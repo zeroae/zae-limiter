@@ -124,14 +124,16 @@ class TestLambdaHandlerUnit:
 
 
 @pytest.mark.integration
-@pytest.mark.skip(
-    reason="Docker tests require manual run - package isolation issues in CI. "
-    "The aggregator imports go through zae_limiter/__init__.py which loads "
-    "aioboto3 (not in Lambda runtime). These tests validate the real Lambda "
-    "environment but unit tests already cover package building adequately."
-)
 class TestLambdaInDocker:
-    """Integration tests running Lambda in Docker container."""
+    """
+    Integration tests running Lambda in Docker container.
+
+    Tests the actual Lambda package in the Python 3.12 Lambda runtime to ensure
+    the aggregator can import and execute without aioboto3 (which is not available
+    in Lambda - only boto3 is provided).
+
+    This validates that the lazy import mechanism in __init__.py works correctly.
+    """
 
     @pytest.fixture
     def docker_available(self) -> bool:
