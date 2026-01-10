@@ -2,7 +2,6 @@
 
 import io
 import json
-import os
 import subprocess
 import tempfile
 import zipfile
@@ -179,10 +178,11 @@ print("SUCCESS: All imports worked")
                 "docker",
                 "run",
                 "--rm",
+                "--entrypoint",
+                "python",
                 "-v",
                 f"{lambda_zip_path}:/var/task/function.zip:ro",
                 "public.ecr.aws/lambda/python:3.12",
-                "python",
                 "-c",
                 test_script,
             ],
@@ -223,10 +223,11 @@ print(json.dumps(result))
                 "docker",
                 "run",
                 "--rm",
+                "--entrypoint",
+                "python",
                 "-v",
                 f"{lambda_zip_path}:/var/task/function.zip:ro",
                 "public.ecr.aws/lambda/python:3.12",
-                "python",
                 "-c",
                 test_script,
             ],
@@ -313,10 +314,11 @@ except Exception as e:
                 "docker",
                 "run",
                 "--rm",
+                "--entrypoint",
+                "python",
                 "-v",
                 f"{lambda_zip_path}:/var/task/function.zip:ro",
                 "public.ecr.aws/lambda/python:3.12",
-                "python",
                 "-c",
                 test_script,
             ],
