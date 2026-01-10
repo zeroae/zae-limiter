@@ -36,7 +36,10 @@ from .exceptions import (
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    StackAlreadyExistsError,
+    StackCreationError,
 )
+from .infra.stack_manager import StackManager
 from .lease import Lease, SyncLease
 from .limiter import FailureMode, RateLimiter, SyncRateLimiter
 from .models import (
@@ -58,6 +61,7 @@ __all__ = [
     "SyncRateLimiter",
     "Lease",
     "SyncLease",
+    "StackManager",
     # Models
     "Limit",
     "LimitName",
@@ -75,4 +79,6 @@ __all__ = [
     "RateLimiterUnavailable",
     "EntityNotFoundError",
     "EntityExistsError",
+    "StackCreationError",
+    "StackAlreadyExistsError",
 ]

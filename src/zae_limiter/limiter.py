@@ -56,11 +56,26 @@ class RateLimiter:
         region: str | None = None,
         endpoint_url: str | None = None,
         create_table: bool = False,
+        create_stack: bool = False,
+        stack_parameters: dict[str, str] | None = None,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
     ) -> None:
         self.table_name = table_name
         self.failure_mode = failure_mode
-        self._create_table = create_table
+
+        # Handle deprecation: create_table -> create_stack
+        if create_table and not create_stack:
+            import warnings
+
+            warnings.warn(
+                "create_table is deprecated, use create_stack instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            create_stack = create_table
+
+        self._create_stack = create_stack
+        self._stack_parameters = stack_parameters or {}
         self._repository = Repository(
             table_name=table_name,
             region=region,
@@ -69,11 +84,14 @@ class RateLimiter:
         self._initialized = False
 
     async def _ensure_initialized(self) -> None:
-        """Ensure table exists if create_table=True."""
+        """Ensure infrastructure exists if create_stack=True."""
         if self._initialized:
             return
-        if self._create_table:
-            await self._repository.create_table()
+        if self._create_stack:
+            await self._repository.create_table_or_stack(
+                use_cloudformation=True,
+                stack_parameters=self._stack_parameters,
+            )
         self._initialized = True
 
     async def close(self) -> None:
@@ -506,6 +524,50 @@ class RateLimiter:
         await self._repository.delete_table()
         self._initialized = False
 
+    async def create_stack(
+        self,
+        stack_name: str | None = None,
+        parameters: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create CloudFormation stack for infrastructure.
+
+        Args:
+            stack_name: Override stack name (default: auto-generated)
+            parameters: Stack parameters dict (e.g.,
+                {'snapshot_windows': 'hourly,daily', 'retention_days': '90'})
+
+        Returns:
+            Dict with stack_id, stack_name, and status
+
+        Raises:
+            StackCreationError: If stack creation fails
+        """
+        from .infra.stack_manager import StackManager
+
+        async with StackManager(
+            self.table_name, self._repository.region, self._repository.endpoint_url
+        ) as manager:
+            return await manager.create_stack(stack_name, parameters)
+
+    async def delete_stack(self, stack_name: str | None = None) -> None:
+        """
+        Delete CloudFormation stack.
+
+        Args:
+            stack_name: Stack name (default: auto-generated from table name)
+
+        Raises:
+            StackCreationError: If deletion fails
+        """
+        from .infra.stack_manager import StackManager
+
+        async with StackManager(
+            self.table_name, self._repository.region, self._repository.endpoint_url
+        ) as manager:
+            stack_name = stack_name or manager.get_stack_name(self.table_name)
+            await manager.delete_stack(stack_name)
+
 
 class SyncRateLimiter:
     """
@@ -520,6 +582,8 @@ class SyncRateLimiter:
         region: str | None = None,
         endpoint_url: str | None = None,
         create_table: bool = False,
+        create_stack: bool = False,
+        stack_parameters: dict[str, str] | None = None,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
     ) -> None:
         self._limiter = RateLimiter(
@@ -527,6 +591,8 @@ class SyncRateLimiter:
             region=region,
             endpoint_url=endpoint_url,
             create_table=create_table,
+            create_stack=create_stack,
+            stack_parameters=stack_parameters,
             failure_mode=failure_mode,
         )
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -731,3 +797,15 @@ class SyncRateLimiter:
     def delete_table(self) -> None:
         """Delete the DynamoDB table."""
         self._run(self._limiter.delete_table())
+
+    def create_stack(
+        self,
+        stack_name: str | None = None,
+        parameters: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Create CloudFormation stack for infrastructure."""
+        return self._run(self._limiter.create_stack(stack_name, parameters))
+
+    def delete_stack(self, stack_name: str | None = None) -> None:
+        """Delete CloudFormation stack."""
+        self._run(self._limiter.delete_stack(stack_name))

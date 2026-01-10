@@ -46,14 +46,39 @@ pip install zae-limiter
 
 ## Quick Start
 
-```python
-from zae_limiter import RateLimiter, Limit
+### 1. Deploy Infrastructure
 
-# Initialize the limiter
+Using CLI (recommended):
+```bash
+zae-limiter deploy --table-name rate_limits --region us-east-1
+```
+
+Or get template for manual deployment:
+```bash
+zae-limiter cfn-template > template.yaml
+aws cloudformation deploy --template-file template.yaml --stack-name zae-limiter
+```
+
+Or auto-create in code (development):
+```python
+from zae_limiter import RateLimiter
+
 limiter = RateLimiter(
     table_name="rate_limits",
     region="us-east-1",
-    create_table=True,  # auto-create DynamoDB table
+    create_stack=True,  # auto-create CloudFormation stack
+)
+```
+
+### 2. Use in Code
+
+```python
+from zae_limiter import RateLimiter, Limit
+
+# Initialize the limiter (stack must already exist)
+limiter = RateLimiter(
+    table_name="rate_limits",
+    region="us-east-1",
 )
 
 # Acquire rate limit capacity
@@ -74,6 +99,18 @@ async with limiter.acquire(
 
 # On success: consumption is committed
 # On exception: consumption is rolled back
+```
+
+### Local Development
+
+For DynamoDB Local, auto-creation uses direct table creation (not CloudFormation):
+
+```python
+limiter = RateLimiter(
+    table_name="rate_limits",
+    endpoint_url="http://localhost:8000",
+    create_table=True,  # Creates table directly (CloudFormation skipped)
+)
 ```
 
 ## Usage
