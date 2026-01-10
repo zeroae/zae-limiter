@@ -73,9 +73,7 @@ class TestCLI:
         assert "AWS::DynamoDB::Table" in content
 
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_default_parameters(
-        self, mock_stack_manager: Mock, runner: CliRunner
-    ) -> None:
+    def test_deploy_default_parameters(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with default parameters."""
         # Mock stack manager
         mock_instance = Mock()
@@ -96,9 +94,7 @@ class TestCLI:
         assert "✓" in result.output
 
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_custom_parameters(
-        self, mock_stack_manager: Mock, runner: CliRunner
-    ) -> None:
+    def test_deploy_custom_parameters(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with custom parameters."""
         mock_instance = Mock()
         mock_instance.get_stack_name = Mock(return_value="my-custom-stack")
@@ -151,9 +147,7 @@ class TestCLI:
         assert "skipped" in result.output.lower()
 
     @patch("zae_limiter.cli.StackManager")
-    def test_delete_with_confirmation(
-        self, mock_stack_manager: Mock, runner: CliRunner
-    ) -> None:
+    def test_delete_with_confirmation(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test delete command requires confirmation."""
         mock_instance = Mock()
         mock_stack_manager.return_value = mock_instance
