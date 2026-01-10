@@ -258,3 +258,108 @@ class TestCLI:
         assert result.exit_code == 1
         assert "CREATE_FAILED" in result.output
         assert "✗" in result.output
+
+    def test_version_help(self, runner: CliRunner) -> None:
+        """Test version command help."""
+        result = runner.invoke(cli, ["version", "--help"])
+        assert result.exit_code == 0
+        assert "Show infrastructure version information" in result.output
+        assert "--table-name" in result.output
+
+    def test_upgrade_help(self, runner: CliRunner) -> None:
+        """Test upgrade command help."""
+        result = runner.invoke(cli, ["upgrade", "--help"])
+        assert result.exit_code == 0
+        assert "Upgrade infrastructure to match client version" in result.output
+        assert "--table-name" in result.output
+        assert "--lambda-only" in result.output
+        assert "--force" in result.output
+
+    def test_check_help(self, runner: CliRunner) -> None:
+        """Test check command help."""
+        result = runner.invoke(cli, ["check", "--help"])
+        assert result.exit_code == 0
+        assert "Check infrastructure compatibility" in result.output
+        assert "--table-name" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_version_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test version command when infrastructure not initialized."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["version", "--table-name", "test_table"])
+
+        assert result.exit_code == 0
+        assert "Not initialized" in result.output
+        assert "zae-limiter deploy" in result.output
+
+    @patch("zae_limiter.__version__", "1.0.0")
+    @patch("zae_limiter.repository.Repository")
+    def test_version_compatible(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test version command when versions are compatible."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(
+            return_value={
+                "schema_version": "1.0.0",
+                "lambda_version": "1.0.0",
+                "client_min_version": "0.0.0",
+            }
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["version", "--table-name", "test_table"])
+
+        assert result.exit_code == 0
+        assert "Infrastructure Version" in result.output
+        assert "Schema Version:" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_check_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test check command when infrastructure not initialized."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["check", "--table-name", "test_table"])
+
+        assert result.exit_code == 1
+        assert "NOT INITIALIZED" in result.output
+
+    @patch("zae_limiter.__version__", "1.0.0")
+    @patch("zae_limiter.repository.Repository")
+    def test_check_compatible(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test check command when compatible."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(
+            return_value={
+                "schema_version": "1.0.0",
+                "lambda_version": "1.0.0",
+                "client_min_version": "0.0.0",
+            }
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["check", "--table-name", "test_table"])
+
+        assert result.exit_code == 0
+        assert "Compatibility Check" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_upgrade_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test upgrade command when infrastructure not initialized."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["upgrade", "--table-name", "test_table"])
+
+        assert result.exit_code == 1
+        assert "not initialized" in result.output.lower()
+        assert "zae-limiter deploy" in result.output

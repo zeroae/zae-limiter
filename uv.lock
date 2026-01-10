@@ -2096,7 +2096,6 @@ wheels = [
 
 [[package]]
 name = "zae-limiter"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
@@ -2140,4 +2139,4 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "types-aiobotocore", extras = ["dynamodb"], specifier = ">=2.0.0" },
 ]
-provides-extras = ["dev", "lambda", "cdk"]
+provides-extras = ["cdk", "dev", "lambda"]

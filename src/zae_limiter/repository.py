@@ -461,6 +461,77 @@ class Repository:
             await client.batch_write_item(RequestItems={self.table_name: chunk})
 
     # -------------------------------------------------------------------------
+    # Version record operations
+    # -------------------------------------------------------------------------
+
+    async def get_version_record(self) -> dict[str, Any] | None:
+        """
+        Get the infrastructure version record.
+
+        Returns:
+            Version record with schema_version, lambda_version, etc.
+            None if no version record exists.
+        """
+        client = await self._get_client()
+
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_version()},
+            },
+        )
+
+        item = response.get("Item")
+        if not item:
+            return None
+
+        return self._deserialize_map(item.get("data", {}).get("M", {}))
+
+    async def set_version_record(
+        self,
+        schema_version: str,
+        lambda_version: str | None = None,
+        client_min_version: str = "0.0.0",
+        updated_by: str | None = None,
+    ) -> None:
+        """
+        Set the infrastructure version record.
+
+        Args:
+            schema_version: Current schema version (e.g., "1.0.0")
+            lambda_version: Currently deployed Lambda version
+            client_min_version: Minimum compatible client version
+            updated_by: Identifier of what performed the update
+        """
+        client = await self._get_client()
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        data: dict[str, Any] = {
+            "schema_version": {"S": schema_version},
+            "client_min_version": {"S": client_min_version},
+            "updated_at": {"S": now},
+        }
+
+        if lambda_version:
+            data["lambda_version"] = {"S": lambda_version}
+        else:
+            data["lambda_version"] = {"NULL": True}
+
+        if updated_by:
+            data["updated_by"] = {"S": updated_by}
+        else:
+            data["updated_by"] = {"NULL": True}
+
+        item = {
+            "PK": {"S": schema.pk_system()},
+            "SK": {"S": schema.sk_version()},
+            "data": {"M": data},
+        }
+
+        await client.put_item(TableName=self.table_name, Item=item)
+
+    # -------------------------------------------------------------------------
     # Resource aggregation
     # -------------------------------------------------------------------------
 

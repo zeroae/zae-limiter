@@ -43,6 +43,11 @@ Parameters:
       - 'false'
     Description: Whether to deploy the aggregator Lambda
 
+  SchemaVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: Schema version for the rate limiter infrastructure
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
 
@@ -177,6 +182,7 @@ Resources:
           TABLE_NAME: !Ref TableName
           SNAPSHOT_WINDOWS: !Ref SnapshotWindows
           SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
+          ZAE_LIMITER_SCHEMA_VERSION: !Ref SchemaVersion
 
       # Note: Code must be deployed separately via SAM, CDK, or manual upload
       # This is a placeholder that will need to be replaced

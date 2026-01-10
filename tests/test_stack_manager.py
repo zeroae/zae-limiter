@@ -33,8 +33,11 @@ class TestStackManager:
         manager = StackManager(table_name="rate_limits", region="us-east-1")
         params = manager._format_parameters(None)
 
-        assert len(params) == 1
-        assert params[0] == {"ParameterKey": "TableName", "ParameterValue": "rate_limits"}
+        # Should include TableName and SchemaVersion
+        assert len(params) == 2
+        param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
+        assert param_dict["TableName"] == "rate_limits"
+        assert "SchemaVersion" in param_dict
 
     def test_format_parameters_with_values(self) -> None:
         """Test parameter formatting with custom values."""
@@ -47,11 +50,12 @@ class TestStackManager:
             }
         )
 
-        # Should include TableName plus custom params
-        assert len(params) == 4
+        # Should include TableName, SchemaVersion, plus custom params
+        assert len(params) == 5
 
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
         assert param_dict["TableName"] == "rate_limits"
+        assert "SchemaVersion" in param_dict
         assert param_dict["SnapshotWindows"] == "hourly,daily,monthly"
         assert param_dict["SnapshotRetentionDays"] == "180"
         assert param_dict["EnableAggregator"] == "false"
