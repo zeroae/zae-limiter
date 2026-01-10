@@ -145,13 +145,17 @@ limiter = RateLimiter(
 src/zae_limiter/
 ├── __init__.py        # Public API exports
 ├── models.py          # Limit, Entity, LimitStatus, BucketState
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError
+├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
-├── cli.py             # CLI commands (deploy, delete, status, cfn-template)
+├── cli.py             # CLI commands (deploy, delete, status, cfn-template, version, upgrade, check)
+├── version.py         # Version tracking and compatibility
+├── migrations/        # Schema migration framework
+│   ├── __init__.py    # Migration registry and runner
+│   └── v1_0_0.py      # Initial schema baseline
 ├── aggregator/        # Lambda for usage snapshots
 │   ├── handler.py     # Lambda entry point
 │   └── processor.py   # Stream processing logic

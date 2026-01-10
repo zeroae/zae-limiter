@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from ..version import parse_version
+
 if TYPE_CHECKING:
     from ..repository import Repository
 
@@ -40,7 +42,7 @@ _MIGRATIONS: list[Migration] = []
 def register_migration(migration: Migration) -> None:
     """Register a migration in the global registry."""
     _MIGRATIONS.append(migration)
-    _MIGRATIONS.sort(key=lambda m: m.version)
+    _MIGRATIONS.sort(key=lambda m: parse_version(m.version))
 
 
 def get_migrations() -> list[Migration]:
@@ -59,8 +61,6 @@ def get_migrations_between(from_version: str, to_version: str) -> list[Migration
     Returns:
         List of migrations to apply in order
     """
-    from ..version import parse_version
-
     from_v = parse_version(from_version)
     to_v = parse_version(to_version)
 
