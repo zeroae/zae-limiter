@@ -85,6 +85,8 @@ class TestCLI:
                 "stack_name": "zae-limiter-rate_limits",
             }
         )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["deploy"])
@@ -104,6 +106,8 @@ class TestCLI:
                 "stack_id": "test-stack-id",
             }
         )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(
@@ -139,6 +143,8 @@ class TestCLI:
                 "message": "CloudFormation skipped for local DynamoDB",
             }
         )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["deploy"])
@@ -162,6 +168,8 @@ class TestCLI:
         """Test delete command with -y flag."""
         mock_instance = Mock()
         mock_instance.delete_stack = AsyncMock(return_value=None)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["delete", "--stack-name", "test-stack", "--yes", "--wait"])
@@ -175,6 +183,8 @@ class TestCLI:
         """Test delete command without waiting."""
         mock_instance = Mock()
         mock_instance.delete_stack = AsyncMock(return_value=None)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["delete", "--stack-name", "test-stack", "--yes", "--no-wait"])
@@ -187,6 +197,8 @@ class TestCLI:
         """Test status command for existing stack."""
         mock_instance = Mock()
         mock_instance.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["status", "--stack-name", "test-stack"])
@@ -200,6 +212,8 @@ class TestCLI:
         """Test status command for non-existent stack."""
         mock_instance = Mock()
         mock_instance.get_stack_status = AsyncMock(return_value=None)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["status", "--stack-name", "nonexistent"])
@@ -212,6 +226,8 @@ class TestCLI:
         """Test status command for stack in progress."""
         mock_instance = Mock()
         mock_instance.get_stack_status = AsyncMock(return_value="CREATE_IN_PROGRESS")
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["status", "--stack-name", "test-stack"])
@@ -225,6 +241,8 @@ class TestCLI:
         """Test status command for failed stack."""
         mock_instance = Mock()
         mock_instance.get_stack_status = AsyncMock(return_value="CREATE_FAILED")
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["status", "--stack-name", "test-stack"])

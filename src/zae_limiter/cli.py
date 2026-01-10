@@ -63,47 +63,47 @@ def deploy(
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
 
     async def _deploy() -> None:
-        manager = StackManager(table_name, region, None)
-        actual_stack_name = stack_name or manager.get_stack_name()
+        async with StackManager(table_name, region, None) as manager:
+            actual_stack_name = stack_name or manager.get_stack_name()
 
-        click.echo(f"Deploying stack: {actual_stack_name}")
-        click.echo(f"  Table name: {table_name}")
-        click.echo(f"  Region: {region or 'default'}")
-        click.echo(f"  Snapshot windows: {snapshot_windows}")
-        click.echo(f"  Retention days: {retention_days}")
-        click.echo(f"  Aggregator: {'enabled' if enable_aggregator else 'disabled'}")
-        click.echo()
+            click.echo(f"Deploying stack: {actual_stack_name}")
+            click.echo(f"  Table name: {table_name}")
+            click.echo(f"  Region: {region or 'default'}")
+            click.echo(f"  Snapshot windows: {snapshot_windows}")
+            click.echo(f"  Retention days: {retention_days}")
+            click.echo(f"  Aggregator: {'enabled' if enable_aggregator else 'disabled'}")
+            click.echo()
 
-        parameters = {
-            "snapshot_windows": snapshot_windows,
-            "retention_days": str(retention_days),
-            "enable_aggregator": "true" if enable_aggregator else "false",
-        }
+            parameters = {
+                "snapshot_windows": snapshot_windows,
+                "retention_days": str(retention_days),
+                "enable_aggregator": "true" if enable_aggregator else "false",
+            }
 
-        try:
-            result = await manager.create_stack(
-                stack_name=actual_stack_name,
-                parameters=parameters,
-                wait=wait,
-            )
+            try:
+                result = await manager.create_stack(
+                    stack_name=actual_stack_name,
+                    parameters=parameters,
+                    wait=wait,
+                )
 
-            status = result.get("status", "unknown")
-            if status == "skipped_local":
-                click.echo("⚠️  CloudFormation deployment skipped (local DynamoDB detected)")
-                sys.exit(0)
+                status = result.get("status", "unknown")
+                if status == "skipped_local":
+                    click.echo("⚠️  CloudFormation deployment skipped (local DynamoDB detected)")
+                    sys.exit(0)
 
-            click.echo(f"✓ Stack {status.lower().replace('_', ' ')}")
+                click.echo(f"✓ Stack {status.lower().replace('_', ' ')}")
 
-            if result.get("stack_id"):
-                click.echo(f"  Stack ID: {result['stack_id']}")
+                if result.get("stack_id"):
+                    click.echo(f"  Stack ID: {result['stack_id']}")
 
-            if not wait:
-                click.echo()
-                click.echo("Stack creation initiated. Use 'status' command to check progress.")
+                if not wait:
+                    click.echo()
+                    click.echo("Stack creation initiated. Use 'status' command to check progress.")
 
-        except Exception as e:
-            click.echo(f"✗ Deployment failed: {e}", err=True)
-            sys.exit(1)
+            except Exception as e:
+                click.echo(f"✗ Deployment failed: {e}", err=True)
+                sys.exit(1)
 
     asyncio.run(_deploy())
 
@@ -144,21 +144,20 @@ def delete(
         )
 
     async def _delete() -> None:
-        manager = StackManager("dummy", region, None)
+        async with StackManager("dummy", region, None) as manager:
+            click.echo(f"Deleting stack: {stack_name}")
 
-        click.echo(f"Deleting stack: {stack_name}")
+            try:
+                await manager.delete_stack(stack_name=stack_name, wait=wait)
 
-        try:
-            await manager.delete_stack(stack_name=stack_name, wait=wait)
+                if wait:
+                    click.echo(f"✓ Stack '{stack_name}' deleted successfully")
+                else:
+                    click.echo("Stack deletion initiated. Use 'status' command to check progress.")
 
-            if wait:
-                click.echo(f"✓ Stack '{stack_name}' deleted successfully")
-            else:
-                click.echo("Stack deletion initiated. Use 'status' command to check progress.")
-
-        except Exception as e:
-            click.echo(f"✗ Deletion failed: {e}", err=True)
-            sys.exit(1)
+            except Exception as e:
+                click.echo(f"✗ Deletion failed: {e}", err=True)
+                sys.exit(1)
 
     asyncio.run(_delete())
 
@@ -207,32 +206,31 @@ def status(stack_name: str, region: str | None) -> None:
     """Get CloudFormation stack status."""
 
     async def _status() -> None:
-        manager = StackManager("dummy", region, None)
+        async with StackManager("dummy", region, None) as manager:
+            try:
+                stack_status = await manager.get_stack_status(stack_name)
 
-        try:
-            stack_status = await manager.get_stack_status(stack_name)
+                if stack_status is None:
+                    click.echo(f"Stack '{stack_name}' not found")
+                    sys.exit(1)
 
-            if stack_status is None:
-                click.echo(f"Stack '{stack_name}' not found")
+                click.echo(f"Stack: {stack_name}")
+                click.echo(f"Status: {stack_status}")
+
+                # Interpret status
+                if stack_status == "CREATE_COMPLETE":
+                    click.echo("✓ Stack is ready")
+                elif stack_status == "DELETE_COMPLETE":
+                    click.echo("✓ Stack has been deleted")
+                elif "IN_PROGRESS" in stack_status:
+                    click.echo("⏳ Operation in progress...")
+                elif "FAILED" in stack_status or "ROLLBACK" in stack_status:
+                    click.echo("✗ Stack operation failed", err=True)
+                    sys.exit(1)
+
+            except Exception as e:
+                click.echo(f"✗ Failed to get status: {e}", err=True)
                 sys.exit(1)
-
-            click.echo(f"Stack: {stack_name}")
-            click.echo(f"Status: {stack_status}")
-
-            # Interpret status
-            if stack_status == "CREATE_COMPLETE":
-                click.echo("✓ Stack is ready")
-            elif stack_status == "DELETE_COMPLETE":
-                click.echo("✓ Stack has been deleted")
-            elif "IN_PROGRESS" in stack_status:
-                click.echo("⏳ Operation in progress...")
-            elif "FAILED" in stack_status or "ROLLBACK" in stack_status:
-                click.echo("✗ Stack operation failed", err=True)
-                sys.exit(1)
-
-        except Exception as e:
-            click.echo(f"✗ Failed to get status: {e}", err=True)
-            sys.exit(1)
 
     asyncio.run(_status())
 

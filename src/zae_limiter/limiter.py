@@ -545,10 +545,10 @@ class RateLimiter:
         """
         from .infra.stack_manager import StackManager
 
-        manager = StackManager(
+        async with StackManager(
             self.table_name, self._repository.region, self._repository.endpoint_url
-        )
-        return await manager.create_stack(stack_name, parameters)
+        ) as manager:
+            return await manager.create_stack(stack_name, parameters)
 
     async def delete_stack(self, stack_name: str | None = None) -> None:
         """
@@ -562,11 +562,11 @@ class RateLimiter:
         """
         from .infra.stack_manager import StackManager
 
-        manager = StackManager(
+        async with StackManager(
             self.table_name, self._repository.region, self._repository.endpoint_url
-        )
-        stack_name = stack_name or manager.get_stack_name(self.table_name)
-        await manager.delete_stack(stack_name)
+        ) as manager:
+            stack_name = stack_name or manager.get_stack_name(self.table_name)
+            await manager.delete_stack(stack_name)
 
 
 class SyncRateLimiter:

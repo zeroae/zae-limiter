@@ -108,8 +108,8 @@ class Repository:
             # Use stack manager for CloudFormation deployment
             from .infra.stack_manager import StackManager
 
-            manager = StackManager(self.table_name, self.region, self.endpoint_url)
-            await manager.create_stack(parameters=stack_parameters)
+            async with StackManager(self.table_name, self.region, self.endpoint_url) as manager:
+                await manager.create_stack(parameters=stack_parameters)
         else:
             # Fallback to direct table creation
             await self.create_table()

@@ -36,6 +36,7 @@ class StackManager:
         self.endpoint_url = endpoint_url
         self._is_local = endpoint_url is not None
         self._session: aioboto3.Session | None = None
+        self._client: Any = None
 
     def _should_use_cloudformation(self) -> bool:
         """
@@ -59,7 +60,10 @@ class StackManager:
         return f"zae-limiter-{name}"
 
     async def _get_client(self) -> Any:
-        """Get CloudFormation client."""
+        """Get or create CloudFormation client."""
+        if self._client is not None:
+            return self._client
+
         if self._session is None:
             self._session = aioboto3.Session()
 
@@ -69,7 +73,10 @@ class StackManager:
         if self.endpoint_url:
             kwargs["endpoint_url"] = self.endpoint_url
 
-        return await self._session.client("cloudformation", **kwargs).__aenter__()
+        # Type checker doesn't know _session is not None after the check above
+        session = self._session
+        self._client = await session.client("cloudformation", **kwargs).__aenter__()
+        return self._client
 
     def _load_template(self) -> str:
         """Load CloudFormation template from package resources."""
@@ -363,6 +370,25 @@ class StackManager:
             return []
 
     async def close(self) -> None:
-        """Close the underlying session."""
-        # aioboto3 clients manage their own lifecycle
-        pass
+        """Close the underlying session and client."""
+        if self._client is not None:
+            try:
+                await self._client.__aexit__(None, None, None)
+            except Exception:
+                pass  # Best effort cleanup
+            finally:
+                self._client = None
+        self._session = None
+
+    async def __aenter__(self) -> "StackManager":
+        """Enter async context manager."""
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Exit async context manager."""
+        await self.close()
