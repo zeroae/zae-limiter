@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "zae-limiter"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Rate limiting library backed by DynamoDB with token bucket algorithm"
 readme = {file = "README.md", content-type = "text/markdown"}
 license = {file = "LICENSE"}
@@ -53,6 +53,9 @@ Repository = "https://github.com/zeroae/zae-limiter"
 
 [project.scripts]
 zae-limiter = "zae_limiter.cli:cli"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zae_limiter"]

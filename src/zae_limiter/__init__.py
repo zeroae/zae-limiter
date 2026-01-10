@@ -55,7 +55,10 @@ from .models import (
 # lazily via __getattr__ to avoid loading aioboto3 for Lambda functions
 # that only need boto3
 
-__version__ = "0.1.0"
+try:
+    from ._version import __version__
+except ImportError:
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     # Main classes
