@@ -4,7 +4,6 @@ import pytest
 
 from zae_limiter.version import (
     CURRENT_SCHEMA_VERSION,
-    CompatibilityResult,
     InfrastructureVersion,
     ParsedVersion,
     check_compatibility,
