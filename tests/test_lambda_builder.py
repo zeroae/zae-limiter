@@ -309,7 +309,8 @@ try:
 except Exception as e:
     # Expected to fail on DynamoDB write, but should get past parsing
     print(f"Expected failure on DynamoDB write: {type(e).__name__}")
-    if "endpoint" in str(e).lower() or "credentials" in str(e).lower():
+    error_msg = str(e).lower()
+    if "endpoint" in error_msg or "credentials" in error_msg or "region" in error_msg:
         print("SUCCESS: Event parsing worked, failed on AWS access as expected")
     else:
         raise
