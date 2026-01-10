@@ -198,8 +198,7 @@ def check_compatibility(
             is_compatible=True,  # Can still work, but update available
             requires_lambda_update=True,
             message=(
-                f"Lambda update available: {infra_version.lambda_version} -> "
-                f"{client_version}"
+                f"Lambda update available: {infra_version.lambda_version} -> {client_version}"
             ),
         )
 

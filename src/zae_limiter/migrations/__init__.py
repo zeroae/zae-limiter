@@ -104,8 +104,7 @@ async def apply_migrations(
             applied.append(migration.version)
         except Exception as e:
             raise RuntimeError(
-                f"Migration to {migration.version} failed: {e}. "
-                f"Applied migrations: {applied}"
+                f"Migration to {migration.version} failed: {e}. Applied migrations: {applied}"
             ) from e
 
     return applied
