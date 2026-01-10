@@ -194,6 +194,20 @@ open htmlcov/index.html
 - All public APIs must have docstrings
 - Async is primary, sync is wrapper
 
+## Commit Messages
+
+Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md).
+
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`
+
+**Examples:**
+```bash
+✨ feat(limiter): add hierarchical rate limiting support
+🐛 fix(bucket): prevent integer overflow in refill calculation
+📝 docs(readme): add CloudFormation deployment guide
+♻️ refactor(schema): simplify DynamoDB key structure
+```
+
 ## Important Invariants
 
 1. **Lease commits only on success**: If any exception occurs in the context, changes are rolled back
