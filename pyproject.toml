@@ -6,12 +6,13 @@ build-backend = "hatchling.build"
 name = "zae-limiter"
 version = "0.1.0"
 description = "Rate limiting library backed by DynamoDB with token bucket algorithm"
-readme = "README.md"
-license = "MIT"
+readme = {file = "README.md", content-type = "text/markdown"}
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 authors = [
     { name = "ZeroAE", email = "dev@zeroae.com" },
 ]
+keywords = ["rate-limiting", "dynamodb", "token-bucket", "aws", "llm", "api-rate-limit"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
