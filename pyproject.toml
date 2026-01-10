@@ -60,6 +60,9 @@ packages = ["src/zae_limiter"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+markers = [
+    "integration: marks tests as integration tests (require Docker or AWS)",
+]
 
 [tool.ruff]
 line-length = 100

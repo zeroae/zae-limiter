@@ -85,6 +85,14 @@ class TestCLI:
                 "stack_name": "zae-limiter-rate_limits",
             }
         )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:test",
+                "code_sha256": "abc123def456",
+                "size_bytes": 30000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
