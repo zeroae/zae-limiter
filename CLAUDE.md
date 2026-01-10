@@ -19,6 +19,9 @@ uv venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
 
+# Deploy infrastructure (CloudFormation)
+zae-limiter deploy --table-name rate_limits --region us-east-1
+
 # Run tests
 pytest
 
@@ -39,20 +42,73 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## Infrastructure Deployment
+
+### CloudFormation Stack
+
+The library uses CloudFormation for infrastructure deployment:
+
+```bash
+# Deploy stack with CLI
+zae-limiter deploy --table-name rate_limits --region us-east-1
+
+# Export template for custom deployment
+zae-limiter cfn-template > template.yaml
+
+# Check stack status
+zae-limiter status --stack-name zae-limiter-rate_limits --region us-east-1
+
+# Delete stack
+zae-limiter delete --stack-name zae-limiter-rate_limits --yes
+```
+
+### Auto-Creation in Code
+
+For development/testing, stacks can be auto-created:
+
+```python
+limiter = RateLimiter(
+    table_name="rate_limits",
+    region="us-east-1",
+    create_stack=True,  # Auto-creates CloudFormation stack
+    stack_parameters={
+        'snapshot_windows': 'hourly,daily',
+        'retention_days': '90',
+    }
+)
+```
+
+**Note:** `create_table` parameter is deprecated. Use `create_stack` instead.
+
+### Local Development
+
+When using DynamoDB Local, CloudFormation is automatically skipped:
+
+```python
+limiter = RateLimiter(
+    table_name="rate_limits",
+    endpoint_url="http://localhost:8000",  # DynamoDB Local
+    create_table=True,  # Uses direct table creation (not CloudFormation)
+)
+```
+
 ## Project Structure
 
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
 ├── models.py          # Limit, Entity, LimitStatus, BucketState
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable
+├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
+├── cli.py             # CLI commands (deploy, delete, status, cfn-template)
 ├── aggregator/        # Lambda for usage snapshots
-└── infra/             # CloudFormation template
+└── infra/
+    ├── stack_manager.py    # CloudFormation stack operations
+    └── cfn_template.yaml   # CloudFormation template
 ```
 
 ## Key Design Decisions

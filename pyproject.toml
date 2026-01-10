@@ -25,6 +25,7 @@ dependencies = [
     "aioboto3>=12.0.0",
     "boto3>=1.34.0",
     "types-aiobotocore[dynamodb]>=2.0.0",
+    "click>=8.0.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +48,9 @@ cdk = [
 [project.urls]
 Homepage = "https://github.com/zeroae/zae-limiter"
 Repository = "https://github.com/zeroae/zae-limiter"
+
+[project.scripts]
+zae-limiter = "zae_limiter.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zae_limiter"]

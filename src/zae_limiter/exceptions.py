@@ -108,3 +108,21 @@ class EntityExistsError(RateLimitError):
     def __init__(self, entity_id: str) -> None:
         self.entity_id = entity_id
         super().__init__(f"Entity already exists: {entity_id}")
+
+
+class StackCreationError(Exception):
+    """Raised when CloudFormation stack creation fails."""
+
+    def __init__(
+        self, stack_name: str, reason: str, events: list[dict[str, Any]] | None = None
+    ) -> None:
+        self.stack_name = stack_name
+        self.reason = reason
+        self.events = events or []
+        super().__init__(f"Stack {stack_name} creation failed: {reason}")
+
+
+class StackAlreadyExistsError(StackCreationError):
+    """Raised when stack already exists (informational)."""
+
+    pass

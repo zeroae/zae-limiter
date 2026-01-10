@@ -80,6 +80,40 @@ class Repository:
             if e.response["Error"]["Code"] != "ResourceNotFoundException":
                 raise
 
+    async def create_table_or_stack(
+        self,
+        use_cloudformation: bool = True,
+        stack_parameters: dict[str, str] | None = None,
+    ) -> None:
+        """
+        Create DynamoDB infrastructure via CloudFormation or direct API.
+
+        Automatically detects local DynamoDB (via endpoint_url) and uses
+        direct table creation instead of CloudFormation.
+
+        Args:
+            use_cloudformation: Use CloudFormation if True, else direct table creation
+            stack_parameters: Parameters for CloudFormation stack (e.g.,
+                {'snapshot_windows': 'hourly,daily', 'retention_days': '90'})
+
+        Raises:
+            StackCreationError: If CloudFormation stack creation fails
+        """
+        # If endpoint_url is set (local DynamoDB), always use direct creation
+        if self.endpoint_url:
+            await self.create_table()
+            return
+
+        if use_cloudformation:
+            # Use stack manager for CloudFormation deployment
+            from .infra.stack_manager import StackManager
+
+            manager = StackManager(self.table_name, self.region, self.endpoint_url)
+            await manager.create_stack(parameters=stack_parameters)
+        else:
+            # Fallback to direct table creation
+            await self.create_table()
+
     # -------------------------------------------------------------------------
     # Entity operations
     # -------------------------------------------------------------------------
