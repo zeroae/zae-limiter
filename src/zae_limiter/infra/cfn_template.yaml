@@ -1,0 +1,249 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  zae-limiter infrastructure - DynamoDB table with streams and
+  Lambda aggregator for usage snapshots.
+
+Parameters:
+  TableName:
+    Type: String
+    Default: rate_limits
+    Description: Name of the DynamoDB table
+
+  SnapshotWindows:
+    Type: String
+    Default: hourly,daily
+    Description: Comma-separated list of snapshot windows (hourly, daily, monthly)
+
+  SnapshotRetentionDays:
+    Type: Number
+    Default: 90
+    Description: Number of days to retain usage snapshots
+    MinValue: 1
+    MaxValue: 3650
+
+  LambdaMemorySize:
+    Type: Number
+    Default: 256
+    Description: Memory size for the aggregator Lambda
+    MinValue: 128
+    MaxValue: 3008
+
+  LambdaTimeout:
+    Type: Number
+    Default: 60
+    Description: Timeout for the aggregator Lambda in seconds
+    MinValue: 1
+    MaxValue: 900
+
+  EnableAggregator:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Whether to deploy the aggregator Lambda
+
+Conditions:
+  DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
+
+Resources:
+  # -------------------------------------------------------------------------
+  # DynamoDB Table
+  # -------------------------------------------------------------------------
+  RateLimitsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST
+
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+      StreamSpecification:
+        StreamEnabled: true
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+      Tags:
+        - Key: Application
+          Value: zae-limiter
+
+  # -------------------------------------------------------------------------
+  # Lambda Aggregator
+  # -------------------------------------------------------------------------
+  AggregatorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployAggregator
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${TableName}-aggregator
+      RetentionInDays: 30
+
+  AggregatorRole:
+    Type: AWS::IAM::Role
+    Condition: DeployAggregator
+    Properties:
+      RoleName: !Sub ${TableName}-aggregator-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Read/write access to table
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt RateLimitsTable.Arn
+                  - !Sub ${RateLimitsTable.Arn}/index/*
+
+              # Stream access
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:DescribeStream
+                  - dynamodb:ListStreams
+                Resource:
+                  - !GetAtt RateLimitsTable.StreamArn
+
+  AggregatorFunction:
+    Type: AWS::Lambda::Function
+    Condition: DeployAggregator
+    DependsOn: AggregatorLogGroup
+    Properties:
+      FunctionName: !Sub ${TableName}-aggregator
+      Description: Aggregates rate limiter usage into hourly/daily snapshots
+      Runtime: python3.12
+      Handler: zae_limiter.aggregator.handler.handler
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Role: !GetAtt AggregatorRole.Arn
+
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+          SNAPSHOT_WINDOWS: !Ref SnapshotWindows
+          SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
+
+      # Note: Code must be deployed separately via SAM, CDK, or manual upload
+      # This is a placeholder that will need to be replaced
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              # Placeholder - replace with actual deployment
+              return {"statusCode": 200, "body": "Placeholder"}
+
+      Tags:
+        - Key: Application
+          Value: zae-limiter
+
+  AggregatorEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Condition: DeployAggregator
+    Properties:
+      EventSourceArn: !GetAtt RateLimitsTable.StreamArn
+      FunctionName: !Ref AggregatorFunction
+      StartingPosition: LATEST
+      BatchSize: 100
+      MaximumBatchingWindowInSeconds: 5
+
+      # Filter to only process MODIFY events on BUCKET records
+      FilterCriteria:
+        Filters:
+          - Pattern: >-
+              {
+                "eventName": ["MODIFY"],
+                "dynamodb": {
+                  "NewImage": {
+                    "SK": {
+                      "S": [{"prefix": "#BUCKET#"}]
+                    }
+                  }
+                }
+              }
+
+Outputs:
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref RateLimitsTable
+    Export:
+      Name: !Sub ${AWS::StackName}-TableName
+
+  TableArn:
+    Description: DynamoDB table ARN
+    Value: !GetAtt RateLimitsTable.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-TableArn
+
+  StreamArn:
+    Description: DynamoDB stream ARN
+    Value: !GetAtt RateLimitsTable.StreamArn
+    Export:
+      Name: !Sub ${AWS::StackName}-StreamArn
+
+  AggregatorFunctionArn:
+    Condition: DeployAggregator
+    Description: Aggregator Lambda function ARN
+    Value: !GetAtt AggregatorFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-AggregatorArn
+
+  AggregatorFunctionName:
+    Condition: DeployAggregator
+    Description: Aggregator Lambda function name
+    Value: !Ref AggregatorFunction
+    Export:
+      Name: !Sub ${AWS::StackName}-AggregatorName

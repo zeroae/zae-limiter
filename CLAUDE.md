@@ -1,0 +1,161 @@
+# CLAUDE.md - Instructions for AI Assistants
+
+This file provides context for AI assistants working on the zae-limiter codebase.
+
+## Project Overview
+
+zae-limiter is a rate limiting library backed by DynamoDB using the token bucket algorithm. It's designed for limiting LLM API calls where:
+- Multiple limits are tracked per call (rpm, tpm)
+- Token counts are unknown until after the call completes
+- Hierarchical limits exist (API key → project)
+
+## Build & Development
+
+### Using uv (preferred)
+
+```bash
+# Setup
+uv venv
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Type check
+mypy src/zae_limiter
+
+# Lint
+ruff check --fix .
+ruff format .
+```
+
+### Using conda
+
+```bash
+conda create -n zae-limiter python=3.12
+conda activate zae-limiter
+pip install -e ".[dev]"
+pytest
+```
+
+## Project Structure
+
+```
+src/zae_limiter/
+├── __init__.py        # Public API exports
+├── models.py          # Limit, Entity, LimitStatus, BucketState
+├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable
+├── bucket.py          # Token bucket math (integer arithmetic)
+├── schema.py          # DynamoDB key builders
+├── repository.py      # DynamoDB operations
+├── lease.py           # Lease context manager
+├── limiter.py         # RateLimiter, SyncRateLimiter
+├── aggregator/        # Lambda for usage snapshots
+└── infra/             # CloudFormation template
+```
+
+## Key Design Decisions
+
+### Integer Arithmetic for Precision
+- All token values stored as **millitokens** (×1000)
+- Refill rates stored as fraction: `refill_amount / refill_period_seconds`
+- Avoids floating point precision issues in distributed systems
+
+### Token Bucket Algorithm
+- Buckets can go **negative** for post-hoc reconciliation
+- Refill is calculated lazily on each access
+- `burst >= capacity` allows controlled bursting
+
+### DynamoDB Single Table Design
+- All entities, buckets, limits, usage in one table
+- GSI1: Parent → Children lookups
+- GSI2: Resource aggregation (capacity tracking)
+- Uses TransactWriteItems for atomicity
+
+### Exception Design
+- `RateLimitExceeded` includes **ALL** limit statuses
+- Both `violations` (exceeded) and `passed` (ok) are available
+- `retry_after_seconds` calculated from primary bottleneck
+
+## Common Tasks
+
+### Adding a New Limit Type
+1. No code changes needed - `Limit.custom()` supports any configuration
+2. For convenience, add factory method to `Limit` class in `models.py`
+
+### Modifying the Schema
+1. Update key builders in `schema.py`
+2. Update serialization in `repository.py`
+3. Update CloudFormation template in `infra/cfn_template.yaml`
+4. Be careful with backwards compatibility
+
+### Adding New Exception Fields
+1. Update `LimitStatus` in `models.py`
+2. Update `RateLimitExceeded.as_dict()` in `exceptions.py`
+3. Update tests in `test_limiter.py`
+
+## Testing
+
+### Run Tests with Moto (DynamoDB Mock)
+```bash
+pytest tests/ -v
+```
+
+### Test with Local DynamoDB
+```bash
+# Start DynamoDB Local
+docker run -p 8000:8000 amazon/dynamodb-local
+
+# Run integration tests
+DYNAMODB_ENDPOINT=http://localhost:8000 pytest tests/integration/ -v
+```
+
+### Test Coverage
+```bash
+pytest --cov=zae_limiter --cov-report=html
+open htmlcov/index.html
+```
+
+## Code Style
+
+- Use `ruff` for linting and formatting
+- Use `mypy` for type checking (strict mode)
+- All public APIs must have docstrings
+- Async is primary, sync is wrapper
+
+## Important Invariants
+
+1. **Lease commits only on success**: If any exception occurs in the context, changes are rolled back
+2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
+3. **Cascade is optional**: Parent is only checked if `cascade=True`
+4. **Stored limits override defaults**: When `use_stored_limits=True`
+5. **Transactions are atomic**: Multi-entity updates succeed or fail together
+
+## DynamoDB Access Patterns
+
+| Pattern | Query |
+|---------|-------|
+| Get entity | `PK=ENTITY#{id}, SK=#META` |
+| Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
+| Get children | GSI1: `GSI1PK=PARENT#{id}` |
+| Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
+
+## Dependencies
+
+- `aioboto3`: Async DynamoDB client
+- `boto3`: Sync DynamoDB (for Lambda aggregator)
+- `moto`: DynamoDB mocking for tests
+
+## Releasing
+
+```bash
+# Update version in pyproject.toml and __init__.py
+# Then:
+git tag v0.1.0
+git push origin v0.1.0
+
+# Build and publish
+uv build
+uv publish
+```
