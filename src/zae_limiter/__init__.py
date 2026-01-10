@@ -56,7 +56,7 @@ from .models import (
 # that only need boto3
 
 try:
-    from ._version import __version__
+    from ._version import __version__  # type: ignore[import-untyped]
 except ImportError:
     __version__ = "0.0.0+unknown"
 
