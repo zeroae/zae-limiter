@@ -15,33 +15,14 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 
 ## Installation
 
-### Using uv (recommended)
-
-```bash
-# Create virtual environment and install
-uv venv
-source .venv/bin/activate  # or `.venv\Scripts\activate` on Windows
-uv pip install -e ".[dev]"
-
-# Or install directly
-uv pip install zae-limiter
-```
-
-### Using conda
-
-```bash
-# Create conda environment
-conda create -n zae-limiter python=3.12
-conda activate zae-limiter
-
-# Install with pip (inside conda env)
-pip install -e ".[dev]"
-```
-
-### Using pip
-
 ```bash
 pip install zae-limiter
+```
+
+Or using uv:
+
+```bash
+uv pip install zae-limiter
 ```
 
 ## Quick Start
@@ -314,9 +295,12 @@ except RateLimitExceeded as e:
 ### Deploy with CloudFormation
 
 ```bash
+# Export the template from the installed package
+zae-limiter cfn-template > template.yaml
+
 # Deploy the DynamoDB table and Lambda aggregator
 aws cloudformation deploy \
-    --template-file src/zae_limiter/infra/cfn_template.yaml \
+    --template-file template.yaml \
     --stack-name zae-limiter \
     --parameter-overrides \
         TableName=rate_limits \
@@ -324,22 +308,24 @@ aws cloudformation deploy \
     --capabilities CAPABILITY_NAMED_IAM
 ```
 
-### Deploy Lambda Aggregator
+### Automatic Lambda Deployment
 
-The CloudFormation template includes a placeholder Lambda. To deploy the actual code:
+The `zae-limiter deploy` CLI command automatically handles Lambda deployment:
 
 ```bash
-# Build Lambda package
-pip install . -t lambda_package/
-cp -r src/zae_limiter lambda_package/
+# Deploy stack with Lambda aggregator (automatic)
+zae-limiter deploy --table-name rate_limits --region us-east-1
 
-# Create ZIP
-cd lambda_package && zip -r ../aggregator.zip . && cd ..
+# The CLI automatically:
+# 1. Creates CloudFormation stack with DynamoDB table and Lambda function
+# 2. Builds Lambda deployment package from installed library
+# 3. Deploys Lambda code via AWS Lambda API (~30KB, no S3 required)
+```
 
-# Update Lambda
-aws lambda update-function-code \
-    --function-name rate_limits-aggregator \
-    --zip-file fileb://aggregator.zip
+To deploy without the Lambda aggregator:
+
+```bash
+zae-limiter deploy --table-name rate_limits --no-aggregator
 ```
 
 ### Local Development with DynamoDB Local

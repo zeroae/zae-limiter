@@ -42,6 +42,42 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## Development Workflow
+
+### Pull Request Process
+
+All changes to the codebase must go through pull requests. Direct commits to the `main` branch are not allowed.
+
+**Workflow:**
+
+1. Create a feature branch from main:
+   ```bash
+   git checkout main
+   git pull origin main
+   git checkout -b feat/your-feature-name
+   ```
+
+2. Make your changes following the project conventions
+   - Follow commit message conventions (see Commit Messages section below)
+   - Add tests for new functionality
+   - Update documentation as needed
+
+3. Push your branch and create a pull request:
+   ```bash
+   git push origin feat/your-feature-name
+   ```
+
+4. Wait for CI checks to pass:
+   - **Lint**: Code style and formatting (ruff)
+   - **Type Check**: Static type checking (mypy)
+   - **Tests**: Unit tests with coverage (pytest on Python 3.11 & 3.12)
+
+5. Address review feedback if needed
+
+6. Once approved and CI passes, the PR will be merged to main
+
+**Important:** Never force-push to main or bypass CI checks.
+
 ## Infrastructure Deployment
 
 ### CloudFormation Stack
@@ -233,13 +269,49 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 
 ## Releasing
 
-```bash
-# Update version in pyproject.toml and __init__.py
-# Then:
-git tag v0.1.0
-git push origin v0.1.0
+Releases are fully automated via GitHub Actions. No manual build or publish steps are required.
 
-# Build and publish
-uv build
-uv publish
-```
+### Release Process
+
+1. **Ensure main is ready**: All PRs merged, CI passing, CHANGELOG expectations met
+
+2. **Create and push a version tag**:
+   ```bash
+   git checkout main
+   git pull origin main
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+3. **GitHub Actions automatically**:
+   - Builds the package (wheel + sdist)
+   - Generates changelog using git-cliff from conventional commits
+   - Creates GitHub Release with changelog and distribution files
+   - Publishes to PyPI using OIDC authentication
+
+4. **Verify the release**:
+   - Check GitHub Releases page for the new release
+   - Verify PyPI: https://pypi.org/project/zae-limiter/
+   - Confirm changelog accuracy
+
+### Version Management
+
+- Versions are **automatically generated** from git tags using `hatch-vcs`
+- No manual version updates needed in `pyproject.toml` or `__init__.py`
+- Tag format: `v{major}.{minor}.{patch}` (e.g., `v0.1.0`, `v1.2.3`)
+
+### Changelog Generation
+
+- Uses `git-cliff` with configuration in `cliff.toml`
+- Parses conventional commits since the last tag
+- Groups by: Features, Bug Fixes, Documentation, Performance, Refactoring, etc.
+- Removes emoji prefixes automatically (e.g., `✨ feat(scope):` → `feat(scope):`)
+
+### Release Workflow Details
+
+See `.github/workflows/release.yml` for the complete automation:
+- **Build job**: Creates distribution packages
+- **Publish job**: Uploads to PyPI (requires `pypi` environment approval if configured)
+- **Release job**: Creates GitHub release with generated changelog
+
+**Note:** The PyPI publish step uses OpenID Connect (OIDC) for authentication, eliminating the need for API tokens in secrets.
