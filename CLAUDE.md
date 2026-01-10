@@ -234,6 +234,45 @@ open htmlcov/index.html
 - All public APIs must have docstrings
 - Async is primary, sync is wrapper
 
+## Code Review Guidelines
+
+When reviewing PRs, check the following based on files changed:
+
+### Test Coverage (changes to src/)
+- Verify corresponding tests exist in tests/
+- Check edge cases: negative values, empty collections, None
+- Ensure async tests have sync counterparts
+- Flag if new public methods lack tests
+
+### Async/Sync Parity (changes to limiter.py, lease.py, repository.py)
+- Verify SyncRateLimiter has matching sync methods
+- Check SyncLease matches AsyncLease functionality
+- Ensure error handling is consistent
+- Confirm both test files updated
+
+### Infrastructure (changes to infra/, aggregator/)
+- Validate CloudFormation template syntax
+- Check IAM follows least privilege
+- Verify Lambda handler signature
+- Ensure version.py updated if schema changes
+
+### Migrations (changes to migrations/)
+- Verify migration follows protocol (async, Repository param)
+- Check backward compatibility
+- Validate CURRENT_VERSION in version.py matches
+- Flag breaking changes needing major version bump
+
+### DynamoDB Schema (changes to schema.py, repository.py)
+- Verify key builders follow single-table patterns
+- Check GSI usage matches access patterns
+- Validate transaction limits (max 100 items)
+- Ensure patterns documented in CLAUDE.md
+
+### API Documentation (changes to __init__.py, models.py)
+- Verify docstrings exist and are accurate
+- Check type hints match descriptions
+- Flag public API changes without changelog entry
+
 ## Commit Messages
 
 Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md).
