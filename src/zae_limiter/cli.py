@@ -265,5 +265,288 @@ def status(stack_name: str, region: str | None) -> None:
     asyncio.run(_status())
 
 
+@cli.command("version")
+@click.option(
+    "--table-name",
+    required=True,
+    help="DynamoDB table name",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--stack-name",
+    help="CloudFormation stack name (default: zae-limiter-{table-name})",
+)
+def version_cmd(
+    table_name: str,
+    region: str | None,
+    stack_name: str | None,
+) -> None:
+    """Show infrastructure version information."""
+    from . import __version__
+    from .version import (
+        InfrastructureVersion,
+        check_compatibility,
+        get_schema_version,
+    )
+
+    async def _version() -> None:
+        # Import here to avoid loading aioboto3 at CLI startup
+        from .repository import Repository
+
+        repo = Repository(table_name, region, None)
+
+        try:
+            click.echo()
+            click.echo("zae-limiter Infrastructure Version")
+            click.echo("=" * 36)
+            click.echo()
+            click.echo(f"Client Version:     {__version__}")
+            click.echo(f"Schema Version:     {get_schema_version()}")
+            click.echo()
+
+            # Get version from DynamoDB
+            version_record = await repo.get_version_record()
+
+            if version_record is None:
+                click.echo("Infrastructure:     Not initialized")
+                click.echo()
+                click.echo("Run 'zae-limiter deploy' to initialize infrastructure.")
+                return
+
+            infra_version = InfrastructureVersion.from_record(version_record)
+
+            click.echo(f"Infra Schema:       {infra_version.schema_version}")
+            click.echo(f"Lambda Version:     {infra_version.lambda_version or 'unknown'}")
+            click.echo(f"Min Client Version: {infra_version.client_min_version}")
+            click.echo()
+
+            # Check compatibility
+            compat = check_compatibility(__version__, infra_version)
+
+            if compat.is_compatible and not compat.requires_lambda_update:
+                click.echo("Status: COMPATIBLE")
+            elif compat.requires_lambda_update:
+                click.echo("Status: COMPATIBLE (Lambda update available)")
+                click.echo()
+                click.echo(f"  {compat.message}")
+                click.echo()
+                click.echo("Run 'zae-limiter upgrade' to update Lambda.")
+            elif compat.requires_schema_migration:
+                click.echo("Status: INCOMPATIBLE (Schema migration required)", err=True)
+                click.echo()
+                click.echo(f"  {compat.message}")
+                sys.exit(1)
+            else:
+                click.echo("Status: INCOMPATIBLE", err=True)
+                click.echo()
+                click.echo(f"  {compat.message}")
+                sys.exit(1)
+
+        except Exception as e:
+            click.echo(f"✗ Failed to get version info: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_version())
+
+
+@cli.command()
+@click.option(
+    "--table-name",
+    required=True,
+    help="DynamoDB table name",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--stack-name",
+    help="CloudFormation stack name (default: zae-limiter-{table-name})",
+)
+@click.option(
+    "--lambda-only",
+    is_flag=True,
+    help="Only update Lambda code",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Force update even if version matches",
+)
+def upgrade(
+    table_name: str,
+    region: str | None,
+    stack_name: str | None,
+    lambda_only: bool,
+    force: bool,
+) -> None:
+    """Upgrade infrastructure to match client version."""
+    from . import __version__
+    from .version import (
+        InfrastructureVersion,
+        check_compatibility,
+        get_schema_version,
+    )
+
+    async def _upgrade() -> None:
+        from .repository import Repository
+
+        repo = Repository(table_name, region, None)
+
+        try:
+            click.echo()
+            click.echo("Checking infrastructure version...")
+
+            version_record = await repo.get_version_record()
+
+            if version_record is None:
+                click.echo("Infrastructure not initialized.")
+                click.echo("Run 'zae-limiter deploy' first.")
+                sys.exit(1)
+
+            infra_version = InfrastructureVersion.from_record(version_record)
+            compat = check_compatibility(__version__, infra_version)
+
+            if not force and compat.is_compatible and not compat.requires_lambda_update:
+                click.echo()
+                click.echo("Infrastructure is already up to date.")
+                click.echo(f"  Client:   {__version__}")
+                click.echo(f"  Lambda:   {infra_version.lambda_version}")
+                return
+
+            if compat.requires_schema_migration:
+                click.echo()
+                click.echo("✗ Schema migration required - cannot auto-upgrade", err=True)
+                click.echo(f"  {compat.message}")
+                sys.exit(1)
+
+            # Perform upgrade
+            click.echo()
+            click.echo(f"Current: Lambda {infra_version.lambda_version or 'unknown'}")
+            click.echo(f"Target:  Lambda {__version__}")
+            click.echo()
+
+            async with StackManager(table_name, region, None) as manager:
+                # Step 1: Update Lambda code
+                click.echo("[1/2] Deploying Lambda code...")
+                try:
+                    result = await manager.deploy_lambda_code(wait=True)
+
+                    if result.get("status") == "deployed":
+                        size_kb = result.get("size_bytes", 0) / 1024
+                        click.echo(f"      Lambda code deployed ({size_kb:.1f} KB)")
+                    elif result.get("status") == "skipped_local":
+                        click.echo("      Skipped (local environment)")
+
+                except Exception as e:
+                    click.echo(f"✗ Lambda deployment failed: {e}", err=True)
+                    sys.exit(1)
+
+                # Step 2: Update version record
+                click.echo("[2/2] Updating version record...")
+                await repo.set_version_record(
+                    schema_version=get_schema_version(),
+                    lambda_version=__version__,
+                    client_min_version="0.0.0",
+                    updated_by=f"cli:{__version__}",
+                )
+                click.echo("      Version record updated")
+
+            click.echo()
+            click.echo("✓ Upgrade complete!")
+
+        except Exception as e:
+            click.echo(f"✗ Upgrade failed: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_upgrade())
+
+
+@cli.command()
+@click.option(
+    "--table-name",
+    required=True,
+    help="DynamoDB table name",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+def check(
+    table_name: str,
+    region: str | None,
+) -> None:
+    """Check infrastructure compatibility without modifying."""
+    from . import __version__
+    from .version import (
+        InfrastructureVersion,
+        check_compatibility,
+    )
+
+    async def _check() -> None:
+        from .repository import Repository
+
+        repo = Repository(table_name, region, None)
+
+        try:
+            click.echo()
+            click.echo("Compatibility Check")
+            click.echo("=" * 20)
+            click.echo()
+
+            version_record = await repo.get_version_record()
+
+            if version_record is None:
+                click.echo("Result: NOT INITIALIZED")
+                click.echo()
+                click.echo("Infrastructure has not been deployed yet.")
+                click.echo("Run 'zae-limiter deploy' to initialize.")
+                sys.exit(1)
+
+            infra_version = InfrastructureVersion.from_record(version_record)
+            compat = check_compatibility(__version__, infra_version)
+
+            click.echo(f"Client:      {__version__}")
+            click.echo(f"Schema:      {infra_version.schema_version}")
+            click.echo(f"Lambda:      {infra_version.lambda_version or 'unknown'}")
+            click.echo()
+
+            if compat.is_compatible and not compat.requires_lambda_update:
+                click.echo("Result: COMPATIBLE")
+                click.echo()
+                click.echo("Client and infrastructure are fully compatible.")
+            elif compat.requires_lambda_update:
+                click.echo("Result: COMPATIBLE (update available)")
+                click.echo()
+                click.echo(compat.message)
+                click.echo()
+                click.echo("Run 'zae-limiter upgrade' to update.")
+            elif compat.requires_schema_migration:
+                click.echo("Result: INCOMPATIBLE", err=True)
+                click.echo()
+                click.echo(compat.message)
+                sys.exit(1)
+            else:
+                click.echo("Result: INCOMPATIBLE", err=True)
+                click.echo()
+                click.echo(compat.message)
+                sys.exit(1)
+
+        except Exception as e:
+            click.echo(f"✗ Check failed: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_check())
+
+
 if __name__ == "__main__":
     cli()

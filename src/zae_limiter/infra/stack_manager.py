@@ -9,6 +9,12 @@ from botocore.exceptions import ClientError
 from ..exceptions import StackAlreadyExistsError, StackCreationError
 from .lambda_builder import build_lambda_package
 
+# Version tag keys for infrastructure
+VERSION_TAG_PREFIX = "zae-limiter:"
+VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}version"
+LAMBDA_VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}lambda-version"
+SCHEMA_VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}schema-version"
+
 
 class StackManager:
     """
@@ -101,13 +107,25 @@ class StackManager:
         Returns:
             List of CloudFormation parameter dicts
         """
+        # Get schema version
+        try:
+            from ..version import get_schema_version
+
+            schema_version = get_schema_version()
+        except ImportError:
+            schema_version = "1.0.0"
+
         if not parameters:
-            # Use defaults from template
-            return [{"ParameterKey": "TableName", "ParameterValue": self.table_name}]
+            # Use defaults from template with schema version
+            return [
+                {"ParameterKey": "TableName", "ParameterValue": self.table_name},
+                {"ParameterKey": "SchemaVersion", "ParameterValue": schema_version},
+            ]
 
         result = []
-        # Always include TableName
+        # Always include TableName and SchemaVersion
         result.append({"ParameterKey": "TableName", "ParameterValue": self.table_name})
+        result.append({"ParameterKey": "SchemaVersion", "ParameterValue": schema_version})
 
         # Map common parameter names
         param_mapping = {
@@ -116,6 +134,7 @@ class StackManager:
             "lambda_memory_size": "LambdaMemorySize",
             "lambda_timeout": "LambdaTimeout",
             "enable_aggregator": "EnableAggregator",
+            "schema_version": "SchemaVersion",
         }
 
         for key, value in parameters.items():
@@ -124,6 +143,28 @@ class StackManager:
             result.append({"ParameterKey": param_key, "ParameterValue": str(value)})
 
         return result
+
+    def _get_version_tags(self) -> list[dict[str, str]]:
+        """
+        Get version tags for CloudFormation stack.
+
+        Returns:
+            List of CloudFormation tag dicts
+        """
+        from .. import __version__
+
+        try:
+            from ..version import get_schema_version
+
+            schema_version = get_schema_version()
+        except ImportError:
+            schema_version = "1.0.0"
+
+        return [
+            {"Key": VERSION_TAG_KEY, "Value": __version__},
+            {"Key": SCHEMA_VERSION_TAG_KEY, "Value": schema_version},
+            {"Key": LAMBDA_VERSION_TAG_KEY, "Value": __version__},
+        ]
 
     async def stack_exists(self, stack_name: str) -> bool:
         """
@@ -246,6 +287,7 @@ class StackManager:
         # Load template and format parameters
         template_body = self._load_template()
         cfn_parameters = self._format_parameters(parameters)
+        tags = self._get_version_tags()
 
         # Create stack
         try:
@@ -254,6 +296,7 @@ class StackManager:
                 TemplateBody=template_body,
                 Parameters=cfn_parameters,
                 Capabilities=["CAPABILITY_NAMED_IAM"],
+                Tags=tags,
             )
 
             stack_id = response["StackId"]
@@ -441,11 +484,22 @@ class StackManager:
                             reason=f"Waiting for Lambda update failed: {e}",
                         ) from e
 
+                # Update Lambda tags to reflect new version
+                from .. import __version__
+
+                await lambda_client.tag_resource(
+                    Resource=response["FunctionArn"],
+                    Tags={
+                        "zae-limiter:lambda-version": __version__,
+                    },
+                )
+
                 return {
                     "function_arn": response["FunctionArn"],
                     "code_sha256": response["CodeSha256"],
                     "status": "deployed",
                     "size_bytes": len(zip_bytes),
+                    "version": __version__,
                 }
 
             except ClientError as e:

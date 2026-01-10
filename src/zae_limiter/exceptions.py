@@ -126,3 +126,89 @@ class StackAlreadyExistsError(StackCreationError):
     """Raised when stack already exists (informational)."""
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Version-related exceptions
+# ---------------------------------------------------------------------------
+
+
+class VersionError(RateLimitError):
+    """Base class for version-related errors."""
+
+    pass
+
+
+class VersionMismatchError(VersionError):
+    """
+    Raised when client and infrastructure versions are incompatible.
+
+    This error indicates that the client library version doesn't match
+    the deployed infrastructure and auto-update is disabled or failed.
+    """
+
+    def __init__(
+        self,
+        client_version: str,
+        schema_version: str,
+        lambda_version: str | None,
+        message: str,
+        can_auto_update: bool = False,
+    ) -> None:
+        self.client_version = client_version
+        self.schema_version = schema_version
+        self.lambda_version = lambda_version
+        self.can_auto_update = can_auto_update
+        super().__init__(self._format_message(message))
+
+    def _format_message(self, message: str) -> str:
+        return (
+            f"Version mismatch: client={self.client_version}, "
+            f"schema={self.schema_version}, "
+            f"lambda={self.lambda_version or 'unknown'}. {message}"
+        )
+
+
+class IncompatibleSchemaError(VersionError):
+    """
+    Raised when schema version requires manual migration.
+
+    This indicates a major version difference that cannot be
+    automatically reconciled.
+    """
+
+    def __init__(
+        self,
+        client_version: str,
+        schema_version: str,
+        message: str,
+        migration_guide_url: str | None = None,
+    ) -> None:
+        self.client_version = client_version
+        self.schema_version = schema_version
+        self.migration_guide_url = migration_guide_url
+        msg = (
+            f"Incompatible schema: client {client_version} is not compatible "
+            f"with schema {schema_version}. {message}"
+        )
+        if migration_guide_url:
+            msg += f" See: {migration_guide_url}"
+        super().__init__(msg)
+
+
+class InfrastructureNotFoundError(VersionError):
+    """
+    Raised when expected infrastructure doesn't exist.
+
+    This typically means the CloudFormation stack or DynamoDB table
+    hasn't been deployed yet.
+    """
+
+    def __init__(self, table_name: str, stack_name: str | None = None) -> None:
+        self.table_name = table_name
+        self.stack_name = stack_name
+        msg = f"Infrastructure not found for table '{table_name}'"
+        if stack_name:
+            msg += f" (stack: {stack_name})"
+        msg += ". Run 'zae-limiter deploy' or use create_stack=True."
+        super().__init__(msg)

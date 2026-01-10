@@ -13,8 +13,10 @@ from .bucket import (
     try_consume,
 )
 from .exceptions import (
+    IncompatibleSchemaError,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    VersionMismatchError,
 )
 from .lease import Lease, LeaseEntry, SyncLease
 from .models import (
@@ -59,9 +61,30 @@ class RateLimiter:
         create_stack: bool = False,
         stack_parameters: dict[str, str] | None = None,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
+        auto_update: bool = True,
+        strict_version: bool = True,
+        skip_version_check: bool = False,
     ) -> None:
+        """
+        Initialize the rate limiter.
+
+        Args:
+            table_name: DynamoDB table name
+            region: AWS region
+            endpoint_url: DynamoDB endpoint URL (for local development)
+            create_table: Deprecated, use create_stack instead
+            create_stack: Create CloudFormation stack if it doesn't exist
+            stack_parameters: Parameters for CloudFormation stack
+            failure_mode: Behavior when DynamoDB is unavailable
+            auto_update: Auto-update Lambda when version mismatch detected
+            strict_version: Fail if version mismatch (when auto_update is False)
+            skip_version_check: Skip all version checks (dangerous)
+        """
         self.table_name = table_name
         self.failure_mode = failure_mode
+        self._auto_update = auto_update
+        self._strict_version = strict_version
+        self._skip_version_check = skip_version_check
 
         # Handle deprecation: create_table -> create_stack
         if create_table and not create_stack:
@@ -84,15 +107,100 @@ class RateLimiter:
         self._initialized = False
 
     async def _ensure_initialized(self) -> None:
-        """Ensure infrastructure exists if create_stack=True."""
+        """Ensure infrastructure exists and version is compatible."""
         if self._initialized:
             return
+
         if self._create_stack:
             await self._repository.create_table_or_stack(
                 use_cloudformation=True,
                 stack_parameters=self._stack_parameters,
             )
+
+        # Version check (skip for local DynamoDB without CloudFormation)
+        if not self._skip_version_check:
+            await self._check_and_update_version()
+
         self._initialized = True
+
+    async def _check_and_update_version(self) -> None:
+        """Check version compatibility and update Lambda if needed."""
+        from . import __version__
+        from .version import (
+            InfrastructureVersion,
+            check_compatibility,
+        )
+
+        # Get current infrastructure version
+        version_record = await self._repository.get_version_record()
+
+        if version_record is None:
+            # First time setup or legacy infrastructure - initialize version record
+            await self._initialize_version_record()
+            return
+
+        infra_version = InfrastructureVersion.from_record(version_record)
+        compatibility = check_compatibility(__version__, infra_version)
+
+        if compatibility.is_compatible and not compatibility.requires_lambda_update:
+            return
+
+        if compatibility.requires_schema_migration:
+            raise IncompatibleSchemaError(
+                client_version=__version__,
+                schema_version=infra_version.schema_version,
+                message=compatibility.message,
+            )
+
+        if compatibility.requires_lambda_update:
+            if self._auto_update and not self._repository.endpoint_url:
+                # Auto-update Lambda (skip for local DynamoDB)
+                await self._perform_lambda_update()
+            elif self._strict_version:
+                raise VersionMismatchError(
+                    client_version=__version__,
+                    schema_version=infra_version.schema_version,
+                    lambda_version=infra_version.lambda_version,
+                    message=compatibility.message,
+                    can_auto_update=not self._repository.endpoint_url,
+                )
+            # else: continue with version mismatch (not strict)
+
+    async def _initialize_version_record(self) -> None:
+        """Initialize the version record for first-time setup."""
+        from . import __version__
+        from .version import get_schema_version
+
+        lambda_version = __version__ if not self._repository.endpoint_url else None
+
+        await self._repository.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version=lambda_version,
+            client_min_version="0.0.0",
+            updated_by=f"client:{__version__}",
+        )
+
+    async def _perform_lambda_update(self) -> None:
+        """Update Lambda code to match client version."""
+        from . import __version__
+        from .infra.stack_manager import StackManager
+        from .version import get_schema_version
+
+        async with StackManager(
+            self.table_name,
+            self._repository.region,
+            self._repository.endpoint_url,
+        ) as manager:
+            # Deploy updated Lambda code
+            await manager.deploy_lambda_code()
+
+            # Update version record in DynamoDB
+            await self._repository.set_version_record(
+                schema_version=get_schema_version(),
+                lambda_version=__version__,
+                client_min_version="0.0.0",
+                updated_by=f"client:{__version__}",
+            )
 
     async def close(self) -> None:
         """Close the underlying connections."""
@@ -585,6 +693,9 @@ class SyncRateLimiter:
         create_stack: bool = False,
         stack_parameters: dict[str, str] | None = None,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
+        auto_update: bool = True,
+        strict_version: bool = True,
+        skip_version_check: bool = False,
     ) -> None:
         self._limiter = RateLimiter(
             table_name=table_name,
@@ -594,6 +705,9 @@ class SyncRateLimiter:
             create_stack=create_stack,
             stack_parameters=stack_parameters,
             failure_mode=failure_mode,
+            auto_update=auto_update,
+            strict_version=strict_version,
+            skip_version_check=skip_version_check,
         )
         self._loop: asyncio.AbstractEventLoop | None = None
 

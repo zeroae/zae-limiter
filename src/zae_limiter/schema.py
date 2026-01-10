@@ -12,6 +12,7 @@ ENTITY_PREFIX = "ENTITY#"
 PARENT_PREFIX = "PARENT#"
 CHILD_PREFIX = "CHILD#"
 RESOURCE_PREFIX = "RESOURCE#"
+SYSTEM_PREFIX = "SYSTEM#"
 
 # Sort key prefixes
 SK_META = "#META"
@@ -19,6 +20,7 @@ SK_BUCKET = "#BUCKET#"
 SK_LIMIT = "#LIMIT#"
 SK_RESOURCE = "#RESOURCE#"
 SK_USAGE = "#USAGE#"
+SK_VERSION = "#VERSION"
 
 # Special resource for default limits
 DEFAULT_RESOURCE = "_default_"
@@ -27,6 +29,16 @@ DEFAULT_RESOURCE = "_default_"
 def pk_entity(entity_id: str) -> str:
     """Build partition key for an entity."""
     return f"{ENTITY_PREFIX}{entity_id}"
+
+
+def pk_system() -> str:
+    """Build partition key for system records (e.g., version)."""
+    return SYSTEM_PREFIX
+
+
+def sk_version() -> str:
+    """Build sort key for version record."""
+    return SK_VERSION
 
 
 def sk_meta() -> str:

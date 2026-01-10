@@ -33,11 +33,15 @@ Example:
 from .exceptions import (
     EntityExistsError,
     EntityNotFoundError,
+    IncompatibleSchemaError,
+    InfrastructureNotFoundError,
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
     StackAlreadyExistsError,
     StackCreationError,
+    VersionError,
+    VersionMismatchError,
 )
 from .lease import Lease, SyncLease
 from .models import (
@@ -86,6 +90,10 @@ __all__ = [
     "EntityExistsError",
     "StackCreationError",
     "StackAlreadyExistsError",
+    "VersionError",
+    "VersionMismatchError",
+    "IncompatibleSchemaError",
+    "InfrastructureNotFoundError",
 ]
 
 
