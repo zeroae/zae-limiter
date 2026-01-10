@@ -1,6 +1,6 @@
 """Exceptions for zae-limiter."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .models import LimitStatus
@@ -12,7 +12,7 @@ class RateLimitError(Exception):
     pass
 
 
-class RateLimitExceeded(RateLimitError):
+class RateLimitExceeded(RateLimitError):  # noqa: N818
     """
     Raised when one or more rate limits would be exceeded.
 
@@ -49,7 +49,7 @@ class RateLimitExceeded(RateLimitError):
             f"Retry after {self.retry_after_seconds:.1f}s"
         )
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, Any]:
         """
         Serialize for JSON API responses.
 
@@ -82,7 +82,7 @@ class RateLimitExceeded(RateLimitError):
         return str(int(self.retry_after_seconds) + 1)  # round up
 
 
-class RateLimiterUnavailable(RateLimitError):
+class RateLimiterUnavailable(RateLimitError):  # noqa: N818
     """
     Raised when DynamoDB is unavailable and failure_mode=FAIL_CLOSED.
 

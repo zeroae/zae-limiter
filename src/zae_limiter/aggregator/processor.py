@@ -2,10 +2,10 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-import boto3
+import boto3  # type: ignore[import-untyped]
 
 from ..schema import SK_BUCKET, gsi2_pk_resource, gsi2_sk_usage, pk_entity, sk_usage
 
@@ -93,7 +93,7 @@ def process_stream_records(
     return ProcessResult(len(records), snapshots_updated, errors)
 
 
-def extract_delta(record: dict[str, Any]) -> Optional[ConsumptionDelta]:
+def extract_delta(record: dict[str, Any]) -> ConsumptionDelta | None:
     """
     Extract consumption delta from a stream record.
 
@@ -162,7 +162,7 @@ def get_window_key(timestamp_ms: int, window: str) -> str:
     Returns:
         ISO timestamp string for the window start
     """
-    dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+    dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
 
     if window == "hourly":
         return dt.strftime("%Y-%m-%dT%H:00:00Z")
@@ -205,7 +205,7 @@ def get_window_end(window_key: str, window: str) -> str:
 
 def calculate_snapshot_ttl(ttl_days: int) -> int:
     """Calculate TTL epoch seconds."""
-    return int(datetime.now(timezone.utc).timestamp()) + (ttl_days * 86400)
+    return int(datetime.now(UTC).timestamp()) + (ttl_days * 86400)
 
 
 def update_snapshot(

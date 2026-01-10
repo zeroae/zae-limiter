@@ -34,8 +34,8 @@ from .exceptions import (
     EntityExistsError,
     EntityNotFoundError,
     RateLimitError,
-    RateLimitExceeded,
     RateLimiterUnavailable,
+    RateLimitExceeded,
 )
 from .lease import Lease, SyncLease
 from .limiter import FailureMode, RateLimiter, SyncRateLimiter

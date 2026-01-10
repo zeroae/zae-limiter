@@ -5,12 +5,11 @@ import pytest
 from zae_limiter.bucket import (
     calculate_available,
     calculate_retry_after,
-    calculate_time_until_available,
     force_consume,
     refill_bucket,
     try_consume,
 )
-from zae_limiter.models import BucketState, Limit
+from zae_limiter.models import BucketState
 
 
 class TestRefillBucket:

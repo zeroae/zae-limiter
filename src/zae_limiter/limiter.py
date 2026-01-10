@@ -2,20 +2,19 @@
 
 import asyncio
 import time
+from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from enum import Enum
-from typing import Any, AsyncIterator, Iterator, Optional
+from typing import Any, TypeVar
 
 from .bucket import (
-    build_limit_status,
     calculate_available,
     calculate_time_until_available,
     try_consume,
 )
 from .exceptions import (
-    EntityNotFoundError,
-    RateLimitExceeded,
     RateLimiterUnavailable,
+    RateLimitExceeded,
 )
 from .lease import Lease, LeaseEntry, SyncLease
 from .models import (
@@ -28,6 +27,8 @@ from .models import (
 )
 from .repository import Repository
 from .schema import DEFAULT_RESOURCE
+
+_T = TypeVar("_T")
 
 
 class FailureMode(Enum):
@@ -52,8 +53,8 @@ class RateLimiter:
     def __init__(
         self,
         table_name: str,
-        region: Optional[str] = None,
-        endpoint_url: Optional[str] = None,
+        region: str | None = None,
+        endpoint_url: str | None = None,
         create_table: bool = False,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
     ) -> None:
@@ -93,9 +94,9 @@ class RateLimiter:
     async def create_entity(
         self,
         entity_id: str,
-        name: Optional[str] = None,
-        parent_id: Optional[str] = None,
-        metadata: Optional[dict] = None,
+        name: str | None = None,
+        parent_id: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> Entity:
         """
         Create a new entity.
@@ -120,7 +121,7 @@ class RateLimiter:
             metadata=metadata,
         )
 
-    async def get_entity(self, entity_id: str) -> Optional[Entity]:
+    async def get_entity(self, entity_id: str) -> Entity | None:
         """Get an entity by ID."""
         await self._ensure_initialized()
         return await self._repository.get_entity(entity_id)
@@ -148,7 +149,7 @@ class RateLimiter:
         consume: dict[str, int],
         cascade: bool = False,
         use_stored_limits: bool = False,
-        failure_mode: Optional[FailureMode] = None,
+        failure_mode: FailureMode | None = None,
     ) -> AsyncIterator[Lease]:
         """
         Acquire rate limit capacity.
@@ -172,6 +173,7 @@ class RateLimiter:
         await self._ensure_initialized()
         mode = failure_mode or self.failure_mode
 
+        # Acquire the lease (this may fail due to rate limit or infrastructure)
         try:
             lease = await self._do_acquire(
                 entity_id=entity_id,
@@ -181,22 +183,23 @@ class RateLimiter:
                 cascade=cascade,
                 use_stored_limits=use_stored_limits,
             )
-
-            try:
-                yield lease
-                await lease._commit()
-            except Exception:
-                await lease._rollback()
-                raise
-
         except RateLimitExceeded:
             raise
         except Exception as e:
             if mode == FailureMode.FAIL_OPEN:
                 # Return a no-op lease
                 yield Lease(repository=self._repository)
+                return
             else:
                 raise RateLimiterUnavailable(str(e), cause=e) from e
+
+        # Lease acquired successfully - manage the context
+        try:
+            yield lease
+            await lease._commit()
+        except Exception:
+            await lease._rollback()
+            raise
 
     async def _do_acquire(
         self,
@@ -514,8 +517,8 @@ class SyncRateLimiter:
     def __init__(
         self,
         table_name: str,
-        region: Optional[str] = None,
-        endpoint_url: Optional[str] = None,
+        region: str | None = None,
+        endpoint_url: str | None = None,
         create_table: bool = False,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
     ) -> None:
@@ -526,7 +529,7 @@ class SyncRateLimiter:
             create_table=create_table,
             failure_mode=failure_mode,
         )
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Get or create an event loop."""
@@ -538,7 +541,7 @@ class SyncRateLimiter:
                 asyncio.set_event_loop(self._loop)
         return self._loop
 
-    def _run(self, coro: Any) -> Any:
+    def _run(self, coro: Coroutine[Any, Any, _T]) -> _T:
         """Run a coroutine in the event loop."""
         return self._get_loop().run_until_complete(coro)
 
@@ -560,9 +563,9 @@ class SyncRateLimiter:
     def create_entity(
         self,
         entity_id: str,
-        name: Optional[str] = None,
-        parent_id: Optional[str] = None,
-        metadata: Optional[dict] = None,
+        name: str | None = None,
+        parent_id: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> Entity:
         """Create a new entity."""
         return self._run(
@@ -574,7 +577,7 @@ class SyncRateLimiter:
             )
         )
 
-    def get_entity(self, entity_id: str) -> Optional[Entity]:
+    def get_entity(self, entity_id: str) -> Entity | None:
         """Get an entity by ID."""
         return self._run(self._limiter.get_entity(entity_id))
 
@@ -599,7 +602,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         cascade: bool = False,
         use_stored_limits: bool = False,
-        failure_mode: Optional[FailureMode] = None,
+        failure_mode: FailureMode | None = None,
     ) -> Iterator[SyncLease]:
         """Acquire rate limit capacity (synchronous)."""
         loop = self._get_loop()

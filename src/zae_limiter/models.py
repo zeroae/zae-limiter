@@ -1,7 +1,7 @@
 """Core models for zae-limiter."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ class Limit:
         cls,
         name: str,
         capacity: int,
-        burst: Optional[int] = None,
+        burst: int | None = None,
     ) -> "Limit":
         """Create a limit that refills `capacity` tokens per second."""
         return cls(
@@ -57,7 +57,7 @@ class Limit:
         cls,
         name: str,
         capacity: int,
-        burst: Optional[int] = None,
+        burst: int | None = None,
     ) -> "Limit":
         """Create a limit that refills `capacity` tokens per minute."""
         return cls(
@@ -73,7 +73,7 @@ class Limit:
         cls,
         name: str,
         capacity: int,
-        burst: Optional[int] = None,
+        burst: int | None = None,
     ) -> "Limit":
         """Create a limit that refills `capacity` tokens per hour."""
         return cls(
@@ -89,7 +89,7 @@ class Limit:
         cls,
         name: str,
         capacity: int,
-        burst: Optional[int] = None,
+        burst: int | None = None,
     ) -> "Limit":
         """Create a limit that refills `capacity` tokens per day."""
         return cls(
@@ -107,7 +107,7 @@ class Limit:
         capacity: int,
         refill_amount: int,
         refill_period_seconds: int,
-        burst: Optional[int] = None,
+        burst: int | None = None,
     ) -> "Limit":
         """
         Create a custom limit with explicit refill rate.
@@ -129,7 +129,7 @@ class Limit:
         """Tokens per second (for display/debugging)."""
         return self.refill_amount / self.refill_period_seconds
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str | int]:
         """Serialize to dictionary for storage."""
         return {
             "name": self.name,
@@ -140,7 +140,7 @@ class Limit:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Limit":
+    def from_dict(cls, data: dict[str, Any]) -> "Limit":
         """Deserialize from dictionary."""
         return cls(
             name=data["name"],
@@ -161,10 +161,10 @@ class Entity:
     """
 
     id: str
-    name: Optional[str] = None
-    parent_id: Optional[str] = None
-    metadata: dict = field(default_factory=dict)
-    created_at: Optional[str] = None
+    name: str | None = None
+    parent_id: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+    created_at: str | None = None
 
     @property
     def is_parent(self) -> bool:

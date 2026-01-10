@@ -1,13 +1,13 @@
 """DynamoDB repository for rate limiter data."""
 
 import time
-from typing import Any, Optional
+from typing import Any
 
-import aioboto3
+import aioboto3  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
 
 from . import schema
-from .exceptions import EntityExistsError, EntityNotFoundError
+from .exceptions import EntityExistsError
 from .models import BucketState, Entity, Limit
 
 
@@ -22,13 +22,13 @@ class Repository:
     def __init__(
         self,
         table_name: str,
-        region: Optional[str] = None,
-        endpoint_url: Optional[str] = None,
+        region: str | None = None,
+        endpoint_url: str | None = None,
     ) -> None:
         self.table_name = table_name
         self.region = region
         self.endpoint_url = endpoint_url
-        self._session: Optional[aioboto3.Session] = None
+        self._session: aioboto3.Session | None = None
         self._client: Any = None
 
     async def _get_client(self) -> Any:
@@ -87,9 +87,9 @@ class Repository:
     async def create_entity(
         self,
         entity_id: str,
-        name: Optional[str] = None,
-        parent_id: Optional[str] = None,
-        metadata: Optional[dict] = None,
+        name: str | None = None,
+        parent_id: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> Entity:
         """Create a new entity."""
         client = await self._get_client()
@@ -133,7 +133,7 @@ class Repository:
             created_at=now,
         )
 
-    async def get_entity(self, entity_id: str) -> Optional[Entity]:
+    async def get_entity(self, entity_id: str) -> Entity | None:
         """Get an entity by ID."""
         client = await self._get_client()
 
@@ -205,7 +205,7 @@ class Repository:
         entity_id: str,
         resource: str,
         limit_name: str,
-    ) -> Optional[BucketState]:
+    ) -> BucketState | None:
         """Get a bucket by entity/resource/limit."""
         client = await self._get_client()
 
@@ -226,7 +226,7 @@ class Repository:
     async def get_buckets(
         self,
         entity_id: str,
-        resource: Optional[str] = None,
+        resource: str | None = None,
     ) -> list[BucketState]:
         """Get all buckets for an entity, optionally filtered by resource."""
         client = await self._get_client()
@@ -285,10 +285,10 @@ class Repository:
         limit_name: str,
         new_tokens_milli: int,
         new_last_refill_ms: int,
-        expected_tokens_milli: Optional[int] = None,
+        expected_tokens_milli: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for a bucket (for use in transactions)."""
-        update = {
+        update: dict[str, dict[str, Any]] = {
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
@@ -433,7 +433,7 @@ class Repository:
     async def get_resource_buckets(
         self,
         resource: str,
-        limit_name: Optional[str] = None,
+        limit_name: str | None = None,
     ) -> list[BucketState]:
         """Get all buckets for a resource across all entities."""
         client = await self._get_client()
@@ -445,7 +445,7 @@ class Repository:
 
         if limit_name:
             key_condition += " AND begins_with(GSI2SK, :sk_prefix)"
-            expression_values[":sk_prefix"] = {"S": f"BUCKET#"}
+            expression_values[":sk_prefix"] = {"S": "BUCKET#"}
 
         response = await client.query(
             TableName=self.table_name,
@@ -466,9 +466,9 @@ class Repository:
     # Serialization helpers
     # -------------------------------------------------------------------------
 
-    def _serialize_map(self, data: dict) -> dict[str, Any]:
+    def _serialize_map(self, data: dict[str, Any]) -> dict[str, Any]:
         """Serialize a Python dict to DynamoDB map format."""
-        result = {}
+        result: dict[str, Any] = {}
         for key, value in data.items():
             if isinstance(value, str):
                 result[key] = {"S": value}

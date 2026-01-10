@@ -3,7 +3,6 @@
 import pytest
 
 from zae_limiter import (
-    FailureMode,
     Limit,
     RateLimitExceeded,
 )
@@ -306,7 +305,7 @@ class TestRateLimiterStoredLimits:
         retrieved = await limiter.get_limits("key-1", resource="gpt-4")
         assert len(retrieved) == 2
 
-        names = {l.name for l in retrieved}
+        names = {limit.name for limit in retrieved}
         assert names == {"rpm", "tpm"}
 
     async def test_use_stored_limits(self, limiter):
