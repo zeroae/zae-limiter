@@ -1,7 +1,7 @@
 """CloudFormation stack management for zae-limiter infrastructure."""
 
 from importlib.resources import files
-from typing import Any
+from typing import Any, cast
 
 import aioboto3  # type: ignore
 from botocore.exceptions import ClientError
@@ -138,7 +138,7 @@ class StackManager:
                 return False
 
             # Stack exists if it's not in DELETE_COMPLETE state
-            status = stacks[0]["StackStatus"]
+            status = cast(str, stacks[0]["StackStatus"])
             return status != "DELETE_COMPLETE"
         except ClientError as e:
             if e.response["Error"]["Code"] == "ValidationError":
@@ -165,7 +165,7 @@ class StackManager:
             stacks = response.get("Stacks", [])
             if not stacks:
                 return None
-            return stacks[0]["StackStatus"]
+            return cast(str, stacks[0]["StackStatus"])
         except ClientError as e:
             if e.response["Error"]["Code"] == "ValidationError":
                 return None

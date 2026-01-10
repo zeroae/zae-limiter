@@ -1,7 +1,6 @@
 """Tests for CloudFormation stack manager."""
 
 import pytest
-from moto import mock_aws
 
 from zae_limiter.infra.stack_manager import StackManager
 
