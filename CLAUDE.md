@@ -14,23 +14,21 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 ### Using uv (preferred)
 
 ```bash
-# Setup
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+# Setup (one-time)
+uv sync --all-extras
 
 # Deploy infrastructure (CloudFormation)
-zae-limiter deploy --table-name rate_limits --region us-east-1
+uv run zae-limiter deploy --table-name rate_limits --region us-east-1
 
 # Run tests
-pytest
+uv run pytest
 
 # Type check
-mypy src/zae_limiter
+uv run mypy src/zae_limiter
 
 # Lint
-ruff check --fix .
-ruff format .
+uv run ruff check --fix .
+uv run ruff format .
 ```
 
 ### Using conda
@@ -95,6 +93,12 @@ zae-limiter deploy --table-name rate_limits --no-aggregator
 
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
+
+# Export Lambda package for custom deployment
+zae-limiter lambda-export --output lambda.zip
+
+# Show Lambda package info without building
+zae-limiter lambda-export --info
 
 # Check stack status
 zae-limiter status --stack-name zae-limiter-rate_limits --region us-east-1

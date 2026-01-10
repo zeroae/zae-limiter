@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from .infra.lambda_builder import get_package_info, write_lambda_package
 from .infra.stack_manager import StackManager
 
 
@@ -219,6 +220,61 @@ def cfn_template(output: str | None) -> None:
 
     except Exception as e:
         click.echo(f"✗ Failed to export template: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("lambda-export")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default="lambda.zip",
+    help="Output file path (default: lambda.zip)",
+)
+@click.option(
+    "--info",
+    is_flag=True,
+    help="Show package information without building",
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite existing file without prompting",
+)
+def lambda_export(output: str, info: bool, force: bool) -> None:
+    """Export Lambda deployment package for custom deployment."""
+    try:
+        if info:
+            # Show package info without building
+            pkg_info = get_package_info()
+            click.echo()
+            click.echo("Lambda Package Information")
+            click.echo("=" * 26)
+            click.echo()
+            click.echo(f"Package path:      {pkg_info['package_path']}")
+            click.echo(f"Python files:      {pkg_info['python_files']}")
+            click.echo(f"Uncompressed size: {int(pkg_info['uncompressed_size']) / 1024:.1f} KB")
+            click.echo(f"Handler:           {pkg_info['handler']}")
+            click.echo()
+            return
+
+        output_path = Path(output)
+
+        # Check if file exists
+        if output_path.exists() and not force:
+            click.echo(f"File already exists: {output_path}", err=True)
+            click.echo("Use --force to overwrite.", err=True)
+            sys.exit(1)
+
+        # Build and write the package
+        size_bytes = write_lambda_package(output_path)
+        size_kb = size_bytes / 1024
+
+        click.echo(f"✓ Exported Lambda package to: {output_path} ({size_kb:.1f} KB)")
+
+    except Exception as e:
+        click.echo(f"✗ Failed to export Lambda package: {e}", err=True)
         sys.exit(1)
 
 
