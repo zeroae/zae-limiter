@@ -7,6 +7,7 @@ import aioboto3  # type: ignore
 from botocore.exceptions import ClientError
 
 from ..exceptions import StackAlreadyExistsError, StackCreationError
+from .lambda_builder import build_lambda_package
 
 
 class StackManager:
@@ -368,6 +369,93 @@ class StackManager:
             ]
         except Exception:
             return []
+
+    async def deploy_lambda_code(
+        self,
+        function_name: str | None = None,
+        wait: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Deploy Lambda function code after stack creation.
+
+        Builds the Lambda deployment package from the installed zae_limiter
+        package and updates the Lambda function code via the AWS API.
+
+        This is called after CloudFormation stack creation to replace the
+        placeholder code with the actual aggregator implementation.
+
+        Args:
+            function_name: Lambda function name (default: {table_name}-aggregator)
+            wait: Wait for function update to complete
+
+        Returns:
+            Dict with function_arn, code_sha256, and status
+
+        Raises:
+            StackCreationError: If Lambda deployment fails
+        """
+        if not self._should_use_cloudformation():
+            # Local environment - no Lambda to deploy
+            return {
+                "function_arn": None,
+                "status": "skipped_local",
+                "message": "Lambda deployment skipped for local DynamoDB",
+            }
+
+        function_name = function_name or f"{self.table_name}-aggregator"
+
+        # Build Lambda package
+        try:
+            zip_bytes = build_lambda_package()
+        except Exception as e:
+            raise StackCreationError(
+                stack_name=self.get_stack_name(),
+                reason=f"Failed to build Lambda package: {e}",
+            ) from e
+
+        # Get Lambda client
+        if self._session is None:
+            self._session = aioboto3.Session()
+
+        kwargs: dict[str, Any] = {}
+        if self.region:
+            kwargs["region_name"] = self.region
+
+        session = self._session
+        async with session.client("lambda", **kwargs) as lambda_client:
+            try:
+                # Update function code
+                response = await lambda_client.update_function_code(
+                    FunctionName=function_name,
+                    ZipFile=zip_bytes,
+                )
+
+                if wait:
+                    # Wait for update to complete
+                    waiter = lambda_client.get_waiter("function_updated")
+                    try:
+                        await waiter.wait(FunctionName=function_name)
+                    except Exception as e:
+                        raise StackCreationError(
+                            stack_name=self.get_stack_name(),
+                            reason=f"Waiting for Lambda update failed: {e}",
+                        ) from e
+
+                return {
+                    "function_arn": response["FunctionArn"],
+                    "code_sha256": response["CodeSha256"],
+                    "status": "deployed",
+                    "size_bytes": len(zip_bytes),
+                }
+
+            except ClientError as e:
+                error_code = e.response["Error"]["Code"]
+                error_msg = e.response["Error"]["Message"]
+
+                raise StackCreationError(
+                    stack_name=self.get_stack_name(),
+                    reason=f"Lambda deployment failed ({error_code}): {error_msg}",
+                ) from e
 
     async def close(self) -> None:
         """Close the underlying session and client."""

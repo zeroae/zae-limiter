@@ -81,6 +81,7 @@ def deploy(
             }
 
             try:
+                # Step 1: Create CloudFormation stack
                 result = await manager.create_stack(
                     stack_name=actual_stack_name,
                     parameters=parameters,
@@ -97,9 +98,38 @@ def deploy(
                 if result.get("stack_id"):
                     click.echo(f"  Stack ID: {result['stack_id']}")
 
+                # Step 2: Deploy Lambda code if aggregator is enabled
+                if enable_aggregator and wait:
+                    click.echo()
+                    click.echo("Deploying Lambda function code...")
+
+                    try:
+                        lambda_result = await manager.deploy_lambda_code(wait=True)
+
+                        if lambda_result.get("status") == "deployed":
+                            size_kb = lambda_result.get("size_bytes", 0) / 1024
+                            click.echo(f"✓ Lambda code deployed ({size_kb:.1f} KB)")
+                            click.echo(f"  Function ARN: {lambda_result['function_arn']}")
+                            click.echo(f"  Code SHA256: {lambda_result['code_sha256'][:16]}...")
+                        elif lambda_result.get("status") == "skipped_local":
+                            click.echo("  Lambda deployment skipped (local environment)")
+                    except Exception as e:
+                        click.echo(f"⚠️  Lambda deployment failed: {e}", err=True)
+                        click.echo(
+                            "  Stack was created successfully, but Lambda code "
+                            "needs manual deployment.",
+                            err=True,
+                        )
+                        sys.exit(1)
+
                 if not wait:
                     click.echo()
                     click.echo("Stack creation initiated. Use 'status' command to check progress.")
+                    if enable_aggregator:
+                        click.echo(
+                            "Note: Lambda code will not be deployed until stack is ready. "
+                            "Run 'zae-limiter deploy' again with --wait to deploy Lambda."
+                        )
 
             except Exception as e:
                 click.echo(f"✗ Deployment failed: {e}", err=True)

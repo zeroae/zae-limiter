@@ -46,11 +46,16 @@ pytest
 
 ### CloudFormation Stack
 
-The library uses CloudFormation for infrastructure deployment:
+The library uses CloudFormation for infrastructure deployment. The `deploy` command automatically:
+1. Creates CloudFormation stack with DynamoDB table, streams, and Lambda function
+2. Packages and deploys the Lambda aggregator code from the installed package
 
 ```bash
-# Deploy stack with CLI
+# Deploy stack with CLI (includes Lambda deployment)
 zae-limiter deploy --table-name rate_limits --region us-east-1
+
+# Deploy without aggregator Lambda
+zae-limiter deploy --table-name rate_limits --no-aggregator
 
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
@@ -61,6 +66,12 @@ zae-limiter status --stack-name zae-limiter-rate_limits --region us-east-1
 # Delete stack
 zae-limiter delete --stack-name zae-limiter-rate_limits --yes
 ```
+
+**Lambda Deployment Details:**
+- The CLI automatically builds a deployment package from the installed `zae_limiter` package
+- Lambda code is updated via AWS Lambda API after stack creation
+- No S3 bucket required - deployment package (~30KB) is uploaded directly
+- Lambda only depends on `boto3` (provided by AWS Lambda runtime)
 
 ### Auto-Creation in Code
 
@@ -106,8 +117,11 @@ src/zae_limiter/
 ├── limiter.py         # RateLimiter, SyncRateLimiter
 ├── cli.py             # CLI commands (deploy, delete, status, cfn-template)
 ├── aggregator/        # Lambda for usage snapshots
+│   ├── handler.py     # Lambda entry point
+│   └── processor.py   # Stream processing logic
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
+    ├── lambda_builder.py   # Lambda deployment package builder
     └── cfn_template.yaml   # CloudFormation template
 ```
 

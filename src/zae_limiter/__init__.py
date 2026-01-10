@@ -39,9 +39,7 @@ from .exceptions import (
     StackAlreadyExistsError,
     StackCreationError,
 )
-from .infra.stack_manager import StackManager
 from .lease import Lease, SyncLease
-from .limiter import FailureMode, RateLimiter, SyncRateLimiter
 from .models import (
     BucketState,
     Entity,
@@ -52,6 +50,10 @@ from .models import (
     ResourceCapacity,
     UsageSnapshot,
 )
+
+# RateLimiter, SyncRateLimiter, FailureMode, and StackManager are imported
+# lazily via __getattr__ to avoid loading aioboto3 for Lambda functions
+# that only need boto3
 
 __version__ = "0.1.0"
 
@@ -82,3 +84,34 @@ __all__ = [
     "StackCreationError",
     "StackAlreadyExistsError",
 ]
+
+
+def __getattr__(name: str) -> type:
+    """
+    Lazy import for modules with heavy dependencies.
+
+    This allows the package to be imported without loading aioboto3,
+    which is critical for Lambda functions that only need boto3.
+
+    The aggregator Lambda function imports the handler which would normally
+    trigger loading of the entire package. By making RateLimiter and
+    StackManager lazy imports, we avoid loading aioboto3 (not available in
+    Lambda runtime) while maintaining backward compatibility for regular usage.
+    """
+    if name == "RateLimiter":
+        from .limiter import RateLimiter
+
+        return RateLimiter
+    if name == "SyncRateLimiter":
+        from .limiter import SyncRateLimiter
+
+        return SyncRateLimiter
+    if name == "FailureMode":
+        from .limiter import FailureMode
+
+        return FailureMode
+    if name == "StackManager":
+        from .infra.stack_manager import StackManager
+
+        return StackManager
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
