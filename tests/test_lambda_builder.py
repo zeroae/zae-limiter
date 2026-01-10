@@ -172,9 +172,9 @@ with zipfile.ZipFile('/var/task/function.zip', 'r') as zf:
 
 sys.path.insert(0, '/tmp/lambda')
 
-# Import handler module directly to avoid package __init__ with aioboto3
-import zae_limiter.aggregator.handler as handler_module
-import zae_limiter.aggregator.processor as processor_module
+# Import handler - note aggregator.__init__ re-exports handler function
+from zae_limiter.aggregator.handler import handler
+from zae_limiter.aggregator.processor import process_stream_records
 
 print("SUCCESS: All imports worked")
 """
@@ -215,11 +215,11 @@ with zipfile.ZipFile('/var/task/function.zip', 'r') as zf:
 
 sys.path.insert(0, '/tmp/lambda')
 
-import zae_limiter.aggregator.handler as handler_module
+from zae_limiter.aggregator.handler import handler
 
 # Test with empty event
 event = {"Records": []}
-result = handler_module.handler(event, None)
+result = handler(event, None)
 
 print(json.dumps(result))
 """
@@ -266,7 +266,7 @@ with zipfile.ZipFile('/var/task/function.zip', 'r') as zf:
 
 sys.path.insert(0, '/tmp/lambda')
 
-import zae_limiter.aggregator.handler as handler_module
+from zae_limiter.aggregator.handler import handler
 
 # Mock DynamoDB stream event (MODIFY on BUCKET)
 event = {
@@ -304,7 +304,7 @@ event = {
 # Handler should process this without DynamoDB access
 # (it will fail when trying to write, but should parse the event)
 try:
-    result = handler_module.handler(event, None)
+    result = handler(event, None)
     print("Handler returned:", json.dumps(result))
 except Exception as e:
     # Expected to fail on DynamoDB write, but should get past parsing
