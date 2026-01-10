@@ -303,6 +303,7 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 | Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
 | Get children | GSI1: `GSI1PK=PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
+| Get version | `PK=SYSTEM#, SK=#VERSION` |
 
 ## Dependencies
 
