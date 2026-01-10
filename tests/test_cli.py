@@ -363,3 +363,99 @@ class TestCLI:
         assert result.exit_code == 1
         assert "not initialized" in result.output.lower()
         assert "zae-limiter deploy" in result.output
+
+
+class TestLambdaExport:
+    """Test lambda-export command."""
+
+    def test_lambda_export_help(self, runner: CliRunner) -> None:
+        """Test lambda-export command help."""
+        result = runner.invoke(cli, ["lambda-export", "--help"])
+        assert result.exit_code == 0
+        assert "Export Lambda deployment package" in result.output
+        assert "--output" in result.output
+        assert "--info" in result.output
+        assert "--force" in result.output
+
+    def test_lambda_export_info(self, runner: CliRunner) -> None:
+        """Test lambda-export --info flag."""
+        result = runner.invoke(cli, ["lambda-export", "--info"])
+        assert result.exit_code == 0
+        assert "Lambda Package Information" in result.output
+        assert "Package path:" in result.output
+        assert "Python files:" in result.output
+        assert "Handler:" in result.output
+        assert "zae_limiter.aggregator.handler.handler" in result.output
+
+    def test_lambda_export_to_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test exporting Lambda package to file."""
+        import zipfile
+
+        output_file = tmp_path / "test-lambda.zip"
+        result = runner.invoke(cli, ["lambda-export", "--output", str(output_file)])
+
+        assert result.exit_code == 0
+        assert "Exported Lambda package to:" in result.output
+        assert "KB" in result.output
+        assert output_file.exists()
+
+        # Verify it's a valid zip file
+        with zipfile.ZipFile(output_file, "r") as zf:
+            names = zf.namelist()
+            assert any("zae_limiter" in name for name in names)
+            assert any("handler.py" in name for name in names)
+
+    def test_lambda_export_default_filename(self, runner: CliRunner) -> None:
+        """Test lambda-export uses default filename."""
+        # Use isolated filesystem to avoid polluting the project directory
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["lambda-export"])
+
+            assert result.exit_code == 0
+            assert "lambda.zip" in result.output
+            assert Path("lambda.zip").exists()
+
+    def test_lambda_export_refuses_overwrite(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test lambda-export refuses to overwrite existing file."""
+        output_file = tmp_path / "existing.zip"
+        output_file.write_bytes(b"existing content")
+
+        result = runner.invoke(cli, ["lambda-export", "--output", str(output_file)])
+
+        assert result.exit_code == 1
+        assert "File already exists" in result.output
+        assert "--force" in result.output
+        # Original file should be unchanged
+        assert output_file.read_bytes() == b"existing content"
+
+    def test_lambda_export_force_overwrite(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test lambda-export with --force overwrites existing file."""
+        output_file = tmp_path / "existing.zip"
+        output_file.write_bytes(b"existing content")
+
+        result = runner.invoke(cli, ["lambda-export", "--output", str(output_file), "--force"])
+
+        assert result.exit_code == 0
+        assert "Exported Lambda package to:" in result.output
+        # File should be overwritten (different content)
+        assert output_file.read_bytes() != b"existing content"
+
+    def test_lambda_export_creates_parent_directory(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test lambda-export creates parent directories if needed."""
+        output_file = tmp_path / "nested" / "dirs" / "lambda.zip"
+        result = runner.invoke(cli, ["lambda-export", "--output", str(output_file)])
+
+        assert result.exit_code == 0
+        assert output_file.exists()
+
+    def test_lambda_export_short_flags(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test lambda-export short flags -o and -f work."""
+        output_file = tmp_path / "short-flag.zip"
+        output_file.write_bytes(b"existing")
+
+        result = runner.invoke(cli, ["lambda-export", "-o", str(output_file), "-f"])
+
+        assert result.exit_code == 0
+        assert output_file.exists()
