@@ -23,8 +23,8 @@ from dataclasses import dataclass
 
 from zae_limiter import (
     Limit,
-    RateLimitExceeded,
     RateLimiter,
+    RateLimitExceeded,
 )
 
 # Configuration

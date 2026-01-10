@@ -24,8 +24,8 @@ import asyncio
 from zae_limiter import (
     EntityExistsError,
     Limit,
-    RateLimitExceeded,
     RateLimiter,
+    RateLimitExceeded,
 )
 
 # Configuration
@@ -106,7 +106,7 @@ async def main() -> None:
     # Check capacity on both entities
     key_available = await limiter.available("key-alice", "api", default_limits)
     proj_available = await limiter.available("proj-acme", "api", default_limits)
-    print(f"\nAfter 3 cascaded requests:")
+    print("\nAfter 3 cascaded requests:")
     print(f"  key-alice available: {key_available}")
     print(f"  proj-acme available: {proj_available}")
 

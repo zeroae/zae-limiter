@@ -23,8 +23,8 @@ import asyncio
 
 from zae_limiter import (
     Limit,
-    RateLimitExceeded,
     RateLimiter,
+    RateLimitExceeded,
     SyncRateLimiter,
 )
 
@@ -73,7 +73,8 @@ async def async_main() -> None:
             # For API responses, use as_dict() for JSON serialization
             error_response = e.as_dict()
             print(f"  JSON response: error={error_response['error']}")
-            print(f"  Violations: {[v['limit_name'] for v in error_response['limits'] if v['exceeded']]}")
+            violations = [v["limit_name"] for v in error_response["limits"] if v["exceeded"]]
+            print(f"  Violations: {violations}")
 
     await limiter.close()
 
