@@ -138,7 +138,8 @@ class TestLocalStackIntegration:
             consume={"rpm": 1},
             cascade=True,
         ) as lease:
-            assert lease.consumed == {"rpm": 1}
+            # Cascade consumes from both child and parent, so total is 2
+            assert lease.consumed == {"rpm": 2}
 
         # Verify both child and parent were consumed
         child_available = await localstack_limiter.available(
