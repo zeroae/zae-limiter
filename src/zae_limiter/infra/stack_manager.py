@@ -44,16 +44,6 @@ class StackManager:
         self._session: aioboto3.Session | None = None
         self._client: Any = None
 
-    def _should_use_cloudformation(self) -> bool:
-        """
-        Always use CloudFormation.
-
-        Both AWS and LocalStack support CloudFormation. For DynamoDB Local
-        (which doesn't support CloudFormation), use create_stack=True in
-        RateLimiter instead of the CLI deploy command.
-        """
-        return True
-
     def get_stack_name(self, table_name: str | None = None) -> str:
         """
         Generate stack name from table name.
@@ -177,9 +167,6 @@ class StackManager:
         Returns:
             True if stack exists and is not in DELETE_COMPLETE state
         """
-        if not self._should_use_cloudformation():
-            return False
-
         client = await self._get_client()
         try:
             response = await client.describe_stacks(StackName=stack_name)
@@ -206,9 +193,6 @@ class StackManager:
         Returns:
             Stack status string or None if stack doesn't exist
         """
-        if not self._should_use_cloudformation():
-            return None
-
         client = await self._get_client()
         try:
             response = await client.describe_stacks(StackName=stack_name)
@@ -245,15 +229,6 @@ class StackManager:
             StackCreationError: If stack creation fails
             StackAlreadyExistsError: If stack already exists
         """
-        if not self._should_use_cloudformation():
-            # Local environment - skip CloudFormation
-            return {
-                "stack_id": None,
-                "stack_name": None,
-                "status": "skipped_local",
-                "message": "CloudFormation skipped for local DynamoDB",
-            }
-
         stack_name = stack_name or self.get_stack_name()
         client = await self._get_client()
 
@@ -349,8 +324,6 @@ class StackManager:
         """
         Delete CloudFormation stack.
 
-        Auto-skips for local DynamoDB environments.
-
         Args:
             stack_name: Name of the stack to delete
             wait: Wait for stack to be DELETE_COMPLETE
@@ -358,10 +331,6 @@ class StackManager:
         Raises:
             StackCreationError: If deletion fails
         """
-        if not self._should_use_cloudformation():
-            # Local environment - skip CloudFormation
-            return
-
         client = await self._get_client()
 
         try:
@@ -438,14 +407,6 @@ class StackManager:
         Raises:
             StackCreationError: If Lambda deployment fails
         """
-        if not self._should_use_cloudformation():
-            # Local environment - no Lambda to deploy
-            return {
-                "function_arn": None,
-                "status": "skipped_local",
-                "message": "Lambda deployment skipped for local DynamoDB",
-            }
-
         function_name = function_name or f"{self.table_name}-aggregator"
 
         # Build Lambda package
