@@ -30,6 +30,25 @@ Example:
         await lease.adjust(tpm=response.usage.total_tokens - 500)
 """
 
+# ---------------------------------------------------------------------------
+# Lazy imports for Lambda compatibility
+# ---------------------------------------------------------------------------
+# RateLimiter, SyncRateLimiter, FailureMode, and StackManager are imported
+# lazily via __getattr__ below. This is REQUIRED because:
+#
+# 1. These modules depend on aioboto3, which is NOT available in the AWS
+#    Lambda runtime (only boto3 is provided).
+# 2. The Lambda aggregator function (zae_limiter.aggregator.handler) imports
+#    this package. Without lazy imports, it would fail with:
+#    ImportError: No module named 'aioboto3'
+# 3. By deferring the import until the attribute is accessed, Lambda can
+#    import the package and use boto3-only code paths successfully.
+#
+# WARNING: Do not add eager imports of limiter.py or infra/stack_manager.py
+# here. Doing so will break the Lambda aggregator function.
+# ---------------------------------------------------------------------------
+from typing import TYPE_CHECKING
+
 from .exceptions import (
     EntityError,
     EntityExistsError,
@@ -58,9 +77,13 @@ from .models import (
     UsageSnapshot,
 )
 
-# RateLimiter, SyncRateLimiter, FailureMode, and StackManager are imported
-# lazily via __getattr__ to avoid loading aioboto3 for Lambda functions
-# that only need boto3
+if TYPE_CHECKING:
+    # Type-checking imports for static analysis and IDE support.
+    # These are never executed at runtime.
+    from .infra.stack_manager import StackManager as StackManager
+    from .limiter import FailureMode as FailureMode
+    from .limiter import RateLimiter as RateLimiter
+    from .limiter import SyncRateLimiter as SyncRateLimiter
 
 try:
     from ._version import __version__  # type: ignore[import-untyped]
@@ -111,16 +134,24 @@ __all__ = [
 
 
 def __getattr__(name: str) -> type:
-    """
-    Lazy import for modules with heavy dependencies.
+    """Lazy import for modules that require aioboto3.
 
-    This allows the package to be imported without loading aioboto3,
-    which is critical for Lambda functions that only need boto3.
+    This function enables the package to be imported in the AWS Lambda runtime,
+    which only provides boto3 (not aioboto3). Without lazy imports, importing
+    this package would fail with ``ImportError: No module named 'aioboto3'``.
 
-    The aggregator Lambda function imports the handler which would normally
-    trigger loading of the entire package. By making RateLimiter and
-    StackManager lazy imports, we avoid loading aioboto3 (not available in
-    Lambda runtime) while maintaining backward compatibility for regular usage.
+    The Lambda aggregator function (``zae_limiter.aggregator.handler``) uses
+    only boto3 for DynamoDB stream processing. By deferring imports of
+    ``RateLimiter``, ``SyncRateLimiter``, ``FailureMode``, and ``StackManager``
+    until they are actually accessed, we allow the Lambda handler to import
+    the package successfully.
+
+    For static type checking and IDE support, these classes are also imported
+    in the ``TYPE_CHECKING`` block above, which is only evaluated by type
+    checkers, not at runtime.
+
+    See Also:
+        PEP 562 -- Module __getattr__ and __dir__
     """
     if name == "RateLimiter":
         from .limiter import RateLimiter
