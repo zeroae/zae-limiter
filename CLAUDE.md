@@ -97,6 +97,18 @@ zae-limiter deploy --table-name rate_limits --no-aggregator
 # Deploy with custom log retention (90 days)
 zae-limiter deploy --table-name rate_limits --log-retention-days 90
 
+# Deploy with custom Lambda settings
+zae-limiter deploy --table-name rate_limits --lambda-timeout 120 --lambda-memory 512
+
+# Deploy with alarms and SNS notifications
+zae-limiter deploy --table-name rate_limits --alarm-sns-topic arn:aws:sns:us-east-1:123456789012:my-topic
+
+# Deploy with custom duration threshold (90% of timeout)
+zae-limiter deploy --table-name rate_limits --lambda-duration-threshold-pct 90
+
+# Disable CloudWatch alarms
+zae-limiter deploy --table-name rate_limits --no-alarms
+
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
 
