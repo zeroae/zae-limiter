@@ -1,6 +1,8 @@
 """DynamoDB Stream processor for usage aggregation."""
 
-import logging
+import json
+import time as time_module
+import traceback
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -9,7 +11,41 @@ import boto3  # type: ignore[import-untyped]
 
 from ..schema import SK_BUCKET, gsi2_pk_resource, gsi2_sk_usage, pk_entity, sk_usage
 
-logger = logging.getLogger(__name__)
+
+class StructuredLogger:
+    """JSON-formatted logger for CloudWatch Logs Insights."""
+
+    def __init__(self, name: str):
+        self._name = name
+
+    def _log(self, level: str, message: str, **extra: Any) -> None:
+        log_entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "level": level,
+            "logger": self._name,
+            "message": message,
+            **extra,
+        }
+        print(json.dumps(log_entry))
+
+    def debug(self, message: str, **extra: Any) -> None:
+        self._log("DEBUG", message, **extra)
+
+    def info(self, message: str, **extra: Any) -> None:
+        self._log("INFO", message, **extra)
+
+    def warning(self, message: str, exc_info: bool = False, **extra: Any) -> None:
+        if exc_info:
+            extra["exception"] = traceback.format_exc()
+        self._log("WARNING", message, **extra)
+
+    def error(self, message: str, exc_info: bool = False, **extra: Any) -> None:
+        if exc_info:
+            extra["exception"] = traceback.format_exc()
+        self._log("ERROR", message, **extra)
+
+
+logger = StructuredLogger(__name__)
 
 
 @dataclass
@@ -55,6 +91,15 @@ def process_stream_records(
     Returns:
         ProcessResult with counts and errors
     """
+    start_time = time_module.perf_counter()
+
+    logger.info(
+        "Batch processing started",
+        record_count=len(records),
+        windows=windows,
+        table_name=table_name,
+    )
+
     dynamodb = boto3.resource("dynamodb")
     table = dynamodb.Table(table_name)
 
@@ -62,7 +107,7 @@ def process_stream_records(
     errors: list[str] = []
 
     # Extract deltas from records
-    for record in records:
+    for idx, record in enumerate(records):
         if record.get("eventName") != "MODIFY":
             continue
 
@@ -72,10 +117,23 @@ def process_stream_records(
                 deltas.append(delta)
         except Exception as e:
             error_msg = f"Error processing record: {e}"
-            logger.warning(error_msg)
+            logger.warning(
+                error_msg,
+                exc_info=True,
+                record_index=idx,
+            )
             errors.append(error_msg)
 
     if not deltas:
+        processing_time_ms = (time_module.perf_counter() - start_time) * 1000
+        logger.info(
+            "Batch processing completed",
+            processed_count=len(records),
+            deltas_extracted=0,
+            snapshots_updated=0,
+            error_count=len(errors),
+            processing_time_ms=round(processing_time_ms, 2),
+        )
         return ProcessResult(len(records), 0, errors)
 
     # Update snapshots
@@ -87,8 +145,25 @@ def process_stream_records(
                 snapshots_updated += 1
             except Exception as e:
                 error_msg = f"Error updating snapshot: {e}"
-                logger.warning(error_msg)
+                logger.warning(
+                    error_msg,
+                    exc_info=True,
+                    entity_id=delta.entity_id,
+                    resource=delta.resource,
+                    limit_name=delta.limit_name,
+                    window=window,
+                )
                 errors.append(error_msg)
+
+    processing_time_ms = (time_module.perf_counter() - start_time) * 1000
+    logger.info(
+        "Batch processing completed",
+        processed_count=len(records),
+        deltas_extracted=len(deltas),
+        snapshots_updated=snapshots_updated,
+        error_count=len(errors),
+        processing_time_ms=round(processing_time_ms, 2),
+    )
 
     return ProcessResult(len(records), snapshots_updated, errors)
 
@@ -270,4 +345,14 @@ def update_snapshot(
             ":delta": tokens_delta,
             ":one": 1,
         },
+    )
+
+    logger.debug(
+        "Snapshot updated",
+        entity_id=delta.entity_id,
+        resource=delta.resource,
+        limit_name=delta.limit_name,
+        window=window,
+        window_key=window_key,
+        tokens_delta=tokens_delta,
     )
