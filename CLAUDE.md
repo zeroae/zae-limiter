@@ -88,6 +88,9 @@ The library uses CloudFormation for infrastructure deployment. The `deploy` comm
 # Deploy stack with CLI (includes Lambda deployment)
 zae-limiter deploy --table-name rate_limits --region us-east-1
 
+# Deploy to LocalStack (for local development)
+zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566 --region us-east-1
+
 # Deploy without aggregator Lambda
 zae-limiter deploy --table-name rate_limits --no-aggregator
 
@@ -133,15 +136,34 @@ limiter = RateLimiter(
 
 ### Local Development
 
-When using DynamoDB Local, CloudFormation is automatically skipped:
+**LocalStack (Recommended):** For full feature testing including Lambda aggregator and DynamoDB Streams:
+
+```bash
+# Deploy to LocalStack using CLI
+zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566 --region us-east-1
+```
+
+```python
+# Or from code
+limiter = RateLimiter(
+    table_name="rate_limits",
+    endpoint_url="http://localhost:4566",  # LocalStack
+    region="us-east-1",
+    create_stack=True,  # Uses CloudFormation (LocalStack supports it)
+)
+```
+
+**DynamoDB Local:** For basic rate limiting only (no Lambda/Streams support):
 
 ```python
 limiter = RateLimiter(
     table_name="rate_limits",
     endpoint_url="http://localhost:8000",  # DynamoDB Local
-    create_table=True,  # Uses direct table creation (not CloudFormation)
+    create_table=True,  # Uses direct table creation (bypasses CloudFormation)
 )
 ```
+
+**Note:** The `--endpoint-url` CLI flag assumes CloudFormation support (LocalStack). For DynamoDB Local, use `create_table=True` in code instead of the CLI deploy command.
 
 ## Project Structure
 
@@ -216,12 +238,22 @@ src/zae_limiter/
 pytest tests/ -v
 ```
 
-### Test with Local DynamoDB
+### Test with LocalStack (Recommended)
 ```bash
-# Start DynamoDB Local
+# Start LocalStack (includes DynamoDB, Lambda, CloudFormation)
+docker run -d -p 4566:4566 localstack/localstack
+
+# Deploy infrastructure and run integration tests
+zae-limiter deploy --table-name test_limits --endpoint-url http://localhost:4566 --region us-east-1
+DYNAMODB_ENDPOINT=http://localhost:4566 pytest tests/integration/ -v
+```
+
+### Test with DynamoDB Local (Basic Only)
+```bash
+# Start DynamoDB Local (no Lambda/Streams support)
 docker run -p 8000:8000 amazon/dynamodb-local
 
-# Run integration tests
+# Run integration tests (aggregator features won't work)
 DYNAMODB_ENDPOINT=http://localhost:8000 pytest tests/integration/ -v
 ```
 

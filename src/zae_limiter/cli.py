@@ -32,6 +32,10 @@ def cli() -> None:
     help="AWS region (default: use boto3 defaults)",
 )
 @click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (for LocalStack or other AWS-compatible services)",
+)
+@click.option(
     "--snapshot-windows",
     default="hourly,daily",
     help="Comma-separated list of snapshot windows",
@@ -56,6 +60,7 @@ def deploy(
     table_name: str,
     stack_name: str | None,
     region: str | None,
+    endpoint_url: str | None,
     snapshot_windows: str,
     retention_days: int,
     enable_aggregator: bool,
@@ -64,7 +69,7 @@ def deploy(
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
 
     async def _deploy() -> None:
-        async with StackManager(table_name, region, None) as manager:
+        async with StackManager(table_name, region, endpoint_url) as manager:
             actual_stack_name = stack_name or manager.get_stack_name()
 
             click.echo(f"Deploying stack: {actual_stack_name}")

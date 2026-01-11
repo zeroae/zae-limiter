@@ -1,6 +1,9 @@
 """Tests for CloudFormation stack manager."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
+from botocore.exceptions import ClientError
 
 from zae_limiter.infra.stack_manager import StackManager
 
@@ -14,14 +17,14 @@ class TestStackManager:
         assert manager.get_stack_name() == "zae-limiter-my_table"
         assert manager.get_stack_name("other_table") == "zae-limiter-other_table"
 
-    def test_local_detection_with_endpoint_url(self) -> None:
-        """Test that stack manager detects local DynamoDB."""
+    def test_cloudformation_used_with_endpoint_url(self) -> None:
+        """Test that CloudFormation is used even with endpoint_url (LocalStack)."""
         manager = StackManager(
             table_name="test",
             region="us-east-1",
-            endpoint_url="http://localhost:8000",
+            endpoint_url="http://localhost:4566",
         )
-        assert not manager._should_use_cloudformation()
+        assert manager._should_use_cloudformation()
 
     def test_cloudformation_use_without_endpoint(self) -> None:
         """Test that CloudFormation is used when no endpoint_url is set."""
@@ -70,21 +73,6 @@ class TestStackManager:
         assert "AWS::DynamoDB::Table" in template
         assert "RateLimitsTable" in template
 
-    @pytest.mark.asyncio
-    async def test_skip_cloudformation_for_local(self) -> None:
-        """Test that CloudFormation is skipped for local DynamoDB."""
-        manager = StackManager(
-            table_name="test",
-            region="us-east-1",
-            endpoint_url="http://localhost:8000",
-        )
-
-        result = await manager.create_stack()
-
-        assert result["status"] == "skipped_local"
-        assert result["stack_id"] is None
-        assert "local" in result["message"].lower()
-
     @pytest.mark.skip(reason="Requires real AWS CloudFormation API - moto doesn't support async")
     @pytest.mark.asyncio
     async def test_stack_exists_false(self) -> None:
@@ -114,20 +102,44 @@ class TestStackManager:
 
     @pytest.mark.asyncio
     async def test_create_stack_with_parameters(self) -> None:
-        """Test create_stack parameter handling."""
-        manager = StackManager(
-            table_name="test",
-            endpoint_url="http://localhost:8000",  # Use local to skip actual creation
-        )
+        """Test create_stack parameter handling with CloudFormation."""
+        from unittest.mock import MagicMock
 
-        result = await manager.create_stack(
-            parameters={
-                "snapshot_windows": "hourly",
-                "retention_days": "30",
-            }
-        )
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            # Use MagicMock for client, with explicit async methods
+            mock_client = MagicMock()
+            # Simulate stack doesn't exist
+            mock_client.describe_stacks = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}},
+                    "DescribeStacks",
+                )
+            )
+            mock_client.create_stack = AsyncMock(return_value={"StackId": "test-stack-id"})
 
-        assert result["status"] == "skipped_local"
+            # Mock the waiter correctly - get_waiter is sync, wait is async
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock()
+            mock_client.get_waiter.return_value = mock_waiter
+
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(
+                table_name="test",
+                region="us-east-1",
+                endpoint_url="http://localhost:4566",
+            )
+
+            result = await manager.create_stack(
+                parameters={
+                    "snapshot_windows": "hourly",
+                    "retention_days": "30",
+                }
+            )
+
+            assert result["status"] == "CREATE_COMPLETE"
+            assert result["stack_id"] == "test-stack-id"
+            mock_client.create_stack.assert_called_once()
 
 
 class TestStackManagerIntegration:

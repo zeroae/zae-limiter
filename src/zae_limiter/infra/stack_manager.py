@@ -20,8 +20,8 @@ class StackManager:
     """
     Manages CloudFormation stack lifecycle for rate limiter infrastructure.
 
-    Auto-detects local DynamoDB environments (via endpoint_url) and
-    gracefully skips CloudFormation operations in those cases.
+    Supports both AWS and LocalStack environments. When endpoint_url is provided,
+    CloudFormation operations are performed against that endpoint.
     """
 
     def __init__(
@@ -36,22 +36,23 @@ class StackManager:
         Args:
             table_name: Name of the DynamoDB table
             region: AWS region (default: use boto3 defaults)
-            endpoint_url: Optional CloudFormation endpoint URL
+            endpoint_url: Optional endpoint URL (for LocalStack or other AWS-compatible services)
         """
         self.table_name = table_name
         self.region = region
         self.endpoint_url = endpoint_url
-        self._is_local = endpoint_url is not None
         self._session: aioboto3.Session | None = None
         self._client: Any = None
 
     def _should_use_cloudformation(self) -> bool:
         """
-        Determine if CloudFormation should be used.
+        Always use CloudFormation.
 
-        Returns False for local DynamoDB environments (endpoint_url is set).
+        Both AWS and LocalStack support CloudFormation. For DynamoDB Local
+        (which doesn't support CloudFormation), use create_table=True in
+        RateLimiter instead of the CLI deploy command.
         """
-        return not self._is_local
+        return True
 
     def get_stack_name(self, table_name: str | None = None) -> str:
         """
@@ -463,6 +464,8 @@ class StackManager:
         kwargs: dict[str, Any] = {}
         if self.region:
             kwargs["region_name"] = self.region
+        if self.endpoint_url:
+            kwargs["endpoint_url"] = self.endpoint_url
 
         session = self._session
         async with session.client("lambda", **kwargs) as lambda_client:

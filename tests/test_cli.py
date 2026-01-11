@@ -31,6 +31,7 @@ class TestCLI:
         assert "Deploy CloudFormation stack" in result.output
         assert "--table-name" in result.output
         assert "--region" in result.output
+        assert "--endpoint-url" in result.output
 
     def test_delete_help(self, runner: CliRunner) -> None:
         """Test delete command help."""
@@ -138,6 +139,48 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert "my-custom-stack" in result.output
+
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+        """Test deploy command with --endpoint-url for LocalStack."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-test")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:000000000000:function:test",
+                "code_sha256": "abc123",
+                "size_bytes": 40000,
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--table-name",
+                "test_table",
+                "--endpoint-url",
+                "http://localhost:4566",
+                "--region",
+                "us-east-1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify StackManager was called with endpoint_url
+        mock_stack_manager.assert_called_once_with(
+            "test_table", "us-east-1", "http://localhost:4566"
+        )
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_skip_local(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
