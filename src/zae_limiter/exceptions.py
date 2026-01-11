@@ -152,11 +152,41 @@ class RateLimiterUnavailable(RateLimitError):  # noqa: N818
     Raised when DynamoDB is unavailable and failure_mode=FAIL_CLOSED.
 
     This indicates a transient infrastructure issue, not a rate limit.
+
+    Attributes:
+        cause: The underlying exception that caused the unavailability
+        table_name: The DynamoDB table that was being accessed
+        entity_id: The entity being rate limited (if applicable)
+        resource: The resource being rate limited (if applicable)
     """
 
-    def __init__(self, message: str, cause: Exception | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        cause: Exception | None = None,
+        *,
+        table_name: str | None = None,
+        entity_id: str | None = None,
+        resource: str | None = None,
+    ) -> None:
         self.cause = cause
-        super().__init__(message)
+        self.table_name = table_name
+        self.entity_id = entity_id
+        self.resource = resource
+        super().__init__(self._format_message(message))
+
+    def _format_message(self, message: str) -> str:
+        parts = [message]
+        context = []
+        if self.table_name:
+            context.append(f"table={self.table_name}")
+        if self.entity_id:
+            context.append(f"entity={self.entity_id}")
+        if self.resource:
+            context.append(f"resource={self.resource}")
+        if context:
+            parts.append(f"[{', '.join(context)}]")
+        return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
