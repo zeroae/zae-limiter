@@ -37,4 +37,11 @@ jobs:
             4. Version compatibility
             5. DynamoDB access pattern correctness
 
+            **Schema Preservation Priority:**
+            When reviewing DynamoDB-related changes, prefer solutions that preserve the existing schema:
+            - If a fix changes attribute structure (nested vs flat), suggest alternatives using `if_not_exists()` or conditional expressions
+            - Schema changes require version bumps and migrations - only recommend if no alternative exists
+            - For UpdateExpression issues with nested paths, suggest initializing parent maps with `if_not_exists()` instead of flattening
+
             Be specific about issues found. Reference file:line numbers.
+            When suggesting alternatives, provide concrete code examples.

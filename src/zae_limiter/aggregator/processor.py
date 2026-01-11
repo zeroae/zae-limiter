@@ -218,7 +218,8 @@ def update_snapshot(
     Update a usage snapshot record atomically.
 
     Uses DynamoDB ADD operation to increment counters, creating
-    the record if it doesn't exist.
+    the record if it doesn't exist. Uses if_not_exists to initialize
+    the nested data map, preserving the original schema structure.
 
     Args:
         table: boto3 Table resource
@@ -232,7 +233,9 @@ def update_snapshot(
     tokens_delta = delta.tokens_delta // 1000
 
     # Build update expression
-    # We use ADD for atomic increments and SET for metadata
+    # Use if_not_exists to initialize the nested data map when item is first created.
+    # This preserves the original schema while fixing the "invalid document path" error.
+    # ADD then atomically increments the counters within the data map.
     table.update_item(
         Key={
             "PK": pk_entity(delta.entity_id),
@@ -240,9 +243,7 @@ def update_snapshot(
         },
         UpdateExpression="""
             SET entity_id = :entity_id,
-                #data.#resource = :resource,
-                #data.#window = :window,
-                #data.window_start = :window_start,
+                #data = if_not_exists(#data, :initial_data),
                 GSI2PK = :gsi2pk,
                 GSI2SK = :gsi2sk,
                 #ttl = :ttl
@@ -251,16 +252,18 @@ def update_snapshot(
         """,
         ExpressionAttributeNames={
             "#data": "data",
-            "#resource": "resource",
-            "#window": "window",
             "#limit_name": delta.limit_name,
             "#ttl": "ttl",
         },
         ExpressionAttributeValues={
             ":entity_id": delta.entity_id,
-            ":resource": delta.resource,
-            ":window": window,
-            ":window_start": window_key,
+            ":initial_data": {
+                "resource": delta.resource,
+                "window": window,
+                "window_start": window_key,
+                delta.limit_name: 0,
+                "total_events": 0,
+            },
             ":gsi2pk": gsi2_pk_resource(delta.resource),
             ":gsi2sk": gsi2_sk_usage(window_key, delta.entity_id),
             ":ttl": calculate_snapshot_ttl(ttl_days),
