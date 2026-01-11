@@ -606,18 +606,8 @@ class RateLimiter:
         )
 
     # -------------------------------------------------------------------------
-    # Table management
+    # Stack management
     # -------------------------------------------------------------------------
-
-    async def create_table(self) -> None:
-        """Create the DynamoDB table if it doesn't exist."""
-        await self._repository.create_table()
-        self._initialized = True
-
-    async def delete_table(self) -> None:
-        """Delete the DynamoDB table."""
-        await self._repository.delete_table()
-        self._initialized = False
 
     async def create_stack(
         self,
@@ -886,16 +876,8 @@ class SyncRateLimiter:
         )
 
     # -------------------------------------------------------------------------
-    # Table management
+    # Stack management
     # -------------------------------------------------------------------------
-
-    def create_table(self) -> None:
-        """Create the DynamoDB table if it doesn't exist."""
-        self._run(self._limiter.create_table())
-
-    def delete_table(self) -> None:
-        """Delete the DynamoDB table."""
-        self._run(self._limiter.delete_table())
 
     def create_stack(
         self,
