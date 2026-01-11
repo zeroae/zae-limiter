@@ -44,10 +44,16 @@ zae-limiter cfn-template | less
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `TableName` | String | `rate_limits` | DynamoDB table name |
-| `SnapshotWindows` | String | `hourly,daily` | Aggregation windows |
-| `SnapshotRetentionDays` | Number | `90` | Days to retain usage data |
-| `EnablePITR` | Boolean | `false` | Point-in-time recovery |
-| `LogRetentionDays` | Number | `14` | CloudWatch log retention |
+| `SnapshotWindows` | String | `hourly,daily` | Comma-separated list of snapshot windows |
+| `SnapshotRetentionDays` | Number | `90` | Days to retain usage snapshots (1-3650) |
+| `LambdaMemorySize` | Number | `256` | Memory for aggregator Lambda (128-3008 MB) |
+| `LambdaTimeout` | Number | `60` | Timeout for aggregator Lambda (1-900 seconds) |
+| `EnableAggregator` | String | `true` | Whether to deploy the aggregator Lambda |
+| `SchemaVersion` | String | `1.0.0` | Schema version for infrastructure |
+| `PITRRecoveryPeriodDays` | String | _(empty)_ | PITR period (1-35 days, empty for AWS default) |
+| `EnableAlarms` | String | `true` | Whether to deploy CloudWatch alarms |
+| `AlarmSNSTopicArn` | String | _(empty)_ | SNS topic ARN for alarm notifications |
+| `LogRetentionDays` | Number | `30` | CloudWatch log retention (standard periods) |
 
 ## DynamoDB Table
 
@@ -265,9 +271,10 @@ aws cloudformation deploy \
     --stack-name zae-limiter-prod \
     --parameter-overrides \
         TableName=prod_rate_limits \
-        EnablePITR=true \
+        PITRRecoveryPeriodDays=35 \
         SnapshotRetentionDays=365 \
         LogRetentionDays=90 \
+        EnableAlarms=true \
     --capabilities CAPABILITY_NAMED_IAM
 ```
 

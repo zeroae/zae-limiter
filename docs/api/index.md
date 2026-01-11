@@ -113,6 +113,8 @@ from zae_limiter import (
     # Main classes
     RateLimiter,
     SyncRateLimiter,
+    Lease,
+    SyncLease,
 
     # Models
     Limit,
@@ -120,14 +122,28 @@ from zae_limiter import (
     LimitStatus,
     BucketState,
 
-    # Exceptions
-    RateLimitExceeded,
-    RateLimiterUnavailable,
-    StackCreationError,
-    VersionError,
-
     # Enums
     FailureMode,
+
+    # Exceptions - Base
+    ZAELimiterError,
+
+    # Exceptions - Rate Limit
+    RateLimitExceeded,
+    RateLimiterUnavailable,
+
+    # Exceptions - Entity
+    EntityNotFoundError,
+    EntityExistsError,
+
+    # Exceptions - Infrastructure
+    StackCreationError,
+    StackAlreadyExistsError,
+    InfrastructureNotFoundError,
+
+    # Exceptions - Version
+    VersionMismatchError,
+    IncompatibleSchemaError,
 )
 ```
 

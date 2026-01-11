@@ -2,7 +2,34 @@
 
 Exception types raised by zae-limiter.
 
-## RateLimitExceeded
+## Exception Hierarchy
+
+```
+ZAELimiterError (base)
+├── RateLimitError
+│   ├── RateLimitExceeded
+│   └── RateLimiterUnavailable
+├── EntityError
+│   ├── EntityNotFoundError
+│   └── EntityExistsError
+├── InfrastructureError
+│   ├── StackCreationError
+│   ├── StackAlreadyExistsError
+│   └── InfrastructureNotFoundError
+└── VersionError
+    ├── VersionMismatchError
+    └── IncompatibleSchemaError
+```
+
+## Base Exception
+
+::: zae_limiter.exceptions.ZAELimiterError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+## Rate Limit Exceptions
 
 ::: zae_limiter.exceptions.RateLimitExceeded
     options:
@@ -11,8 +38,6 @@ Exception types raised by zae-limiter.
       members_order: source
       heading_level: 3
 
-## RateLimiterUnavailable
-
 ::: zae_limiter.exceptions.RateLimiterUnavailable
     options:
       show_root_heading: true
@@ -20,7 +45,21 @@ Exception types raised by zae-limiter.
       members_order: source
       heading_level: 3
 
-## StackCreationError
+## Entity Exceptions
+
+::: zae_limiter.exceptions.EntityNotFoundError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: zae_limiter.exceptions.EntityExistsError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+## Infrastructure Exceptions
 
 ::: zae_limiter.exceptions.StackCreationError
     options:
@@ -29,13 +68,30 @@ Exception types raised by zae-limiter.
       members_order: source
       heading_level: 3
 
-## VersionError
-
-::: zae_limiter.exceptions.VersionError
+::: zae_limiter.exceptions.StackAlreadyExistsError
     options:
       show_root_heading: true
       show_source: false
-      members_order: source
+      heading_level: 3
+
+::: zae_limiter.exceptions.InfrastructureNotFoundError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+## Version Exceptions
+
+::: zae_limiter.exceptions.VersionMismatchError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: zae_limiter.exceptions.IncompatibleSchemaError
+    options:
+      show_root_heading: true
+      show_source: false
       heading_level: 3
 
 ## Exception Handling Examples
@@ -118,26 +174,36 @@ The `as_dict()` method returns a dictionary suitable for API responses:
 ```python
 {
     "error": "rate_limit_exceeded",
-    "message": "Rate limit exceeded for rpm",
+    "message": "Rate limit exceeded for user-123/api: [rpm]. Retry after 45.2s",
     "retry_after_seconds": 45.2,
-    "violations": [
+    "retry_after_ms": 45200,
+    "limits": [
         {
             "entity_id": "user-123",
+            "resource": "api",
             "limit_name": "rpm",
-            "limit_capacity": 100,
+            "capacity": 100,
+            "burst": 100,
             "available": -5,
-            "requested": 1,
+            "requested": 10,
+            "exceeded": True,
             "retry_after_seconds": 45.2,
-        }
-    ],
-    "passed": [
+        },
         {
             "entity_id": "user-123",
+            "resource": "api",
             "limit_name": "tpm",
-            "limit_capacity": 10000,
+            "capacity": 10000,
+            "burst": 10000,
             "available": 8500,
             "requested": 500,
-        }
+            "exceeded": False,
+            "retry_after_seconds": 0.0,
+        },
     ],
 }
 ```
+
+!!! note "Single `limits` array"
+    All limits (both exceeded and passed) are returned in a single `limits` array.
+    Use the `exceeded` field to distinguish between violations and passed limits.
