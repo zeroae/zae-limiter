@@ -300,3 +300,77 @@ class LimitName:
     TPM = "tpm"  # tokens per minute
     TPH = "tph"  # tokens per hour
     TPD = "tpd"  # tokens per day
+
+
+@dataclass(frozen=True)
+class StackOptions:
+    """
+    Configuration options for CloudFormation stack creation and updates.
+
+    When passed to RateLimiter constructor, triggers automatic stack creation.
+    When None is passed (default), no stack creation is attempted.
+
+    Attributes:
+        snapshot_windows: Comma-separated list of snapshot windows (e.g., "hourly,daily")
+        retention_days: Number of days to retain usage snapshots
+        enable_aggregator: Deploy Lambda aggregator for usage snapshots
+        pitr_recovery_days: Point-in-Time Recovery period (1-35, None for AWS default)
+        log_retention_days: CloudWatch log retention period in days
+        lambda_timeout: Lambda timeout in seconds (1-900)
+        lambda_memory: Lambda memory size in MB (128-3008)
+        enable_alarms: Deploy CloudWatch alarms for monitoring
+        alarm_sns_topic: SNS topic ARN for alarm notifications
+        lambda_duration_threshold_pct: Duration alarm threshold as percentage of timeout (1-100)
+        stack_name: Override stack name (default: zae-limiter-{table_name})
+    """
+
+    snapshot_windows: str = "hourly,daily"
+    retention_days: int = 90
+    enable_aggregator: bool = True
+    pitr_recovery_days: int | None = None
+    log_retention_days: int = 30
+    lambda_timeout: int = 60
+    lambda_memory: int = 256
+    enable_alarms: bool = True
+    alarm_sns_topic: str | None = None
+    lambda_duration_threshold_pct: int = 80
+    stack_name: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate options."""
+        if not (1 <= self.lambda_timeout <= 900):
+            raise ValueError("lambda_timeout must be between 1 and 900")
+        if not (128 <= self.lambda_memory <= 3008):
+            raise ValueError("lambda_memory must be between 128 and 3008")
+        if not (1 <= self.lambda_duration_threshold_pct <= 100):
+            raise ValueError("lambda_duration_threshold_pct must be between 1 and 100")
+        if self.pitr_recovery_days is not None and not (1 <= self.pitr_recovery_days <= 35):
+            raise ValueError("pitr_recovery_days must be between 1 and 35")
+        if self.retention_days <= 0:
+            raise ValueError("retention_days must be positive")
+
+    def to_parameters(self) -> dict[str, str]:
+        """
+        Convert to stack parameters dict for StackManager.
+
+        Returns:
+            Dict with snake_case keys matching stack_manager parameter mapping.
+        """
+        lambda_duration_threshold_ms = int(
+            self.lambda_timeout * 1000 * (self.lambda_duration_threshold_pct / 100)
+        )
+        params: dict[str, str] = {
+            "snapshot_windows": self.snapshot_windows,
+            "retention_days": str(self.retention_days),
+            "enable_aggregator": "true" if self.enable_aggregator else "false",
+            "log_retention_days": str(self.log_retention_days),
+            "lambda_timeout": str(self.lambda_timeout),
+            "lambda_memory_size": str(self.lambda_memory),
+            "enable_alarms": "true" if self.enable_alarms else "false",
+            "lambda_duration_threshold": str(lambda_duration_threshold_ms),
+        }
+        if self.pitr_recovery_days is not None:
+            params["pitr_recovery_days"] = str(self.pitr_recovery_days)
+        if self.alarm_sns_topic:
+            params["alarm_sns_topic_arn"] = self.alarm_sns_topic
+        return params

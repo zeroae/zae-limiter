@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-from zae_limiter import Limit, RateLimiter, RateLimitExceeded, SyncRateLimiter
+from zae_limiter import Limit, RateLimiter, RateLimitExceeded, StackOptions, SyncRateLimiter
 
 pytestmark = pytest.mark.integration
 
@@ -36,7 +36,7 @@ async def localstack_limiter(localstack_endpoint):
         table_name="integration_test_rate_limits",
         endpoint_url=localstack_endpoint,
         region="us-east-1",
-        create_stack=True,  # Test full CloudFormation deployment
+        stack_options=StackOptions(),  # Test full stack deployment
     )
 
     async with limiter:
@@ -50,7 +50,7 @@ def sync_localstack_limiter(localstack_endpoint):
         table_name="integration_test_rate_limits_sync",
         endpoint_url=localstack_endpoint,
         region="us-east-1",
-        create_stack=True,
+        stack_options=StackOptions(),
     )
 
     with limiter:
@@ -67,7 +67,7 @@ class TestLocalStackIntegration:
             table_name="test_cloudformation_deployment",
             endpoint_url=localstack_endpoint,
             region="us-east-1",
-            create_stack=True,
+            stack_options=StackOptions(),
         )
 
         async with limiter:

@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from zae_limiter import Limit
+from zae_limiter import Limit, StackOptions
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
 
@@ -115,15 +115,15 @@ class TestRepositoryLocalStackCloudFormation:
         )
 
         try:
-            # Create with custom parameters
+            # Create with custom parameters using StackOptions
             # Note: LocalStack might not fully validate these, but we test the flow
-            params = {
-                "snapshot_windows": "hourly,daily",
-                "retention_days": "90",
-            }
+            stack_options = StackOptions(
+                snapshot_windows="hourly,daily",
+                retention_days=90,
+            )
             await repo.create_table_or_stack(
                 use_cloudformation=True,
-                stack_parameters=params,
+                stack_options=stack_options,
             )
 
             # Verify table was created

@@ -111,16 +111,15 @@ class TestCLI:
         assert "Deploying stack: zae-limiter-rate_limits" in result.output
         assert "✓" in result.output
 
-        # Verify default values for new parameters
+        # Verify default values for new parameters via StackOptions
         call_args = mock_instance.create_stack.call_args
         assert call_args is not None
-        params = call_args[1]["parameters"]
+        stack_options = call_args[1]["stack_options"]
         # Default values: lambda_timeout=60, lambda_memory=256, alarms enabled, 80% threshold
-        assert params["lambda_timeout"] == "60"
-        assert params["lambda_memory_size"] == "256"
-        assert params["enable_alarms"] == "true"
-        # 60s * 1000 * 0.8 = 48000ms (default)
-        assert params["lambda_duration_threshold"] == "48000"
+        assert stack_options.lambda_timeout == 60
+        assert stack_options.lambda_memory == 256
+        assert stack_options.enable_alarms is True
+        assert stack_options.lambda_duration_threshold_pct == 80
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_custom_parameters(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
@@ -189,9 +188,8 @@ class TestCLI:
         # Verify create_stack was called with pitr_recovery_days parameter
         call_args = mock_instance.create_stack.call_args
         assert call_args is not None
-        params = call_args[1]["parameters"]
-        assert "pitr_recovery_days" in params
-        assert params["pitr_recovery_days"] == "7"
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.pitr_recovery_days == 7
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_log_retention_days(
@@ -224,9 +222,8 @@ class TestCLI:
         # Verify create_stack was called with log_retention_days parameter
         call_args = mock_instance.create_stack.call_args
         assert call_args is not None
-        params = call_args[1]["parameters"]
-        assert "log_retention_days" in params
-        assert params["log_retention_days"] == "90"
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.log_retention_days == 90
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_lambda_timeout_and_memory(
@@ -271,9 +268,9 @@ class TestCLI:
         # Verify create_stack was called with correct parameters
         call_args = mock_instance.create_stack.call_args
         assert call_args is not None
-        params = call_args[1]["parameters"]
-        assert params["lambda_timeout"] == "120"
-        assert params["lambda_memory_size"] == "512"
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.lambda_timeout == 120
+        assert stack_options.lambda_memory == 512
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_alarms_disabled(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
@@ -305,8 +302,8 @@ class TestCLI:
         # Verify create_stack was called with enable_alarms=false
         call_args = mock_instance.create_stack.call_args
         assert call_args is not None
-        params = call_args[1]["parameters"]
-        assert params["enable_alarms"] == "false"
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.enable_alarms is False
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_alarm_sns_topic(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
@@ -337,11 +334,11 @@ class TestCLI:
         assert result.exit_code == 0
         assert f"Alarm SNS topic: {sns_topic}" in result.output
 
-        # Verify create_stack was called with alarm_sns_topic_arn
+        # Verify create_stack was called with alarm_sns_topic
         call_args = mock_instance.create_stack.call_args
         assert call_args is not None
-        params = call_args[1]["parameters"]
-        assert params["alarm_sns_topic_arn"] == sns_topic
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.alarm_sns_topic == sns_topic
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_lambda_duration_threshold_pct(
@@ -360,7 +357,7 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
-        # Lambda timeout 60s with 50% threshold should be 30000ms
+        # Lambda timeout 60s with 50% threshold
         result = runner.invoke(
             cli,
             [
@@ -375,12 +372,12 @@ class TestCLI:
 
         assert result.exit_code == 0
 
-        # Verify create_stack was called with calculated threshold
+        # Verify create_stack was called with StackOptions having correct values
         call_args = mock_instance.create_stack.call_args
         assert call_args is not None
-        params = call_args[1]["parameters"]
-        # 60s * 1000 * 0.5 = 30000ms
-        assert params["lambda_duration_threshold"] == "30000"
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.lambda_timeout == 60
+        assert stack_options.lambda_duration_threshold_pct == 50
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_duration_threshold_calculation(
@@ -399,7 +396,7 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
-        # Lambda timeout 120s with 80% threshold should be 96000ms
+        # Lambda timeout 120s with 80% threshold
         result = runner.invoke(
             cli,
             [
@@ -416,8 +413,11 @@ class TestCLI:
 
         call_args = mock_instance.create_stack.call_args
         assert call_args is not None
-        params = call_args[1]["parameters"]
-        # 120s * 1000 * 0.8 = 96000ms
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.lambda_timeout == 120
+        assert stack_options.lambda_duration_threshold_pct == 80
+        # Verify to_parameters computes the ms value correctly (120s * 1000 * 0.8 = 96000ms)
+        params = stack_options.to_parameters()
         assert params["lambda_duration_threshold"] == "96000"
 
     def test_deploy_lambda_timeout_invalid_range(self, runner: CliRunner) -> None:

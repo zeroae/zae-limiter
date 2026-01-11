@@ -2,7 +2,7 @@
 
 import pytest
 
-from zae_limiter import Entity, Limit, LimitName
+from zae_limiter import Entity, Limit, LimitName, StackOptions
 
 
 class TestLimit:
@@ -111,3 +111,114 @@ class TestLimitName:
         assert LimitName.TPM == "tpm"
         assert LimitName.RPH == "rph"
         assert LimitName.TPH == "tph"
+
+
+class TestStackOptions:
+    """Tests for StackOptions model."""
+
+    def test_default_values(self):
+        """Test default values match expected defaults."""
+        opts = StackOptions()
+        assert opts.snapshot_windows == "hourly,daily"
+        assert opts.retention_days == 90
+        assert opts.enable_aggregator is True
+        assert opts.pitr_recovery_days is None
+        assert opts.log_retention_days == 30
+        assert opts.lambda_timeout == 60
+        assert opts.lambda_memory == 256
+        assert opts.enable_alarms is True
+        assert opts.alarm_sns_topic is None
+        assert opts.lambda_duration_threshold_pct == 80
+        assert opts.stack_name is None
+
+    def test_custom_values(self):
+        """Test custom values are preserved."""
+        opts = StackOptions(
+            snapshot_windows="hourly",
+            retention_days=30,
+            lambda_timeout=120,
+            lambda_memory=512,
+            enable_aggregator=False,
+        )
+        assert opts.snapshot_windows == "hourly"
+        assert opts.retention_days == 30
+        assert opts.lambda_timeout == 120
+        assert opts.lambda_memory == 512
+        assert opts.enable_aggregator is False
+
+    def test_invalid_lambda_timeout_too_high(self):
+        """Test validation of lambda_timeout upper bound."""
+        with pytest.raises(ValueError, match="lambda_timeout must be between 1 and 900"):
+            StackOptions(lambda_timeout=1000)
+
+    def test_invalid_lambda_timeout_too_low(self):
+        """Test validation of lambda_timeout lower bound."""
+        with pytest.raises(ValueError, match="lambda_timeout must be between 1 and 900"):
+            StackOptions(lambda_timeout=0)
+
+    def test_invalid_lambda_memory_too_low(self):
+        """Test validation of lambda_memory lower bound."""
+        with pytest.raises(ValueError, match="lambda_memory must be between 128 and 3008"):
+            StackOptions(lambda_memory=100)
+
+    def test_invalid_lambda_memory_too_high(self):
+        """Test validation of lambda_memory upper bound."""
+        with pytest.raises(ValueError, match="lambda_memory must be between 128 and 3008"):
+            StackOptions(lambda_memory=4000)
+
+    def test_invalid_duration_threshold_pct(self):
+        """Test validation of lambda_duration_threshold_pct range."""
+        with pytest.raises(
+            ValueError, match="lambda_duration_threshold_pct must be between 1 and 100"
+        ):
+            StackOptions(lambda_duration_threshold_pct=0)
+
+    def test_invalid_pitr_recovery_days(self):
+        """Test validation of pitr_recovery_days range."""
+        with pytest.raises(ValueError, match="pitr_recovery_days must be between 1 and 35"):
+            StackOptions(pitr_recovery_days=40)
+
+    def test_invalid_retention_days(self):
+        """Test validation of retention_days must be positive."""
+        with pytest.raises(ValueError, match="retention_days must be positive"):
+            StackOptions(retention_days=0)
+
+    def test_to_parameters(self):
+        """Test conversion to stack parameters dict."""
+        opts = StackOptions(
+            lambda_timeout=60,
+            lambda_duration_threshold_pct=80,
+        )
+        params = opts.to_parameters()
+
+        # Check duration threshold is computed correctly: 60 * 1000 * 0.8 = 48000
+        assert params["lambda_duration_threshold"] == "48000"
+        assert params["lambda_timeout"] == "60"
+        assert params["enable_aggregator"] == "true"
+        assert params["enable_alarms"] == "true"
+
+    def test_to_parameters_with_optional_fields(self):
+        """Test to_parameters with optional fields set."""
+        opts = StackOptions(
+            pitr_recovery_days=7,
+            alarm_sns_topic="arn:aws:sns:us-east-1:123456789012:alerts",
+        )
+        params = opts.to_parameters()
+
+        assert params["pitr_recovery_days"] == "7"
+        assert params["alarm_sns_topic_arn"] == "arn:aws:sns:us-east-1:123456789012:alerts"
+
+    def test_to_parameters_without_optional_fields(self):
+        """Test to_parameters without optional fields."""
+        opts = StackOptions()
+        params = opts.to_parameters()
+
+        # Optional fields should not be in params when None
+        assert "pitr_recovery_days" not in params
+        assert "alarm_sns_topic_arn" not in params
+
+    def test_frozen(self):
+        """Test that StackOptions is immutable."""
+        opts = StackOptions()
+        with pytest.raises(AttributeError):
+            opts.lambda_timeout = 120
