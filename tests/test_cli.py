@@ -141,7 +141,9 @@ class TestCLI:
         assert "my-custom-stack" in result.output
 
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_with_pitr_recovery_days(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    def test_deploy_with_pitr_recovery_days(
+        self, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
         """Test deploy command with --pitr-recovery-days parameter."""
         mock_instance = Mock()
         mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
