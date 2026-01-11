@@ -132,7 +132,6 @@ limiter = RateLimiter(
 )
 ```
 
-**Note:** `create_table` parameter is deprecated. Use `create_stack` instead.
 
 ### Local Development with LocalStack
 

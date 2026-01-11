@@ -43,7 +43,7 @@ async def async_main() -> None:
     limiter = RateLimiter(
         table_name=TABLE_NAME,
         endpoint_url=ENDPOINT_URL,
-        create_table=True,  # Auto-create table for local dev
+        create_stack=True,  # Auto-create infrastructure for local dev
         skip_version_check=True,  # Skip version check for local dev
     )
 
@@ -89,7 +89,7 @@ def sync_main() -> None:
     limiter = SyncRateLimiter(
         table_name=TABLE_NAME + "_sync",
         endpoint_url=ENDPOINT_URL,
-        create_table=True,
+        create_stack=True,
         skip_version_check=True,
     )
 

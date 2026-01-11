@@ -42,7 +42,7 @@ async def main() -> None:
     limiter = RateLimiter(
         table_name=TABLE_NAME,
         endpoint_url=ENDPOINT_URL,
-        create_table=True,
+        create_stack=True,
         skip_version_check=True,
     )
 

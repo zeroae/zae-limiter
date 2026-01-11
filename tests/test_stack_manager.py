@@ -18,20 +18,6 @@ class TestStackManager:
         assert manager.get_stack_name() == "zae-limiter-my_table"
         assert manager.get_stack_name("other_table") == "zae-limiter-other_table"
 
-    def test_cloudformation_used_with_endpoint_url(self) -> None:
-        """Test that CloudFormation is used even with endpoint_url (LocalStack)."""
-        manager = StackManager(
-            table_name="test",
-            region="us-east-1",
-            endpoint_url="http://localhost:4566",
-        )
-        assert manager._should_use_cloudformation()
-
-    def test_cloudformation_use_without_endpoint(self) -> None:
-        """Test that CloudFormation is used when no endpoint_url is set."""
-        manager = StackManager(table_name="test", region="us-east-1")
-        assert manager._should_use_cloudformation()
-
     def test_format_parameters_defaults(self) -> None:
         """Test parameter formatting with defaults."""
         manager = StackManager(table_name="rate_limits", region="us-east-1")
@@ -469,7 +455,6 @@ class TestDeployLambdaCode:
     async def test_successful_deployment(self) -> None:
         """deploy_lambda_code successfully deploys Lambda."""
         with (
-            patch.object(StackManager, "_should_use_cloudformation", return_value=True),
             patch(
                 "zae_limiter.infra.stack_manager.build_lambda_package",
                 return_value=b"fake-zip",
@@ -508,12 +493,9 @@ class TestDeployLambdaCode:
     @pytest.mark.asyncio
     async def test_raises_on_build_failure(self) -> None:
         """deploy_lambda_code raises on package build failure."""
-        with (
-            patch.object(StackManager, "_should_use_cloudformation", return_value=True),
-            patch(
-                "zae_limiter.infra.stack_manager.build_lambda_package",
-                side_effect=Exception("Build failed"),
-            ),
+        with patch(
+            "zae_limiter.infra.stack_manager.build_lambda_package",
+            side_effect=Exception("Build failed"),
         ):
             manager = StackManager(table_name="test", region="us-east-1")
 
@@ -541,15 +523,6 @@ class TestDeployLambdaCode:
                 return_value={"aggregator_function_name": "non-existent-function-123456"},
             ):
                 await manager.deploy_lambda_code()
-
-    @pytest.mark.asyncio
-    async def test_skips_for_local(self) -> None:
-        """deploy_lambda_code skips for local environments."""
-        with patch.object(StackManager, "_should_use_cloudformation", return_value=False):
-            manager = StackManager(table_name="test", region="us-east-1")
-            result = await manager.deploy_lambda_code()
-
-            assert result["status"] == "skipped_local"
 
 
 class TestContextManager:
