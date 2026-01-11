@@ -74,32 +74,44 @@ class TestStackManager:
         assert "AWS::DynamoDB::Table" in template
         assert "RateLimitsTable" in template
 
-    @pytest.mark.skip(reason="Requires real AWS CloudFormation API - moto doesn't support async")
+    @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_stack_exists_false(self) -> None:
+    async def test_stack_exists_false(self, localstack_endpoint) -> None:
         """Test stack_exists returns False for non-existent stack."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(
+            table_name="test",
+            region="us-east-1",
+            endpoint_url=localstack_endpoint,
+        )
 
-        exists = await manager.stack_exists("non-existent-stack")
+        exists = await manager.stack_exists("non-existent-stack-123456")
         assert not exists
 
-    @pytest.mark.skip(reason="Requires real AWS CloudFormation API - moto doesn't support async")
+    @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_get_stack_status_none(self) -> None:
+    async def test_get_stack_status_none(self, localstack_endpoint) -> None:
         """Test get_stack_status returns None for non-existent stack."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(
+            table_name="test",
+            region="us-east-1",
+            endpoint_url=localstack_endpoint,
+        )
 
-        status = await manager.get_stack_status("non-existent-stack")
+        status = await manager.get_stack_status("non-existent-stack-123456")
         assert status is None
 
-    @pytest.mark.skip(reason="Requires real AWS CloudFormation API - moto doesn't support async")
+    @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_delete_stack_nonexistent(self) -> None:
+    async def test_delete_stack_nonexistent(self, localstack_endpoint) -> None:
         """Test deleting a non-existent stack doesn't raise error."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(
+            table_name="test",
+            region="us-east-1",
+            endpoint_url=localstack_endpoint,
+        )
 
         # Should not raise
-        await manager.delete_stack("non-existent-stack")
+        await manager.delete_stack("non-existent-stack-123456")
 
     @pytest.mark.asyncio
     async def test_create_stack_with_parameters(self) -> None:
@@ -510,11 +522,25 @@ class TestDeployLambdaCode:
 
             assert "Build failed" in str(exc_info.value)
 
-    @pytest.mark.skip(reason="Complex async context manager mocking - tested via integration")
+    @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_raises_on_update_failure(self) -> None:
-        """deploy_lambda_code raises on Lambda update failure."""
-        pass  # Tested via integration tests with LocalStack
+    async def test_raises_on_update_failure(self, localstack_endpoint) -> None:
+        """deploy_lambda_code raises on Lambda update failure with invalid function."""
+        manager = StackManager(
+            table_name="test",
+            region="us-east-1",
+            endpoint_url=localstack_endpoint,
+        )
+
+        # Attempting to update a non-existent Lambda function should raise
+        with pytest.raises(Exception):  # Will be ClientError or similar
+            # Mock the get_stack_outputs to return a fake function name
+            with patch.object(
+                manager,
+                "_get_stack_outputs",
+                return_value={"aggregator_function_name": "non-existent-function-123456"},
+            ):
+                await manager.deploy_lambda_code()
 
     @pytest.mark.asyncio
     async def test_skips_for_local(self) -> None:

@@ -1,6 +1,7 @@
 """Pytest fixtures for zae-limiter tests."""
 
 import asyncio
+import os
 from collections.abc import Awaitable
 from unittest.mock import patch
 
@@ -81,3 +82,43 @@ def sync_limiter(mock_dynamodb):
         limiter._run(limiter._limiter._repository.create_table())
         with limiter:
             yield limiter
+
+
+# LocalStack fixtures for integration testing
+
+
+@pytest.fixture
+def localstack_endpoint():
+    """LocalStack endpoint URL from environment."""
+    endpoint = os.getenv("AWS_ENDPOINT_URL")
+    if not endpoint:
+        pytest.skip("AWS_ENDPOINT_URL not set - LocalStack not available")
+    return endpoint
+
+
+@pytest.fixture
+async def localstack_limiter(localstack_endpoint):
+    """Create RateLimiter with LocalStack for integration tests."""
+    limiter = RateLimiter(
+        table_name="integration_test_rate_limits",
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        create_stack=True,
+    )
+
+    async with limiter:
+        yield limiter
+
+
+@pytest.fixture
+def sync_localstack_limiter(localstack_endpoint):
+    """Create SyncRateLimiter with LocalStack for integration tests."""
+    limiter = SyncRateLimiter(
+        table_name="integration_test_rate_limits_sync",
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        create_stack=True,
+    )
+
+    with limiter:
+        yield limiter
