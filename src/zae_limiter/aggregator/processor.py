@@ -232,7 +232,8 @@ def update_snapshot(
     tokens_delta = delta.tokens_delta // 1000
 
     # Build update expression
-    # We use ADD for atomic increments and SET for metadata
+    # Use top-level attributes to avoid nested path issues when item doesn't exist
+    # ADD creates numeric attributes with the given value if they don't exist
     table.update_item(
         Key={
             "PK": pk_entity(delta.entity_id),
@@ -240,17 +241,16 @@ def update_snapshot(
         },
         UpdateExpression="""
             SET entity_id = :entity_id,
-                #data.#resource = :resource,
-                #data.#window = :window,
-                #data.window_start = :window_start,
+                #resource = :resource,
+                #window = :window,
+                window_start = :window_start,
                 GSI2PK = :gsi2pk,
                 GSI2SK = :gsi2sk,
                 #ttl = :ttl
-            ADD #data.#limit_name :delta,
-                #data.total_events :one
+            ADD #limit_name :delta,
+                total_events :one
         """,
         ExpressionAttributeNames={
-            "#data": "data",
             "#resource": "resource",
             "#window": "window",
             "#limit_name": delta.limit_name,
