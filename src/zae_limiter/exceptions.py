@@ -110,7 +110,7 @@ class EntityExistsError(RateLimitError):
         super().__init__(f"Entity already exists: {entity_id}")
 
 
-class StackCreationError(Exception):
+class StackCreationError(RateLimitError):
     """Raised when CloudFormation stack creation fails."""
 
     def __init__(

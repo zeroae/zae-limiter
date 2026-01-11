@@ -261,6 +261,11 @@ class TestStackCreationError:
         assert "test-stack" in msg
         assert "permission denied" in msg
 
+    def test_inherits_from_rate_limit_error(self) -> None:
+        """StackCreationError extends RateLimitError."""
+        exc = StackCreationError("test-stack", "test reason")
+        assert isinstance(exc, RateLimitError)
+
 
 class TestStackAlreadyExistsError:
     """Tests for StackAlreadyExistsError."""
