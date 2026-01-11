@@ -186,6 +186,7 @@ class TestRepositoryLocalStackTransactions:
 
         # This should fail due to conditional check
         from botocore.exceptions import ClientError
+
         with pytest.raises(ClientError) as exc_info:
             await localstack_repo.transact_write([update_item_stale])
 
@@ -209,10 +210,12 @@ class TestRepositoryLocalStackTransactions:
         state1 = BucketState.from_limit("entity-1", "api", limit, now_ms)
         state2 = BucketState.from_limit("entity-2", "api", limit, now_ms)
 
-        await localstack_repo.transact_write([
-            localstack_repo.build_bucket_put_item(state1),
-            localstack_repo.build_bucket_put_item(state2),
-        ])
+        await localstack_repo.transact_write(
+            [
+                localstack_repo.build_bucket_put_item(state1),
+                localstack_repo.build_bucket_put_item(state2),
+            ]
+        )
 
         # Get both bucket states
         bucket1 = await localstack_repo.get_bucket("entity-1", "api", "rpm")
@@ -240,6 +243,7 @@ class TestRepositoryLocalStackTransactions:
 
         # Transaction should fail
         from botocore.exceptions import ClientError
+
         with pytest.raises(ClientError):
             await localstack_repo.transact_write([valid_update, failing_update])
 
