@@ -126,6 +126,7 @@ class StackManager:
             "lambda_timeout": "LambdaTimeout",
             "enable_aggregator": "EnableAggregator",
             "schema_version": "SchemaVersion",
+            "pitr_recovery_days": "PITRRecoveryPeriodDays",
         }
 
         for key, value in parameters.items():
