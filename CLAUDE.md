@@ -88,6 +88,9 @@ The library uses CloudFormation for infrastructure deployment. The `deploy` comm
 # Deploy stack with CLI (includes Lambda deployment)
 zae-limiter deploy --table-name rate_limits --region us-east-1
 
+# Deploy to LocalStack (for local development)
+zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566 --region us-east-1
+
 # Deploy without aggregator Lambda
 zae-limiter deploy --table-name rate_limits --no-aggregator
 
