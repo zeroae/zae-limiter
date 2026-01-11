@@ -46,9 +46,11 @@ class StackManager:
 
     def _should_use_cloudformation(self) -> bool:
         """
-        Determine if CloudFormation should be used.
+        Always use CloudFormation.
 
-        Always returns True. Both AWS and LocalStack support CloudFormation.
+        Both AWS and LocalStack support CloudFormation. For DynamoDB Local
+        (which doesn't support CloudFormation), use create_table=True in
+        RateLimiter instead of the CLI deploy command.
         """
         return True
 
