@@ -1,0 +1,261 @@
+# LocalStack Development
+
+LocalStack provides a local AWS environment for development and testing. This guide covers setting up zae-limiter with LocalStack.
+
+## Why LocalStack?
+
+- **Free** - No AWS costs during development
+- **Fast** - No network latency
+- **Isolated** - No risk to production data
+- **Full stack** - DynamoDB, Lambda, Streams, CloudFormation
+
+## Quick Start
+
+### 1. Start LocalStack
+
+=== "Docker"
+
+    ```bash
+    docker run -d \
+      --name localstack \
+      -p 4566:4566 \
+      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
+      localstack/localstack
+    ```
+
+=== "Docker Compose"
+
+    ```yaml
+    # docker-compose.yml
+    services:
+      localstack:
+        image: localstack/localstack
+        ports:
+          - "4566:4566"
+        environment:
+          - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam
+          - DEBUG=0
+        volumes:
+          - "./localstack:/var/lib/localstack"
+    ```
+
+    ```bash
+    docker compose up -d
+    ```
+
+=== "LocalStack CLI"
+
+    ```bash
+    pip install localstack
+    localstack start -d
+    ```
+
+### 2. Deploy Infrastructure
+
+```bash
+zae-limiter deploy \
+    --table-name rate_limits \
+    --endpoint-url http://localhost:4566 \
+    --region us-east-1
+```
+
+### 3. Use in Code
+
+```python
+from zae_limiter import RateLimiter, Limit
+
+limiter = RateLimiter(
+    table_name="rate_limits",
+    endpoint_url="http://localhost:4566",
+    region="us-east-1",
+)
+
+async with limiter.acquire(
+    entity_id="test-user",
+    resource="api",
+    limits=[Limit.per_minute("requests", 100)],
+    consume={"requests": 1},
+) as lease:
+    print("Rate limited request!")
+```
+
+## Auto-Creation Mode
+
+For quick iteration, use auto-creation:
+
+```python
+limiter = RateLimiter(
+    table_name="rate_limits",
+    endpoint_url="http://localhost:4566",
+    region="us-east-1",
+    create_stack=True,  # Creates CloudFormation stack
+)
+```
+
+## Environment Variables
+
+Configure via environment variables for easy switching:
+
+```bash
+# .env.local
+AWS_ENDPOINT_URL=http://localhost:4566
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_DEFAULT_REGION=us-east-1
+```
+
+```python
+import os
+
+limiter = RateLimiter(
+    table_name="rate_limits",
+    endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
+    region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+)
+```
+
+## Testing with LocalStack
+
+### pytest Fixture
+
+```python
+import pytest
+from zae_limiter import RateLimiter
+
+@pytest.fixture
+async def limiter():
+    """Create a rate limiter connected to LocalStack."""
+    limiter = RateLimiter(
+        table_name="test_rate_limits",
+        endpoint_url="http://localhost:4566",
+        region="us-east-1",
+        create_stack=True,
+    )
+    yield limiter
+    # Cleanup handled by LocalStack container restart
+
+@pytest.mark.integration
+async def test_rate_limiting(limiter):
+    async with limiter.acquire(
+        entity_id="test-user",
+        resource="api",
+        limits=[Limit.per_minute("requests", 10)],
+        consume={"requests": 1},
+    ):
+        pass  # Success
+```
+
+### CI Configuration
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -e ".[dev]"
+      - run: pytest -m integration
+        env:
+          AWS_ENDPOINT_URL: http://localhost:4566
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+```
+
+## Debugging
+
+### Check Stack Status
+
+```bash
+# List stacks
+aws --endpoint-url=http://localhost:4566 cloudformation list-stacks
+
+# Describe stack
+aws --endpoint-url=http://localhost:4566 cloudformation describe-stacks \
+    --stack-name zae-limiter-rate_limits
+```
+
+### Inspect DynamoDB
+
+```bash
+# List tables
+aws --endpoint-url=http://localhost:4566 dynamodb list-tables
+
+# Scan table
+aws --endpoint-url=http://localhost:4566 dynamodb scan \
+    --table-name rate_limits
+```
+
+### View Lambda Logs
+
+```bash
+# List functions
+aws --endpoint-url=http://localhost:4566 lambda list-functions
+
+# Get logs
+aws --endpoint-url=http://localhost:4566 logs tail \
+    /aws/lambda/zae-limiter-aggregator
+```
+
+## LocalStack vs DynamoDB Local
+
+| Feature | LocalStack | DynamoDB Local |
+|---------|------------|----------------|
+| DynamoDB | Yes | Yes |
+| Streams | Yes | Limited |
+| Lambda | Yes | No |
+| CloudFormation | Yes | No |
+| Cost | Free | Free |
+| Fidelity | High | Medium |
+
+**Recommendation**: Use LocalStack for full integration testing, DynamoDB Local for quick unit tests.
+
+## Troubleshooting
+
+### Connection Refused
+
+```
+Cannot connect to http://localhost:4566
+```
+
+**Solution**: Ensure LocalStack is running:
+
+```bash
+docker ps | grep localstack
+# or
+curl http://localhost:4566/_localstack/health
+```
+
+### Lambda Not Executing
+
+Check Lambda logs:
+
+```bash
+docker logs localstack 2>&1 | grep -i lambda
+```
+
+Ensure the Lambda service is enabled:
+
+```bash
+docker run -e SERVICES=dynamodb,dynamodbstreams,lambda,...
+```
+
+### Slow Performance
+
+LocalStack can be slow on first request. Consider:
+
+- Pre-warming containers
+- Using persistence for faster restarts
+- Reducing DEBUG level
+
+## Next Steps
+
+- [Deployment](deployment.md) - Production deployment
+- [CloudFormation](cloudformation.md) - Template customization

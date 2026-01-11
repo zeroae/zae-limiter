@@ -1,0 +1,103 @@
+site_name: zae-limiter
+site_url: https://zeroae.github.io/zae-limiter/
+site_description: Rate limiting library backed by DynamoDB using the token bucket algorithm
+site_author: ZeroAE
+repo_url: https://github.com/zeroae/zae-limiter
+repo_name: zeroae/zae-limiter
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            docstring_options:
+              ignore_init_summary: true
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            signature_crossrefs: true
+
+extra:
+  version:
+    provider: mike
+    default: latest
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/zeroae/zae-limiter
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/zae-limiter/
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - User Guide:
+      - Basic Usage: guide/basic-usage.md
+      - Hierarchical Limits: guide/hierarchical.md
+      - LLM Integration: guide/llm-integration.md
+      - Failure Modes: guide/failure-modes.md
+  - Infrastructure:
+      - Deployment: infra/deployment.md
+      - LocalStack: infra/localstack.md
+      - CloudFormation: infra/cloudformation.md
+  - CLI Reference: cli.md
+  - API Reference:
+      - Overview: api/index.md
+      - RateLimiter: api/limiter.md
+      - Models: api/models.md
+      - Exceptions: api/exceptions.md
