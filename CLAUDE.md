@@ -94,6 +94,9 @@ zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566
 # Deploy without aggregator Lambda
 zae-limiter deploy --table-name rate_limits --no-aggregator
 
+# Deploy with custom log retention (90 days)
+zae-limiter deploy --table-name rate_limits --log-retention-days 90
+
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
 

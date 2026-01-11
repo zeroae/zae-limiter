@@ -61,7 +61,7 @@ def cli() -> None:
 )
 @click.option(
     "--log-retention-days",
-    default=30,
+    default="30",
     type=click.Choice(
         [
             "1",
