@@ -81,9 +81,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Run integration tests
-        run: uv run pytest -m integration -v
+        run: uv run pytest -m integration -v --cov=zae_limiter --cov-report=xml
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:4566
+      - name: Upload integration coverage
+        uses: codecov/codecov-action@v5
+        if: matrix.python-version == '3.12'
+        with:
+          files: coverage.xml
+          flags: integration
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
