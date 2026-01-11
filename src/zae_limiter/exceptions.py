@@ -6,10 +6,75 @@ if TYPE_CHECKING:
     from .models import LimitStatus
 
 
-class RateLimitError(Exception):
-    """Base exception for rate limiting errors."""
+# ---------------------------------------------------------------------------
+# Base Exception
+# ---------------------------------------------------------------------------
+
+
+class ZAELimiterError(Exception):
+    """
+    Base exception for all zae-limiter errors.
+
+    All exceptions raised by this library inherit from this class,
+    allowing callers to catch all library-specific errors with a single
+    except clause.
+    """
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Category Exceptions
+# ---------------------------------------------------------------------------
+
+
+class RateLimitError(ZAELimiterError):
+    """
+    Base exception for rate limit-related errors.
+
+    This includes errors raised when rate limits are exceeded or when
+    the rate limiter service is unavailable.
+    """
+
+    pass
+
+
+class InfrastructureError(ZAELimiterError):
+    """
+    Base exception for infrastructure-related errors.
+
+    This includes errors related to CloudFormation stacks, DynamoDB tables,
+    and Lambda functions.
+    """
+
+    pass
+
+
+class EntityError(ZAELimiterError):
+    """
+    Base exception for entity-related errors.
+
+    This includes errors when creating, reading, or deleting entities
+    in the rate limiter.
+    """
+
+    pass
+
+
+class VersionError(ZAELimiterError):
+    """
+    Base exception for version-related errors.
+
+    This includes errors related to schema versioning, migrations,
+    and compatibility between client and infrastructure versions.
+    """
+
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Rate Limit Exceptions
+# ---------------------------------------------------------------------------
 
 
 class RateLimitExceeded(RateLimitError):  # noqa: N818
@@ -94,7 +159,12 @@ class RateLimiterUnavailable(RateLimitError):  # noqa: N818
         super().__init__(message)
 
 
-class EntityNotFoundError(RateLimitError):
+# ---------------------------------------------------------------------------
+# Entity Exceptions
+# ---------------------------------------------------------------------------
+
+
+class EntityNotFoundError(EntityError):
     """Raised when an entity is not found."""
 
     def __init__(self, entity_id: str) -> None:
@@ -102,7 +172,7 @@ class EntityNotFoundError(RateLimitError):
         super().__init__(f"Entity not found: {entity_id}")
 
 
-class EntityExistsError(RateLimitError):
+class EntityExistsError(EntityError):
     """Raised when trying to create an entity that already exists."""
 
     def __init__(self, entity_id: str) -> None:
@@ -110,7 +180,12 @@ class EntityExistsError(RateLimitError):
         super().__init__(f"Entity already exists: {entity_id}")
 
 
-class StackCreationError(Exception):
+# ---------------------------------------------------------------------------
+# Infrastructure Exceptions
+# ---------------------------------------------------------------------------
+
+
+class StackCreationError(InfrastructureError):
     """Raised when CloudFormation stack creation fails."""
 
     def __init__(
@@ -128,15 +203,27 @@ class StackAlreadyExistsError(StackCreationError):
     pass
 
 
+class InfrastructureNotFoundError(InfrastructureError):
+    """
+    Raised when expected infrastructure doesn't exist.
+
+    This typically means the CloudFormation stack or DynamoDB table
+    hasn't been deployed yet.
+    """
+
+    def __init__(self, table_name: str, stack_name: str | None = None) -> None:
+        self.table_name = table_name
+        self.stack_name = stack_name
+        msg = f"Infrastructure not found for table '{table_name}'"
+        if stack_name:
+            msg += f" (stack: {stack_name})"
+        msg += ". Run 'zae-limiter deploy' or use create_stack=True."
+        super().__init__(msg)
+
+
 # ---------------------------------------------------------------------------
-# Version-related exceptions
+# Version Exceptions
 # ---------------------------------------------------------------------------
-
-
-class VersionError(RateLimitError):
-    """Base class for version-related errors."""
-
-    pass
 
 
 class VersionMismatchError(VersionError):
@@ -193,22 +280,4 @@ class IncompatibleSchemaError(VersionError):
         )
         if migration_guide_url:
             msg += f" See: {migration_guide_url}"
-        super().__init__(msg)
-
-
-class InfrastructureNotFoundError(VersionError):
-    """
-    Raised when expected infrastructure doesn't exist.
-
-    This typically means the CloudFormation stack or DynamoDB table
-    hasn't been deployed yet.
-    """
-
-    def __init__(self, table_name: str, stack_name: str | None = None) -> None:
-        self.table_name = table_name
-        self.stack_name = stack_name
-        msg = f"Infrastructure not found for table '{table_name}'"
-        if stack_name:
-            msg += f" (stack: {stack_name})"
-        msg += ". Run 'zae-limiter deploy' or use create_stack=True."
         super().__init__(msg)

@@ -3,9 +3,11 @@
 import pytest
 
 from zae_limiter.exceptions import (
+    EntityError,
     EntityExistsError,
     EntityNotFoundError,
     IncompatibleSchemaError,
+    InfrastructureError,
     InfrastructureNotFoundError,
     RateLimitError,
     RateLimiterUnavailable,
@@ -14,6 +16,7 @@ from zae_limiter.exceptions import (
     StackCreationError,
     VersionError,
     VersionMismatchError,
+    ZAELimiterError,
 )
 from zae_limiter.models import Limit, LimitStatus
 
@@ -211,10 +214,11 @@ class TestEntityNotFoundError:
         assert "my-entity" in str(exc)
         assert "not found" in str(exc).lower()
 
-    def test_inherits_from_rate_limit_error(self) -> None:
-        """EntityNotFoundError is a RateLimitError."""
+    def test_inherits_from_entity_error(self) -> None:
+        """EntityNotFoundError is an EntityError."""
         exc = EntityNotFoundError("test")
-        assert isinstance(exc, RateLimitError)
+        assert isinstance(exc, EntityError)
+        assert isinstance(exc, ZAELimiterError)
 
 
 class TestEntityExistsError:
@@ -231,10 +235,11 @@ class TestEntityExistsError:
         assert "dup-entity" in str(exc)
         assert "already exists" in str(exc).lower()
 
-    def test_inherits_from_rate_limit_error(self) -> None:
-        """EntityExistsError is a RateLimitError."""
+    def test_inherits_from_entity_error(self) -> None:
+        """EntityExistsError is an EntityError."""
         exc = EntityExistsError("test")
-        assert isinstance(exc, RateLimitError)
+        assert isinstance(exc, EntityError)
+        assert isinstance(exc, ZAELimiterError)
 
 
 class TestStackCreationError:
@@ -260,6 +265,12 @@ class TestStackCreationError:
         msg = str(exc)
         assert "test-stack" in msg
         assert "permission denied" in msg
+
+    def test_inherits_from_infrastructure_error(self) -> None:
+        """StackCreationError is an InfrastructureError."""
+        exc = StackCreationError("test-stack", "test reason")
+        assert isinstance(exc, InfrastructureError)
+        assert isinstance(exc, ZAELimiterError)
 
 
 class TestStackAlreadyExistsError:
@@ -320,7 +331,7 @@ class TestVersionMismatchError:
         """VersionMismatchError is a VersionError."""
         exc = VersionMismatchError("1.0", "0.9", None, "test")
         assert isinstance(exc, VersionError)
-        assert isinstance(exc, RateLimitError)
+        assert isinstance(exc, ZAELimiterError)
 
 
 class TestIncompatibleSchemaError:
@@ -370,6 +381,7 @@ class TestIncompatibleSchemaError:
         """IncompatibleSchemaError is a VersionError."""
         exc = IncompatibleSchemaError("2.0", "1.0", "test")
         assert isinstance(exc, VersionError)
+        assert isinstance(exc, ZAELimiterError)
 
 
 class TestInfrastructureNotFoundError:
@@ -406,10 +418,11 @@ class TestInfrastructureNotFoundError:
         assert "my-stack" in msg
         assert "stack:" in msg
 
-    def test_inherits_from_version_error(self) -> None:
-        """InfrastructureNotFoundError is a VersionError."""
+    def test_inherits_from_infrastructure_error(self) -> None:
+        """InfrastructureNotFoundError is an InfrastructureError."""
         exc = InfrastructureNotFoundError("table")
-        assert isinstance(exc, VersionError)
+        assert isinstance(exc, InfrastructureError)
+        assert isinstance(exc, ZAELimiterError)
 
 
 class TestLimitStatusDeficit:

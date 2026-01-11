@@ -31,9 +31,11 @@ Example:
 """
 
 from .exceptions import (
+    EntityError,
     EntityExistsError,
     EntityNotFoundError,
     IncompatibleSchemaError,
+    InfrastructureError,
     InfrastructureNotFoundError,
     RateLimitError,
     RateLimiterUnavailable,
@@ -42,6 +44,7 @@ from .exceptions import (
     StackCreationError,
     VersionError,
     VersionMismatchError,
+    ZAELimiterError,
 )
 from .lease import Lease, SyncLease
 from .models import (
@@ -84,18 +87,26 @@ __all__ = [
     "EntityCapacity",
     # Enums
     "FailureMode",
-    # Exceptions
+    # Exceptions - Base
+    "ZAELimiterError",
+    # Exceptions - Categories
     "RateLimitError",
+    "InfrastructureError",
+    "EntityError",
+    "VersionError",
+    # Exceptions - Rate Limit
     "RateLimitExceeded",
     "RateLimiterUnavailable",
+    # Exceptions - Entity
     "EntityNotFoundError",
     "EntityExistsError",
+    # Exceptions - Infrastructure
     "StackCreationError",
     "StackAlreadyExistsError",
-    "VersionError",
+    "InfrastructureNotFoundError",
+    # Exceptions - Version
     "VersionMismatchError",
     "IncompatibleSchemaError",
-    "InfrastructureNotFoundError",
 ]
 
 
