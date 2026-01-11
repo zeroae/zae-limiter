@@ -5,6 +5,7 @@
 [![License](https://img.shields.io/pypi/l/zae-limiter)](https://github.com/zeroae/zae-limiter/blob/main/LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/zeroae/zae-limiter/ci.yml?branch=main)](https://github.com/zeroae/zae-limiter/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/zeroae/zae-limiter/graph/badge.svg)](https://codecov.io/gh/zeroae/zae-limiter)
+[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://zeroae.github.io/zae-limiter/)
 
 A rate limiting library backed by DynamoDB using the token bucket algorithm.
 

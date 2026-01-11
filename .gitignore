@@ -86,6 +86,9 @@ dmypy.json
 lambda_package/
 *.zip
 
+# MkDocs build output
+site/
+
 # OS files
 .DS_Store
 Thumbs.db
