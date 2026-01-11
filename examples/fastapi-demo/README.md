@@ -3,9 +3,11 @@
 A comprehensive demo of [zae-limiter](https://github.com/zeroae/zae-limiter) using FastAPI and LocalStack. This example demonstrates rate limiting for LLM APIs with:
 
 - OpenAI-compatible chat completions API with rate limiting
-- Dashboard for viewing entities and rate limit status
+- Real-time dashboard with Server-Sent Events (SSE) for live updates
 - Hierarchical limits (project -> API keys)
 - Token estimation and post-hoc reconciliation
+- Configurable `max_tokens` to generate variable-length responses
+- Low TPM limits for visible rate limiting in the demo
 - LocalStack for AWS services (DynamoDB, DynamoDB Streams, Lambda)
 
 ## Quick Start
@@ -43,14 +45,22 @@ open http://localhost:8080/docs
 
 ## Demo Entities
 
-The demo is pre-configured with hierarchical entities:
+The demo is pre-configured with hierarchical entities and balanced limits to demonstrate both RPM and TPM rate limiting:
 
-| Entity | Type | RPM Limit | TPM Limit | Description |
-|--------|------|-----------|-----------|-------------|
-| `proj-demo` | Project | 200 | 500,000 | Shared project limit |
-| `key-alice` | API Key | 100 | 200,000 | Premium tier |
-| `key-bob` | API Key | 50 | 50,000 | Standard tier |
-| `key-charlie` | API Key | 60 | 100,000 | Default limits |
+| Entity | Type | RPM | TPM | Threshold | Description |
+|--------|------|-----|-----|-----------|-------------|
+| `proj-demo` | Project | 50 | 10,000 | 200 tok/req | Shared project limit |
+| `key-alice` | API Key | 30 | 3,000 | 100 tok/req | Premium tier |
+| `key-bob` | API Key | 10 | 1,000 | 100 tok/req | Easy to hit both limits |
+| `key-charlie` | API Key | 20 | 2,000 | 100 tok/req | Default limits |
+
+**Threshold** = TPM / RPM. This is the tokens-per-request where both limits are equally restrictive:
+- **Below threshold**: RPM limit is hit first (many small requests)
+- **Above threshold**: TPM limit is hit first (fewer large requests)
+
+Example with `key-bob` (10 RPM, 1000 TPM, threshold = 100):
+- At 50 max_tokens: Can make ~20 requests before TPM, but only 10 before RPM → **hits RPM**
+- At 200 max_tokens: Can make ~5 requests before TPM, but 10 before RPM → **hits TPM**
 
 When cascade mode is enabled (default), API key limits and project limits are both enforced.
 
@@ -58,15 +68,28 @@ When cascade mode is enabled (default), API key limits and project limits are bo
 
 ### Chat Completions
 
-OpenAI-compatible chat API with rate limiting.
+OpenAI-compatible chat API with rate limiting. Use `max_tokens` to control response length and token consumption.
 
 ```bash
+# Small request (50 tokens) - tests RPM limit
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: key-alice" \
+  -H "X-API-Key: key-bob" \
   -d '{
     "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 50
+  }'
+
+# Large request (200 tokens) - tests TPM limit
+# key-bob has 1000 TPM, so ~5 of these will exhaust the limit
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: key-bob" \
+  -d '{
+    "model": "gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 200
   }'
 ```
 
@@ -146,6 +169,9 @@ curl http://localhost:8080/api/dashboard/availability/key-alice
 
 # Get wait time
 curl "http://localhost:8080/api/dashboard/wait-time/key-alice?rpm=1&tpm=1000"
+
+# Stream real-time updates (SSE)
+curl -N http://localhost:8080/api/dashboard/stream
 ```
 
 ## Testing Rate Limits
@@ -153,10 +179,21 @@ curl "http://localhost:8080/api/dashboard/wait-time/key-alice?rpm=1&tpm=1000"
 ### Manual Testing
 
 1. Open the dashboard at http://localhost:8080/dashboard
-2. Select an API key (e.g., `key-bob` with lower limits)
-3. Click "Send Request" multiple times quickly
-4. Watch the utilization bars fill up
-5. See 429 responses when limits are exceeded
+2. Notice the "Live" indicator showing real-time SSE connection
+3. Select `key-bob` (10 RPM, 1000 TPM) for easy limit testing
+
+**Test TPM limit (large requests):**
+4. Set `max_tokens` to 200 or higher
+5. Click "Send Request" a few times - watch TPM utilization spike
+6. After ~5 requests, you'll hit the TPM limit (429 error)
+
+**Test RPM limit (small requests):**
+7. Set `max_tokens` to 50 (below the 100 token threshold)
+8. Click "Send Request" rapidly - watch RPM utilization increase
+9. After 10 requests, you'll hit the RPM limit
+
+**Watch real-time refill:**
+10. Wait and watch the utilization bars decrease as tokens refill (~1 second updates)
 
 ### Load Testing
 

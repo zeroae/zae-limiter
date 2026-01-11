@@ -50,40 +50,43 @@ async def seed_data() -> None:
             print(f"  API key {key_id} already exists")
 
     # Set project-level limits (shared across all keys)
+    # Balanced limits: small requests hit RPM, large requests hit TPM
     await limiter.set_limits(
         entity_id="proj-demo",
         resource="gpt-4",
         limits=[
-            Limit.per_minute("rpm", 200),  # 200 rpm for entire project
-            Limit.per_minute("tpm", 500_000),  # 500k tpm for entire project
+            Limit.per_minute("rpm", 50),  # 50 rpm for entire project
+            Limit.per_minute("tpm", 10_000),  # 10k tpm for entire project
         ],
     )
-    print("  Set project limits: 200 rpm, 500k tpm")
+    print("  Set project limits: 50 rpm, 10k tpm")
 
     # Set individual key limits - Alice (premium)
     await limiter.set_limits(
         entity_id="key-alice",
         resource="gpt-4",
         limits=[
-            Limit.per_minute("rpm", 100),  # Alice: 100 rpm
-            Limit.per_minute("tpm", 200_000),  # Alice: 200k tpm
+            Limit.per_minute("rpm", 30),  # Alice: 30 rpm
+            Limit.per_minute("tpm", 3_000),  # Alice: 3k tpm (~100 tokens/req threshold)
         ],
     )
-    print("  Set Alice limits: 100 rpm, 200k tpm")
+    print("  Set Alice limits: 30 rpm, 3k tpm")
 
     # Set individual key limits - Bob (standard)
+    # 10 RPM, 1000 TPM = 100 tokens/request threshold
+    # < 100 tokens: hit RPM first, > 100 tokens: hit TPM first
     await limiter.set_limits(
         entity_id="key-bob",
         resource="gpt-4",
         limits=[
-            Limit.per_minute("rpm", 50),  # Bob: 50 rpm (lower tier)
-            Limit.per_minute("tpm", 50_000),  # Bob: 50k tpm
+            Limit.per_minute("rpm", 10),  # Bob: 10 rpm (easy to hit!)
+            Limit.per_minute("tpm", 1_000),  # Bob: 1k tpm
         ],
     )
-    print("  Set Bob limits: 50 rpm, 50k tpm")
+    print("  Set Bob limits: 10 rpm, 1k tpm")
 
     # Charlie uses default limits (no stored limits)
-    print("  Charlie uses default limits (60 rpm, 100k tpm)")
+    print("  Charlie uses default limits (20 rpm, 2k tpm)")
 
     await limiter.close()
     print("\nDemo data seeded successfully!")

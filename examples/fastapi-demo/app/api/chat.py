@@ -6,7 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 
-from zae_limiter import Limit, RateLimitExceeded, RateLimiter
+from zae_limiter import Limit, RateLimiter, RateLimitExceeded
 
 from ..dependencies import get_limiter
 from ..models import ChatChoice, ChatMessage, ChatRequest, ChatResponse, Usage
@@ -15,9 +15,10 @@ from ..services.llm_simulator import simulate_completion
 router = APIRouter()
 
 # Default limits (can be overridden per-entity via stored limits)
+# Balanced: 100 tokens/request threshold (< 100: hit RPM, > 100: hit TPM)
 DEFAULT_LIMITS = [
-    Limit.per_minute("rpm", 60),  # 60 requests per minute
-    Limit.per_minute("tpm", 100_000),  # 100k tokens per minute
+    Limit.per_minute("rpm", 20),  # 20 requests per minute
+    Limit.per_minute("tpm", 2_000),  # 2k tokens per minute
 ]
 
 

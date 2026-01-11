@@ -111,9 +111,7 @@ async def run_load_test(
         tasks = []
         for i in range(concurrency):
             api_key = API_KEYS[i % len(API_KEYS)]
-            task = asyncio.create_task(
-                worker(client, base_url, api_key, stats, duration, delay)
-            )
+            task = asyncio.create_task(worker(client, base_url, api_key, stats, duration, delay))
             tasks.append(task)
 
         # Wait for all workers
