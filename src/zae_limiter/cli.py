@@ -62,11 +62,32 @@ def cli() -> None:
 @click.option(
     "--log-retention-days",
     default=30,
-    type=click.Choice([
-        "1", "3", "5", "7", "14", "30", "60", "90", "120", "150", "180",
-        "365", "400", "545", "731", "1096", "1827", "2192", "2557", "2922",
-        "3288", "3653",
-    ]),
+    type=click.Choice(
+        [
+            "1",
+            "3",
+            "5",
+            "7",
+            "14",
+            "30",
+            "60",
+            "90",
+            "120",
+            "150",
+            "180",
+            "365",
+            "400",
+            "545",
+            "731",
+            "1096",
+            "1827",
+            "2192",
+            "2557",
+            "2922",
+            "3288",
+            "3653",
+        ]
+    ),
     help="Number of days to retain Lambda logs (CloudWatch standard retention periods)",
 )
 @click.option(
