@@ -214,20 +214,17 @@ class StackManager:
     async def create_stack(
         self,
         stack_name: str | None = None,
-        parameters: dict[str, str] | None = None,
         stack_options: StackOptions | None = None,
         wait: bool = True,
     ) -> dict[str, Any]:
         """
         Create CloudFormation stack.
 
-        Auto-skips for local DynamoDB environments. Handles stack already
-        exists gracefully.
+        Handles stack already exists gracefully.
 
         Args:
             stack_name: Override stack name (default: auto-generated or from stack_options)
-            parameters: Stack parameters dict (deprecated, use stack_options)
-            stack_options: Stack configuration (preferred over parameters)
+            stack_options: Stack configuration
             wait: Wait for stack to be CREATE_COMPLETE
 
         Returns:
@@ -242,9 +239,8 @@ class StackManager:
             stack_name = stack_options.stack_name
         stack_name = stack_name or self.get_stack_name()
 
-        # Convert stack_options to parameters if provided
-        if stack_options is not None:
-            parameters = stack_options.to_parameters()
+        # Convert stack_options to parameters
+        parameters = stack_options.to_parameters() if stack_options else None
         client = await self._get_client()
 
         # Check if stack already exists

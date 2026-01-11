@@ -63,7 +63,7 @@ class TestRepositoryLocalStackCloudFormation:
 
         try:
             # Create stack using CloudFormation
-            await repo.create_table_or_stack(use_cloudformation=True)
+            await repo.create_stack()
 
             # Verify table was created by trying to use it
             await repo.create_entity("test-entity", name="Test Entity")
@@ -81,32 +81,7 @@ class TestRepositoryLocalStackCloudFormation:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_create_table_or_stack_with_endpoint_url_uses_direct(self, localstack_endpoint):
-        """Should use direct table creation when endpoint_url is set."""
-        repo = Repository(
-            table_name="test_direct_table",
-            endpoint_url=localstack_endpoint,  # This forces direct creation
-            region="us-east-1",
-        )
-
-        try:
-            # Even with use_cloudformation=True, endpoint_url forces direct
-            await repo.create_table_or_stack(use_cloudformation=True)
-
-            # Verify table works
-            await repo.create_entity("test-entity")
-            entity = await repo.get_entity("test-entity")
-            assert entity is not None
-
-        finally:
-            try:
-                await repo.delete_table()
-            except Exception:
-                pass
-            await repo.close()
-
-    @pytest.mark.asyncio
-    async def test_create_table_or_stack_with_custom_parameters(self, localstack_endpoint):
+    async def test_create_stack_with_custom_parameters(self, localstack_endpoint):
         """Should pass custom parameters to CloudFormation stack."""
         repo = Repository(
             table_name="test_params_stack",
@@ -116,15 +91,11 @@ class TestRepositoryLocalStackCloudFormation:
 
         try:
             # Create with custom parameters using StackOptions
-            # Note: LocalStack might not fully validate these, but we test the flow
             stack_options = StackOptions(
                 snapshot_windows="hourly,daily",
                 retention_days=90,
             )
-            await repo.create_table_or_stack(
-                use_cloudformation=True,
-                stack_options=stack_options,
-            )
+            await repo.create_stack(stack_options=stack_options)
 
             # Verify table was created
             await repo.create_entity("test-entity")

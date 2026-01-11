@@ -181,11 +181,11 @@ limiter = RateLimiter(
     table_name="rate_limits",
     endpoint_url="http://localhost:4566",
     region="us-east-1",
-    stack_options=StackOptions(),  # Auto-detects LocalStack, skips CloudFormation
+    stack_options=StackOptions(),  # Creates full CloudFormation stack
 )
 ```
 
-**Note:** When `endpoint_url` is set, the library bypasses CloudFormation and creates the DynamoDB table directly. This works with LocalStack and any AWS-compatible service.
+**Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services.
 
 ## Project Structure
 

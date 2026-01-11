@@ -97,8 +97,7 @@ class RateLimiter:
             return
 
         if self._stack_options is not None:
-            await self._repository.create_table_or_stack(
-                use_cloudformation=True,
+            await self._repository.create_stack(
                 stack_options=self._stack_options,
             )
 
@@ -616,15 +615,14 @@ class RateLimiter:
     async def create_stack(
         self,
         stack_name: str | None = None,
-        parameters: dict[str, str] | None = None,
+        stack_options: StackOptions | None = None,
     ) -> dict[str, Any]:
         """
         Create CloudFormation stack for infrastructure.
 
         Args:
             stack_name: Override stack name (default: auto-generated)
-            parameters: Stack parameters dict (e.g.,
-                {'snapshot_windows': 'hourly,daily', 'retention_days': '90'})
+            stack_options: Stack configuration
 
         Returns:
             Dict with stack_id, stack_name, and status
@@ -637,7 +635,7 @@ class RateLimiter:
         async with StackManager(
             self.table_name, self._repository.region, self._repository.endpoint_url
         ) as manager:
-            return await manager.create_stack(stack_name, parameters)
+            return await manager.create_stack(stack_name, stack_options)
 
     async def delete_stack(self, stack_name: str | None = None) -> None:
         """
@@ -884,10 +882,10 @@ class SyncRateLimiter:
     def create_stack(
         self,
         stack_name: str | None = None,
-        parameters: dict[str, str] | None = None,
+        stack_options: StackOptions | None = None,
     ) -> dict[str, Any]:
         """Create CloudFormation stack for infrastructure."""
-        return self._run(self._limiter.create_stack(stack_name, parameters))
+        return self._run(self._limiter.create_stack(stack_name, stack_options))
 
     def delete_stack(self, stack_name: str | None = None) -> None:
         """Delete CloudFormation stack."""
