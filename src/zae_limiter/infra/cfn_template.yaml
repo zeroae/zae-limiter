@@ -48,8 +48,16 @@ Parameters:
     Default: '1.0.0'
     Description: Schema version for the rate limiter infrastructure
 
+  PITRRecoveryPeriodDays:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Number of days for Point-in-Time Recovery period (1-35).
+      Leave empty to use AWS default (35 days). Not supported in all AWS partitions (e.g., aws-iso).
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
+  UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
 
 Resources:
   # -------------------------------------------------------------------------
@@ -107,6 +115,13 @@ Resources:
       StreamSpecification:
         StreamEnabled: true
         StreamViewType: NEW_AND_OLD_IMAGES
+
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+        RecoveryPeriodInDays: !If
+          - UsePITRRecoveryPeriod
+          - !Ref PITRRecoveryPeriodDays
+          - !Ref AWS::NoValue
 
       Tags:
         - Key: Application
