@@ -186,6 +186,9 @@ class TestRateLimiterUnavailable:
         exc = RateLimiterUnavailable("DynamoDB timeout")
         assert str(exc) == "DynamoDB timeout"
         assert exc.cause is None
+        assert exc.table_name is None
+        assert exc.entity_id is None
+        assert exc.resource is None
 
     def test_with_cause(self) -> None:
         """Can create with cause exception."""
@@ -193,6 +196,37 @@ class TestRateLimiterUnavailable:
         exc = RateLimiterUnavailable("DynamoDB unavailable", cause=cause)
         assert exc.cause is cause
         assert str(exc) == "DynamoDB unavailable"
+
+    def test_with_full_context(self) -> None:
+        """Can create with all context fields."""
+        cause = ConnectionError("network failure")
+        exc = RateLimiterUnavailable(
+            "DynamoDB unavailable",
+            cause=cause,
+            table_name="rate_limits",
+            entity_id="entity-1",
+            resource="gpt-4",
+        )
+        assert exc.table_name == "rate_limits"
+        assert exc.entity_id == "entity-1"
+        assert exc.resource == "gpt-4"
+        msg = str(exc)
+        assert "table=rate_limits" in msg
+        assert "entity=entity-1" in msg
+        assert "resource=gpt-4" in msg
+
+    def test_with_partial_context(self) -> None:
+        """Context fields are optional."""
+        exc = RateLimiterUnavailable(
+            "DynamoDB timeout",
+            table_name="my_table",
+        )
+        assert exc.table_name == "my_table"
+        assert exc.entity_id is None
+        assert exc.resource is None
+        assert "table=my_table" in str(exc)
+        assert "entity=" not in str(exc)
+        assert "resource=" not in str(exc)
 
     def test_inherits_from_rate_limit_error(self) -> None:
         """RateLimiterUnavailable is a RateLimitError."""

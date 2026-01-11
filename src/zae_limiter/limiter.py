@@ -304,7 +304,13 @@ class RateLimiter:
                 yield Lease(repository=self._repository)
                 return
             else:
-                raise RateLimiterUnavailable(str(e), cause=e) from e
+                raise RateLimiterUnavailable(
+                    str(e),
+                    cause=e,
+                    table_name=self.table_name,
+                    entity_id=entity_id,
+                    resource=resource,
+                ) from e
 
         # Lease acquired successfully - manage the context
         try:
