@@ -50,6 +50,37 @@ class TestStackManager:
         assert param_dict["SnapshotRetentionDays"] == "180"
         assert param_dict["EnableAggregator"] == "false"
 
+    def test_format_parameters_with_pitr_recovery_days(self) -> None:
+        """Test parameter formatting with PITR recovery period."""
+        manager = StackManager(table_name="rate_limits", region="us-east-1")
+        params = manager._format_parameters(
+            {
+                "pitr_recovery_days": "7",
+            }
+        )
+
+        # Should include TableName, SchemaVersion, plus PITR parameter
+        assert len(params) == 3
+
+        param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
+        assert param_dict["TableName"] == "rate_limits"
+        assert "SchemaVersion" in param_dict
+        assert param_dict["PITRRecoveryPeriodDays"] == "7"
+
+    def test_format_parameters_pitr_edge_cases(self) -> None:
+        """Test PITR parameter with edge case values."""
+        manager = StackManager(table_name="rate_limits", region="us-east-1")
+
+        # Test minimum value (1 day)
+        params_min = manager._format_parameters({"pitr_recovery_days": "1"})
+        param_dict_min = {p["ParameterKey"]: p["ParameterValue"] for p in params_min}
+        assert param_dict_min["PITRRecoveryPeriodDays"] == "1"
+
+        # Test maximum value (35 days)
+        params_max = manager._format_parameters({"pitr_recovery_days": "35"})
+        param_dict_max = {p["ParameterKey"]: p["ParameterValue"] for p in params_max}
+        assert param_dict_max["PITRRecoveryPeriodDays"] == "35"
+
     def test_load_template(self) -> None:
         """Test loading CloudFormation template."""
         manager = StackManager(table_name="test", region="us-east-1")

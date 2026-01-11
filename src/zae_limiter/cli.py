@@ -55,6 +55,11 @@ def cli() -> None:
     help="Deploy Lambda aggregator for usage snapshots",
 )
 @click.option(
+    "--pitr-recovery-days",
+    type=int,
+    help="Point-in-Time Recovery period in days (1-35, default: AWS default of 35)",
+)
+@click.option(
     "--wait/--no-wait",
     default=True,
     help="Wait for stack creation to complete",
@@ -67,6 +72,7 @@ def deploy(
     snapshot_windows: str,
     retention_days: int,
     enable_aggregator: bool,
+    pitr_recovery_days: int | None,
     wait: bool,
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
@@ -88,6 +94,9 @@ def deploy(
                 "retention_days": str(retention_days),
                 "enable_aggregator": "true" if enable_aggregator else "false",
             }
+
+            if pitr_recovery_days is not None:
+                parameters["pitr_recovery_days"] = str(pitr_recovery_days)
 
             try:
                 # Step 1: Create CloudFormation stack
