@@ -258,7 +258,16 @@ When reviewing PRs, check the following based on files changed:
 - Validate CloudFormation template syntax
 - Check IAM follows least privilege
 - Verify Lambda handler signature
-- Ensure version.py updated if schema changes
+- **Prefer fixes that preserve existing schema** (see Schema Preservation below)
+- Only update version.py if schema change is unavoidable
+
+### Schema Preservation (DynamoDB changes)
+When fixing DynamoDB-related bugs, prefer solutions that preserve the existing schema:
+- Use `if_not_exists()` to initialize nested maps instead of flattening structure
+- Use conditional expressions to handle missing attributes
+- Avoid changing attribute names or moving data between top-level and nested paths
+- Schema changes require version bumps, migrations, and careful rollout planning
+- Only change schema when there's no viable alternative
 
 ### Migrations (changes to migrations/)
 - Verify migration follows protocol (async, Repository param)

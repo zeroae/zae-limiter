@@ -6,8 +6,7 @@ import re
 from dataclasses import dataclass
 
 # Current schema version - increment when schema changes
-# 1.1.0: Usage snapshots use top-level attributes instead of nested data map
-CURRENT_SCHEMA_VERSION = "1.1.0"
+CURRENT_SCHEMA_VERSION = "1.0.0"
 
 
 @dataclass(frozen=True, order=False)
