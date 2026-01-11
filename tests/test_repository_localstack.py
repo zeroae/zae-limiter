@@ -12,13 +12,13 @@ To run these tests locally:
 """
 
 import os
+import time
 
 import pytest
 
 from zae_limiter import Limit
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
-import time
 
 pytestmark = pytest.mark.integration
 

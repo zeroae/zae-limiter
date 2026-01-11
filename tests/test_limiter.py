@@ -6,8 +6,8 @@ from botocore.exceptions import ClientError
 from zae_limiter import (
     FailureMode,
     Limit,
-    RateLimitExceeded,
     RateLimiterUnavailable,
+    RateLimitExceeded,
 )
 
 

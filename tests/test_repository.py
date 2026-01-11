@@ -98,7 +98,8 @@ class TestRepositoryBucketOperations:
         update_spec = update_item["Update"]
 
         # Check update expression
-        assert update_spec["UpdateExpression"] == "SET #data.#tokens = :tokens, #data.#refill = :refill"
+        expected_expr = "SET #data.#tokens = :tokens, #data.#refill = :refill"
+        assert update_spec["UpdateExpression"] == expected_expr
 
         # Check attribute names
         assert update_spec["ExpressionAttributeNames"]["#data"] == "data"
@@ -134,7 +135,8 @@ class TestRepositoryBucketOperations:
         assert ":expected" not in update_spec["ExpressionAttributeValues"]
 
         # Verify update expression is still correct
-        assert update_spec["UpdateExpression"] == "SET #data.#tokens = :tokens, #data.#refill = :refill"
+        expected_expr = "SET #data.#tokens = :tokens, #data.#refill = :refill"
+        assert update_spec["UpdateExpression"] == expected_expr
 
 
 class TestRepositoryResourceAggregation:
