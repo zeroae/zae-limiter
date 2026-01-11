@@ -183,6 +183,19 @@ class TestStackOptions:
         with pytest.raises(ValueError, match="retention_days must be positive"):
             StackOptions(retention_days=0)
 
+    def test_invalid_log_retention_days(self):
+        """Test validation of log_retention_days must be valid CloudWatch value."""
+        with pytest.raises(ValueError, match="log_retention_days must be one of"):
+            StackOptions(log_retention_days=15)  # 15 is not a valid CloudWatch value
+
+    def test_valid_log_retention_days(self):
+        """Test that valid log_retention_days values are accepted."""
+        # Test a few valid values
+        valid_values = [1, 3, 5, 7, 14, 30, 60, 90, 365]
+        for value in valid_values:
+            opts = StackOptions(log_retention_days=value)
+            assert opts.log_retention_days == value
+
     def test_to_parameters(self):
         """Test conversion to stack parameters dict."""
         opts = StackOptions(

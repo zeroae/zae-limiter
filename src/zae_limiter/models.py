@@ -302,6 +302,14 @@ class LimitName:
     TPD = "tpd"  # tokens per day
 
 
+# Valid CloudWatch Logs retention periods (in days)
+# See: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutRetentionPolicy.html
+VALID_LOG_RETENTION_DAYS = frozenset({
+    1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922,
+    3288, 3653,
+})
+
+
 @dataclass(frozen=True)
 class StackOptions:
     """
@@ -315,7 +323,7 @@ class StackOptions:
         retention_days: Number of days to retain usage snapshots
         enable_aggregator: Deploy Lambda aggregator for usage snapshots
         pitr_recovery_days: Point-in-Time Recovery period (1-35, None for AWS default)
-        log_retention_days: CloudWatch log retention period in days
+        log_retention_days: CloudWatch log retention period in days (must be valid CloudWatch value)
         lambda_timeout: Lambda timeout in seconds (1-900)
         lambda_memory: Lambda memory size in MB (128-3008)
         enable_alarms: Deploy CloudWatch alarms for monitoring
@@ -348,6 +356,10 @@ class StackOptions:
             raise ValueError("pitr_recovery_days must be between 1 and 35")
         if self.retention_days <= 0:
             raise ValueError("retention_days must be positive")
+        if self.log_retention_days not in VALID_LOG_RETENTION_DAYS:
+            raise ValueError(
+                f"log_retention_days must be one of {sorted(VALID_LOG_RETENTION_DAYS)}"
+            )
 
     def to_parameters(self) -> dict[str, str]:
         """
