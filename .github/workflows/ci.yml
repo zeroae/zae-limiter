@@ -55,7 +55,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
       - name: Upload test results to Codecov
-        if: ${{ !cancelled() }} && matrix.python-version == '3.12'
+        if: "!cancelled() && matrix.python-version == '3.12'"
         uses: codecov/codecov-action@v5
         with:
           files: junit.xml
@@ -104,7 +104,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
       - name: Upload integration test results to Codecov
-        if: ${{ !cancelled() }} && matrix.python-version == '3.12'
+        if: "!cancelled() && matrix.python-version == '3.12'"
         uses: codecov/codecov-action@v5
         with:
           files: junit.xml
