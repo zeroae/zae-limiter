@@ -96,6 +96,13 @@ Parameters:
       - 3653
     Description: Number of days to retain Lambda logs (CloudWatch standard retention periods)
 
+  LambdaDurationThreshold:
+    Type: Number
+    Default: 48000
+    Description: Lambda duration alarm threshold in milliseconds (default 48000 = 80% of 60s timeout)
+    MinValue: 1
+    MaxValue: 900000
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
   UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
@@ -356,13 +363,13 @@ Resources:
     Condition: DeployAggregatorAlarms
     Properties:
       AlarmName: !Sub ${TableName}-aggregator-duration
-      AlarmDescription: Alert when Lambda duration exceeds 48s (80% of 60s default timeout)
+      AlarmDescription: !Sub Alert when Lambda duration exceeds threshold (${LambdaDurationThreshold}ms)
       MetricName: Duration
       Namespace: AWS/Lambda
       Statistic: Average
       Period: 300  # 5 minutes
       EvaluationPeriods: 2
-      Threshold: 48000  # 80% of default 60s timeout (48s in milliseconds)
+      Threshold: !Ref LambdaDurationThreshold
       ComparisonOperator: GreaterThanThreshold
       Dimensions:
         - Name: FunctionName

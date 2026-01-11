@@ -128,6 +128,9 @@ class StackManager:
             "schema_version": "SchemaVersion",
             "pitr_recovery_days": "PITRRecoveryPeriodDays",
             "log_retention_days": "LogRetentionDays",
+            "enable_alarms": "EnableAlarms",
+            "alarm_sns_topic_arn": "AlarmSNSTopicArn",
+            "lambda_duration_threshold": "LambdaDurationThreshold",
         }
 
         for key, value in parameters.items():
