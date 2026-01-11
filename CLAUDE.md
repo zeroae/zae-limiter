@@ -312,7 +312,7 @@ When fixing DynamoDB-related bugs, prefer solutions that preserve the existing s
 
 Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md).
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`
 
 **Examples:**
 ```bash
