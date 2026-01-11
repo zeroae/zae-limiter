@@ -141,6 +141,39 @@ class TestCLI:
         assert "my-custom-stack" in result.output
 
     @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_pitr_recovery_days(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+        """Test deploy command with --pitr-recovery-days parameter."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--pitr-recovery-days",
+                "7",
+                "--no-aggregator",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify create_stack was called with pitr_recovery_days parameter
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        params = call_args[1]["parameters"]
+        assert "pitr_recovery_days" in params
+        assert params["pitr_recovery_days"] == "7"
+
+    @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with --endpoint-url for LocalStack."""
         mock_instance = Mock()
