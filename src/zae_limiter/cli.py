@@ -33,7 +33,10 @@ def cli() -> None:
 )
 @click.option(
     "--endpoint-url",
-    help="AWS endpoint URL (for LocalStack or other AWS-compatible services)",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
 )
 @click.option(
     "--snapshot-windows",

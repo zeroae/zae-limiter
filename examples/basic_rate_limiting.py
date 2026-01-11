@@ -2,11 +2,13 @@
 """
 Basic Rate Limiting Example
 
-Demonstrates the core zae-limiter API with DynamoDB Local.
+Demonstrates the core zae-limiter API with LocalStack.
 
 Setup:
-    # Start DynamoDB Local
-    docker run -p 8000:8000 amazon/dynamodb-local
+    # Start LocalStack
+    docker run -p 4566:4566 \
+      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
+      localstack/localstack
 
     # Run this example
     uv run python examples/basic_rate_limiting.py
@@ -28,8 +30,8 @@ from zae_limiter import (
     SyncRateLimiter,
 )
 
-# Configuration for DynamoDB Local
-ENDPOINT_URL = "http://localhost:8000"
+# Configuration for LocalStack
+ENDPOINT_URL = "http://localhost:4566"
 TABLE_NAME = "rate_limits_example"
 
 
@@ -37,7 +39,7 @@ async def async_main() -> None:
     """Demonstrate async rate limiting."""
     print("=== Async Rate Limiting Example ===\n")
 
-    # Create rate limiter with DynamoDB Local
+    # Create rate limiter with LocalStack
     limiter = RateLimiter(
         table_name=TABLE_NAME,
         endpoint_url=ENDPOINT_URL,

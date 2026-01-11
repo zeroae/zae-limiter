@@ -334,19 +334,26 @@ To deploy without the Lambda aggregator:
 zae-limiter deploy --table-name rate_limits --no-aggregator
 ```
 
-### Local Development with DynamoDB Local
+### Local Development with LocalStack
 
 ```bash
-# Start DynamoDB Local
-docker run -p 8000:8000 amazon/dynamodb-local
+# Start LocalStack
+docker run -p 4566:4566 \
+  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation \
+  localstack/localstack
 
-# Use endpoint_url
+# Deploy with CLI
+zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566
+
+# Or use in code
 limiter = RateLimiter(
     table_name="rate_limits",
-    endpoint_url="http://localhost:8000",
-    create_table=True,
+    endpoint_url="http://localhost:4566",
+    create_stack=True,
 )
 ```
+
+For a complete demo with FastAPI and dashboard, see `examples/fastapi-demo/`.
 
 ## Development
 

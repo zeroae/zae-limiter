@@ -13,7 +13,9 @@ Key patterns:
 - Handling negative bucket states (actual > estimate)
 
 Setup:
-    docker run -p 8000:8000 amazon/dynamodb-local
+    docker run -p 4566:4566 \
+      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
+      localstack/localstack
     uv run python examples/llm_token_reconciliation.py
 """
 
@@ -28,7 +30,7 @@ from zae_limiter import (
 )
 
 # Configuration
-ENDPOINT_URL = "http://localhost:8000"
+ENDPOINT_URL = "http://localhost:4566"
 TABLE_NAME = "llm_rate_limits"
 
 

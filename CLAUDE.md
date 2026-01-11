@@ -134,36 +134,29 @@ limiter = RateLimiter(
 
 **Note:** `create_table` parameter is deprecated. Use `create_stack` instead.
 
-### Local Development
+### Local Development with LocalStack
 
-**LocalStack (Recommended):** For full feature testing including Lambda aggregator and DynamoDB Streams:
+LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Streams, Lambda):
 
 ```bash
-# Deploy to LocalStack using CLI
-zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566 --region us-east-1
-```
+# Start LocalStack
+docker run -p 4566:4566 \
+  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
+  localstack/localstack
 
-```python
-# Or from code
+# Deploy infrastructure with CLI
+zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566
+
+# Or auto-create in code
 limiter = RateLimiter(
     table_name="rate_limits",
-    endpoint_url="http://localhost:4566",  # LocalStack
+    endpoint_url="http://localhost:4566",
     region="us-east-1",
-    create_stack=True,  # Uses CloudFormation (LocalStack supports it)
+    create_stack=True,  # Uses CloudFormation with LocalStack
 )
 ```
 
-**DynamoDB Local:** For basic rate limiting only (no Lambda/Streams support):
-
-```python
-limiter = RateLimiter(
-    table_name="rate_limits",
-    endpoint_url="http://localhost:8000",  # DynamoDB Local
-    create_table=True,  # Uses direct table creation (bypasses CloudFormation)
-)
-```
-
-**Note:** The `--endpoint-url` CLI flag assumes CloudFormation support (LocalStack). For DynamoDB Local, use `create_table=True` in code instead of the CLI deploy command.
+**Note:** The `endpoint_url` parameter works with any AWS-compatible service (LocalStack, custom AWS endpoints, etc.). LocalStack is recommended for local development as it supports all required services including Lambda and DynamoDB Streams.
 
 ## Project Structure
 
@@ -233,29 +226,26 @@ src/zae_limiter/
 
 ## Testing
 
-### Run Tests with Moto (DynamoDB Mock)
+### Run Tests with Moto (Unit Tests)
 ```bash
-pytest tests/ -v
+pytest tests/ -v  # Fast unit tests with mocked DynamoDB
 ```
 
-### Test with LocalStack (Recommended)
+### Test with LocalStack (Integration Tests)
 ```bash
-# Start LocalStack (includes DynamoDB, Lambda, CloudFormation)
-docker run -d -p 4566:4566 localstack/localstack
+# Start LocalStack
+docker run -p 4566:4566 \
+  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation \
+  localstack/localstack
 
-# Deploy infrastructure and run integration tests
-zae-limiter deploy --table-name test_limits --endpoint-url http://localhost:4566 --region us-east-1
-DYNAMODB_ENDPOINT=http://localhost:4566 pytest tests/integration/ -v
+# Run integration tests
+AWS_ENDPOINT_URL=http://localhost:4566 pytest -m integration -v
 ```
 
-### Test with DynamoDB Local (Basic Only)
-```bash
-# Start DynamoDB Local (no Lambda/Streams support)
-docker run -p 8000:8000 amazon/dynamodb-local
-
-# Run integration tests (aggregator features won't work)
-DYNAMODB_ENDPOINT=http://localhost:8000 pytest tests/integration/ -v
-```
+**Testing Strategy:**
+- Unit tests use moto for speed (no Docker required)
+- Integration tests use LocalStack for full AWS service testing
+- CI runs both in parallel
 
 ### Test Coverage
 ```bash
