@@ -32,6 +32,13 @@ class TestCLI:
         assert "--table-name" in result.output
         assert "--region" in result.output
         assert "--endpoint-url" in result.output
+        # New options
+        assert "--lambda-timeout" in result.output
+        assert "--lambda-memory" in result.output
+        assert "--enable-alarms" in result.output
+        assert "--no-alarms" in result.output
+        assert "--alarm-sns-topic" in result.output
+        assert "--lambda-duration-threshold-pct" in result.output
 
     def test_delete_help(self, runner: CliRunner) -> None:
         """Test delete command help."""
@@ -103,6 +110,17 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Deploying stack: zae-limiter-rate_limits" in result.output
         assert "✓" in result.output
+
+        # Verify default values for new parameters
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        params = call_args[1]["parameters"]
+        # Default values: lambda_timeout=60, lambda_memory=256, alarms enabled, 80% threshold
+        assert params["lambda_timeout"] == "60"
+        assert params["lambda_memory_size"] == "256"
+        assert params["enable_alarms"] == "true"
+        # 60s * 1000 * 0.8 = 48000ms (default)
+        assert params["lambda_duration_threshold"] == "48000"
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_custom_parameters(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
@@ -209,6 +227,266 @@ class TestCLI:
         params = call_args[1]["parameters"]
         assert "log_retention_days" in params
         assert params["log_retention_days"] == "90"
+
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_lambda_timeout_and_memory(
+        self, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command with --lambda-timeout and --lambda-memory parameters."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:test",
+                "code_sha256": "abc123def456",
+                "size_bytes": 30000,
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-timeout",
+                "120",
+                "--lambda-memory",
+                "512",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Lambda timeout: 120s" in result.output
+        assert "Lambda memory: 512MB" in result.output
+
+        # Verify create_stack was called with correct parameters
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        params = call_args[1]["parameters"]
+        assert params["lambda_timeout"] == "120"
+        assert params["lambda_memory_size"] == "512"
+
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_alarms_disabled(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+        """Test deploy command with --no-alarms parameter."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--no-alarms",
+                "--no-aggregator",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Alarms: disabled" in result.output
+
+        # Verify create_stack was called with enable_alarms=false
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        params = call_args[1]["parameters"]
+        assert params["enable_alarms"] == "false"
+
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_alarm_sns_topic(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+        """Test deploy command with --alarm-sns-topic parameter."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        sns_topic = "arn:aws:sns:us-east-1:123456789012:my-topic"
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--alarm-sns-topic",
+                sns_topic,
+                "--no-aggregator",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert f"Alarm SNS topic: {sns_topic}" in result.output
+
+        # Verify create_stack was called with alarm_sns_topic_arn
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        params = call_args[1]["parameters"]
+        assert params["alarm_sns_topic_arn"] == sns_topic
+
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_lambda_duration_threshold_pct(
+        self, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command with --lambda-duration-threshold-pct parameter."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        # Lambda timeout 60s with 50% threshold should be 30000ms
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-timeout",
+                "60",
+                "--lambda-duration-threshold-pct",
+                "50",
+                "--no-aggregator",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Verify create_stack was called with calculated threshold
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        params = call_args[1]["parameters"]
+        # 60s * 1000 * 0.5 = 30000ms
+        assert params["lambda_duration_threshold"] == "30000"
+
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_duration_threshold_calculation(
+        self, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
+        """Test that duration threshold is correctly calculated from timeout and percentage."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        # Lambda timeout 120s with 80% threshold should be 96000ms
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-timeout",
+                "120",
+                "--lambda-duration-threshold-pct",
+                "80",
+                "--no-aggregator",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        params = call_args[1]["parameters"]
+        # 120s * 1000 * 0.8 = 96000ms
+        assert params["lambda_duration_threshold"] == "96000"
+
+    def test_deploy_lambda_timeout_invalid_range(self, runner: CliRunner) -> None:
+        """Test that --lambda-timeout rejects values outside 1-900."""
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-timeout",
+                "0",
+            ],
+        )
+        assert result.exit_code != 0
+        # Click's IntRange provides error message with the invalid value
+        assert "0" in result.output or "range" in result.output.lower()
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-timeout",
+                "901",
+            ],
+        )
+        assert result.exit_code != 0
+
+    def test_deploy_lambda_memory_invalid_range(self, runner: CliRunner) -> None:
+        """Test that --lambda-memory rejects values outside 128-3008."""
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-memory",
+                "64",
+            ],
+        )
+        assert result.exit_code != 0
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-memory",
+                "3009",
+            ],
+        )
+        assert result.exit_code != 0
+
+    def test_deploy_duration_threshold_pct_invalid_range(self, runner: CliRunner) -> None:
+        """Test that --lambda-duration-threshold-pct rejects values outside 1-100."""
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-duration-threshold-pct",
+                "0",
+            ],
+        )
+        assert result.exit_code != 0
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--lambda-duration-threshold-pct",
+                "101",
+            ],
+        )
+        assert result.exit_code != 0
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:

@@ -91,6 +91,35 @@ def cli() -> None:
     help="Number of days to retain Lambda logs (CloudWatch standard retention periods)",
 )
 @click.option(
+    "--lambda-timeout",
+    type=click.IntRange(1, 900),
+    default=60,
+    help="Lambda timeout in seconds (1-900, default: 60)",
+)
+@click.option(
+    "--lambda-memory",
+    type=click.IntRange(128, 3008),
+    default=256,
+    help="Lambda memory size in MB (128-3008, default: 256)",
+)
+@click.option(
+    "--enable-alarms/--no-alarms",
+    default=True,
+    help="Deploy CloudWatch alarms for monitoring (default: enabled)",
+)
+@click.option(
+    "--alarm-sns-topic",
+    type=str,
+    default=None,
+    help="SNS topic ARN for alarm notifications (optional)",
+)
+@click.option(
+    "--lambda-duration-threshold-pct",
+    type=click.IntRange(1, 100),
+    default=80,
+    help="Lambda duration alarm threshold as percentage of timeout (1-100, default: 80)",
+)
+@click.option(
     "--wait/--no-wait",
     default=True,
     help="Wait for stack creation to complete",
@@ -105,6 +134,11 @@ def deploy(
     enable_aggregator: bool,
     pitr_recovery_days: int | None,
     log_retention_days: str,
+    lambda_timeout: int,
+    lambda_memory: int,
+    enable_alarms: bool,
+    alarm_sns_topic: str | None,
+    lambda_duration_threshold_pct: int,
     wait: bool,
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
@@ -119,17 +153,36 @@ def deploy(
             click.echo(f"  Snapshot windows: {snapshot_windows}")
             click.echo(f"  Retention days: {retention_days}")
             click.echo(f"  Aggregator: {'enabled' if enable_aggregator else 'disabled'}")
+            if enable_aggregator:
+                click.echo(f"  Lambda timeout: {lambda_timeout}s")
+                click.echo(f"  Lambda memory: {lambda_memory}MB")
+            click.echo(f"  Alarms: {'enabled' if enable_alarms else 'disabled'}")
+            if enable_alarms and alarm_sns_topic:
+                click.echo(f"  Alarm SNS topic: {alarm_sns_topic}")
             click.echo()
+
+            # Calculate the duration threshold in milliseconds
+            # duration_threshold_ms = timeout_seconds * 1000 * (percentage / 100)
+            lambda_duration_threshold_ms = int(
+                lambda_timeout * 1000 * (lambda_duration_threshold_pct / 100)
+            )
 
             parameters = {
                 "snapshot_windows": snapshot_windows,
                 "retention_days": str(retention_days),
                 "enable_aggregator": "true" if enable_aggregator else "false",
                 "log_retention_days": log_retention_days,
+                "lambda_timeout": str(lambda_timeout),
+                "lambda_memory_size": str(lambda_memory),
+                "enable_alarms": "true" if enable_alarms else "false",
+                "lambda_duration_threshold": str(lambda_duration_threshold_ms),
             }
 
             if pitr_recovery_days is not None:
                 parameters["pitr_recovery_days"] = str(pitr_recovery_days)
+
+            if alarm_sns_topic:
+                parameters["alarm_sns_topic_arn"] = alarm_sns_topic
 
             try:
                 # Step 1: Create CloudFormation stack
