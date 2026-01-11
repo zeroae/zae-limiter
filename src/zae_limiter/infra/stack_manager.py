@@ -49,7 +49,7 @@ class StackManager:
         Always use CloudFormation.
 
         Both AWS and LocalStack support CloudFormation. For DynamoDB Local
-        (which doesn't support CloudFormation), use create_table=True in
+        (which doesn't support CloudFormation), use create_stack=True in
         RateLimiter instead of the CLI deploy command.
         """
         return True

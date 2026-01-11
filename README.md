@@ -96,7 +96,7 @@ For DynamoDB Local, auto-creation uses direct table creation (not CloudFormation
 limiter = RateLimiter(
     table_name="rate_limits",
     endpoint_url="http://localhost:8000",
-    create_table=True,  # Creates table directly (CloudFormation skipped)
+    create_stack=True,  # Creates table directly (CloudFormation skipped)
 )
 ```
 

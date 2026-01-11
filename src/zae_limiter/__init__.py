@@ -14,7 +14,7 @@ Example:
     limiter = RateLimiter(
         table_name="rate_limits",
         region="us-east-1",
-        create_table=True,
+        create_stack=True,
     )
 
     async with limiter.acquire(

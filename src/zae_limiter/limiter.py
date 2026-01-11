@@ -57,7 +57,6 @@ class RateLimiter:
         table_name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
-        create_table: bool = False,
         create_stack: bool = False,
         stack_parameters: dict[str, str] | None = None,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
@@ -72,7 +71,6 @@ class RateLimiter:
             table_name: DynamoDB table name
             region: AWS region
             endpoint_url: DynamoDB endpoint URL (for local development)
-            create_table: Deprecated, use create_stack instead
             create_stack: Create CloudFormation stack if it doesn't exist
             stack_parameters: Parameters for CloudFormation stack
             failure_mode: Behavior when DynamoDB is unavailable
@@ -85,17 +83,6 @@ class RateLimiter:
         self._auto_update = auto_update
         self._strict_version = strict_version
         self._skip_version_check = skip_version_check
-
-        # Handle deprecation: create_table -> create_stack
-        if create_table and not create_stack:
-            import warnings
-
-            warnings.warn(
-                "create_table is deprecated, use create_stack instead",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            create_stack = create_table
 
         self._create_stack = create_stack
         self._stack_parameters = stack_parameters or {}
@@ -689,7 +676,6 @@ class SyncRateLimiter:
         table_name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
-        create_table: bool = False,
         create_stack: bool = False,
         stack_parameters: dict[str, str] | None = None,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
@@ -701,7 +687,6 @@ class SyncRateLimiter:
             table_name=table_name,
             region=region,
             endpoint_url=endpoint_url,
-            create_table=create_table,
             create_stack=create_stack,
             stack_parameters=stack_parameters,
             failure_mode=failure_mode,
