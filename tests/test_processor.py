@@ -1,5 +1,6 @@
 """Tests for aggregator processor module."""
 
+import json
 import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,7 @@ import pytest
 from zae_limiter.aggregator.processor import (
     ConsumptionDelta,
     ProcessResult,
+    StructuredLogger,
     calculate_snapshot_ttl,
     extract_delta,
     get_window_end,
@@ -594,3 +596,190 @@ class TestProcessStreamRecords:
         assert result.processed_count == 3
         assert result.snapshots_updated == 1  # only one valid delta
         assert result.errors == []
+
+
+class TestStructuredLogger:
+    """Tests for StructuredLogger class."""
+
+    def test_info_outputs_valid_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Info logs output valid JSON with required fields."""
+        logger = StructuredLogger("test.module")
+        logger.info("Test message", key="value", count=42)
+
+        captured = capsys.readouterr()
+        log_entry = json.loads(captured.out.strip())
+
+        assert log_entry["level"] == "INFO"
+        assert log_entry["logger"] == "test.module"
+        assert log_entry["message"] == "Test message"
+        assert log_entry["key"] == "value"
+        assert log_entry["count"] == 42
+        assert "timestamp" in log_entry
+
+    def test_warning_with_exc_info(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Warning logs include exception traceback when exc_info=True."""
+        logger = StructuredLogger("test.module")
+        try:
+            raise ValueError("Test error")
+        except ValueError:
+            logger.warning("An error occurred", exc_info=True, entity_id="test-entity")
+
+        captured = capsys.readouterr()
+        log_entry = json.loads(captured.out.strip())
+
+        assert log_entry["level"] == "WARNING"
+        assert log_entry["message"] == "An error occurred"
+        assert log_entry["entity_id"] == "test-entity"
+        assert "exception" in log_entry
+        assert "ValueError: Test error" in log_entry["exception"]
+
+    def test_debug_outputs_valid_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Debug logs output valid JSON."""
+        logger = StructuredLogger("test.module")
+        logger.debug("Debug message", resource="gpt-4", limit_name="tpm")
+
+        captured = capsys.readouterr()
+        log_entry = json.loads(captured.out.strip())
+
+        assert log_entry["level"] == "DEBUG"
+        assert log_entry["resource"] == "gpt-4"
+        assert log_entry["limit_name"] == "tpm"
+
+    def test_error_with_exc_info(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Error logs include exception traceback when exc_info=True."""
+        logger = StructuredLogger("test.module")
+        try:
+            raise RuntimeError("Critical failure")
+        except RuntimeError:
+            logger.error("Critical error", exc_info=True)
+
+        captured = capsys.readouterr()
+        log_entry = json.loads(captured.out.strip())
+
+        assert log_entry["level"] == "ERROR"
+        assert "exception" in log_entry
+        assert "RuntimeError: Critical failure" in log_entry["exception"]
+
+
+class TestStructuredLoggingIntegration:
+    """Integration tests for structured logging in processor functions."""
+
+    def _make_record(
+        self,
+        event_name: str = "MODIFY",
+        sk: str = "#BUCKET#gpt-4#tpm",
+        entity_id: str = "entity-1",
+        old_tokens: int = 10000,
+        new_tokens: int = 5000,
+    ) -> dict:
+        """Helper to create a stream record."""
+        return {
+            "eventName": event_name,
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": f"ENTITY#{entity_id}"},
+                    "SK": {"S": sk},
+                    "entity_id": {"S": entity_id},
+                    "data": {
+                        "M": {
+                            "tokens_milli": {"N": str(new_tokens)},
+                            "last_refill_ms": {"N": "1704067200000"},
+                        }
+                    },
+                },
+                "OldImage": {
+                    "PK": {"S": f"ENTITY#{entity_id}"},
+                    "SK": {"S": sk},
+                    "entity_id": {"S": entity_id},
+                    "data": {
+                        "M": {
+                            "tokens_milli": {"N": str(old_tokens)},
+                            "last_refill_ms": {"N": "1704067199000"},
+                        }
+                    },
+                },
+            },
+        }
+
+    def test_batch_processing_logs_start_and_end(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Logs batch start and completion with metrics."""
+        records = [self._make_record()]
+
+        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+            mock_table = MagicMock()
+            mock_boto.resource.return_value.Table.return_value = mock_table
+
+            process_stream_records(records, "test_table", ["hourly"])
+
+        captured = capsys.readouterr()
+        lines = [line for line in captured.out.strip().split("\n") if line]
+
+        # Should have at least: batch start, snapshot update debug, batch end
+        assert len(lines) >= 2
+
+        # Parse first and last INFO logs
+        logs = [json.loads(line) for line in lines]
+        info_logs = [log for log in logs if log["level"] == "INFO"]
+
+        assert len(info_logs) >= 2
+        start_log = info_logs[0]
+        end_log = info_logs[-1]
+
+        assert start_log["message"] == "Batch processing started"
+        assert start_log["record_count"] == 1
+        assert start_log["table_name"] == "test_table"
+
+        assert end_log["message"] == "Batch processing completed"
+        assert end_log["processed_count"] == 1
+        assert "processing_time_ms" in end_log
+
+    def test_error_logs_include_context(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Error logs include entity_id, resource, limit_name."""
+        records = [self._make_record()]
+
+        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+            mock_table = MagicMock()
+            mock_table.update_item.side_effect = Exception("DynamoDB error")
+            mock_boto.resource.return_value.Table.return_value = mock_table
+
+            process_stream_records(records, "test_table", ["hourly"])
+
+        captured = capsys.readouterr()
+        lines = [line for line in captured.out.strip().split("\n") if line]
+        logs = [json.loads(line) for line in lines]
+        warning_logs = [log for log in logs if log["level"] == "WARNING"]
+
+        assert len(warning_logs) == 1
+        warning_log = warning_logs[0]
+
+        assert warning_log["entity_id"] == "entity-1"
+        assert warning_log["resource"] == "gpt-4"
+        assert warning_log["limit_name"] == "tpm"
+        assert warning_log["window"] == "hourly"
+        assert "exception" in warning_log
+
+    def test_snapshot_update_logs_debug(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Successful snapshot updates are logged at DEBUG level."""
+        records = [self._make_record()]
+
+        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+            mock_table = MagicMock()
+            mock_boto.resource.return_value.Table.return_value = mock_table
+
+            process_stream_records(records, "test_table", ["hourly"])
+
+        captured = capsys.readouterr()
+        lines = [line for line in captured.out.strip().split("\n") if line]
+        logs = [json.loads(line) for line in lines]
+        debug_logs = [log for log in logs if log["level"] == "DEBUG"]
+
+        assert len(debug_logs) == 1
+        debug_log = debug_logs[0]
+
+        assert debug_log["message"] == "Snapshot updated"
+        assert debug_log["entity_id"] == "entity-1"
+        assert debug_log["resource"] == "gpt-4"
+        assert debug_log["limit_name"] == "tpm"
+        assert debug_log["window"] == "hourly"
+        assert "window_key" in debug_log
+        assert "tokens_delta" in debug_log
