@@ -55,9 +55,27 @@ Parameters:
       (Optional) Number of days for Point-in-Time Recovery period (1-35).
       Leave empty to use AWS default (35 days). Not supported in all AWS partitions (e.g., aws-iso).
 
+  EnableAlarms:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Whether to deploy CloudWatch alarms for monitoring
+
+  AlarmSNSTopicArn:
+    Type: String
+    Default: ''
+    Description: (Optional) SNS topic ARN for alarm notifications. Leave empty to skip SNS notifications.
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
   UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
+  DeployAlarms: !Equals [!Ref EnableAlarms, 'true']
+  DeployAggregatorAlarms: !And
+    - !Condition DeployAggregator
+    - !Condition DeployAlarms
+  HasSNSTopic: !Not [!Equals [!Ref AlarmSNSTopicArn, '']]
 
 Resources:
   # -------------------------------------------------------------------------
@@ -280,6 +298,119 @@ Resources:
                 }
               }
 
+  # -------------------------------------------------------------------------
+  # CloudWatch Alarms
+  # -------------------------------------------------------------------------
+  LambdaErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployAggregatorAlarms
+    Properties:
+      AlarmName: !Sub ${TableName}-aggregator-error-rate
+      AlarmDescription: Alert when Lambda error rate exceeds 1%
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AggregatorFunction
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasSNSTopic
+        - [!Ref AlarmSNSTopicArn]
+        - !Ref AWS::NoValue
+
+  LambdaDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployAggregatorAlarms
+    Properties:
+      AlarmName: !Sub ${TableName}-aggregator-duration
+      AlarmDescription: Alert when Lambda duration exceeds 48s (80% of 60s default timeout)
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2
+      Threshold: 48000  # 80% of default 60s timeout (48s in milliseconds)
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AggregatorFunction
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasSNSTopic
+        - [!Ref AlarmSNSTopicArn]
+        - !Ref AWS::NoValue
+
+  DynamoDBReadThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployAlarms
+    Properties:
+      AlarmName: !Sub ${TableName}-read-throttle
+      AlarmDescription: Alert when DynamoDB read requests are throttled
+      MetricName: ReadThrottleEvents
+      Namespace: AWS/DynamoDB
+      Statistic: Sum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TableName
+          Value: !Ref RateLimitsTable
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasSNSTopic
+        - [!Ref AlarmSNSTopicArn]
+        - !Ref AWS::NoValue
+
+  DynamoDBWriteThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployAlarms
+    Properties:
+      AlarmName: !Sub ${TableName}-write-throttle
+      AlarmDescription: Alert when DynamoDB write requests are throttled
+      MetricName: WriteThrottleEvents
+      Namespace: AWS/DynamoDB
+      Statistic: Sum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TableName
+          Value: !Ref RateLimitsTable
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasSNSTopic
+        - [!Ref AlarmSNSTopicArn]
+        - !Ref AWS::NoValue
+
+  StreamIteratorAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployAggregatorAlarms
+    Properties:
+      AlarmName: !Sub ${TableName}-stream-iterator-age
+      AlarmDescription: Alert when stream processing lag exceeds 30 seconds
+      MetricName: IteratorAge
+      Namespace: AWS/Lambda
+      Statistic: Maximum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2
+      Threshold: 30000  # 30 seconds in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AggregatorFunction
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasSNSTopic
+        - [!Ref AlarmSNSTopicArn]
+        - !Ref AWS::NoValue
+
 Outputs:
   TableName:
     Description: DynamoDB table name
@@ -333,3 +464,38 @@ Outputs:
     Value: !Ref AggregatorDLQAlarm
     Export:
       Name: !Sub ${AWS::StackName}-DLQAlarmName
+
+  LambdaErrorRateAlarmName:
+    Condition: DeployAggregatorAlarms
+    Description: CloudWatch alarm for Lambda error rate
+    Value: !Ref LambdaErrorRateAlarm
+    Export:
+      Name: !Sub ${AWS::StackName}-LambdaErrorRateAlarmName
+
+  LambdaDurationAlarmName:
+    Condition: DeployAggregatorAlarms
+    Description: CloudWatch alarm for Lambda duration
+    Value: !Ref LambdaDurationAlarm
+    Export:
+      Name: !Sub ${AWS::StackName}-LambdaDurationAlarmName
+
+  DynamoDBReadThrottleAlarmName:
+    Condition: DeployAlarms
+    Description: CloudWatch alarm for DynamoDB read throttles
+    Value: !Ref DynamoDBReadThrottleAlarm
+    Export:
+      Name: !Sub ${AWS::StackName}-ReadThrottleAlarmName
+
+  DynamoDBWriteThrottleAlarmName:
+    Condition: DeployAlarms
+    Description: CloudWatch alarm for DynamoDB write throttles
+    Value: !Ref DynamoDBWriteThrottleAlarm
+    Export:
+      Name: !Sub ${AWS::StackName}-WriteThrottleAlarmName
+
+  StreamIteratorAgeAlarmName:
+    Condition: DeployAggregatorAlarms
+    Description: CloudWatch alarm for stream iterator age
+    Value: !Ref StreamIteratorAgeAlarm
+    Export:
+      Name: !Sub ${AWS::StackName}-StreamIteratorAgeAlarmName
