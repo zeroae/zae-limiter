@@ -523,3 +523,69 @@ class StackOptions:
         if self.alarm_sns_topic:
             params["alarm_sns_topic_arn"] = self.alarm_sns_topic
         return params
+
+
+class AuditAction:
+    """Audit action type constants."""
+
+    ENTITY_CREATED = "entity_created"
+    ENTITY_DELETED = "entity_deleted"
+    LIMITS_SET = "limits_set"
+    LIMITS_DELETED = "limits_deleted"
+
+
+@dataclass
+class AuditEvent:
+    """
+    Security audit event for tracking modifications.
+
+    Audit events are logged for security-sensitive operations:
+    - Entity creation and deletion
+    - Limit configuration changes
+
+    Attributes:
+        event_id: Unique identifier for the event (timestamp-based)
+        timestamp: ISO timestamp when the event occurred
+        action: Type of action (see AuditAction constants)
+        entity_id: ID of the entity affected
+        principal: Caller identity who performed the action (optional)
+        resource: Resource name for limit-related actions (optional)
+        details: Additional action-specific details
+    """
+
+    event_id: str
+    timestamp: str
+    action: str
+    entity_id: str
+    principal: str | None = None
+    resource: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dictionary for storage."""
+        result: dict[str, Any] = {
+            "event_id": self.event_id,
+            "timestamp": self.timestamp,
+            "action": self.action,
+            "entity_id": self.entity_id,
+        }
+        if self.principal is not None:
+            result["principal"] = self.principal
+        if self.resource is not None:
+            result["resource"] = self.resource
+        if self.details:
+            result["details"] = self.details
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AuditEvent":
+        """Deserialize from dictionary."""
+        return cls(
+            event_id=data["event_id"],
+            timestamp=data["timestamp"],
+            action=data["action"],
+            entity_id=data["entity_id"],
+            principal=data.get("principal"),
+            resource=data.get("resource"),
+            details=data.get("details", {}),
+        )

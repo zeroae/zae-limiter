@@ -70,6 +70,8 @@ from .exceptions import (
 )
 from .lease import Lease, SyncLease
 from .models import (
+    AuditAction,
+    AuditEvent,
     BucketState,
     Entity,
     EntityCapacity,
@@ -113,6 +115,9 @@ __all__ = [
     "ResourceCapacity",
     "EntityCapacity",
     "StackOptions",
+    # Audit
+    "AuditEvent",
+    "AuditAction",
     # Enums
     "FailureMode",
     # Exceptions - Base
