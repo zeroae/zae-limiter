@@ -127,6 +127,7 @@ class StackManager:
             "enable_aggregator": "EnableAggregator",
             "schema_version": "SchemaVersion",
             "pitr_recovery_days": "PITRRecoveryPeriodDays",
+            "log_retention_days": "LogRetentionDays",
         }
 
         for key, value in parameters.items():

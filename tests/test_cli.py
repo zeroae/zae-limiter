@@ -176,6 +176,41 @@ class TestCLI:
         assert params["pitr_recovery_days"] == "7"
 
     @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_log_retention_days(
+        self, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command with --log-retention-days parameter."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--log-retention-days",
+                "90",
+                "--no-aggregator",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify create_stack was called with log_retention_days parameter
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        params = call_args[1]["parameters"]
+        assert "log_retention_days" in params
+        assert params["log_retention_days"] == "90"
+
+    @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with --endpoint-url for LocalStack."""
         mock_instance = Mock()

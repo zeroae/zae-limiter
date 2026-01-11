@@ -60,6 +60,16 @@ def cli() -> None:
     help="Point-in-Time Recovery period in days (1-35, default: AWS default of 35)",
 )
 @click.option(
+    "--log-retention-days",
+    default=30,
+    type=click.Choice([
+        "1", "3", "5", "7", "14", "30", "60", "90", "120", "150", "180",
+        "365", "400", "545", "731", "1096", "1827", "2192", "2557", "2922",
+        "3288", "3653",
+    ]),
+    help="Number of days to retain Lambda logs (CloudWatch standard retention periods)",
+)
+@click.option(
     "--wait/--no-wait",
     default=True,
     help="Wait for stack creation to complete",
@@ -73,6 +83,7 @@ def deploy(
     retention_days: int,
     enable_aggregator: bool,
     pitr_recovery_days: int | None,
+    log_retention_days: str,
     wait: bool,
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
@@ -93,6 +104,7 @@ def deploy(
                 "snapshot_windows": snapshot_windows,
                 "retention_days": str(retention_days),
                 "enable_aggregator": "true" if enable_aggregator else "false",
+                "log_retention_days": log_retention_days,
             }
 
             if pitr_recovery_days is not None:

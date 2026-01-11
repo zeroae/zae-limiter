@@ -68,6 +68,34 @@ Parameters:
     Default: ''
     Description: (Optional) SNS topic ARN for alarm notifications. Leave empty to skip SNS notifications.
 
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 2192
+      - 2557
+      - 2922
+      - 3288
+      - 3653
+    Description: Number of days to retain Lambda logs (CloudWatch standard retention periods)
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
   UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
@@ -182,7 +210,7 @@ Resources:
     Condition: DeployAggregator
     Properties:
       LogGroupName: !Sub /aws/lambda/${TableName}-aggregator
-      RetentionInDays: 30
+      RetentionInDays: !Ref LogRetentionDays
 
   AggregatorRole:
     Type: AWS::IAM::Role

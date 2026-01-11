@@ -81,6 +81,23 @@ class TestStackManager:
         param_dict_max = {p["ParameterKey"]: p["ParameterValue"] for p in params_max}
         assert param_dict_max["PITRRecoveryPeriodDays"] == "35"
 
+    def test_format_parameters_with_log_retention_days(self) -> None:
+        """Test parameter formatting with log retention days."""
+        manager = StackManager(table_name="rate_limits", region="us-east-1")
+        params = manager._format_parameters(
+            {
+                "log_retention_days": "90",
+            }
+        )
+
+        # Should include TableName, SchemaVersion, plus log retention parameter
+        assert len(params) == 3
+
+        param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
+        assert param_dict["TableName"] == "rate_limits"
+        assert "SchemaVersion" in param_dict
+        assert param_dict["LogRetentionDays"] == "90"
+
     def test_load_template(self) -> None:
         """Test loading CloudFormation template."""
         manager = StackManager(table_name="test", region="us-east-1")
