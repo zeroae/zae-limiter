@@ -1,9 +1,12 @@
 """Tests for RateLimiter."""
 
 import pytest
+from botocore.exceptions import ClientError
 
 from zae_limiter import (
+    FailureMode,
     Limit,
+    RateLimiterUnavailable,
     RateLimitExceeded,
 )
 
@@ -433,3 +436,225 @@ class TestRateLimitExceededException:
             header = e.retry_after_header
             assert header.isdigit()
             assert int(header) > 0
+
+
+class TestRateLimiterFailureMode:
+    """Tests for FAIL_OPEN vs FAIL_CLOSED behavior."""
+
+    @pytest.mark.asyncio
+    async def test_fail_open_returns_noop_lease_on_dynamodb_error(self, limiter, monkeypatch):
+        """FAIL_OPEN should return no-op lease on infrastructure error."""
+
+        # Mock repository method to raise error
+        async def mock_error(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ServiceUnavailable", "Message": "DynamoDB down"}},
+                "GetItem",
+            )
+
+        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+
+        # Set failure mode to FAIL_OPEN
+        limiter.failure_mode = FailureMode.FAIL_OPEN
+
+        # Should not raise, should return no-op lease
+        limits = [Limit.per_minute("rpm", 100)]
+        async with limiter.acquire(
+            entity_id="test-entity",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            # No-op lease has no entries
+            assert len(lease.entries) == 0
+            assert lease.consumed == {}
+
+    @pytest.mark.asyncio
+    async def test_fail_closed_raises_unavailable_on_dynamodb_error(self, limiter, monkeypatch):
+        """FAIL_CLOSED should reject requests when DynamoDB is down."""
+
+        # Mock repository method to raise error
+        async def mock_error(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}},
+                "Query",
+            )
+
+        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+
+        # Set failure mode to FAIL_CLOSED (default)
+        limiter.failure_mode = FailureMode.FAIL_CLOSED
+
+        # Should raise RateLimiterUnavailable
+        limits = [Limit.per_minute("rpm", 100)]
+        with pytest.raises(RateLimiterUnavailable) as exc_info:
+            async with limiter.acquire(
+                entity_id="test-entity",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        # Verify exception details
+        assert exc_info.value.cause is not None
+        assert "ProvisionedThroughputExceededException" in str(exc_info.value.cause)
+
+    @pytest.mark.asyncio
+    async def test_fail_open_override_in_acquire_call(self, limiter, monkeypatch):
+        """failure_mode parameter should override limiter default."""
+
+        # Mock error
+        async def mock_error(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "InternalServerError"}},
+                "TransactWriteItems",
+            )
+
+        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+
+        # Set limiter to FAIL_CLOSED, but override in acquire
+        limiter.failure_mode = FailureMode.FAIL_CLOSED
+
+        limits = [Limit.per_minute("rpm", 100)]
+        async with limiter.acquire(
+            entity_id="test-entity",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+            failure_mode=FailureMode.FAIL_OPEN,  # Override to FAIL_OPEN
+        ) as lease:
+            # Should get no-op lease due to override
+            assert len(lease.entries) == 0
+
+    @pytest.mark.asyncio
+    async def test_fail_closed_override_in_acquire_call(self, limiter, monkeypatch):
+        """failure_mode parameter should override limiter default."""
+
+        # Mock error
+        async def mock_error(*args, **kwargs):
+            raise Exception("DynamoDB timeout")
+
+        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+
+        # Set limiter to FAIL_OPEN, but override in acquire
+        limiter.failure_mode = FailureMode.FAIL_OPEN
+
+        limits = [Limit.per_minute("rpm", 100)]
+        with pytest.raises(RateLimiterUnavailable):
+            async with limiter.acquire(
+                entity_id="test-entity",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+                failure_mode=FailureMode.FAIL_CLOSED,  # Override to FAIL_CLOSED
+            ):
+                pass
+
+
+class TestRateLimiterResourceCapacity:
+    """Tests for get_resource_capacity."""
+
+    @pytest.mark.asyncio
+    async def test_get_resource_capacity_basic_aggregation(self, limiter):
+        """Should aggregate capacity across all entities for a resource."""
+        # Create 3 entities with different consumption levels
+        entities = ["entity-a", "entity-b", "entity-c"]
+        for entity_id in entities:
+            await limiter.create_entity(entity_id)
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Entity A: consume 20
+        async with limiter.acquire("entity-a", "gpt-4", limits, {"rpm": 20}):
+            pass
+
+        # Entity B: consume 50
+        async with limiter.acquire("entity-b", "gpt-4", limits, {"rpm": 50}):
+            pass
+
+        # Entity C: consume 10
+        async with limiter.acquire("entity-c", "gpt-4", limits, {"rpm": 10}):
+            pass
+
+        # Query aggregated capacity
+        capacity = await limiter.get_resource_capacity(
+            resource="gpt-4",
+            limit_name="rpm",
+        )
+
+        # Verify aggregation
+        assert capacity.resource == "gpt-4"
+        assert capacity.limit_name == "rpm"
+        assert capacity.total_capacity == 300  # 100 * 3 entities
+        assert capacity.total_available == 220  # 300 - (20 + 50 + 10)
+        assert len(capacity.entities) == 3
+
+        # Verify individual entity capacities
+        entity_map = {e.entity_id: e for e in capacity.entities}
+        assert entity_map["entity-a"].available == 80
+        assert entity_map["entity-b"].available == 50
+        assert entity_map["entity-c"].available == 90
+
+    @pytest.mark.asyncio
+    async def test_get_resource_capacity_parents_only_filter(self, limiter):
+        """parents_only=True should exclude child entities."""
+        # Create hierarchy
+        await limiter.create_entity("org-1")  # Parent
+        await limiter.create_entity("team-1", parent_id="org-1")  # Child
+        await limiter.create_entity("org-2")  # Parent
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Create buckets for all
+        for entity_id in ["org-1", "team-1", "org-2"]:
+            async with limiter.acquire(entity_id, "api", limits, {"rpm": 10}):
+                pass
+
+        # Query with parents_only=False (all)
+        all_capacity = await limiter.get_resource_capacity("api", "rpm", parents_only=False)
+        assert len(all_capacity.entities) == 3
+        assert all_capacity.total_capacity == 300
+
+        # Query with parents_only=True
+        parent_capacity = await limiter.get_resource_capacity("api", "rpm", parents_only=True)
+        assert len(parent_capacity.entities) == 2  # Only org-1 and org-2
+        assert parent_capacity.total_capacity == 200
+
+        # Verify only parents are included
+        parent_ids = {e.entity_id for e in parent_capacity.entities}
+        assert parent_ids == {"org-1", "org-2"}
+        assert "team-1" not in parent_ids
+
+    @pytest.mark.asyncio
+    async def test_get_resource_capacity_utilization_calculation(self, limiter):
+        """Should calculate utilization percentage correctly."""
+        await limiter.create_entity("entity-1")
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Consume 30%
+        async with limiter.acquire("entity-1", "api", limits, {"rpm": 30}):
+            pass
+
+        capacity = await limiter.get_resource_capacity("api", "rpm")
+
+        # Should have 70% available, 30% utilized
+        assert len(capacity.entities) == 1
+        entity = capacity.entities[0]
+        assert entity.available == 70
+        assert entity.capacity == 100
+        # Utilization is (used / capacity * 100) = (30 / 100 * 100) = 30%
+        assert abs(entity.utilization_pct - 30.0) < 0.1
+
+    @pytest.mark.asyncio
+    async def test_get_resource_capacity_empty_result(self, limiter):
+        """Should return empty capacity when no buckets match."""
+        capacity = await limiter.get_resource_capacity("nonexistent-resource", "rpm")
+
+        assert capacity.resource == "nonexistent-resource"
+        assert capacity.limit_name == "rpm"
+        assert capacity.total_capacity == 0
+        assert capacity.total_available == 0
+        assert len(capacity.entities) == 0
+        assert capacity.utilization_pct == 0.0
