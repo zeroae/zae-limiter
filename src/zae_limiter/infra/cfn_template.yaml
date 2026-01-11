@@ -130,6 +130,35 @@ Resources:
   # -------------------------------------------------------------------------
   # Lambda Aggregator
   # -------------------------------------------------------------------------
+  AggregatorDLQ:
+    Type: AWS::SQS::Queue
+    Condition: DeployAggregator
+    Properties:
+      QueueName: !Sub ${TableName}-aggregator-dlq
+      MessageRetentionPeriod: 1209600  # 14 days (max retention)
+      VisibilityTimeout: 300  # 5 minutes
+      Tags:
+        - Key: Application
+          Value: zae-limiter
+
+  AggregatorDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployAggregator
+    Properties:
+      AlarmName: !Sub ${TableName}-aggregator-dlq-alarm
+      AlarmDescription: Alert when messages appear in the aggregator DLQ
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt AggregatorDLQ.QueueName
+      TreatMissingData: notBreaching
+
   AggregatorLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: DeployAggregator
@@ -179,6 +208,13 @@ Resources:
                 Resource:
                   - !GetAtt RateLimitsTable.StreamArn
 
+              # DLQ access
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource:
+                  - !GetAtt AggregatorDLQ.Arn
+
   AggregatorFunction:
     Type: AWS::Lambda::Function
     Condition: DeployAggregator
@@ -220,6 +256,14 @@ Resources:
       StartingPosition: LATEST
       BatchSize: 100
       MaximumBatchingWindowInSeconds: 5
+      MaximumRetryAttempts: 3
+      MaximumRecordAgeInSeconds: 3600  # 1 hour
+      BisectBatchOnFunctionError: true
+
+      # Send failed batches to DLQ
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt AggregatorDLQ.Arn
 
       # Filter to only process MODIFY events on BUCKET records
       FilterCriteria:
@@ -268,3 +312,24 @@ Outputs:
     Value: !Ref AggregatorFunction
     Export:
       Name: !Sub ${AWS::StackName}-AggregatorName
+
+  AggregatorDLQUrl:
+    Condition: DeployAggregator
+    Description: Aggregator Dead Letter Queue URL
+    Value: !Ref AggregatorDLQ
+    Export:
+      Name: !Sub ${AWS::StackName}-DLQUrl
+
+  AggregatorDLQArn:
+    Condition: DeployAggregator
+    Description: Aggregator Dead Letter Queue ARN
+    Value: !GetAtt AggregatorDLQ.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-DLQArn
+
+  AggregatorDLQAlarmName:
+    Condition: DeployAggregator
+    Description: CloudWatch alarm for DLQ monitoring
+    Value: !Ref AggregatorDLQAlarm
+    Export:
+      Name: !Sub ${AWS::StackName}-DLQAlarmName
