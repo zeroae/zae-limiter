@@ -132,6 +132,8 @@ class StackManager:
             "enable_alarms": "EnableAlarms",
             "alarm_sns_topic_arn": "AlarmSNSTopicArn",
             "lambda_duration_threshold": "LambdaDurationThreshold",
+            "permission_boundary": "PermissionBoundary",
+            "role_name": "RoleName",
         }
 
         for key, value in parameters.items():
@@ -240,7 +242,7 @@ class StackManager:
         stack_name = stack_name or self.get_stack_name()
 
         # Convert stack_options to parameters
-        parameters = stack_options.to_parameters() if stack_options else None
+        parameters = stack_options.to_parameters(self.table_name) if stack_options else None
         client = await self._get_client()
 
         # Check if stack already exists

@@ -78,6 +78,8 @@ class TestE2EAWSFullWorkflow:
             retention_days=1,  # Minimum for cost
             lambda_timeout=60,
             lambda_memory=256,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
         )
 
         limiter = RateLimiter(
@@ -136,6 +138,23 @@ class TestE2EAWSFullWorkflow:
             limits=limits,
         )
         assert available["rpm"] < 100
+
+    @pytest.mark.asyncio
+    async def test_role_has_permission_boundary(self, aws_limiter, unique_table_name):
+        """Verify the Lambda role was created with permission boundary and custom name."""
+        import boto3
+
+        iam = boto3.client("iam", region_name="us-east-1")
+
+        # The role name format "PowerUserPB-{}" produces "PowerUserPB-{table_name}-aggregator-role"
+        expected_role_name = f"PowerUserPB-{unique_table_name}-aggregator-role"
+
+        role = iam.get_role(RoleName=expected_role_name)
+
+        assert role["Role"]["RoleName"] == expected_role_name
+        assert role["Role"]["PermissionsBoundary"]["PermissionsBoundaryArn"] == (
+            "arn:aws:iam::aws:policy/PowerUserAccess"
+        )
 
     @pytest.mark.asyncio
     async def test_cloudwatch_alarm_states(
@@ -301,6 +320,8 @@ class TestE2EAWSUsageSnapshots:
             enable_alarms=False,  # Faster for snapshot tests
             snapshot_windows="hourly,daily",
             retention_days=1,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
         )
 
         limiter = RateLimiter(
@@ -386,6 +407,8 @@ class TestE2EAWSRateLimiting:
             enable_aggregator=False,
             enable_alarms=False,
             retention_days=1,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
         )
 
         limiter = RateLimiter(

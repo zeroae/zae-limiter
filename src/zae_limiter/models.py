@@ -467,6 +467,8 @@ class StackOptions:
         alarm_sns_topic: SNS topic ARN for alarm notifications
         lambda_duration_threshold_pct: Duration alarm threshold as percentage of timeout (1-100)
         stack_name: Override stack name (default: zae-limiter-{table_name})
+        permission_boundary: IAM permission boundary (policy name or full ARN)
+        role_name_format: Format template for role name, {} = default role name
     """
 
     snapshot_windows: str = "hourly,daily"
@@ -480,6 +482,8 @@ class StackOptions:
     alarm_sns_topic: str | None = None
     lambda_duration_threshold_pct: int = 80
     stack_name: str | None = None
+    permission_boundary: str | None = None
+    role_name_format: str | None = None
 
     def __post_init__(self) -> None:
         """Validate options."""
@@ -497,10 +501,44 @@ class StackOptions:
             raise ValueError(
                 f"log_retention_days must be one of {sorted(VALID_LOG_RETENTION_DAYS)}"
             )
+        # Validate role_name_format contains exactly one {}
+        if self.role_name_format is not None:
+            placeholder_count = self.role_name_format.count("{}")
+            if placeholder_count != 1:
+                raise ValueError(
+                    f"role_name_format must contain exactly one '{{}}' placeholder, "
+                    f"found {placeholder_count}"
+                )
+            # Validate resulting name won't exceed IAM limits (64 chars)
+            # We can't fully validate without table_name, but we can check the format length
+            format_len = len(self.role_name_format) - 2  # subtract {}
+            if format_len > 40:  # leave room for table_name-aggregator-role
+                raise ValueError(
+                    "role_name_format template is too long, resulting role name "
+                    "may exceed IAM 64 character limit"
+                )
 
-    def to_parameters(self) -> dict[str, str]:
+    def get_role_name(self, table_name: str) -> str | None:
+        """
+        Get the final role name for a given table name.
+
+        Args:
+            table_name: DynamoDB table name
+
+        Returns:
+            Final role name, or None to use CloudFormation default
+        """
+        if self.role_name_format is None:
+            return None
+        default_role = f"{table_name}-aggregator-role"
+        return self.role_name_format.replace("{}", default_role)
+
+    def to_parameters(self, table_name: str | None = None) -> dict[str, str]:
         """
         Convert to stack parameters dict for StackManager.
+
+        Args:
+            table_name: Table name for role_name_format substitution
 
         Returns:
             Dict with snake_case keys matching stack_manager parameter mapping.
@@ -522,6 +560,12 @@ class StackOptions:
             params["pitr_recovery_days"] = str(self.pitr_recovery_days)
         if self.alarm_sns_topic:
             params["alarm_sns_topic_arn"] = self.alarm_sns_topic
+        if self.permission_boundary:
+            params["permission_boundary"] = self.permission_boundary
+        if self.role_name_format and table_name:
+            role_name = self.get_role_name(table_name)
+            if role_name:
+                params["role_name"] = role_name
         return params
 
 
