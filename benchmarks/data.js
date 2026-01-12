@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768190750007,
+  "lastUpdate": 1768195847028,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -202,6 +202,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.02722667726883063",
             "extra": "mean: 56.15319286363532 msec\nrounds: 22"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "63718c17d3625b4bb03d2094ca5d40b6a33f9fe4",
+          "message": "🔒 feat(models): add input validation to prevent injection attacks (#75)\n\n* 🔒 feat(models): add input validation to prevent injection attacks\n\nAdd comprehensive input validation to defend against DynamoDB key\ninjection attacks. The '#' character is used as a key delimiter in\nDynamoDB and must be forbidden in user-provided values.\n\nChanges:\n- Add ValidationError exception hierarchy (ValidationError,\n  InvalidIdentifierError, InvalidNameError) to exceptions.py\n- Add validate_identifier() and validate_name() functions to models.py\n- Add validation to Limit, Entity, BucketState, and LimitStatus models\n- Export new exceptions in __init__.py\n- Add comprehensive test coverage (29 new tests)\n\nValidation rules:\n- Identifiers (entity_id, parent_id): alphanumeric start, max 256 chars,\n  allows alphanumeric, underscore, hyphen, dot, colon, @\n- Names (limit_name, resource): letter start, max 64 chars,\n  allows alphanumeric, underscore, hyphen, dot\n\nCloses #48\n\n* 🐛 fix(models): move validation to API boundaries for performance\n\nAddress code review feedback:\n- Remove __post_init__ validation from BucketState and LimitStatus\n  (internal models used for DynamoDB deserialization)\n- Keep validation in BucketState.from_limit() (API boundary)\n- Keep validation in Limit and Entity (user-facing models)\n\nThis fixes:\n1. Performance regression (4.25x slowdown) - validation no longer\n   runs on every internal model construction\n2. Deserialization bug - repository can now read DynamoDB data\n   with empty string defaults without crashing\n\nAlso updates:\n- CLAUDE.md to document ValidationError exception\n- Tests to reflect internal models don't validate directly\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🎨 style(models): fix ruff formatting\n\n* 🐛 fix(models): remove Entity validation for benchmark performance\n\nMove validation from Entity.__post_init__ to Repository.create_entity()\nto avoid performance overhead during DynamoDB deserialization.\n\n- Entity no longer validates in __post_init__ (internal model)\n- Repository.create_entity() validates entity_id and parent_id at API boundary\n- Add comprehensive tests for repository validation\n- Update model tests to reflect Entity is an internal model\n\nThis fixes the 2.43x performance regression in test_available_check benchmark.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ♻️ refactor(validation): move validation to RateLimiter API boundary\n\nMove entity_id and resource validation from BucketState.from_limit() to\nRateLimiter._do_acquire() for consistent API boundary validation.\n\nChanges:\n- Remove validation from BucketState.from_limit() (internal factory)\n- Add validation to RateLimiter._do_acquire() (API boundary)\n- Add ValidationError to exceptions that bypass FAIL_OPEN mode\n- Add input validation tests to test_limiter.py\n- Update test_models.py to reflect from_limit is internal\n\nThis ensures validation happens at the public API boundary while keeping\ninternal model construction fast and unvalidated.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T00:28:29-05:00",
+          "tree_id": "3cb86eab302bdb568fe81e9b12c638a898e65a50",
+          "url": "https://github.com/zeroae/zae-limiter/commit/63718c17d3625b4bb03d2094ca5d40b6a33f9fe4"
+        },
+        "date": 1768195846611,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 88.64000635450937,
+            "unit": "iter/sec",
+            "range": "stddev: 0.014368388976432353",
+            "extra": "mean: 11.28158763888815 msec\nrounds: 180"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 21.771917448528807,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0605898870196733",
+            "extra": "mean: 45.93072715639811 msec\nrounds: 211"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1075.712612528329,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00021929895955026952",
+            "extra": "mean: 929.6163197804516 usec\nrounds: 910"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 56.94235857679263,
+            "unit": "iter/sec",
+            "range": "stddev: 0.029222667071432052",
+            "extra": "mean: 17.56161888958985 msec\nrounds: 317"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 51.34312206983351,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05759838172751993",
+            "extra": "mean: 19.476805454874096 msec\nrounds: 277"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 24.38053942162023,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07342162316898168",
+            "extra": "mean: 41.01631972560942 msec\nrounds: 164"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 26.483825038479583,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09878569152783225",
+            "extra": "mean: 37.758896177083685 msec\nrounds: 96"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 5.019281344225767,
+            "unit": "iter/sec",
+            "range": "stddev: 0.13999505878421478",
+            "extra": "mean: 199.231708967741 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 4.678897069569877,
+            "unit": "iter/sec",
+            "range": "stddev: 0.22119330584985614",
+            "extra": "mean: 213.7255821470611 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.089016128492737,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010689874051306307",
+            "extra": "mean: 45.27136900000244 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.684824246693545,
+            "unit": "iter/sec",
+            "range": "stddev: 0.028683688554514485",
+            "extra": "mean: 53.51936880952784 msec\nrounds: 21"
           }
         ]
       }
