@@ -79,9 +79,7 @@ def validate_name(value: str, field_name: str) -> None:
         raise InvalidNameError(field_name, value, "cannot be empty")
 
     if len(value) > MAX_NAME_LENGTH:
-        raise InvalidNameError(
-            field_name, value, f"exceeds maximum length of {MAX_NAME_LENGTH}"
-        )
+        raise InvalidNameError(field_name, value, f"exceeds maximum length of {MAX_NAME_LENGTH}")
 
     if FORBIDDEN_CHAR in value:
         raise InvalidNameError(
