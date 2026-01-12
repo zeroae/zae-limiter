@@ -2,7 +2,16 @@
 
 import pytest
 
-from zae_limiter import Entity, Limit, LimitName, StackOptions
+from zae_limiter import (
+    Entity,
+    InvalidIdentifierError,
+    InvalidNameError,
+    Limit,
+    LimitName,
+    StackOptions,
+    ValidationError,
+)
+from zae_limiter.models import BucketState, LimitStatus
 
 
 class TestLimit:
@@ -235,3 +244,327 @@ class TestStackOptions:
         opts = StackOptions()
         with pytest.raises(AttributeError):
             opts.lambda_timeout = 120
+
+
+class TestInputValidation:
+    """Tests for input validation security (issue #48)."""
+
+    # -------------------------------------------------------------------------
+    # Exception Hierarchy Tests
+    # -------------------------------------------------------------------------
+
+    def test_validation_error_inherits_from_base(self):
+        """Test ValidationError is in the exception hierarchy."""
+        from zae_limiter import ZAELimiterError
+
+        assert issubclass(ValidationError, ZAELimiterError)
+        assert issubclass(InvalidIdentifierError, ValidationError)
+        assert issubclass(InvalidNameError, ValidationError)
+
+    def test_validation_error_attributes(self):
+        """Test ValidationError contains field, value, reason."""
+        err = ValidationError("test_field", "bad_value", "test reason")
+        assert err.field == "test_field"
+        assert err.value == "bad_value"
+        assert err.reason == "test reason"
+        assert "test_field" in str(err)
+        assert "test reason" in str(err)
+
+    def test_validation_error_truncates_long_values(self):
+        """Test that long values are truncated in error."""
+        long_value = "x" * 100
+        err = ValidationError("field", long_value, "too long")
+        assert len(err.value) <= 53  # 50 + "..."
+        assert err.value.endswith("...")
+
+    # -------------------------------------------------------------------------
+    # Limit Name Validation Tests
+    # -------------------------------------------------------------------------
+
+    def test_limit_name_valid(self):
+        """Test valid limit names are accepted."""
+        valid_names = [
+            "rpm",
+            "tpm",
+            "requests",
+            "tokens_per_minute",
+            "rate-limit",
+            "gpt-3.5",  # dots allowed
+        ]
+        for name in valid_names:
+            limit = Limit.per_minute(name, 100)
+            assert limit.name == name
+
+    def test_limit_name_rejects_hash(self):
+        """Test limit name with # is rejected."""
+        with pytest.raises(InvalidNameError) as exc_info:
+            Limit.per_minute("rpm#evil", 100)
+        assert exc_info.value.field == "name"
+        assert "#" in exc_info.value.reason
+
+    def test_limit_name_rejects_empty(self):
+        """Test empty limit name is rejected."""
+        with pytest.raises(InvalidNameError) as exc_info:
+            Limit.per_minute("", 100)
+        assert exc_info.value.field == "name"
+        assert "empty" in exc_info.value.reason
+
+    def test_limit_name_rejects_too_long(self):
+        """Test limit name exceeding max length is rejected."""
+        with pytest.raises(InvalidNameError) as exc_info:
+            Limit.per_minute("a" * 100, 100)
+        assert exc_info.value.field == "name"
+        assert "length" in exc_info.value.reason
+
+    def test_limit_name_must_start_with_letter(self):
+        """Test limit name starting with number is rejected."""
+        with pytest.raises(InvalidNameError) as exc_info:
+            Limit.per_minute("123rpm", 100)
+        assert exc_info.value.field == "name"
+        assert "letter" in exc_info.value.reason
+
+    def test_limit_name_rejects_special_chars(self):
+        """Test limit name with special characters is rejected."""
+        # Note: dots are allowed (e.g., gpt-3.5)
+        invalid_names = ["rpm@test", "rpm:test", "rpm/test", "rpm test"]
+        for name in invalid_names:
+            with pytest.raises(InvalidNameError):
+                Limit.per_minute(name, 100)
+
+    # -------------------------------------------------------------------------
+    # Entity ID Validation Tests
+    # -------------------------------------------------------------------------
+
+    def test_entity_id_valid(self):
+        """Test valid entity IDs are accepted."""
+        valid_ids = [
+            "user123",
+            "550e8400-e29b-41d4-a716-446655440000",  # UUID
+            "sk-proj-abc123_xyz",  # API key format
+            "user@example.com",  # Email-like
+            "org:team:user",  # Colon-separated
+            "a",  # Single char
+        ]
+        for entity_id in valid_ids:
+            entity = Entity(id=entity_id)
+            assert entity.id == entity_id
+
+    def test_entity_id_rejects_hash(self):
+        """Test entity ID with # is rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            Entity(id="user#123")
+        assert exc_info.value.field == "id"
+        assert "#" in exc_info.value.reason
+
+    def test_entity_id_rejects_empty(self):
+        """Test empty entity ID is rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            Entity(id="")
+        assert exc_info.value.field == "id"
+        assert "empty" in exc_info.value.reason
+
+    def test_entity_id_rejects_too_long(self):
+        """Test entity ID exceeding max length is rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            Entity(id="a" * 300)
+        assert exc_info.value.field == "id"
+        assert "length" in exc_info.value.reason
+
+    def test_entity_id_must_start_alphanumeric(self):
+        """Test entity ID must start with alphanumeric."""
+        invalid_starts = ["_user", "-user", ".user", "@user", ":user"]
+        for entity_id in invalid_starts:
+            with pytest.raises(InvalidIdentifierError):
+                Entity(id=entity_id)
+
+    def test_entity_id_rejects_special_chars(self):
+        """Test entity ID with invalid special characters is rejected."""
+        invalid_ids = ["user/path", "user\\path", "user\nid", "user\tid", "user id"]
+        for entity_id in invalid_ids:
+            with pytest.raises(InvalidIdentifierError):
+                Entity(id=entity_id)
+
+    # -------------------------------------------------------------------------
+    # Parent ID Validation Tests
+    # -------------------------------------------------------------------------
+
+    def test_parent_id_valid(self):
+        """Test valid parent IDs are accepted."""
+        entity = Entity(id="child-1", parent_id="parent-123")
+        assert entity.parent_id == "parent-123"
+
+    def test_parent_id_none_is_valid(self):
+        """Test None parent_id is valid (root entity)."""
+        entity = Entity(id="root-1", parent_id=None)
+        assert entity.parent_id is None
+        assert entity.is_parent is True
+
+    def test_parent_id_rejects_hash(self):
+        """Test parent ID with # is rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            Entity(id="child-1", parent_id="parent#123")
+        assert exc_info.value.field == "parent_id"
+
+    def test_parent_id_rejects_empty(self):
+        """Test empty parent ID is rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            Entity(id="child-1", parent_id="")
+        assert exc_info.value.field == "parent_id"
+
+    # -------------------------------------------------------------------------
+    # BucketState Validation Tests
+    # -------------------------------------------------------------------------
+
+    def test_bucket_state_valid(self):
+        """Test valid BucketState is created."""
+        bucket = BucketState(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            tokens_milli=100000,
+            last_refill_ms=1000000,
+            capacity_milli=100000,
+            burst_milli=100000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        assert bucket.entity_id == "user-123"
+
+    def test_bucket_state_rejects_invalid_entity_id(self):
+        """Test BucketState rejects invalid entity_id."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            BucketState(
+                entity_id="user#123",
+                resource="api",
+                limit_name="rpm",
+                tokens_milli=100000,
+                last_refill_ms=1000000,
+                capacity_milli=100000,
+                burst_milli=100000,
+                refill_amount_milli=100000,
+                refill_period_ms=60000,
+            )
+        assert exc_info.value.field == "entity_id"
+
+    def test_bucket_state_rejects_invalid_resource(self):
+        """Test BucketState rejects invalid resource name."""
+        with pytest.raises(InvalidNameError) as exc_info:
+            BucketState(
+                entity_id="user-123",
+                resource="api#v2",
+                limit_name="rpm",
+                tokens_milli=100000,
+                last_refill_ms=1000000,
+                capacity_milli=100000,
+                burst_milli=100000,
+                refill_amount_milli=100000,
+                refill_period_ms=60000,
+            )
+        assert exc_info.value.field == "resource"
+
+    def test_bucket_state_rejects_invalid_limit_name(self):
+        """Test BucketState rejects invalid limit_name."""
+        with pytest.raises(InvalidNameError) as exc_info:
+            BucketState(
+                entity_id="user-123",
+                resource="api",
+                limit_name="rpm#hack",
+                tokens_milli=100000,
+                last_refill_ms=1000000,
+                capacity_milli=100000,
+                burst_milli=100000,
+                refill_amount_milli=100000,
+                refill_period_ms=60000,
+            )
+        assert exc_info.value.field == "limit_name"
+
+    # -------------------------------------------------------------------------
+    # LimitStatus Validation Tests
+    # -------------------------------------------------------------------------
+
+    def test_limit_status_valid(self):
+        """Test valid LimitStatus is created."""
+        limit = Limit.per_minute("rpm", 100)
+        status = LimitStatus(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            limit=limit,
+            available=50,
+            requested=10,
+            exceeded=False,
+            retry_after_seconds=0,
+        )
+        assert status.entity_id == "user-123"
+
+    def test_limit_status_rejects_invalid_entity_id(self):
+        """Test LimitStatus rejects invalid entity_id."""
+        limit = Limit.per_minute("rpm", 100)
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            LimitStatus(
+                entity_id="user#123",
+                resource="api",
+                limit_name="rpm",
+                limit=limit,
+                available=50,
+                requested=10,
+                exceeded=False,
+                retry_after_seconds=0,
+            )
+        assert exc_info.value.field == "entity_id"
+
+    def test_limit_status_rejects_invalid_resource(self):
+        """Test LimitStatus rejects invalid resource."""
+        limit = Limit.per_minute("rpm", 100)
+        with pytest.raises(InvalidNameError) as exc_info:
+            LimitStatus(
+                entity_id="user-123",
+                resource="123api",  # must start with letter
+                limit_name="rpm",
+                limit=limit,
+                available=50,
+                requested=10,
+                exceeded=False,
+                retry_after_seconds=0,
+            )
+        assert exc_info.value.field == "resource"
+
+    # -------------------------------------------------------------------------
+    # BucketState.from_limit Validation Tests
+    # -------------------------------------------------------------------------
+
+    def test_bucket_state_from_limit_validates_entity_id(self):
+        """Test BucketState.from_limit validates entity_id."""
+        limit = Limit.per_minute("rpm", 100)
+        with pytest.raises(InvalidIdentifierError):
+            BucketState.from_limit(
+                entity_id="user#123",
+                resource="api",
+                limit=limit,
+                now_ms=1000000,
+            )
+
+    def test_bucket_state_from_limit_validates_resource(self):
+        """Test BucketState.from_limit validates resource."""
+        limit = Limit.per_minute("rpm", 100)
+        with pytest.raises(InvalidNameError):
+            BucketState.from_limit(
+                entity_id="user-123",
+                resource="api#v2",
+                limit=limit,
+                now_ms=1000000,
+            )
+
+    # -------------------------------------------------------------------------
+    # Catching ValidationError as Category
+    # -------------------------------------------------------------------------
+
+    def test_can_catch_validation_error_category(self):
+        """Test that ValidationError can catch all validation errors."""
+        # InvalidIdentifierError
+        with pytest.raises(ValidationError):
+            Entity(id="user#123")
+
+        # InvalidNameError
+        with pytest.raises(ValidationError):
+            Limit.per_minute("rpm#test", 100)

@@ -1,7 +1,100 @@
 """Core models for zae-limiter."""
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+from .exceptions import InvalidIdentifierError, InvalidNameError
+
+# ---------------------------------------------------------------------------
+# Validation Constants
+# ---------------------------------------------------------------------------
+
+# Maximum lengths for validated fields
+MAX_IDENTIFIER_LENGTH = 256  # entity_id, parent_id
+MAX_NAME_LENGTH = 64  # limit_name, resource
+
+# Identifiers: alphanumeric start, then alphanumeric + _ - . : @
+# Supports UUIDs, API keys (sk-proj-xxx), email-like formats
+IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-:@]*$")
+
+# Names: letter start, then alphanumeric + _ - .
+# Used for limit names (rpm, tpm) and resources (api, gpt-3.5-turbo)
+NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.\-]*$")
+
+# The '#' character is used as a key delimiter in DynamoDB and must be forbidden
+FORBIDDEN_CHAR = "#"
+
+
+# ---------------------------------------------------------------------------
+# Validation Functions
+# ---------------------------------------------------------------------------
+
+
+def validate_identifier(value: str, field_name: str) -> None:
+    """
+    Validate an identifier (entity_id, parent_id).
+
+    Args:
+        value: The identifier value to validate
+        field_name: Name of the field (for error messages)
+
+    Raises:
+        InvalidIdentifierError: If validation fails
+    """
+    if not value:
+        raise InvalidIdentifierError(field_name, value, "cannot be empty")
+
+    if len(value) > MAX_IDENTIFIER_LENGTH:
+        raise InvalidIdentifierError(
+            field_name, value, f"exceeds maximum length of {MAX_IDENTIFIER_LENGTH}"
+        )
+
+    if FORBIDDEN_CHAR in value:
+        raise InvalidIdentifierError(
+            field_name, value, f"cannot contain '{FORBIDDEN_CHAR}' (reserved delimiter)"
+        )
+
+    if not IDENTIFIER_PATTERN.match(value):
+        raise InvalidIdentifierError(
+            field_name,
+            value,
+            "must start with alphanumeric and contain only alphanumeric, "
+            "underscore, hyphen, dot, colon, or @ characters",
+        )
+
+
+def validate_name(value: str, field_name: str) -> None:
+    """
+    Validate a name (limit_name, resource).
+
+    Args:
+        value: The name value to validate
+        field_name: Name of the field (for error messages)
+
+    Raises:
+        InvalidNameError: If validation fails
+    """
+    if not value:
+        raise InvalidNameError(field_name, value, "cannot be empty")
+
+    if len(value) > MAX_NAME_LENGTH:
+        raise InvalidNameError(
+            field_name, value, f"exceeds maximum length of {MAX_NAME_LENGTH}"
+        )
+
+    if FORBIDDEN_CHAR in value:
+        raise InvalidNameError(
+            field_name, value, f"cannot contain '{FORBIDDEN_CHAR}' (reserved delimiter)"
+        )
+
+    if not NAME_PATTERN.match(value):
+        raise InvalidNameError(
+            field_name,
+            value,
+            "must start with a letter and contain only alphanumeric, "
+            "underscore, hyphen, or dot characters",
+        )
 
 
 @dataclass(frozen=True)
@@ -27,6 +120,7 @@ class Limit:
     refill_period_seconds: int
 
     def __post_init__(self) -> None:
+        validate_name(self.name, "name")
         if self.capacity <= 0:
             raise ValueError("capacity must be positive")
         if self.burst < self.capacity:
@@ -166,6 +260,11 @@ class Entity:
     metadata: dict[str, str] = field(default_factory=dict)
     created_at: str | None = None
 
+    def __post_init__(self) -> None:
+        validate_identifier(self.id, "id")
+        if self.parent_id is not None:
+            validate_identifier(self.parent_id, "parent_id")
+
     @property
     def is_parent(self) -> bool:
         """True if this entity has no parent (is a root/project)."""
@@ -195,6 +294,11 @@ class LimitStatus:
     exceeded: bool  # True if this limit was exceeded
     retry_after_seconds: float  # time until `requested` is available (0 if not exceeded)
 
+    def __post_init__(self) -> None:
+        validate_identifier(self.entity_id, "entity_id")
+        validate_name(self.resource, "resource")
+        validate_name(self.limit_name, "limit_name")
+
     @property
     def deficit(self) -> int:
         """How many tokens short we are (0 if not exceeded)."""
@@ -218,6 +322,11 @@ class BucketState:
     burst_milli: int  # max burst (in millitokens)
     refill_amount_milli: int  # refill numerator (in millitokens)
     refill_period_ms: int  # refill denominator (in milliseconds)
+
+    def __post_init__(self) -> None:
+        validate_identifier(self.entity_id, "entity_id")
+        validate_name(self.resource, "resource")
+        validate_name(self.limit_name, "limit_name")
 
     @property
     def tokens(self) -> int:

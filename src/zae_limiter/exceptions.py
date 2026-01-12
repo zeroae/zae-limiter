@@ -311,3 +311,58 @@ class IncompatibleSchemaError(VersionError):
         if migration_guide_url:
             msg += f" See: {migration_guide_url}"
         super().__init__(msg)
+
+
+# ---------------------------------------------------------------------------
+# Validation Exceptions
+# ---------------------------------------------------------------------------
+
+
+class ValidationError(ZAELimiterError):
+    """
+    Base exception for input validation errors.
+
+    This includes errors raised when invalid input is provided to
+    models, such as invalid entity IDs, limit names, or resource names.
+
+    Attributes:
+        field: The name of the field that failed validation
+        value: The invalid value (truncated if too long)
+        reason: Human-readable explanation of why validation failed
+    """
+
+    def __init__(self, field: str, value: str, reason: str) -> None:
+        self.field = field
+        self.value = value[:50] + "..." if len(value) > 50 else value
+        self.reason = reason
+        super().__init__(f"Invalid {field}: {reason}")
+
+
+class InvalidIdentifierError(ValidationError):
+    """
+    Raised when an identifier (entity_id, parent_id) is invalid.
+
+    Identifiers must:
+    - Not be empty
+    - Not contain the '#' character (used as key delimiter)
+    - Not exceed 256 characters
+    - Start with alphanumeric character
+    - Contain only: alphanumeric, underscore, hyphen, dot, colon, @
+    """
+
+    pass
+
+
+class InvalidNameError(ValidationError):
+    """
+    Raised when a name (limit_name, resource) is invalid.
+
+    Names must:
+    - Not be empty
+    - Start with a letter
+    - Contain only alphanumeric characters, underscores, hyphens, and dots
+    - Not exceed 64 characters
+    - Not contain the '#' character
+    """
+
+    pass

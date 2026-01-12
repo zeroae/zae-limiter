@@ -56,11 +56,14 @@ from .exceptions import (
     IncompatibleSchemaError,
     InfrastructureError,
     InfrastructureNotFoundError,
+    InvalidIdentifierError,
+    InvalidNameError,
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
     StackAlreadyExistsError,
     StackCreationError,
+    ValidationError,
     VersionError,
     VersionMismatchError,
     ZAELimiterError,
@@ -132,6 +135,10 @@ __all__ = [
     # Exceptions - Version
     "VersionMismatchError",
     "IncompatibleSchemaError",
+    # Exceptions - Validation
+    "ValidationError",
+    "InvalidIdentifierError",
+    "InvalidNameError",
 ]
 
 
