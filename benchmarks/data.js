@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768256807260,
+  "lastUpdate": 1768257084771,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -707,6 +707,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.034333194386366006",
             "extra": "mean: 57.1908683529313 msec\nrounds: 17"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6504b22e55e93f1a5ebf13534c015f348e40f70",
+          "message": "✅ test(e2e): add E2E integration tests for LocalStack and AWS (#82)\n\n* ✅ test(e2e): add E2E integration tests for LocalStack and AWS (#46)\n\nAdd comprehensive end-to-end integration tests that validate the full\nstack lifecycle including CloudFormation, DynamoDB, Lambda aggregator,\nand CloudWatch alarms.\n\nChanges:\n- Add test_e2e_localstack.py with 9 tests for LocalStack integration\n- Add test_e2e_aws.py with 9 tests for real AWS integration\n- Add --run-aws pytest flag to enable AWS tests\n- Fix CloudFormation template: remove invalid StreamEnabled property\n- Fix table naming to use hyphens (CloudFormation stack name constraint)\n- Add timing-tolerant assertions for token bucket refill behavior\n- Add explicit stack cleanup in test fixtures\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(e2e): mark flaky usage snapshot test as xfail (#84)\n\nThe test_usage_snapshots_created test fails intermittently because\nthe Lambda aggregator may not create snapshots within the 120s wait\nperiod due to DynamoDB Streams latency and Lambda batching delays.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): fix flaky concurrent lease test by reducing refill rate\n\nUse per_hour limit (1000/hour = ~0.28/second) instead of per_minute\n(100/minute = ~1.67/second) to prevent bucket from fully refilling\nduring concurrent operations in CI.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): fix CI failures for E2E tests\n\n- Add aws and e2e pytest markers to pyproject.toml\n- Disable CloudWatch alarms in e2e_stack_options (LocalStack bug)\n- Loosen concurrent test assertion (optimistic locking timing)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T17:26:35-05:00",
+          "tree_id": "f5e5c987cd7b7d127932c83ecef5744263d195cd",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d6504b22e55e93f1a5ebf13534c015f348e40f70"
+        },
+        "date": 1768257084513,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 99.04715332625544,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013120757998244663",
+            "extra": "mean: 10.096201318437284 msec\nrounds: 179"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 23.558446857561357,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05760746087862037",
+            "extra": "mean: 42.44762000000176 msec\nrounds: 203"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1072.065199203095,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000348947236521859",
+            "extra": "mean: 932.7790891294078 usec\nrounds: 920"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 52.56579808155997,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07274788972220575",
+            "extra": "mean: 19.023776609429984 msec\nrounds: 297"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 58.53294870380911,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05001491319628298",
+            "extra": "mean: 17.084394723734867 msec\nrounds: 257"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 29.46450277877858,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0464658937429686",
+            "extra": "mean: 33.939143908453694 msec\nrounds: 142"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 28.56118262677422,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09693193051531834",
+            "extra": "mean: 35.01255578480725 msec\nrounds: 79"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 16.821378548373055,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009031838185150022",
+            "extra": "mean: 59.44815980000158 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 4.9638973455574895,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1463293226829997",
+            "extra": "mean: 201.45460922856597 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.007398435827255,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007853424887152958",
+            "extra": "mean: 49.98151075000834 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.79172067482718,
+            "unit": "iter/sec",
+            "range": "stddev: 0.028664996032335733",
+            "extra": "mean: 56.205918374992336 msec\nrounds: 16"
           }
         ]
       }
