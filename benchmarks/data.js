@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768257084771,
+  "lastUpdate": 1768257849919,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -808,6 +808,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.028664996032335733",
             "extra": "mean: 56.205918374992336 msec\nrounds: 16"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "acf485f1c56bcb725e70d3966fabcafac0a8847a",
+          "message": "📝 docs: document stack lifecycle and cleanup best practices (#79) (#88)\n\n- Enhanced delete_stack() docstrings with examples and warnings\n- Added Stack Lifecycle section to README with cleanup examples\n- Added Stack Lifecycle Management section to deployment docs\n- Updated LocalStack docs with proper pytest fixtures including cleanup\n- Added use-case guidance for dev/test/production scenarios\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T17:41:28-05:00",
+          "tree_id": "d7dcd91fd6a96f962d4d8ffa2a4e5b86bea6dfd9",
+          "url": "https://github.com/zeroae/zae-limiter/commit/acf485f1c56bcb725e70d3966fabcafac0a8847a"
+        },
+        "date": 1768257849590,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 92.68959513346157,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013634189422221417",
+            "extra": "mean: 10.788697464479412 msec\nrounds: 183"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 21.204309145371667,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0654737491651672",
+            "extra": "mean: 47.16022545909133 msec\nrounds: 220"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1062.4381566441052,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003082791123123492",
+            "extra": "mean: 941.2312554348321 usec\nrounds: 920"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 48.89090598268989,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08757468797971125",
+            "extra": "mean: 20.45370156065539 msec\nrounds: 305"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 57.501034646197915,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05403937526892342",
+            "extra": "mean: 17.39099141698874 msec\nrounds: 259"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 32.642168613104026,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08109914606166381",
+            "extra": "mean: 30.63521948718062 msec\nrounds: 78"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 37.952539900586736,
+            "unit": "iter/sec",
+            "range": "stddev: 0.040182051154319616",
+            "extra": "mean: 26.348697679243866 msec\nrounds: 53"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 17.079611886590847,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009355601915834373",
+            "extra": "mean: 58.549339799992595 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 6.155785799171137,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10414416467517386",
+            "extra": "mean: 162.44879737931228 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.005732602663947,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004715097428076891",
+            "extra": "mean: 49.985672600004705 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 15.769030762527137,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03479643273802465",
+            "extra": "mean: 63.41543846666582 msec\nrounds: 15"
           }
         ]
       }
