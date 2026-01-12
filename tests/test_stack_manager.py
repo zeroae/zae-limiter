@@ -148,6 +148,80 @@ class TestStackManager:
         # Should not raise
         await manager.delete_stack("non-existent-stack-123456")
 
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_stack_create_and_delete_minimal(self, localstack_endpoint) -> None:
+        """Test creating and deleting a minimal stack (no aggregator, no alarms).
+
+        This test documents issue #81 where CloudFormation stack deletion fails
+        with template validation errors in LocalStack's new CloudFormation v2 engine.
+
+        The error manifests as:
+            Template format error: Unresolved resource dependencies [AggregatorDLQ]
+            in the Resources block of the template
+
+        This happens even though the stack was created with enable_aggregator=False
+        and the AggregatorDLQ resource was never created. LocalStack's v2 engine
+        incorrectly tries to resolve !GetAtt AggregatorDLQ.Arn references in
+        conditional resources during deletion.
+
+        Workarounds:
+        1. Use legacy CloudFormation engine: PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy
+        2. Wrap delete_stack() in try/except and fall back to direct resource deletion
+        """
+        import uuid
+
+        unique_id = uuid.uuid4().hex[:8]
+        table_name = f"test-delete-{unique_id}"
+
+        manager = StackManager(
+            table_name=table_name,
+            region="us-east-1",
+            endpoint_url=localstack_endpoint,
+        )
+
+        stack_name = manager.get_stack_name()
+
+        try:
+            # Create minimal stack (no aggregator, no alarms)
+            result = await manager.create_stack(
+                stack_options=StackOptions(
+                    enable_aggregator=False,
+                    enable_alarms=False,
+                ),
+                wait=True,
+            )
+            assert result["status"] == "CREATE_COMPLETE"
+
+            # Verify stack exists
+            assert await manager.stack_exists(stack_name)
+
+            # Delete stack - this is where issue #81 manifests in LocalStack
+            # Due to LocalStack bug, we expect this to fail with ValidationError
+            try:
+                await manager.delete_stack(stack_name, wait=True)
+                # If deletion succeeds, verify stack was deleted
+                assert not await manager.stack_exists(stack_name)
+            except StackCreationError as e:
+                # Expected LocalStack bug - template validation error during deletion
+                # See: https://github.com/zeroae/zae-limiter/issues/81
+                assert "AggregatorDLQ" in str(e) or "Unresolved resource" in str(e)
+                pytest.xfail("LocalStack bug #81: CloudFormation stack deletion fails")
+        finally:
+            # Cleanup: delete DynamoDB table directly since CloudFormation fails
+            try:
+                import aioboto3
+
+                session = aioboto3.Session()
+                async with session.client(
+                    "dynamodb",
+                    endpoint_url=localstack_endpoint,
+                    region_name="us-east-1",
+                ) as dynamodb:
+                    await dynamodb.delete_table(TableName=table_name)
+            except Exception:
+                pass
+
     @pytest.mark.asyncio
     async def test_create_stack_with_parameters(self) -> None:
         """Test create_stack parameter handling with CloudFormation."""
