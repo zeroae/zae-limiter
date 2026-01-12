@@ -99,7 +99,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --extra dev
       - name: Run integration tests
         run: uv run pytest -m integration -v --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:
