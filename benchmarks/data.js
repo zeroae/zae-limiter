@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768195847028,
+  "lastUpdate": 1768201198506,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -303,6 +303,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.028683688554514485",
             "extra": "mean: 53.51936880952784 msec\nrounds: 21"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e8b69a321e5072e19fddeee1a4b6fe3d00a4bcf",
+          "message": "✨ feat(repository): add security audit logging for limit modifications (#76)\n\n* ✨ feat(repository): add security audit logging for limit modifications\n\n- Add AuditEvent and AuditAction models for tracking security events\n- Add audit schema keys (pk_audit, sk_audit) in schema.py\n- Implement _log_audit_event and get_audit_events methods in Repository\n- Add principal parameter to create_entity, delete_entity, set_limits, delete_limits\n- Log audit events for entity creation/deletion and limit changes\n- Store audit logs in DynamoDB with 90-day TTL by default\n- Add comprehensive tests for audit logging functionality\n\nCloses #47\n\n* 🔒 feat(repository): add principal validation to audit logging\n\n- Validate principal field using identifier pattern before logging\n- Prevents injection attacks via malicious principal values\n- Rejects empty strings and # delimiter in principal\n- Accepts valid formats: emails, UUIDs, service names\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(repository): use ULID for collision-free audit event IDs\n\nAddresses PR #76 review feedback:\n- Replace timestamp-based event IDs with ULIDs (monotonic, collision-free)\n- Add python-ulid dependency for ULID generation\n- Update CLAUDE.md with AuditEvent/AuditAction in models.py description\n- Add audit events access pattern to DynamoDB patterns table\n- Add tests for ULID format and monotonic ordering\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🎨 style(tests): format test_repository.py\n\n* ✅ test(models): increase coverage to 100%\n\nAdd tests for:\n- Limit validation: refill_amount and refill_period_seconds\n- BucketState properties: tokens, capacity, burst\n- LimitStatus.deficit property\n- AuditEvent: to_dict() and from_dict() serialization\n- AuditAction constants\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T01:57:47-05:00",
+          "tree_id": "01c1a73e66d9f1c749e6d30da4c01bcbe4187fbd",
+          "url": "https://github.com/zeroae/zae-limiter/commit/7e8b69a321e5072e19fddeee1a4b6fe3d00a4bcf"
+        },
+        "date": 1768201197907,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 102.17806338977026,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012929268571449548",
+            "extra": "mean: 9.786836497237006 msec\nrounds: 181"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 23.312733508923785,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06426343455454973",
+            "extra": "mean: 42.89501270270233 msec\nrounds: 222"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1102.9982132980513,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003817406733583265",
+            "extra": "mean: 906.6197822840722 usec\nrounds: 937"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 49.4086982660495,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09466865861438518",
+            "extra": "mean: 20.23935126999968 msec\nrounds: 300"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 61.33223590630287,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05320307947068044",
+            "extra": "mean: 16.304639562263766 msec\nrounds: 265"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 28.916304298698883,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07238923936193296",
+            "extra": "mean: 34.582565934782885 msec\nrounds: 138"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 29.250073301218336,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0807034306681412",
+            "extra": "mean: 34.18794851219561 msec\nrounds: 82"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 6.652134556790673,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08528911949683002",
+            "extra": "mean: 150.32768676923013 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 4.922331660859523,
+            "unit": "iter/sec",
+            "range": "stddev: 0.18010217483478808",
+            "extra": "mean: 203.15575400000228 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.948630430335996,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00741757551197253",
+            "extra": "mean: 45.56092933333389 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.87645430208263,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007551622967925118",
+            "extra": "mean: 47.900854500001955 msec\nrounds: 14"
           }
         ]
       }
