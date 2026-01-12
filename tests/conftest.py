@@ -96,14 +96,38 @@ def localstack_endpoint():
     return endpoint
 
 
+# StackOptions fixtures for different test scenarios
+
+
 @pytest.fixture
-async def localstack_limiter(localstack_endpoint):
-    """Create RateLimiter with LocalStack for integration tests."""
+def minimal_stack_options():
+    """Minimal stack - no aggregator, no alarms. Fastest deployment."""
+    return StackOptions(enable_aggregator=False, enable_alarms=False)
+
+
+@pytest.fixture
+def aggregator_stack_options():
+    """Stack with aggregator Lambda but no CloudWatch alarms."""
+    return StackOptions(enable_aggregator=True, enable_alarms=False)
+
+
+@pytest.fixture
+def full_stack_options():
+    """Full stack with aggregator and CloudWatch alarms."""
+    return StackOptions(enable_aggregator=True, enable_alarms=True)
+
+
+# LocalStack limiter fixtures
+
+
+@pytest.fixture
+async def localstack_limiter(localstack_endpoint, minimal_stack_options):
+    """RateLimiter with minimal stack for core rate limiting tests."""
     limiter = RateLimiter(
         table_name="integration_test_rate_limits",
         endpoint_url=localstack_endpoint,
         region="us-east-1",
-        stack_options=StackOptions(),
+        stack_options=minimal_stack_options,
     )
 
     async with limiter:
@@ -111,13 +135,41 @@ async def localstack_limiter(localstack_endpoint):
 
 
 @pytest.fixture
-def sync_localstack_limiter(localstack_endpoint):
-    """Create SyncRateLimiter with LocalStack for integration tests."""
+async def localstack_limiter_with_aggregator(localstack_endpoint, aggregator_stack_options):
+    """RateLimiter with Lambda aggregator for stream testing."""
+    limiter = RateLimiter(
+        table_name="integration_test_with_aggregator",
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=aggregator_stack_options,
+    )
+
+    async with limiter:
+        yield limiter
+
+
+@pytest.fixture
+async def localstack_limiter_full(localstack_endpoint, full_stack_options):
+    """RateLimiter with full stack including alarms."""
+    limiter = RateLimiter(
+        table_name="integration_test_full",
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=full_stack_options,
+    )
+
+    async with limiter:
+        yield limiter
+
+
+@pytest.fixture
+def sync_localstack_limiter(localstack_endpoint, minimal_stack_options):
+    """SyncRateLimiter with minimal stack for sync integration tests."""
     limiter = SyncRateLimiter(
         table_name="integration_test_rate_limits_sync",
         endpoint_url=localstack_endpoint,
         region="us-east-1",
-        stack_options=StackOptions(),
+        stack_options=minimal_stack_options,
     )
 
     with limiter:

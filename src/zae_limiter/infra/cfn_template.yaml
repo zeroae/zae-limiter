@@ -196,7 +196,7 @@ Resources:
 
   AggregatorDLQAlarm:
     Type: AWS::CloudWatch::Alarm
-    Condition: DeployAggregator
+    Condition: DeployAggregatorAlarms
     Properties:
       AlarmName: !Sub ${TableName}-aggregator-dlq-alarm
       AlarmDescription: Alert when messages appear in the aggregator DLQ
