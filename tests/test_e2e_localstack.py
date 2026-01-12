@@ -477,14 +477,15 @@ class TestE2ELocalStackErrorHandling:
         """
         await e2e_limiter_minimal.create_entity("concurrent-user")
 
-        limits = [Limit.per_minute("rpm", 100)]
+        # Use per_hour to minimize refill during test (1000/hour = ~0.28/second)
+        limits = [Limit.per_hour("rph", 1000)]
 
         async def acquire_lease(user_id: str):
             async with e2e_limiter_minimal.acquire(
                 entity_id=user_id,
                 resource="api",
                 limits=limits,
-                consume={"rpm": 1},
+                consume={"rph": 10},
             ):
                 await asyncio.sleep(0.1)  # Simulate work
             return True
@@ -503,8 +504,9 @@ class TestE2ELocalStackErrorHandling:
             limits=limits,
         )
         # Due to optimistic locking and concurrent operations,
-        # verify that tokens were consumed (at least some)
-        assert available["rpm"] < 100  # Some tokens were consumed
+        # verify that tokens were consumed (consumed 100 total, minimal refill)
+        assert available["rph"] < 1000, "Some tokens should have been consumed"
+        assert available["rph"] <= 920, "At least 80 tokens should be consumed"
 
     @pytest.mark.asyncio
     async def test_lease_rollback_on_exception(self, e2e_limiter_minimal):
