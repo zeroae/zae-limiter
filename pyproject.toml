@@ -76,8 +76,6 @@ addopts = "-v --tb=short"
 markers = [
     "integration: marks tests as integration tests (require Docker or AWS)",
     "benchmark: marks tests as performance benchmarks",
-    "aws: marks tests as real AWS tests (require --run-aws flag)",
-    "e2e: marks tests as end-to-end tests (full stack lifecycle)",
 ]
 
 [tool.ruff]

@@ -20,10 +20,13 @@ LocalStack provides a local AWS environment for development and testing. This gu
       --name localstack \
       -p 4566:4566 \
       -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
-      -e PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy \
       -v /var/run/docker.sock:/var/run/docker.sock \
+      -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
       localstack/localstack
     ```
+
+    !!! important "Docker Socket Required"
+        The Docker socket mount (`-v /var/run/docker.sock:/var/run/docker.sock`) is required for LocalStack to spawn Lambda functions as Docker containers.
 
 === "Docker Compose"
 
@@ -36,11 +39,10 @@ LocalStack provides a local AWS environment for development and testing. This gu
           - "4566:4566"
         environment:
           - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
-          - PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy
           - DEBUG=0
         volumes:
-          - "./localstack:/var/lib/localstack"
           - "/var/run/docker.sock:/var/run/docker.sock"
+          - "./localstack:/var/lib/localstack"
     ```
 
     ```bash
@@ -51,11 +53,8 @@ LocalStack provides a local AWS environment for development and testing. This gu
 
     ```bash
     pip install localstack
-    PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy localstack start -d
+    localstack start -d
     ```
-
-!!! warning "Legacy CloudFormation Engine Required"
-    The `PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy` environment variable is required due to a bug in LocalStack's new CloudFormation v2 engine that causes stack deletion to fail with "Unresolved resource dependencies" errors.
 
 ### 2. Deploy Infrastructure
 
@@ -166,10 +165,8 @@ jobs:
           - 4566:4566
         env:
           SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
-          PROVIDER_OVERRIDE_CLOUDFORMATION: engine-legacy
-          DOCKER_HOST: unix:///var/run/docker.sock
-        volumes:
-          - /var/run/docker.sock:/var/run/docker.sock
+        options: >-
+          --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock
     steps:
       - uses: actions/checkout@v4
       - run: pip install -e ".[dev]"

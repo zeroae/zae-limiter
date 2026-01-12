@@ -494,7 +494,7 @@ Outputs:
       Name: !Sub ${AWS::StackName}-DLQArn
 
   AggregatorDLQAlarmName:
-    Condition: DeployAggregatorAlarms
+    Condition: DeployAggregator
     Description: CloudWatch alarm for DLQ monitoring
     Value: !Ref AggregatorDLQAlarm
     Export:
