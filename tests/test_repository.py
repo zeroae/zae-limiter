@@ -669,5 +669,5 @@ class TestRepositoryAuditLogging:
         # Each ULID should be greater than the previous (lexicographic order)
         for i in range(1, len(event_ids)):
             assert event_ids[i] > event_ids[i - 1], (
-                f"Event IDs not monotonic: {event_ids[i-1]} >= {event_ids[i]}"
+                f"Event IDs not monotonic: {event_ids[i - 1]} >= {event_ids[i]}"
             )
