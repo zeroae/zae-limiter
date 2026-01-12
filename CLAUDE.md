@@ -171,6 +171,7 @@ LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Stream
 # Start LocalStack (with Docker socket for Lambda execution)
 docker run -p 4566:4566 \
   -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
+  -e PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
   localstack/localstack
@@ -188,6 +189,8 @@ limiter = RateLimiter(
 ```
 
 **Important:** The Docker socket mount (`-v /var/run/docker.sock:/var/run/docker.sock`) is required for LocalStack to spawn Lambda functions as Docker containers. Without this, CloudFormation stack creation will fail when the aggregator Lambda is enabled.
+
+**Important:** The `PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy` environment variable is required due to a bug in LocalStack's new CloudFormation v2 engine that causes stack deletion to fail with "Unresolved resource dependencies" errors.
 
 **Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services.
 
@@ -269,6 +272,7 @@ pytest tests/ -v  # Fast unit tests with mocked DynamoDB
 # Start LocalStack (with Docker socket for Lambda execution)
 docker run -p 4566:4566 \
   -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
+  -e PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
   localstack/localstack
@@ -289,6 +293,8 @@ pytest -m e2e -v
 ```
 
 **Important:** The Docker socket mount is required for Lambda execution in LocalStack.
+
+**Important:** The `PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy` is required to avoid CloudFormation stack deletion bugs in LocalStack's v2 engine.
 
 **Testing Strategy:**
 - Unit tests use moto for speed (no Docker required)

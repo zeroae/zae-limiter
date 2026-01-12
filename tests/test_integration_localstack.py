@@ -6,10 +6,15 @@ including CloudFormation, DynamoDB, DynamoDB Streams, and Lambda.
 To run these tests locally:
     docker run -p 4566:4566 \\
       -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \\
+      -e PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy \\
       -v /var/run/docker.sock:/var/run/docker.sock \\
       localstack/localstack
 
     AWS_ENDPOINT_URL=http://localhost:4566 pytest -m integration -v
+
+Note: The PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy environment variable is
+required due to a bug in LocalStack's CloudFormation v2 engine that causes stack
+deletion to fail with "Unresolved resource dependencies" errors.
 """
 
 import pytest
@@ -31,20 +36,30 @@ class TestLocalStackIntegration:
     """Integration tests with full LocalStack deployment."""
 
     @pytest.mark.asyncio
-    async def test_cloudformation_stack_deployment(self, localstack_endpoint, full_stack_options):
-        """Test full CloudFormation stack creation in LocalStack (with aggregator and alarms)."""
+    async def test_cloudformation_stack_deployment(self, localstack_endpoint, aggregator_stack_options):
+        """Test CloudFormation stack creation and deletion in LocalStack with aggregator Lambda.
+
+        Note: Uses aggregator_stack_options (no alarms) because LocalStack's legacy
+        CloudFormation engine has a bug where CloudWatch Alarm Threshold parameters
+        are passed as strings instead of numbers, causing stack creation to fail.
+        The legacy engine is required due to issue #81 (v2 engine deletion bug).
+        """
         limiter = RateLimiter(
             table_name="test_cloudformation_deployment",
             endpoint_url=localstack_endpoint,
             region="us-east-1",
-            stack_options=full_stack_options,
+            stack_options=aggregator_stack_options,
         )
 
-        async with limiter:
-            # Verify stack was created by checking if we can perform operations
-            entity = await limiter.create_entity("test-entity", name="Test Entity")
-            assert entity.id == "test-entity"
-            assert entity.name == "Test Entity"
+        try:
+            async with limiter:
+                # Verify stack was created by checking if we can perform operations
+                entity = await limiter.create_entity("test-entity", name="Test Entity")
+                assert entity.id == "test-entity"
+                assert entity.name == "Test Entity"
+        finally:
+            # Clean up: delete the CloudFormation stack
+            await limiter.delete_stack()
 
     @pytest.mark.asyncio
     async def test_rate_limiting_operations(self, localstack_limiter):

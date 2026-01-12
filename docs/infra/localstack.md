@@ -19,7 +19,9 @@ LocalStack provides a local AWS environment for development and testing. This gu
     docker run -d \
       --name localstack \
       -p 4566:4566 \
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
+      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
+      -e PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy \
+      -v /var/run/docker.sock:/var/run/docker.sock \
       localstack/localstack
     ```
 
@@ -33,10 +35,12 @@ LocalStack provides a local AWS environment for development and testing. This gu
         ports:
           - "4566:4566"
         environment:
-          - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam
+          - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
+          - PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy
           - DEBUG=0
         volumes:
           - "./localstack:/var/lib/localstack"
+          - "/var/run/docker.sock:/var/run/docker.sock"
     ```
 
     ```bash
@@ -47,8 +51,11 @@ LocalStack provides a local AWS environment for development and testing. This gu
 
     ```bash
     pip install localstack
-    localstack start -d
+    PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy localstack start -d
     ```
+
+!!! warning "Legacy CloudFormation Engine Required"
+    The `PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy` environment variable is required due to a bug in LocalStack's new CloudFormation v2 engine that causes stack deletion to fail with "Unresolved resource dependencies" errors.
 
 ### 2. Deploy Infrastructure
 
@@ -158,7 +165,11 @@ jobs:
         ports:
           - 4566:4566
         env:
-          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
+          PROVIDER_OVERRIDE_CLOUDFORMATION: engine-legacy
+          DOCKER_HOST: unix:///var/run/docker.sock
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
     steps:
       - uses: actions/checkout@v4
       - run: pip install -e ".[dev]"
