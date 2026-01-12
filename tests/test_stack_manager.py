@@ -148,6 +148,69 @@ class TestStackManager:
         # Should not raise
         await manager.delete_stack("non-existent-stack-123456")
 
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_stack_create_and_delete_minimal(self, localstack_endpoint) -> None:
+        """Test creating and deleting a minimal stack (no aggregator, no alarms).
+
+        This test verifies that CloudFormation stack creation and deletion works
+        correctly with LocalStack. The test requires the legacy CloudFormation
+        engine (PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy) to work around
+        a bug in LocalStack's v2 engine (see issue #81).
+
+        The v2 engine bug manifests as:
+            Template format error: Unresolved resource dependencies [AggregatorDLQ]
+            in the Resources block of the template
+
+        With the legacy engine, stack deletion works correctly.
+        """
+        import uuid
+
+        unique_id = uuid.uuid4().hex[:8]
+        table_name = f"test-delete-{unique_id}"
+
+        manager = StackManager(
+            table_name=table_name,
+            region="us-east-1",
+            endpoint_url=localstack_endpoint,
+        )
+
+        stack_name = manager.get_stack_name()
+
+        try:
+            # Create minimal stack (no aggregator, no alarms)
+            result = await manager.create_stack(
+                stack_options=StackOptions(
+                    enable_aggregator=False,
+                    enable_alarms=False,
+                ),
+                wait=True,
+            )
+            assert result["status"] == "CREATE_COMPLETE"
+
+            # Verify stack exists
+            assert await manager.stack_exists(stack_name)
+
+            # Delete stack - works with legacy CloudFormation engine
+            await manager.delete_stack(stack_name, wait=True)
+
+            # Verify stack was deleted
+            assert not await manager.stack_exists(stack_name)
+        finally:
+            # Safety cleanup: delete DynamoDB table directly if stack deletion failed
+            try:
+                import aioboto3
+
+                session = aioboto3.Session()
+                async with session.client(
+                    "dynamodb",
+                    endpoint_url=localstack_endpoint,
+                    region_name="us-east-1",
+                ) as dynamodb:
+                    await dynamodb.delete_table(TableName=table_name)
+            except Exception:
+                pass
+
     @pytest.mark.asyncio
     async def test_create_stack_with_parameters(self) -> None:
         """Test create_stack parameter handling with CloudFormation."""

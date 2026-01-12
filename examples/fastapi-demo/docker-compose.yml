@@ -5,7 +5,8 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam
+      - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
+      - PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy
       - DEBUG=0
     volumes:
       - "${TMPDIR:-/tmp}/localstack:/var/lib/localstack"
