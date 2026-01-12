@@ -168,9 +168,11 @@ limiter = RateLimiter(
 LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Streams, Lambda):
 
 ```bash
-# Start LocalStack
+# Start LocalStack (with Docker socket for Lambda execution)
 docker run -p 4566:4566 \
-  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
+  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
   localstack/localstack
 
 # Deploy infrastructure with CLI
@@ -184,6 +186,8 @@ limiter = RateLimiter(
     stack_options=StackOptions(),  # Creates full CloudFormation stack
 )
 ```
+
+**Important:** The Docker socket mount (`-v /var/run/docker.sock:/var/run/docker.sock`) is required for LocalStack to spawn Lambda functions as Docker containers. Without this, CloudFormation stack creation will fail when the aggregator Lambda is enabled.
 
 **Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services.
 
@@ -262,19 +266,35 @@ pytest tests/ -v  # Fast unit tests with mocked DynamoDB
 
 ### Test with LocalStack (Integration Tests)
 ```bash
-# Start LocalStack
+# Start LocalStack (with Docker socket for Lambda execution)
 docker run -p 4566:4566 \
-  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation \
+  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
   localstack/localstack
 
 # Run integration tests
-AWS_ENDPOINT_URL=http://localhost:4566 pytest -m integration -v
+AWS_ENDPOINT_URL=http://localhost:4566 \
+AWS_ACCESS_KEY_ID=test \
+AWS_SECRET_ACCESS_KEY=test \
+AWS_DEFAULT_REGION=us-east-1 \
+pytest -m integration -v
+
+# Run E2E tests (full stack lifecycle)
+AWS_ENDPOINT_URL=http://localhost:4566 \
+AWS_ACCESS_KEY_ID=test \
+AWS_SECRET_ACCESS_KEY=test \
+AWS_DEFAULT_REGION=us-east-1 \
+pytest -m e2e -v
 ```
+
+**Important:** The Docker socket mount is required for Lambda execution in LocalStack.
 
 **Testing Strategy:**
 - Unit tests use moto for speed (no Docker required)
 - Integration tests use LocalStack for full AWS service testing
-- CI runs both in parallel
+- E2E tests validate complete stack lifecycle (deploy → use → delete)
+- CI runs both unit and integration tests in parallel
 
 ### Test Coverage
 ```bash
