@@ -385,11 +385,18 @@ def lambda_export(output: str, info: bool, force: bool) -> None:
     "--region",
     help="AWS region (default: use boto3 defaults)",
 )
-def status(stack_name: str, region: str | None) -> None:
+@click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+def status(stack_name: str, region: str | None, endpoint_url: str | None) -> None:
     """Get CloudFormation stack status."""
 
     async def _status() -> None:
-        async with StackManager("dummy", region, None) as manager:
+        async with StackManager("dummy", region, endpoint_url) as manager:
             try:
                 stack_status = await manager.get_stack_status(stack_name)
 
