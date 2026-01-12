@@ -2,58 +2,58 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/cli/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/getting-started/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/exceptions/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/limiter/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/models/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/basic-usage/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/failure-modes/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/hierarchical/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/llm-integration/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/infra/cloudformation/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/infra/deployment/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/infra/localstack/</loc>
-         <lastmod>2026-01-11</lastmod>
+         <lastmod>2026-01-12</lastmod>
     </url>
 </urlset>

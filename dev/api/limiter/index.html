@@ -1755,7 +1755,7 @@
 
 
 <a href="#zae_limiter.limiter.RateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">table_name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">create_stack</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">stack_parameters</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">table_name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -1833,30 +1833,14 @@
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>create_stack</code>
+                <code>stack_options</code>
             </td>
             <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Create CloudFormation stack if it doesn't exist</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>stack_parameters</code>
-            </td>
-            <td>
-                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="str">str</span>] | None</code>
+                  <code><span title="zae_limiter.models.StackOptions">StackOptions</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Parameters for CloudFormation stack</p>
+                <p>Stack configuration for auto-creation (None = don't create)</p>
               </div>
             </td>
             <td>
@@ -3077,7 +3061,7 @@ Can return negative values if bucket is in debt.</p>
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.create_stack" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_stack</span><span class="p">(</span><span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parameters</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_stack</span><span class="p">(</span><span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -3114,15 +3098,14 @@ Can return negative values if bucket is in debt.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>parameters</code>
+                <code>stack_options</code>
             </td>
             <td>
-                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="str">str</span>] | None</code>
+                  <code><span title="zae_limiter.models.StackOptions">StackOptions</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Stack parameters dict (e.g.,
-{'snapshot_windows': 'hourly,daily', 'retention_days': '90'})</p>
+                <p>Stack configuration</p>
               </div>
             </td>
             <td>
@@ -3279,7 +3262,7 @@ Can return negative values if bucket is in debt.</p>
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">table_name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">create_stack</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">stack_parameters</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">table_name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -3558,7 +3541,7 @@ Can return negative values if bucket is in debt.</p>
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.create_stack" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_stack</span><span class="p">(</span><span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parameters</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_stack</span><span class="p">(</span><span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
