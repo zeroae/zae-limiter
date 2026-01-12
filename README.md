@@ -356,6 +356,58 @@ limiter = RateLimiter(
 
 For a complete demo with FastAPI and dashboard, see `examples/fastapi-demo/`.
 
+## Stack Lifecycle
+
+When you use `stack_options` for automatic infrastructure deployment, the created CloudFormation stack persists after your program exits. This is intentional for production stability, but requires explicit cleanup.
+
+### Cleanup with `delete_stack()`
+
+Both `RateLimiter` and `SyncRateLimiter` provide a `delete_stack()` method for programmatic cleanup:
+
+```python
+# Async cleanup
+limiter = RateLimiter(table_name="rate_limits", region="us-east-1")
+await limiter.delete_stack()  # Deletes zae-limiter-rate_limits stack
+
+# Sync cleanup
+limiter = SyncRateLimiter(table_name="rate_limits", region="us-east-1")
+limiter.delete_stack()
+```
+
+### When to Use Each Cleanup Method
+
+| Scenario | Recommendation |
+|----------|----------------|
+| **Integration tests** | Use `delete_stack()` in fixture teardown |
+| **Development/prototyping** | Use CLI `zae-limiter delete` or `delete_stack()` |
+| **CI/CD pipelines** | Use CLI `zae-limiter delete --yes` or `delete_stack()` |
+| **Production** | Use CloudFormation console or CLI with proper review |
+
+### Test Fixture Example
+
+```python
+import pytest
+from zae_limiter import RateLimiter, StackOptions
+
+@pytest.fixture
+async def integration_limiter():
+    """RateLimiter with full stack for integration testing."""
+    limiter = RateLimiter(
+        table_name="test_rate_limits",
+        endpoint_url="http://localhost:4566",  # LocalStack
+        region="us-east-1",
+        stack_options=StackOptions(enable_aggregator=False),
+    )
+
+    async with limiter:
+        yield limiter
+
+    # Cleanup: delete the CloudFormation stack
+    await limiter.delete_stack()
+```
+
+> **Warning:** The `delete_stack()` method permanently removes all data in the DynamoDB table. Always use with caution in production environments.
+
 ## Development
 
 ### Setup

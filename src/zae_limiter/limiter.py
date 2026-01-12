@@ -646,13 +646,45 @@ class RateLimiter:
 
     async def delete_stack(self, stack_name: str | None = None) -> None:
         """
-        Delete CloudFormation stack.
+        Delete the CloudFormation stack and all associated resources.
+
+        This method permanently removes the CloudFormation stack, including:
+
+        - DynamoDB table and all stored data
+        - Lambda aggregator function (if deployed)
+        - IAM roles and CloudWatch log groups
+        - All other stack resources
+
+        The method waits for deletion to complete before returning.
+        If the stack doesn't exist, no error is raised.
 
         Args:
-            stack_name: Stack name (default: auto-generated from table name)
+            stack_name: CloudFormation stack name to delete.
+                Default: auto-generated from table name (``zae-limiter-{table_name}``)
 
         Raises:
-            StackCreationError: If deletion fails
+            StackCreationError: If deletion fails (e.g., permission denied,
+                resources in use, or CloudFormation service error)
+
+        Example:
+            Cleanup after integration testing::
+
+                limiter = RateLimiter(
+                    table_name="test_limits",
+                    region="us-east-1",
+                    stack_options=StackOptions(),
+                )
+
+                async with limiter:
+                    # Run tests...
+                    pass
+
+                # Clean up infrastructure
+                await limiter.delete_stack()
+
+        Warning:
+            This operation is irreversible. All rate limit state, entity data,
+            and usage history will be permanently deleted.
         """
         from .infra.stack_manager import StackManager
 
@@ -895,5 +927,36 @@ class SyncRateLimiter:
         return self._run(self._limiter.create_stack(stack_name, stack_options))
 
     def delete_stack(self, stack_name: str | None = None) -> None:
-        """Delete CloudFormation stack."""
+        """
+        Delete the CloudFormation stack and all associated resources.
+
+        Synchronous wrapper for :meth:`RateLimiter.delete_stack`.
+        See the async version for full documentation.
+
+        Args:
+            stack_name: CloudFormation stack name to delete.
+                Default: auto-generated from table name (``zae-limiter-{table_name}``)
+
+        Raises:
+            StackCreationError: If deletion fails
+
+        Example:
+            Cleanup after testing::
+
+                limiter = SyncRateLimiter(
+                    table_name="test_limits",
+                    region="us-east-1",
+                    stack_options=StackOptions(),
+                )
+
+                with limiter:
+                    # Run tests...
+                    pass
+
+                # Clean up infrastructure
+                limiter.delete_stack()
+
+        Warning:
+            This operation is irreversible. All data will be permanently deleted.
+        """
         self._run(self._limiter.delete_stack(stack_name))

@@ -116,23 +116,46 @@ limiter = RateLimiter(
 
 ## Testing with LocalStack
 
-### pytest Fixture
+### pytest Fixture with Cleanup
+
+For integration tests, use fixtures that properly clean up resources:
 
 ```python
+import os
+import uuid
 import pytest
-from zae_limiter import RateLimiter
+from zae_limiter import RateLimiter, StackOptions
 
 @pytest.fixture
-async def limiter():
-    """Create a rate limiter connected to LocalStack."""
+def localstack_endpoint():
+    """Get LocalStack endpoint from environment."""
+    return os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+
+@pytest.fixture(scope="function")
+async def limiter(localstack_endpoint):
+    """
+    Create a rate limiter connected to LocalStack with automatic cleanup.
+
+    This fixture:
+    1. Creates a unique stack for test isolation
+    2. Yields the limiter for test use
+    3. Deletes the stack in teardown
+    """
+    # Unique table name prevents test interference
+    table_name = f"test_{uuid.uuid4().hex[:8]}"
+
     limiter = RateLimiter(
-        table_name="test_rate_limits",
-        endpoint_url="http://localhost:4566",
+        table_name=table_name,
+        endpoint_url=localstack_endpoint,
         region="us-east-1",
-        create_stack=True,
+        stack_options=StackOptions(enable_aggregator=False),
     )
-    yield limiter
-    # Cleanup handled by LocalStack container restart
+
+    async with limiter:
+        yield limiter
+
+    # Cleanup: delete the CloudFormation stack
+    await limiter.delete_stack()
 
 @pytest.mark.integration
 async def test_rate_limiting(limiter):
@@ -143,6 +166,55 @@ async def test_rate_limiting(limiter):
         consume={"requests": 1},
     ):
         pass  # Success
+```
+
+### Session-Scoped Fixture (Faster)
+
+For test suites where stack creation overhead is significant:
+
+```python
+@pytest.fixture(scope="session")
+async def shared_limiter(localstack_endpoint):
+    """
+    Session-scoped limiter for faster test execution.
+
+    Trade-off: Tests share state, less isolation.
+    """
+    limiter = RateLimiter(
+        table_name="integration_test_shared",
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=StackOptions(enable_aggregator=False),
+    )
+
+    async with limiter:
+        yield limiter
+
+    await limiter.delete_stack()
+```
+
+### Sync Fixture Example
+
+```python
+@pytest.fixture(scope="function")
+def sync_limiter(localstack_endpoint):
+    """Synchronous rate limiter with cleanup."""
+    from zae_limiter import SyncRateLimiter, StackOptions
+    import uuid
+
+    table_name = f"test_sync_{uuid.uuid4().hex[:8]}"
+
+    limiter = SyncRateLimiter(
+        table_name=table_name,
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=StackOptions(enable_aggregator=False),
+    )
+
+    with limiter:
+        yield limiter
+
+    limiter.delete_stack()
 ```
 
 ### CI Configuration
