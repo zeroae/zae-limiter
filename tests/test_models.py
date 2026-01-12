@@ -3,6 +3,8 @@
 import pytest
 
 from zae_limiter import (
+    AuditAction,
+    AuditEvent,
     Entity,
     InvalidIdentifierError,
     InvalidNameError,
@@ -75,6 +77,26 @@ class TestLimit:
         """Test validation of burst < capacity."""
         with pytest.raises(ValueError, match="burst must be >= capacity"):
             Limit.per_minute("rpm", 100, burst=50)
+
+    def test_invalid_refill_amount(self):
+        """Test validation of refill_amount must be positive."""
+        with pytest.raises(ValueError, match="refill_amount must be positive"):
+            Limit.custom("rpm", capacity=100, refill_amount=0, refill_period_seconds=60)
+
+    def test_invalid_refill_amount_negative(self):
+        """Test validation of negative refill_amount."""
+        with pytest.raises(ValueError, match="refill_amount must be positive"):
+            Limit.custom("rpm", capacity=100, refill_amount=-1, refill_period_seconds=60)
+
+    def test_invalid_refill_period_seconds(self):
+        """Test validation of refill_period_seconds must be positive."""
+        with pytest.raises(ValueError, match="refill_period_seconds must be positive"):
+            Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=0)
+
+    def test_invalid_refill_period_seconds_negative(self):
+        """Test validation of negative refill_period_seconds."""
+        with pytest.raises(ValueError, match="refill_period_seconds must be positive"):
+            Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=-1)
 
     def test_to_dict_from_dict(self):
         """Test serialization round-trip."""
@@ -491,3 +513,271 @@ class TestInputValidation:
         # InvalidNameError (via Limit)
         with pytest.raises(ValidationError):
             Limit.per_minute("rpm#test", 100)
+
+
+class TestBucketStateProperties:
+    """Tests for BucketState property accessors."""
+
+    def test_tokens_property(self):
+        """Test tokens property converts millitokens to tokens."""
+        bucket = BucketState(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            tokens_milli=150500,  # 150.5 tokens
+            last_refill_ms=1000000,
+            capacity_milli=100000,
+            burst_milli=200000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        assert bucket.tokens == 150  # truncates to 150
+
+    def test_tokens_property_exact(self):
+        """Test tokens property with exact token value."""
+        bucket = BucketState(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            tokens_milli=100000,  # exactly 100 tokens
+            last_refill_ms=1000000,
+            capacity_milli=100000,
+            burst_milli=100000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        assert bucket.tokens == 100
+
+    def test_capacity_property(self):
+        """Test capacity property converts millitokens to tokens."""
+        bucket = BucketState(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            tokens_milli=100000,
+            last_refill_ms=1000000,
+            capacity_milli=250000,  # 250 tokens
+            burst_milli=300000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        assert bucket.capacity == 250
+
+    def test_burst_property(self):
+        """Test burst property converts millitokens to tokens."""
+        bucket = BucketState(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            tokens_milli=100000,
+            last_refill_ms=1000000,
+            capacity_milli=100000,
+            burst_milli=500000,  # 500 tokens
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        assert bucket.burst == 500
+
+    def test_burst_property_with_fractional_millitokens(self):
+        """Test burst property truncates fractional tokens."""
+        bucket = BucketState(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            tokens_milli=100000,
+            last_refill_ms=1000000,
+            capacity_milli=100000,
+            burst_milli=199999,  # 199.999 tokens
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        assert bucket.burst == 199  # truncates to 199
+
+
+class TestLimitStatusDeficit:
+    """Tests for LimitStatus deficit property."""
+
+    def test_deficit_when_exceeded(self):
+        """Test deficit calculation when limit is exceeded."""
+        limit = Limit.per_minute("rpm", 100)
+        status = LimitStatus(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            limit=limit,
+            available=30,
+            requested=50,
+            exceeded=True,
+            retry_after_seconds=12.0,
+        )
+        assert status.deficit == 20  # 50 - 30
+
+    def test_deficit_when_not_exceeded(self):
+        """Test deficit is 0 when limit is not exceeded."""
+        limit = Limit.per_minute("rpm", 100)
+        status = LimitStatus(
+            entity_id="user-123",
+            resource="api",
+            limit_name="rpm",
+            limit=limit,
+            available=100,
+            requested=50,
+            exceeded=False,
+            retry_after_seconds=0,
+        )
+        assert status.deficit == 0
+
+
+class TestAuditEvent:
+    """Tests for AuditEvent model."""
+
+    def test_to_dict_minimal(self):
+        """Test to_dict with minimal required fields."""
+        event = AuditEvent(
+            event_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            timestamp="2024-01-15T10:30:00Z",
+            action=AuditAction.ENTITY_CREATED,
+            entity_id="user-123",
+        )
+        result = event.to_dict()
+        assert result == {
+            "event_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "action": "entity_created",
+            "entity_id": "user-123",
+        }
+
+    def test_to_dict_with_principal(self):
+        """Test to_dict includes principal when set."""
+        event = AuditEvent(
+            event_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            timestamp="2024-01-15T10:30:00Z",
+            action=AuditAction.LIMITS_SET,
+            entity_id="user-123",
+            principal="admin@example.com",
+        )
+        result = event.to_dict()
+        assert result["principal"] == "admin@example.com"
+
+    def test_to_dict_with_resource(self):
+        """Test to_dict includes resource when set."""
+        event = AuditEvent(
+            event_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            timestamp="2024-01-15T10:30:00Z",
+            action=AuditAction.LIMITS_SET,
+            entity_id="user-123",
+            resource="gpt-4",
+        )
+        result = event.to_dict()
+        assert result["resource"] == "gpt-4"
+
+    def test_to_dict_with_details(self):
+        """Test to_dict includes details when non-empty."""
+        event = AuditEvent(
+            event_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            timestamp="2024-01-15T10:30:00Z",
+            action=AuditAction.LIMITS_SET,
+            entity_id="user-123",
+            details={"limits": ["rpm", "tpm"]},
+        )
+        result = event.to_dict()
+        assert result["details"] == {"limits": ["rpm", "tpm"]}
+
+    def test_to_dict_excludes_empty_details(self):
+        """Test to_dict excludes details when empty dict."""
+        event = AuditEvent(
+            event_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            timestamp="2024-01-15T10:30:00Z",
+            action=AuditAction.ENTITY_CREATED,
+            entity_id="user-123",
+            details={},
+        )
+        result = event.to_dict()
+        assert "details" not in result
+
+    def test_to_dict_full(self):
+        """Test to_dict with all fields populated."""
+        event = AuditEvent(
+            event_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            timestamp="2024-01-15T10:30:00Z",
+            action=AuditAction.LIMITS_DELETED,
+            entity_id="user-123",
+            principal="system",
+            resource="gpt-4",
+            details={"reason": "quota exceeded"},
+        )
+        result = event.to_dict()
+        assert result == {
+            "event_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "action": "limits_deleted",
+            "entity_id": "user-123",
+            "principal": "system",
+            "resource": "gpt-4",
+            "details": {"reason": "quota exceeded"},
+        }
+
+    def test_from_dict_minimal(self):
+        """Test from_dict with minimal required fields."""
+        data = {
+            "event_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "action": "entity_created",
+            "entity_id": "user-123",
+        }
+        event = AuditEvent.from_dict(data)
+        assert event.event_id == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        assert event.timestamp == "2024-01-15T10:30:00Z"
+        assert event.action == "entity_created"
+        assert event.entity_id == "user-123"
+        assert event.principal is None
+        assert event.resource is None
+        assert event.details == {}
+
+    def test_from_dict_full(self):
+        """Test from_dict with all fields populated."""
+        data = {
+            "event_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "action": "limits_set",
+            "entity_id": "user-123",
+            "principal": "admin@example.com",
+            "resource": "gpt-4",
+            "details": {"limits": ["rpm", "tpm"]},
+        }
+        event = AuditEvent.from_dict(data)
+        assert event.principal == "admin@example.com"
+        assert event.resource == "gpt-4"
+        assert event.details == {"limits": ["rpm", "tpm"]}
+
+    def test_to_dict_from_dict_roundtrip(self):
+        """Test serialization round-trip."""
+        original = AuditEvent(
+            event_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            timestamp="2024-01-15T10:30:00Z",
+            action=AuditAction.ENTITY_DELETED,
+            entity_id="user-123",
+            principal="admin",
+            resource="api",
+            details={"reason": "test"},
+        )
+        data = original.to_dict()
+        restored = AuditEvent.from_dict(data)
+        assert restored.event_id == original.event_id
+        assert restored.timestamp == original.timestamp
+        assert restored.action == original.action
+        assert restored.entity_id == original.entity_id
+        assert restored.principal == original.principal
+        assert restored.resource == original.resource
+        assert restored.details == original.details
+
+
+class TestAuditAction:
+    """Tests for AuditAction constants."""
+
+    def test_action_constants(self):
+        """Test audit action constant values."""
+        assert AuditAction.ENTITY_CREATED == "entity_created"
+        assert AuditAction.ENTITY_DELETED == "entity_deleted"
+        assert AuditAction.LIMITS_SET == "limits_set"
+        assert AuditAction.LIMITS_DELETED == "limits_deleted"

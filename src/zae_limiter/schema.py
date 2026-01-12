@@ -21,6 +21,10 @@ SK_LIMIT = "#LIMIT#"
 SK_RESOURCE = "#RESOURCE#"
 SK_USAGE = "#USAGE#"
 SK_VERSION = "#VERSION"
+SK_AUDIT = "#AUDIT#"
+
+# Partition key prefix for audit logs
+AUDIT_PREFIX = "AUDIT#"
 
 # Special resource for default limits
 DEFAULT_RESOURCE = "_default_"
@@ -99,6 +103,16 @@ def gsi2_sk_access(entity_id: str) -> str:
 def gsi2_sk_usage(window_key: str, entity_id: str) -> str:
     """Build GSI2 sort key for usage snapshot entry."""
     return f"USAGE#{window_key}#{entity_id}"
+
+
+def pk_audit(entity_id: str) -> str:
+    """Build partition key for audit log records."""
+    return f"{AUDIT_PREFIX}{entity_id}"
+
+
+def sk_audit(event_id: str) -> str:
+    """Build sort key for audit log record."""
+    return f"{SK_AUDIT}{event_id}"
 
 
 def parse_bucket_sk(sk: str) -> tuple[str, str]:

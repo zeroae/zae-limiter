@@ -5,10 +5,13 @@ from typing import Any
 
 import aioboto3  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
+from ulid import ULID
 
 from . import schema
 from .exceptions import EntityExistsError
 from .models import (
+    AuditAction,
+    AuditEvent,
     BucketState,
     Entity,
     Limit,
@@ -117,6 +120,7 @@ class Repository:
         name: str | None = None,
         parent_id: str | None = None,
         metadata: dict[str, str] | None = None,
+        principal: str | None = None,
     ) -> Entity:
         """
         Create a new entity.
@@ -126,6 +130,10 @@ class Repository:
             name: Optional display name (defaults to entity_id)
             parent_id: Optional parent entity ID (for hierarchical limits)
             metadata: Optional key-value metadata
+            principal: Caller identity for audit logging
+
+        Returns:
+            The created Entity
 
         Raises:
             InvalidIdentifierError: If entity_id or parent_id is invalid
@@ -169,6 +177,18 @@ class Repository:
                 raise EntityExistsError(entity_id)
             raise
 
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.ENTITY_CREATED,
+            entity_id=entity_id,
+            principal=principal,
+            details={
+                "name": name or entity_id,
+                "parent_id": parent_id,
+                "metadata": metadata or {},
+            },
+        )
+
         return Entity(
             id=entity_id,
             name=name or entity_id,
@@ -195,8 +215,18 @@ class Repository:
 
         return self._deserialize_entity(item)
 
-    async def delete_entity(self, entity_id: str) -> None:
-        """Delete an entity and all its related records."""
+    async def delete_entity(
+        self,
+        entity_id: str,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete an entity and all its related records.
+
+        Args:
+            entity_id: ID of the entity to delete
+            principal: Caller identity for audit logging
+        """
         client = await self._get_client()
 
         # First, query all items for this entity
@@ -220,6 +250,14 @@ class Repository:
         for i in range(0, len(delete_requests), 25):
             chunk = delete_requests[i : i + 25]
             await client.batch_write_item(RequestItems={self.table_name: chunk})
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.ENTITY_DELETED,
+            entity_id=entity_id,
+            principal=principal,
+            details={"records_deleted": len(items)},
+        )
 
     async def get_children(self, parent_id: str) -> list[Entity]:
         """Get all children of a parent entity."""
@@ -378,8 +416,17 @@ class Repository:
         entity_id: str,
         limits: list[Limit],
         resource: str = schema.DEFAULT_RESOURCE,
+        principal: str | None = None,
     ) -> None:
-        """Store limit configs for an entity."""
+        """
+        Store limit configs for an entity.
+
+        Args:
+            entity_id: ID of the entity
+            limits: List of Limit configurations to store
+            resource: Resource name (defaults to "_default_")
+            principal: Caller identity for audit logging
+        """
         client = await self._get_client()
 
         # Delete existing limits for this resource first
@@ -403,6 +450,15 @@ class Repository:
                 },
             }
             await client.put_item(TableName=self.table_name, Item=item)
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=entity_id,
+            principal=principal,
+            resource=resource,
+            details={"limits": [limit.to_dict() for limit in limits]},
+        )
 
     async def get_limits(
         self,
@@ -440,9 +496,25 @@ class Repository:
         self,
         entity_id: str,
         resource: str = schema.DEFAULT_RESOURCE,
+        principal: str | None = None,
     ) -> None:
-        """Delete stored limit configs for an entity."""
+        """
+        Delete stored limit configs for an entity.
+
+        Args:
+            entity_id: ID of the entity
+            resource: Resource name (defaults to "_default_")
+            principal: Caller identity for audit logging
+        """
         await self._delete_limits_for_resource(entity_id, resource)
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_DELETED,
+            entity_id=entity_id,
+            principal=principal,
+            resource=resource,
+        )
 
     async def _delete_limits_for_resource(self, entity_id: str, resource: str) -> None:
         """Delete all limits for a specific resource."""
@@ -540,6 +612,154 @@ class Repository:
         }
 
         await client.put_item(TableName=self.table_name, Item=item)
+
+    # -------------------------------------------------------------------------
+    # Audit logging operations
+    # -------------------------------------------------------------------------
+
+    def _generate_event_id(self) -> str:
+        """Generate a unique event ID using ULID (monotonic, collision-free)."""
+        return str(ULID())
+
+    async def _log_audit_event(
+        self,
+        action: str,
+        entity_id: str,
+        principal: str | None = None,
+        resource: str | None = None,
+        details: dict[str, Any] | None = None,
+        ttl_seconds: int = 7776000,  # 90 days default
+    ) -> AuditEvent:
+        """
+        Log an audit event to DynamoDB.
+
+        Args:
+            action: Type of action (see AuditAction constants)
+            entity_id: ID of the entity affected
+            principal: Caller identity who performed the action
+            resource: Resource name for limit-related actions
+            details: Additional action-specific details
+            ttl_seconds: TTL for the audit record (default 90 days)
+
+        Returns:
+            The created AuditEvent
+
+        Raises:
+            InvalidIdentifierError: If principal is invalid
+        """
+        # Validate principal if provided
+        if principal is not None:
+            validate_identifier(principal, "principal")
+
+        client = await self._get_client()
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        event_id = self._generate_event_id()
+
+        event = AuditEvent(
+            event_id=event_id,
+            timestamp=now,
+            action=action,
+            entity_id=entity_id,
+            principal=principal,
+            resource=resource,
+            details=details or {},
+        )
+
+        # Build DynamoDB item
+        data: dict[str, Any] = {
+            "event_id": {"S": event_id},
+            "timestamp": {"S": now},
+            "action": {"S": action},
+            "entity_id": {"S": entity_id},
+        }
+
+        if principal:
+            data["principal"] = {"S": principal}
+        else:
+            data["principal"] = {"NULL": True}
+
+        if resource:
+            data["resource"] = {"S": resource}
+        else:
+            data["resource"] = {"NULL": True}
+
+        if details:
+            data["details"] = {"M": self._serialize_map(details)}
+        else:
+            data["details"] = {"M": {}}
+
+        item = {
+            "PK": {"S": schema.pk_audit(entity_id)},
+            "SK": {"S": schema.sk_audit(event_id)},
+            "entity_id": {"S": entity_id},
+            "data": {"M": data},
+            "ttl": {"N": str(schema.calculate_ttl(self._now_ms(), ttl_seconds))},
+        }
+
+        await client.put_item(TableName=self.table_name, Item=item)
+        return event
+
+    async def get_audit_events(
+        self,
+        entity_id: str,
+        limit: int = 100,
+        start_event_id: str | None = None,
+    ) -> list[AuditEvent]:
+        """
+        Get audit events for an entity.
+
+        Args:
+            entity_id: ID of the entity to query
+            limit: Maximum number of events to return
+            start_event_id: Event ID to start after (for pagination)
+
+        Returns:
+            List of AuditEvent objects, ordered by most recent first
+        """
+        client = await self._get_client()
+
+        query_args: dict[str, Any] = {
+            "TableName": self.table_name,
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk_prefix)",
+            "ExpressionAttributeValues": {
+                ":pk": {"S": schema.pk_audit(entity_id)},
+                ":sk_prefix": {"S": schema.SK_AUDIT},
+            },
+            "ScanIndexForward": False,  # Most recent first
+            "Limit": limit,
+        }
+
+        if start_event_id:
+            query_args["ExclusiveStartKey"] = {
+                "PK": {"S": schema.pk_audit(entity_id)},
+                "SK": {"S": schema.sk_audit(start_event_id)},
+            }
+
+        response = await client.query(**query_args)
+
+        events = []
+        for item in response.get("Items", []):
+            event = self._deserialize_audit_event(item)
+            if event:
+                events.append(event)
+
+        return events
+
+    def _deserialize_audit_event(self, item: dict[str, Any]) -> AuditEvent | None:
+        """Deserialize a DynamoDB item to AuditEvent."""
+        data = self._deserialize_map(item.get("data", {}).get("M", {}))
+        if not data:
+            return None
+
+        return AuditEvent(
+            event_id=data.get("event_id", ""),
+            timestamp=data.get("timestamp", ""),
+            action=data.get("action", ""),
+            entity_id=data.get("entity_id", ""),
+            principal=data.get("principal"),
+            resource=data.get("resource"),
+            details=data.get("details", {}),
+        )
 
     # -------------------------------------------------------------------------
     # Resource aggregation

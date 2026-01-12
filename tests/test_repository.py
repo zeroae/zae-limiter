@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from zae_limiter import Limit
+from zae_limiter import AuditAction, Limit
 from zae_limiter.exceptions import InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
@@ -439,3 +439,235 @@ class TestRepositoryEntityValidation:
         """Email-like format should be accepted."""
         entity = await repo.create_entity("user@example.com")
         assert entity.id == "user@example.com"
+
+
+class TestRepositoryAuditLogging:
+    """Tests for security audit logging."""
+
+    @pytest.mark.asyncio
+    async def test_create_entity_logs_audit_event(self, repo):
+        """Creating an entity should log an audit event."""
+        await repo.create_entity(
+            entity_id="audit-test-entity",
+            name="Audit Test",
+            principal="user@example.com",
+        )
+
+        events = await repo.get_audit_events("audit-test-entity")
+        assert len(events) == 1
+
+        event = events[0]
+        assert event.action == AuditAction.ENTITY_CREATED
+        assert event.entity_id == "audit-test-entity"
+        assert event.principal == "user@example.com"
+        assert event.details["name"] == "Audit Test"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_logs_audit_without_principal(self, repo):
+        """Creating an entity without principal still logs event."""
+        await repo.create_entity(
+            entity_id="audit-test-entity-2",
+            name="No Principal",
+        )
+
+        events = await repo.get_audit_events("audit-test-entity-2")
+        assert len(events) == 1
+        assert events[0].principal is None
+
+    @pytest.mark.asyncio
+    async def test_delete_entity_logs_audit_event(self, repo):
+        """Deleting an entity should log an audit event."""
+        await repo.create_entity(entity_id="to-delete")
+        await repo.delete_entity(
+            entity_id="to-delete",
+            principal="admin@example.com",
+        )
+
+        events = await repo.get_audit_events("to-delete")
+        # Should have both create and delete events
+        assert len(events) == 2
+
+        # Most recent first
+        delete_event = events[0]
+        assert delete_event.action == AuditAction.ENTITY_DELETED
+        assert delete_event.principal == "admin@example.com"
+        assert "records_deleted" in delete_event.details
+
+    @pytest.mark.asyncio
+    async def test_set_limits_logs_audit_event(self, repo):
+        """Setting limits should log an audit event."""
+        await repo.create_entity(entity_id="limits-test")
+
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10000),
+        ]
+        await repo.set_limits(
+            entity_id="limits-test",
+            limits=limits,
+            resource="gpt-4",
+            principal="api-admin@example.com",
+        )
+
+        events = await repo.get_audit_events("limits-test")
+        # Should have entity create + limits set events
+        assert len(events) == 2
+
+        limits_event = events[0]  # Most recent first
+        assert limits_event.action == AuditAction.LIMITS_SET
+        assert limits_event.principal == "api-admin@example.com"
+        assert limits_event.resource == "gpt-4"
+        assert len(limits_event.details["limits"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_delete_limits_logs_audit_event(self, repo):
+        """Deleting limits should log an audit event."""
+        await repo.create_entity(entity_id="delete-limits-test")
+        await repo.set_limits(
+            entity_id="delete-limits-test",
+            limits=[Limit.per_minute("rpm", 100)],
+        )
+        await repo.delete_limits(
+            entity_id="delete-limits-test",
+            principal="cleanup-service",
+        )
+
+        events = await repo.get_audit_events("delete-limits-test")
+        # Should have entity create + limits set + limits delete events
+        assert len(events) == 3
+
+        delete_event = events[0]  # Most recent first
+        assert delete_event.action == AuditAction.LIMITS_DELETED
+        assert delete_event.principal == "cleanup-service"
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_pagination(self, repo):
+        """Should support pagination for audit events."""
+        # Create entity and perform multiple operations
+        await repo.create_entity(entity_id="pagination-test")
+        for i in range(5):
+            await repo.set_limits(
+                entity_id="pagination-test",
+                limits=[Limit.per_minute(f"limit-{i}", 100 * (i + 1))],
+                principal=f"user-{i}",
+            )
+
+        # Query with limit
+        events = await repo.get_audit_events("pagination-test", limit=3)
+        assert len(events) == 3
+
+        # Query with pagination
+        all_events = await repo.get_audit_events("pagination-test", limit=10)
+        assert len(all_events) == 6  # 1 create + 5 set_limits
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_empty_for_nonexistent(self, repo):
+        """Should return empty list for entity with no audit events."""
+        events = await repo.get_audit_events("nonexistent-entity")
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_audit_event_includes_parent_id(self, repo):
+        """Audit event for child entity should include parent_id."""
+        await repo.create_entity(entity_id="parent-entity")
+        await repo.create_entity(
+            entity_id="child-entity",
+            parent_id="parent-entity",
+            principal="admin",
+        )
+
+        events = await repo.get_audit_events("child-entity")
+        assert len(events) == 1
+        assert events[0].details["parent_id"] == "parent-entity"
+
+    @pytest.mark.asyncio
+    async def test_audit_event_includes_metadata(self, repo):
+        """Audit event should include entity metadata."""
+        await repo.create_entity(
+            entity_id="metadata-test",
+            metadata={"tier": "premium", "region": "us-west-2"},
+            principal="onboarding-service",
+        )
+
+        events = await repo.get_audit_events("metadata-test")
+        assert len(events) == 1
+        assert events[0].details["metadata"]["tier"] == "premium"
+        assert events[0].details["metadata"]["region"] == "us-west-2"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_invalid_principal(self, repo):
+        """Principal with # delimiter should be rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity(
+                entity_id="valid-entity",
+                principal="user#admin",
+            )
+        assert exc_info.value.field == "principal"
+        assert "#" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_empty_principal(self, repo):
+        """Empty principal should be rejected (use None instead)."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity(
+                entity_id="valid-entity",
+                principal="",
+            )
+        assert exc_info.value.field == "principal"
+        assert "empty" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_accepts_email_principal(self, repo):
+        """Email-like principal should be accepted."""
+        await repo.create_entity(
+            entity_id="email-principal-test",
+            principal="admin@example.com",
+        )
+        events = await repo.get_audit_events("email-principal-test")
+        assert events[0].principal == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_accepts_service_principal(self, repo):
+        """Service name principal should be accepted."""
+        await repo.create_entity(
+            entity_id="service-principal-test",
+            principal="auth-service-v2",
+        )
+        events = await repo.get_audit_events("service-principal-test")
+        assert events[0].principal == "auth-service-v2"
+
+    @pytest.mark.asyncio
+    async def test_audit_event_id_is_ulid_format(self, repo):
+        """Event ID should be a valid 26-character ULID."""
+        await repo.create_entity(entity_id="ulid-test")
+        events = await repo.get_audit_events("ulid-test")
+        assert len(events) == 1
+
+        event_id = events[0].event_id
+        # ULID is 26 characters, uppercase alphanumeric (Crockford Base32)
+        assert len(event_id) == 26
+        assert event_id.isalnum()
+        # ULID uses Crockford Base32: 0-9 and A-Z excluding I, L, O, U
+        valid_chars = set("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+        assert all(c in valid_chars for c in event_id.upper())
+
+    @pytest.mark.asyncio
+    async def test_audit_event_ids_are_monotonic(self, repo):
+        """Multiple events should have monotonically increasing ULIDs."""
+        await repo.create_entity(entity_id="monotonic-test")
+        # Create multiple events rapidly
+        for i in range(5):
+            await repo.set_limits(
+                entity_id="monotonic-test",
+                limits=[Limit.per_minute(f"limit-{i}", 100)],
+            )
+
+        events = await repo.get_audit_events("monotonic-test", limit=10)
+        # Events are returned most recent first, so reverse for chronological order
+        event_ids = [e.event_id for e in reversed(events)]
+
+        # Each ULID should be greater than the previous (lexicographic order)
+        for i in range(1, len(event_ids)):
+            assert event_ids[i] > event_ids[i - 1], (
+                f"Event IDs not monotonic: {event_ids[i - 1]} >= {event_ids[i]}"
+            )
