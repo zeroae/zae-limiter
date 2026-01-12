@@ -8,7 +8,13 @@ from botocore.exceptions import ClientError
 
 from . import schema
 from .exceptions import EntityExistsError
-from .models import BucketState, Entity, Limit, StackOptions
+from .models import (
+    BucketState,
+    Entity,
+    Limit,
+    StackOptions,
+    validate_identifier,
+)
 
 
 class Repository:
@@ -112,7 +118,24 @@ class Repository:
         parent_id: str | None = None,
         metadata: dict[str, str] | None = None,
     ) -> Entity:
-        """Create a new entity."""
+        """
+        Create a new entity.
+
+        Args:
+            entity_id: Unique identifier for the entity
+            name: Optional display name (defaults to entity_id)
+            parent_id: Optional parent entity ID (for hierarchical limits)
+            metadata: Optional key-value metadata
+
+        Raises:
+            InvalidIdentifierError: If entity_id or parent_id is invalid
+            EntityExistsError: If entity already exists
+        """
+        # Validate inputs at API boundary
+        validate_identifier(entity_id, "entity_id")
+        if parent_id is not None:
+            validate_identifier(parent_id, "parent_id")
+
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 

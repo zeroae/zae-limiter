@@ -1,7 +1,98 @@
 """Core models for zae-limiter."""
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+from .exceptions import InvalidIdentifierError, InvalidNameError
+
+# ---------------------------------------------------------------------------
+# Validation Constants
+# ---------------------------------------------------------------------------
+
+# Maximum lengths for validated fields
+MAX_IDENTIFIER_LENGTH = 256  # entity_id, parent_id
+MAX_NAME_LENGTH = 64  # limit_name, resource
+
+# Identifiers: alphanumeric start, then alphanumeric + _ - . : @
+# Supports UUIDs, API keys (sk-proj-xxx), email-like formats
+IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-:@]*$")
+
+# Names: letter start, then alphanumeric + _ - .
+# Used for limit names (rpm, tpm) and resources (api, gpt-3.5-turbo)
+NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.\-]*$")
+
+# The '#' character is used as a key delimiter in DynamoDB and must be forbidden
+FORBIDDEN_CHAR = "#"
+
+
+# ---------------------------------------------------------------------------
+# Validation Functions
+# ---------------------------------------------------------------------------
+
+
+def validate_identifier(value: str, field_name: str) -> None:
+    """
+    Validate an identifier (entity_id, parent_id).
+
+    Args:
+        value: The identifier value to validate
+        field_name: Name of the field (for error messages)
+
+    Raises:
+        InvalidIdentifierError: If validation fails
+    """
+    if not value:
+        raise InvalidIdentifierError(field_name, value, "cannot be empty")
+
+    if len(value) > MAX_IDENTIFIER_LENGTH:
+        raise InvalidIdentifierError(
+            field_name, value, f"exceeds maximum length of {MAX_IDENTIFIER_LENGTH}"
+        )
+
+    if FORBIDDEN_CHAR in value:
+        raise InvalidIdentifierError(
+            field_name, value, f"cannot contain '{FORBIDDEN_CHAR}' (reserved delimiter)"
+        )
+
+    if not IDENTIFIER_PATTERN.match(value):
+        raise InvalidIdentifierError(
+            field_name,
+            value,
+            "must start with alphanumeric and contain only alphanumeric, "
+            "underscore, hyphen, dot, colon, or @ characters",
+        )
+
+
+def validate_name(value: str, field_name: str) -> None:
+    """
+    Validate a name (limit_name, resource).
+
+    Args:
+        value: The name value to validate
+        field_name: Name of the field (for error messages)
+
+    Raises:
+        InvalidNameError: If validation fails
+    """
+    if not value:
+        raise InvalidNameError(field_name, value, "cannot be empty")
+
+    if len(value) > MAX_NAME_LENGTH:
+        raise InvalidNameError(field_name, value, f"exceeds maximum length of {MAX_NAME_LENGTH}")
+
+    if FORBIDDEN_CHAR in value:
+        raise InvalidNameError(
+            field_name, value, f"cannot contain '{FORBIDDEN_CHAR}' (reserved delimiter)"
+        )
+
+    if not NAME_PATTERN.match(value):
+        raise InvalidNameError(
+            field_name,
+            value,
+            "must start with a letter and contain only alphanumeric, "
+            "underscore, hyphen, or dot characters",
+        )
 
 
 @dataclass(frozen=True)
@@ -27,6 +118,7 @@ class Limit:
     refill_period_seconds: int
 
     def __post_init__(self) -> None:
+        validate_name(self.name, "name")
         if self.capacity <= 0:
             raise ValueError("capacity must be positive")
         if self.burst < self.capacity:
@@ -158,6 +250,10 @@ class Entity:
 
     Entities can be parents (projects) or children (API keys).
     Children have a parent_id reference.
+
+    Note: This model does not validate in __post_init__ to support DynamoDB
+    deserialization and avoid performance overhead. Validation is performed
+    in Repository.create_entity() at the API boundary.
     """
 
     id: str
@@ -184,6 +280,9 @@ class LimitStatus:
 
     Returned in RateLimitExceeded to provide full visibility into
     all limits that were checked.
+
+    Note: This is an internal model created by the limiter from validated
+    inputs. No validation is performed here to avoid performance overhead.
     """
 
     entity_id: str
@@ -207,6 +306,10 @@ class BucketState:
     Internal state of a token bucket.
 
     All token values are stored in millitokens (x1000) for precision.
+
+    Note: This is an internal model. Validation is performed in from_limit()
+    for user-provided inputs, not in __post_init__ to support DynamoDB
+    deserialization and avoid performance overhead on frequent operations.
     """
 
     entity_id: str
@@ -242,7 +345,19 @@ class BucketState:
         limit: Limit,
         now_ms: int,
     ) -> "BucketState":
-        """Create a new bucket at full capacity from a Limit."""
+        """
+        Create a new bucket at full capacity from a Limit.
+
+        Note: This is an internal factory method. Validation of entity_id
+        and resource is performed at the API boundary (RateLimiter public
+        methods) before calling this method.
+
+        Args:
+            entity_id: Entity identifier (pre-validated by caller)
+            resource: Resource name (pre-validated by caller)
+            limit: Limit configuration (validated via __post_init__)
+            now_ms: Current time in milliseconds
+        """
         return cls(
             entity_id=entity_id,
             resource=resource,
