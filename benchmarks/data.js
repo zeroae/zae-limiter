@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768250336649,
+  "lastUpdate": 1768254597840,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -505,6 +505,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.007106335751871682",
             "extra": "mean: 54.594744500011274 msec\nrounds: 18"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1e632cb5f905d3692f2f2a99c5607f7a1d128b73",
+          "message": "revert: undo LocalStack legacy CloudFormation engine workaround (#85) (#86)\n\n* ⏪ revert: undo LocalStack legacy CloudFormation engine workaround (#85)\n\nThis reverts commit 1bbc649df756dedfaf71b9c0701a357d56106468.\n\nPrefer using LocalStack's v2 CloudFormation engine (the default) rather\nthan the legacy engine. While v2 has a stack deletion bug with conditional\nresources, the legacy engine has its own bug with CloudWatch Alarm\nThreshold parameters.\n\nThe v2 engine is the future of LocalStack CloudFormation support, and\nwe should track the upstream bug rather than permanently work around it.\n\nUpstream issue: https://github.com/localstack/localstack/issues/13609\n\nRe-opens #81 for tracking until LocalStack fixes the v2 engine.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(infra): address code review feedback for PR #86\n\n1. Fix CloudFormation condition mismatch: AggregatorDLQAlarmName output\n   now uses DeployAggregatorAlarms condition (not DeployAggregator) to\n   match the resource it references.\n\n2. Add test_cloudformation_stack_deployment_no_alarms: Tests the edge\n   case where EnableAggregator=true but EnableAlarms=false.\n\n3. Add test_stack_create_and_delete_minimal: Integration test for full\n   stack lifecycle with graceful handling of LocalStack v2 deletion bug.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: remove references to non-existent e2e pytest marker\n\nThe e2e marker was removed by the revert. Update CLAUDE.md to reflect\nthat integration tests now include full stack lifecycle tests.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T16:47:20-05:00",
+          "tree_id": "b3417a33749991d9f7e91fe83426329be51cb48f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1e632cb5f905d3692f2f2a99c5607f7a1d128b73"
+        },
+        "date": 1768254597391,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 106.9477419826424,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012057956116338163",
+            "extra": "mean: 9.350361040463106 msec\nrounds: 173"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 23.212185508901037,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06493027360716228",
+            "extra": "mean: 43.080820615384795 msec\nrounds: 221"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1089.567108505349,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002770213854729763",
+            "extra": "mean: 917.7956935317037 usec\nrounds: 943"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 53.83573022075945,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08641234915548292",
+            "extra": "mean: 18.57502435463191 msec\nrounds: 313"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 70.8211705817303,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06694522360601257",
+            "extra": "mean: 14.120071608333026 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 29.566041798705925,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04513439678832916",
+            "extra": "mean: 33.82258629032206 msec\nrounds: 155"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 28.766037179085178,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10522993024121512",
+            "extra": "mean: 34.76321725423711 msec\nrounds: 59"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 6.062327942727209,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10126840548271451",
+            "extra": "mean: 164.9531350740716 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 4.829210979943567,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1749091283427059",
+            "extra": "mean: 207.07316457142775 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.854401425374554,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007496194642260101",
+            "extra": "mean: 41.92098481818427 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.012249135824824,
+            "unit": "iter/sec",
+            "range": "stddev: 0.026925888075122074",
+            "extra": "mean: 52.59766968420889 msec\nrounds: 19"
           }
         ]
       }
