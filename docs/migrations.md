@@ -299,17 +299,23 @@ async def test_migration_v1_1_0(mock_dynamodb):
     repo = Repository("test_table", "us-east-1", None)
 
     # Create test entity without metrics
-    await repo.save_entity(entity_id="test-1", name="Test Entity")
+    await repo.create_entity(entity_id="test-1", name="Test Entity")
 
     # Apply migration
     applied = await apply_migrations(repo, "1.0.0", "1.1.0")
 
     assert applied == ["1.1.0"]
 
-    # Verify metrics added
-    entity = await repo.get_entity("test-1")
-    assert "metrics" in entity
-    assert entity["metrics"]["requests"] == 0
+    # Verify metrics added - use raw DynamoDB query since Entity
+    # dataclass won't have the new 'metrics' field until code is updated
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={"PK": {"S": "ENTITY#test-1"}, "SK": {"S": "#META"}},
+    )
+    item = response["Item"]
+    assert "metrics" in item["data"]["M"]
+    assert item["data"]["M"]["metrics"]["M"]["requests"]["N"] == "0"
 
 
 @pytest.mark.asyncio
@@ -317,13 +323,21 @@ async def test_migration_idempotent(mock_dynamodb):
     """Test migration can be safely run multiple times."""
     repo = Repository("test_table", "us-east-1", None)
 
+    # Create test entity
+    await repo.create_entity(entity_id="test-1", name="Test Entity")
+
     # Run migration twice
     await apply_migrations(repo, "1.0.0", "1.1.0")
     await apply_migrations(repo, "1.0.0", "1.1.0")  # Should not fail
 
-    # Verify single application
-    entity = await repo.get_entity("test-1")
-    assert entity["metrics"]["requests"] == 0  # Not doubled
+    # Verify single application via raw DynamoDB query
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={"PK": {"S": "ENTITY#test-1"}, "SK": {"S": "#META"}},
+    )
+    item = response["Item"]
+    assert item["data"]["M"]["metrics"]["M"]["requests"]["N"] == "0"
 ```
 
 ### Integration Testing with LocalStack
@@ -709,21 +723,29 @@ async def test_v2_migration_adds_created_at(mock_dynamodb):
     repo = Repository("test_table", "us-east-1", None)
 
     # Create entities without created_at (v1 schema)
-    await repo.save_entity(entity_id="entity-1", name="Test 1")
-    await repo.save_entity(entity_id="entity-2", name="Test 2")
+    await repo.create_entity(entity_id="entity-1", name="Test 1")
+    await repo.create_entity(entity_id="entity-2", name="Test 2")
 
-    # Verify no created_at
+    # Verify no created_at before migration
     entity = await repo.get_entity("entity-1")
-    assert "created_at" not in entity
+    assert entity.created_at is None
 
     # Apply migration
     applied = await apply_migrations(repo, "1.0.0", "2.0.0")
     assert applied == ["2.0.0"]
 
-    # Verify created_at added
-    entity = await repo.get_entity("entity-1")
-    assert "created_at" in entity
-    assert entity["created_at"].startswith("20")  # Valid ISO timestamp
+    # Verify created_at added - check raw DynamoDB for GSI3 keys
+    # (Entity dataclass has created_at, but GSI3PK/GSI3SK are schema-level)
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={"PK": {"S": "ENTITY#entity-1"}, "SK": {"S": "#META"}},
+    )
+    item = response["Item"]
+    assert "created_at" in item
+    assert item["created_at"]["S"].startswith("20")  # Valid ISO timestamp
+    assert "GSI3PK" in item  # GSI key was added
+    assert item["GSI3PK"]["S"].startswith("CREATED#")
 
 
 @pytest.mark.asyncio
@@ -731,20 +753,32 @@ async def test_v2_migration_idempotent(mock_dynamodb):
     """Test v2.0.0 migration is idempotent."""
     repo = Repository("test_table", "us-east-1", None)
 
-    # Create entity and set created_at manually
+    # Create entity with created_at already set
+    # (simulating an entity created after v2.0.0 code deployed)
     original_time = "2024-01-01T00:00:00Z"
-    await repo.save_entity(
-        entity_id="entity-1",
-        name="Test",
-        created_at=original_time,
+    client = await repo._get_client()
+    await client.put_item(
+        TableName=repo.table_name,
+        Item={
+            "PK": {"S": "ENTITY#entity-1"},
+            "SK": {"S": "#META"},
+            "data": {"M": {"name": {"S": "Test"}}},
+            "created_at": {"S": original_time},
+            "GSI3PK": {"S": "CREATED#2024-01"},
+            "GSI3SK": {"S": "ENTITY#entity-1"},
+        },
     )
 
-    # Apply migration
+    # Apply migration - should not overwrite existing values
     await apply_migrations(repo, "1.0.0", "2.0.0")
 
     # Verify original created_at preserved (if_not_exists)
-    entity = await repo.get_entity("entity-1")
-    assert entity["created_at"] == original_time
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={"PK": {"S": "ENTITY#entity-1"}, "SK": {"S": "#META"}},
+    )
+    item = response["Item"]
+    assert item["created_at"]["S"] == original_time
 ```
 
 ## Reference
