@@ -49,6 +49,10 @@ async def localstack_repo(localstack_endpoint):
     await repo.close()
 
 
+@pytest.mark.xfail(
+    reason="CloudFormation stack creation fails in LocalStack. See #70",
+    strict=False,
+)
 class TestRepositoryLocalStackCloudFormation:
     """Integration tests for CloudFormation stack operations."""
 

@@ -17,7 +17,13 @@ import pytest
 
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded, StackOptions, SyncRateLimiter
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.xfail(
+        reason="CloudFormation stack creation fails in LocalStack. See #70",
+        strict=False,
+    ),
+]
 
 
 @pytest.fixture
