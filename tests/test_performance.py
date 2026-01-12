@@ -260,20 +260,25 @@ class TestLocalStackBenchmarks:
 
         benchmark(operation)
 
-    def test_cascade_localstack(self, benchmark, sync_localstack_limiter):
+    @pytest.fixture
+    def cascade_hierarchy(self, sync_localstack_limiter):
+        """Setup parent-child hierarchy for cascade tests."""
+        sync_localstack_limiter.create_entity("ls-cascade-parent", name="Parent")
+        sync_localstack_limiter.create_entity(
+            "ls-cascade-child", name="Child", parent_id="ls-cascade-parent"
+        )
+        return sync_localstack_limiter
+
+    def test_cascade_localstack(self, benchmark, cascade_hierarchy):
         """Benchmark cascade against LocalStack.
 
         Measures realistic cascade overhead including network latency.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
-        # Setup hierarchy
-        sync_localstack_limiter.create_entity("ls-parent", name="Parent")
-        sync_localstack_limiter.create_entity("ls-child", name="Child", parent_id="ls-parent")
-
         def operation():
-            with sync_localstack_limiter.acquire(
-                entity_id="ls-child",
+            with cascade_hierarchy.acquire(
+                entity_id="ls-cascade-child",
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
