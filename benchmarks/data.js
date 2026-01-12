@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768254597840,
+  "lastUpdate": 1768256807260,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -606,6 +606,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.026925888075122074",
             "extra": "mean: 52.59766968420889 msec\nrounds: 19"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c330e5cba9eba3c59d5e79dfb412376118a3ac73",
+          "message": "✨ feat(infra): add VS Code worktree configuration for multi-session Claude Code (#87)\n\nConfigure Git Worktrees extension to store worktrees in ../zae-limiter.worktrees,\nenabling parallel Claude Code sessions in separate VS Code windows.\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T17:24:34-05:00",
+          "tree_id": "f05fd6443803a5eabc58f597787e0065b5373370",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c330e5cba9eba3c59d5e79dfb412376118a3ac73"
+        },
+        "date": 1768256806591,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 88.84809323580606,
+            "unit": "iter/sec",
+            "range": "stddev: 0.015791765345691815",
+            "extra": "mean: 11.255165570587586 msec\nrounds: 170"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 22.743013365002398,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06170238535268035",
+            "extra": "mean: 43.96954721658954 msec\nrounds: 217"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1077.3983459785827,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000358263262172934",
+            "extra": "mean: 928.1618110260944 usec\nrounds: 889"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 63.73627841539987,
+            "unit": "iter/sec",
+            "range": "stddev: 0.029701817483299336",
+            "extra": "mean: 15.689651558920975 msec\nrounds: 297"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 58.73246126255121,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05388441045203094",
+            "extra": "mean: 17.026359503813552 msec\nrounds: 262"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 31.3279013757348,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0708975462368444",
+            "extra": "mean: 31.92042735344397 msec\nrounds: 116"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 29.480405870252476,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06371782726703051",
+            "extra": "mean: 33.92083556790718 msec\nrounds: 81"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 5.253625519353005,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12602494543354634",
+            "extra": "mean: 190.34474313333854 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 4.95983356044279,
+            "unit": "iter/sec",
+            "range": "stddev: 0.17136841914392673",
+            "extra": "mean: 201.6196688484694 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 19.94203037894304,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01391465525580085",
+            "extra": "mean: 50.14534533333719 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.485308910312174,
+            "unit": "iter/sec",
+            "range": "stddev: 0.034333194386366006",
+            "extra": "mean: 57.1908683529313 msec\nrounds: 17"
           }
         ]
       }
