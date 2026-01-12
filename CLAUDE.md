@@ -193,7 +193,7 @@ limiter = RateLimiter(
 src/zae_limiter/
 ├── __init__.py        # Public API exports
 ├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError
+├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders
 ├── repository.py      # DynamoDB operations

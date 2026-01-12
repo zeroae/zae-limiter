@@ -412,7 +412,7 @@ class TestInputValidation:
         assert exc_info.value.field == "parent_id"
 
     # -------------------------------------------------------------------------
-    # BucketState Validation Tests
+    # BucketState Tests (internal model - no __post_init__ validation)
     # -------------------------------------------------------------------------
 
     def test_bucket_state_valid(self):
@@ -430,56 +430,29 @@ class TestInputValidation:
         )
         assert bucket.entity_id == "user-123"
 
-    def test_bucket_state_rejects_invalid_entity_id(self):
-        """Test BucketState rejects invalid entity_id."""
-        with pytest.raises(InvalidIdentifierError) as exc_info:
-            BucketState(
-                entity_id="user#123",
-                resource="api",
-                limit_name="rpm",
-                tokens_milli=100000,
-                last_refill_ms=1000000,
-                capacity_milli=100000,
-                burst_milli=100000,
-                refill_amount_milli=100000,
-                refill_period_ms=60000,
-            )
-        assert exc_info.value.field == "entity_id"
+    def test_bucket_state_allows_any_values_direct_construction(self):
+        """Test BucketState allows any values when constructed directly.
 
-    def test_bucket_state_rejects_invalid_resource(self):
-        """Test BucketState rejects invalid resource name."""
-        with pytest.raises(InvalidNameError) as exc_info:
-            BucketState(
-                entity_id="user-123",
-                resource="api#v2",
-                limit_name="rpm",
-                tokens_milli=100000,
-                last_refill_ms=1000000,
-                capacity_milli=100000,
-                burst_milli=100000,
-                refill_amount_milli=100000,
-                refill_period_ms=60000,
-            )
-        assert exc_info.value.field == "resource"
-
-    def test_bucket_state_rejects_invalid_limit_name(self):
-        """Test BucketState rejects invalid limit_name."""
-        with pytest.raises(InvalidNameError) as exc_info:
-            BucketState(
-                entity_id="user-123",
-                resource="api",
-                limit_name="rpm#hack",
-                tokens_milli=100000,
-                last_refill_ms=1000000,
-                capacity_milli=100000,
-                burst_milli=100000,
-                refill_amount_milli=100000,
-                refill_period_ms=60000,
-            )
-        assert exc_info.value.field == "limit_name"
+        BucketState is an internal model used for DynamoDB deserialization.
+        Validation is performed in from_limit() instead of __post_init__
+        to support reading existing data and avoid performance overhead.
+        """
+        # This should NOT raise - direct construction bypasses validation
+        bucket = BucketState(
+            entity_id="user#123",  # Would be invalid in from_limit
+            resource="",  # Empty - from DynamoDB deserialization
+            limit_name="rpm",
+            tokens_milli=100000,
+            last_refill_ms=1000000,
+            capacity_milli=100000,
+            burst_milli=100000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        assert bucket.entity_id == "user#123"
 
     # -------------------------------------------------------------------------
-    # LimitStatus Validation Tests
+    # LimitStatus Tests (internal model - no validation)
     # -------------------------------------------------------------------------
 
     def test_limit_status_valid(self):
@@ -497,63 +470,67 @@ class TestInputValidation:
         )
         assert status.entity_id == "user-123"
 
-    def test_limit_status_rejects_invalid_entity_id(self):
-        """Test LimitStatus rejects invalid entity_id."""
-        limit = Limit.per_minute("rpm", 100)
-        with pytest.raises(InvalidIdentifierError) as exc_info:
-            LimitStatus(
-                entity_id="user#123",
-                resource="api",
-                limit_name="rpm",
-                limit=limit,
-                available=50,
-                requested=10,
-                exceeded=False,
-                retry_after_seconds=0,
-            )
-        assert exc_info.value.field == "entity_id"
+    def test_limit_status_is_internal_model_no_validation(self):
+        """Test LimitStatus is an internal model without validation.
 
-    def test_limit_status_rejects_invalid_resource(self):
-        """Test LimitStatus rejects invalid resource."""
+        LimitStatus is created internally by the limiter from already-validated
+        inputs. No validation is performed to avoid performance overhead during
+        rate limiting operations.
+        """
         limit = Limit.per_minute("rpm", 100)
-        with pytest.raises(InvalidNameError) as exc_info:
-            LimitStatus(
-                entity_id="user-123",
-                resource="123api",  # must start with letter
-                limit_name="rpm",
-                limit=limit,
-                available=50,
-                requested=10,
-                exceeded=False,
-                retry_after_seconds=0,
-            )
-        assert exc_info.value.field == "resource"
+        # This should NOT raise - LimitStatus doesn't validate
+        status = LimitStatus(
+            entity_id="user#123",  # Would be invalid if validated
+            resource="123api",  # Would be invalid if validated
+            limit_name="rpm",
+            limit=limit,
+            available=50,
+            requested=10,
+            exceeded=False,
+            retry_after_seconds=0,
+        )
+        assert status.entity_id == "user#123"
 
     # -------------------------------------------------------------------------
-    # BucketState.from_limit Validation Tests
+    # BucketState.from_limit Validation Tests (API boundary)
     # -------------------------------------------------------------------------
 
     def test_bucket_state_from_limit_validates_entity_id(self):
-        """Test BucketState.from_limit validates entity_id."""
+        """Test BucketState.from_limit validates entity_id at API boundary."""
         limit = Limit.per_minute("rpm", 100)
-        with pytest.raises(InvalidIdentifierError):
+        with pytest.raises(InvalidIdentifierError) as exc_info:
             BucketState.from_limit(
                 entity_id="user#123",
                 resource="api",
                 limit=limit,
                 now_ms=1000000,
             )
+        assert exc_info.value.field == "entity_id"
 
     def test_bucket_state_from_limit_validates_resource(self):
-        """Test BucketState.from_limit validates resource."""
+        """Test BucketState.from_limit validates resource at API boundary."""
         limit = Limit.per_minute("rpm", 100)
-        with pytest.raises(InvalidNameError):
+        with pytest.raises(InvalidNameError) as exc_info:
             BucketState.from_limit(
                 entity_id="user-123",
                 resource="api#v2",
                 limit=limit,
                 now_ms=1000000,
             )
+        assert exc_info.value.field == "resource"
+
+    def test_bucket_state_from_limit_valid(self):
+        """Test BucketState.from_limit creates bucket with valid inputs."""
+        limit = Limit.per_minute("rpm", 100)
+        bucket = BucketState.from_limit(
+            entity_id="user-123",
+            resource="gpt-3.5-turbo",
+            limit=limit,
+            now_ms=1000000,
+        )
+        assert bucket.entity_id == "user-123"
+        assert bucket.resource == "gpt-3.5-turbo"
+        assert bucket.limit_name == "rpm"
 
     # -------------------------------------------------------------------------
     # Catching ValidationError as Category

@@ -283,6 +283,9 @@ class LimitStatus:
 
     Returned in RateLimitExceeded to provide full visibility into
     all limits that were checked.
+
+    Note: This is an internal model created by the limiter from validated
+    inputs. No validation is performed here to avoid performance overhead.
     """
 
     entity_id: str
@@ -293,11 +296,6 @@ class LimitStatus:
     requested: int  # amount requested
     exceeded: bool  # True if this limit was exceeded
     retry_after_seconds: float  # time until `requested` is available (0 if not exceeded)
-
-    def __post_init__(self) -> None:
-        validate_identifier(self.entity_id, "entity_id")
-        validate_name(self.resource, "resource")
-        validate_name(self.limit_name, "limit_name")
 
     @property
     def deficit(self) -> int:
@@ -311,6 +309,10 @@ class BucketState:
     Internal state of a token bucket.
 
     All token values are stored in millitokens (x1000) for precision.
+
+    Note: This is an internal model. Validation is performed in from_limit()
+    for user-provided inputs, not in __post_init__ to support DynamoDB
+    deserialization and avoid performance overhead on frequent operations.
     """
 
     entity_id: str
@@ -322,11 +324,6 @@ class BucketState:
     burst_milli: int  # max burst (in millitokens)
     refill_amount_milli: int  # refill numerator (in millitokens)
     refill_period_ms: int  # refill denominator (in milliseconds)
-
-    def __post_init__(self) -> None:
-        validate_identifier(self.entity_id, "entity_id")
-        validate_name(self.resource, "resource")
-        validate_name(self.limit_name, "limit_name")
 
     @property
     def tokens(self) -> int:
@@ -351,7 +348,23 @@ class BucketState:
         limit: Limit,
         now_ms: int,
     ) -> "BucketState":
-        """Create a new bucket at full capacity from a Limit."""
+        """
+        Create a new bucket at full capacity from a Limit.
+
+        Args:
+            entity_id: Validated identifier for the entity
+            resource: Validated resource name
+            limit: Limit configuration (already validated)
+            now_ms: Current time in milliseconds
+
+        Raises:
+            InvalidIdentifierError: If entity_id is invalid
+            InvalidNameError: If resource is invalid
+        """
+        # Validate user-provided inputs at API boundary
+        validate_identifier(entity_id, "entity_id")
+        validate_name(resource, "resource")
+
         return cls(
             entity_id=entity_id,
             resource=resource,
