@@ -62,10 +62,14 @@ venv.bak/
 
 # IDEs
 .idea/
-.vscode/
+.vscode/*.local.json
+.vscode/launch.json
 *.swp
 *.swo
 *~
+
+# Worktrees
+*.worktrees/
 
 # mypy
 .mypy_cache/
