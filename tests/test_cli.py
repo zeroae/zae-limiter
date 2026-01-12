@@ -489,6 +489,32 @@ class TestCLI:
         assert result.exit_code != 0
 
     @patch("zae_limiter.cli.StackManager")
+    def test_deploy_lambda_skipped_local(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+        """Test deploy shows correct message when Lambda deployment is skipped for local."""
+        mock_instance = Mock()
+        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        # Lambda deployment returns skipped_local status
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "skipped_local",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(cli, ["deploy"])
+
+        assert result.exit_code == 0
+        assert "Lambda deployment skipped (local environment)" in result.output
+
+    @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with --endpoint-url for LocalStack."""
         mock_instance = Mock()
