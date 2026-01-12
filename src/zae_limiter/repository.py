@@ -642,7 +642,14 @@ class Repository:
 
         Returns:
             The created AuditEvent
+
+        Raises:
+            InvalidIdentifierError: If principal is invalid
         """
+        # Validate principal if provided
+        if principal is not None:
+            validate_identifier(principal, "principal")
+
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         event_id = self._generate_event_id()

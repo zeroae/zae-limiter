@@ -593,3 +593,45 @@ class TestRepositoryAuditLogging:
         assert len(events) == 1
         assert events[0].details["metadata"]["tier"] == "premium"
         assert events[0].details["metadata"]["region"] == "us-west-2"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_invalid_principal(self, repo):
+        """Principal with # delimiter should be rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity(
+                entity_id="valid-entity",
+                principal="user#admin",
+            )
+        assert exc_info.value.field == "principal"
+        assert "#" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_empty_principal(self, repo):
+        """Empty principal should be rejected (use None instead)."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity(
+                entity_id="valid-entity",
+                principal="",
+            )
+        assert exc_info.value.field == "principal"
+        assert "empty" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_accepts_email_principal(self, repo):
+        """Email-like principal should be accepted."""
+        await repo.create_entity(
+            entity_id="email-principal-test",
+            principal="admin@example.com",
+        )
+        events = await repo.get_audit_events("email-principal-test")
+        assert events[0].principal == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_accepts_service_principal(self, repo):
+        """Service name principal should be accepted."""
+        await repo.create_entity(
+            entity_id="service-principal-test",
+            principal="auth-service-v2",
+        )
+        events = await repo.get_audit_events("service-principal-test")
+        assert events[0].principal == "auth-service-v2"
