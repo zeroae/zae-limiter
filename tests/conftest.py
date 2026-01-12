@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import time
+import uuid
 from collections.abc import Awaitable
 from unittest.mock import patch
 
@@ -9,6 +11,27 @@ import pytest
 from moto import mock_aws
 
 from zae_limiter import RateLimiter, StackOptions, SyncRateLimiter
+
+# Pytest hooks for --run-aws flag
+
+
+def pytest_addoption(parser):
+    """Add --run-aws pytest option."""
+    parser.addoption(
+        "--run-aws",
+        action="store_true",
+        default=False,
+        help="Run tests against real AWS (requires valid credentials)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip AWS tests unless --run-aws flag is provided."""
+    if not config.getoption("--run-aws"):
+        skip_aws = pytest.mark.skip(reason="Need --run-aws option to run")
+        for item in items:
+            if "aws" in item.keywords:
+                item.add_marker(skip_aws)
 
 
 @pytest.fixture
@@ -177,3 +200,62 @@ def sync_localstack_limiter(localstack_endpoint, minimal_stack_options):
 
     with limiter:
         yield limiter
+
+
+# E2E test fixtures
+
+
+@pytest.fixture
+def unique_table_name():
+    """Generate unique table name for test isolation.
+
+    Uses hyphens instead of underscores because CloudFormation stack names
+    must match pattern [a-zA-Z][-a-zA-Z0-9]*.
+    """
+    timestamp = int(time.time())
+    unique_id = uuid.uuid4().hex[:8]
+    return f"e2e-test-{timestamp}-{unique_id}"
+
+
+@pytest.fixture
+def e2e_stack_options():
+    """Full stack options for E2E tests."""
+    return StackOptions(
+        enable_aggregator=True,
+        enable_alarms=True,
+        snapshot_windows="hourly",
+        retention_days=7,
+    )
+
+
+@pytest.fixture
+def cloudwatch_client(localstack_endpoint):
+    """CloudWatch client for alarm verification."""
+    import boto3
+
+    kwargs = {"region_name": "us-east-1"}
+    if localstack_endpoint:
+        kwargs["endpoint_url"] = localstack_endpoint
+    return boto3.client("cloudwatch", **kwargs)
+
+
+@pytest.fixture
+def sqs_client(localstack_endpoint):
+    """SQS client for DLQ verification."""
+    import boto3
+
+    kwargs = {"region_name": "us-east-1"}
+    if localstack_endpoint:
+        kwargs["endpoint_url"] = localstack_endpoint
+    return boto3.client("sqs", **kwargs)
+
+
+@pytest.fixture
+def lambda_client(localstack_endpoint):
+    """Lambda client for function inspection."""
+    import boto3
+
+    kwargs = {"region_name": "us-east-1"}
+    if localstack_endpoint:
+        kwargs["endpoint_url"] = localstack_endpoint
+    return boto3.client("lambda", **kwargs)
