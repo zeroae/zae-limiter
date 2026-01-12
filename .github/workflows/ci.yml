@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: write
+  pull-requests: write
+
+# Share concurrency group with docs to prevent gh-pages race conditions
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -86,11 +95,13 @@ jobs:
           --health-retries 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Needed for benchmark gh-pages access
       - uses: astral-sh/setup-uv@v7
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --all-extras
       - name: Run integration tests
         run: uv run pytest -m integration -v --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:
@@ -98,6 +109,26 @@ jobs:
           AWS_SECRET_ACCESS_KEY: test
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:4566
+      - name: Run benchmarks
+        if: matrix.python-version == '3.12'
+        run: uv run pytest tests/test_performance.py --benchmark-json=benchmark.json
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ENDPOINT_URL: http://localhost:4566
+      - name: Store benchmark result
+        if: matrix.python-version == '3.12'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'pytest'
+          output-file-path: benchmark.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: benchmarks
+          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          alert-threshold: '130%'
+          comment-on-alert: true
+          fail-on-alert: false
       - name: Upload integration coverage
         uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.12'
