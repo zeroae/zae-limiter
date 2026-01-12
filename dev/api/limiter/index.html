@@ -3211,7 +3211,16 @@ Can return negative values if bucket is in debt.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Delete CloudFormation stack.</p>
+        <p>Delete the CloudFormation stack and all associated resources.</p>
+<p>This method permanently removes the CloudFormation stack, including:</p>
+<ul>
+<li>DynamoDB table and all stored data</li>
+<li>Lambda aggregator function (if deployed)</li>
+<li>IAM roles and CloudWatch log groups</li>
+<li>All other stack resources</li>
+</ul>
+<p>The method waits for deletion to complete before returning.
+If the stack doesn't exist, no error is raised.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3234,7 +3243,8 @@ Can return negative values if bucket is in debt.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Stack name (default: auto-generated from table name)</p>
+                <p>CloudFormation stack name to delete.
+Default: auto-generated from table name (<code>zae-limiter-{table_name}</code>)</p>
               </div>
             </td>
             <td>
@@ -3260,13 +3270,38 @@ Can return negative values if bucket is in debt.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If deletion fails</p>
+                <p>If deletion fails (e.g., permission denied,
+resources in use, or CloudFormation service error)</p>
               </div>
             </td>
           </tr>
       </tbody>
     </table>
 
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>Cleanup after integration testing::</p>
+<div class="language-text highlight"><pre><span></span><code>limiter = RateLimiter(
+    table_name=&quot;test_limits&quot;,
+    region=&quot;us-east-1&quot;,
+    stack_options=StackOptions(),
+)
+
+async with limiter:
+    # Run tests...
+    pass
+
+# Clean up infrastructure
+await limiter.delete_stack()
+</code></pre></div>
+</details>
+
+<details class="warning" open>
+  <summary>Warning</summary>
+  <p>This operation is irreversible. All rate limit state, entity data,
+and usage history will be permanently deleted.</p>
+</details>
 
     </div>
 
@@ -3594,8 +3629,88 @@ Can return negative values if bucket is in debt.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Delete CloudFormation stack.</p>
+        <p>Delete the CloudFormation stack and all associated resources.</p>
+<p>Synchronous wrapper for :meth:<code>RateLimiter.delete_stack</code>.
+See the async version for full documentation.</p>
 
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>stack_name</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>CloudFormation stack name to delete.
+Default: auto-generated from table name (<code>zae-limiter-{table_name}</code>)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            StackCreationError (zae_limiter.exceptions.StackCreationError)" href="../exceptions/#zae_limiter.exceptions.StackCreationError">StackCreationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If deletion fails</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>Cleanup after testing::</p>
+<div class="language-text highlight"><pre><span></span><code>limiter = SyncRateLimiter(
+    table_name=&quot;test_limits&quot;,
+    region=&quot;us-east-1&quot;,
+    stack_options=StackOptions(),
+)
+
+with limiter:
+    # Run tests...
+    pass
+
+# Clean up infrastructure
+limiter.delete_stack()
+</code></pre></div>
+</details>
+
+<details class="warning" open>
+  <summary>Warning</summary>
+  <p>This operation is irreversible. All data will be permanently deleted.</p>
+</details>
 
     </div>
 
