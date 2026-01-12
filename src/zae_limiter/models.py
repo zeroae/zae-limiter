@@ -348,20 +348,16 @@ class BucketState:
         """
         Create a new bucket at full capacity from a Limit.
 
+        Note: This is an internal factory method. Validation of entity_id
+        and resource is performed at the API boundary (RateLimiter public
+        methods) before calling this method.
+
         Args:
-            entity_id: Validated identifier for the entity
-            resource: Validated resource name
-            limit: Limit configuration (already validated)
+            entity_id: Entity identifier (pre-validated by caller)
+            resource: Resource name (pre-validated by caller)
+            limit: Limit configuration (validated via __post_init__)
             now_ms: Current time in milliseconds
-
-        Raises:
-            InvalidIdentifierError: If entity_id is invalid
-            InvalidNameError: If resource is invalid
         """
-        # Validate user-provided inputs at API boundary
-        validate_identifier(entity_id, "entity_id")
-        validate_name(resource, "resource")
-
         return cls(
             entity_id=entity_id,
             resource=resource,

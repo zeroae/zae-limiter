@@ -16,6 +16,7 @@ from .exceptions import (
     IncompatibleSchemaError,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    ValidationError,
     VersionMismatchError,
 )
 from .lease import Lease, LeaseEntry, SyncLease
@@ -27,6 +28,8 @@ from .models import (
     LimitStatus,
     ResourceCapacity,
     StackOptions,
+    validate_identifier,
+    validate_name,
 )
 from .repository import Repository
 from .schema import DEFAULT_RESOURCE
@@ -293,7 +296,7 @@ class RateLimiter:
                 cascade=cascade,
                 use_stored_limits=use_stored_limits,
             )
-        except RateLimitExceeded:
+        except (RateLimitExceeded, ValidationError):
             raise
         except Exception as e:
             if mode == FailureMode.FAIL_OPEN:
@@ -327,6 +330,10 @@ class RateLimiter:
         use_stored_limits: bool,
     ) -> Lease:
         """Internal acquire implementation."""
+        # Validate inputs at API boundary
+        validate_identifier(entity_id, "entity_id")
+        validate_name(resource, "resource")
+
         now_ms = int(time.time() * 1000)
 
         # Determine which entities to check

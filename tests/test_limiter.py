@@ -9,6 +9,7 @@ from zae_limiter import (
     RateLimiterUnavailable,
     RateLimitExceeded,
 )
+from zae_limiter.exceptions import InvalidIdentifierError, InvalidNameError
 
 
 class TestRateLimiterEntities:
@@ -724,3 +725,64 @@ class TestRateLimiterResourceCapacity:
         assert capacity.total_available == 0
         assert len(capacity.entities) == 0
         assert capacity.utilization_pct == 0.0
+
+
+class TestRateLimiterInputValidation:
+    """Tests for input validation at API boundary."""
+
+    @pytest.mark.asyncio
+    async def test_acquire_validates_entity_id(self, limiter):
+        """Acquire should reject entity_id containing reserved delimiter."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            async with limiter.acquire("user#123", "api", limits, {"rpm": 1}):
+                pass
+
+        assert exc_info.value.field == "entity_id"
+        assert "#" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_acquire_validates_resource(self, limiter):
+        """Acquire should reject resource containing reserved delimiter."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with pytest.raises(InvalidNameError) as exc_info:
+            async with limiter.acquire("user-123", "api#v2", limits, {"rpm": 1}):
+                pass
+
+        assert exc_info.value.field == "resource"
+        assert "#" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_acquire_validates_empty_entity_id(self, limiter):
+        """Acquire should reject empty entity_id."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            async with limiter.acquire("", "api", limits, {"rpm": 1}):
+                pass
+
+        assert exc_info.value.field == "entity_id"
+        assert "empty" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_acquire_validates_empty_resource(self, limiter):
+        """Acquire should reject empty resource."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with pytest.raises(InvalidNameError) as exc_info:
+            async with limiter.acquire("user-123", "", limits, {"rpm": 1}):
+                pass
+
+        assert exc_info.value.field == "resource"
+        assert "empty" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_acquire_accepts_valid_inputs(self, limiter):
+        """Acquire should accept valid entity_id and resource."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Should not raise
+        async with limiter.acquire("user-123", "gpt-3.5-turbo", limits, {"rpm": 1}):
+            pass
