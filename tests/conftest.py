@@ -19,6 +19,9 @@ def aws_credentials(monkeypatch):
     monkeypatch.setenv("AWS_SECURITY_TOKEN", "testing")
     monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    # Unset AWS_ENDPOINT_URL to ensure moto intercepts requests
+    # (LocalStack tests use localstack_endpoint fixture which reads from env)
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
 
 
 @pytest.fixture
