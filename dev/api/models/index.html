@@ -1908,6 +1908,9 @@ to avoid floating point precision issues.</p>
         <p>An entity that can have rate limits applied.</p>
 <p>Entities can be parents (projects) or children (API keys).
 Children have a parent_id reference.</p>
+<p>Note: This model does not validate in <strong>post_init</strong> to support DynamoDB
+deserialization and avoid performance overhead. Validation is performed
+in Repository.create_entity() at the API boundary.</p>
 
 
 
@@ -2010,6 +2013,8 @@ Children have a parent_id reference.</p>
         <p>Status of a specific limit check.</p>
 <p>Returned in RateLimitExceeded to provide full visibility into
 all limits that were checked.</p>
+<p>Note: This is an internal model created by the limiter from validated
+inputs. No validation is performed here to avoid performance overhead.</p>
 
 
 
@@ -2087,6 +2092,9 @@ all limits that were checked.</p>
 
         <p>Internal state of a token bucket.</p>
 <p>All token values are stored in millitokens (x1000) for precision.</p>
+<p>Note: This is an internal model. Validation is performed in from_limit()
+for user-provided inputs, not in <strong>post_init</strong> to support DynamoDB
+deserialization and avoid performance overhead on frequent operations.</p>
 
 
 
@@ -2199,6 +2207,93 @@ all limits that were checked.</p>
     <div class="doc doc-contents ">
 
         <p>Create a new bucket at full capacity from a Limit.</p>
+<p>Note: This is an internal factory method. Validation of entity_id
+and resource is performed at the API boundary (RateLimiter public
+methods) before calling this method.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity identifier (pre-validated by caller)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource name (pre-validated by caller)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>limit</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="#zae_limiter.models.Limit">Limit</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit configuration (validated via <strong>post_init</strong>)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>now_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Current time in milliseconds</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
