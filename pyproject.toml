@@ -27,6 +27,7 @@ dependencies = [
     "boto3>=1.34.0",
     "types-aiobotocore[dynamodb]>=2.0.0",
     "click>=8.0.0",
+    "python-ulid>=3.0.0",
 ]
 
 [project.optional-dependencies]

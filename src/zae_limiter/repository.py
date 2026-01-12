@@ -5,6 +5,7 @@ from typing import Any
 
 import aioboto3  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
+from ulid import ULID
 
 from . import schema
 from .exceptions import EntityExistsError
@@ -617,8 +618,8 @@ class Repository:
     # -------------------------------------------------------------------------
 
     def _generate_event_id(self) -> str:
-        """Generate a unique event ID based on timestamp."""
-        return str(self._now_ms())
+        """Generate a unique event ID using ULID (monotonic, collision-free)."""
+        return str(ULID())
 
     async def _log_audit_event(
         self,

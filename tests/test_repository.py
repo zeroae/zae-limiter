@@ -635,3 +635,39 @@ class TestRepositoryAuditLogging:
         )
         events = await repo.get_audit_events("service-principal-test")
         assert events[0].principal == "auth-service-v2"
+
+    @pytest.mark.asyncio
+    async def test_audit_event_id_is_ulid_format(self, repo):
+        """Event ID should be a valid 26-character ULID."""
+        await repo.create_entity(entity_id="ulid-test")
+        events = await repo.get_audit_events("ulid-test")
+        assert len(events) == 1
+
+        event_id = events[0].event_id
+        # ULID is 26 characters, uppercase alphanumeric (Crockford Base32)
+        assert len(event_id) == 26
+        assert event_id.isalnum()
+        # ULID uses Crockford Base32: 0-9 and A-Z excluding I, L, O, U
+        valid_chars = set("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+        assert all(c in valid_chars for c in event_id.upper())
+
+    @pytest.mark.asyncio
+    async def test_audit_event_ids_are_monotonic(self, repo):
+        """Multiple events should have monotonically increasing ULIDs."""
+        await repo.create_entity(entity_id="monotonic-test")
+        # Create multiple events rapidly
+        for i in range(5):
+            await repo.set_limits(
+                entity_id="monotonic-test",
+                limits=[Limit.per_minute(f"limit-{i}", 100)],
+            )
+
+        events = await repo.get_audit_events("monotonic-test", limit=10)
+        # Events are returned most recent first, so reverse for chronological order
+        event_ids = [e.event_id for e in reversed(events)]
+
+        # Each ULID should be greater than the previous (lexicographic order)
+        for i in range(1, len(event_ids)):
+            assert event_ids[i] > event_ids[i - 1], (
+                f"Event IDs not monotonic: {event_ids[i-1]} >= {event_ids[i]}"
+            )
