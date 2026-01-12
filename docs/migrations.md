@@ -101,7 +101,7 @@ For minor updates (Lambda code, no schema changes):
 zae-limiter upgrade --table-name rate_limits --region us-east-1
 ```
 
-For major version upgrades requiring schema migration, see [Running Migrations](#running-migrations).
+For major version upgrades requiring schema migration, see [Sample Migration: v2.0.0](#sample-migration-v200).
 
 ## Schema Modification Approaches
 
