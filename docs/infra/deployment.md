@@ -52,6 +52,98 @@ zae-limiter status --stack-name zae-limiter-rate_limits --region us-east-1
 zae-limiter delete --stack-name zae-limiter-rate_limits --region us-east-1 --yes
 ```
 
+## Stack Lifecycle Management
+
+### Programmatic Cleanup
+
+In addition to the CLI, you can manage stack lifecycle programmatically using the `delete_stack()` method:
+
+```python
+from zae_limiter import RateLimiter, StackOptions
+
+# Create stack
+limiter = RateLimiter(
+    table_name="rate_limits",
+    region="us-east-1",
+    stack_options=StackOptions(),
+)
+
+# Use the limiter...
+async with limiter:
+    # Rate limiting operations here
+    pass
+
+# Delete stack when done
+await limiter.delete_stack()
+```
+
+### Use-Case Guidance
+
+#### Development and Prototyping
+
+For rapid iteration, use auto-creation with cleanup:
+
+```python
+async def dev_session():
+    limiter = RateLimiter(
+        table_name="dev_limits",
+        region="us-east-1",
+        stack_options=StackOptions(enable_aggregator=False),
+    )
+
+    try:
+        async with limiter:
+            # Development work...
+            pass
+    finally:
+        # Clean up development stack
+        await limiter.delete_stack()
+```
+
+#### Integration Testing
+
+For test isolation, create/destroy stacks per test session:
+
+```python
+import pytest
+import uuid
+from zae_limiter import RateLimiter, StackOptions
+
+@pytest.fixture(scope="session")
+async def integration_limiter():
+    """Session-scoped fixture with automatic cleanup."""
+    limiter = RateLimiter(
+        table_name=f"test_{uuid.uuid4().hex[:8]}",  # Unique name
+        endpoint_url="http://localhost:4566",
+        region="us-east-1",
+        stack_options=StackOptions(enable_aggregator=False),
+    )
+
+    async with limiter:
+        yield limiter
+
+    await limiter.delete_stack()
+```
+
+#### Production Deployments
+
+For production, prefer CLI or CloudFormation-managed deployments:
+
+```bash
+# Deploy via CLI (with review)
+zae-limiter deploy --table-name prod_limits --region us-east-1
+
+# Delete via CLI (requires confirmation)
+zae-limiter delete --stack-name zae-limiter-prod_limits --region us-east-1
+```
+
+!!! note "Production Best Practice"
+    In production, avoid programmatic `delete_stack()` calls. Use:
+
+    - CloudFormation console for manual cleanup
+    - CLI with `--yes` flag for scripted cleanup (after review)
+    - Stack policies to prevent accidental deletion
+
 ## CloudFormation Template
 
 Export and customize the template:
