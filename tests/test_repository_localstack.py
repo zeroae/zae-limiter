@@ -4,14 +4,14 @@ These tests run against a real LocalStack instance with full AWS service emulati
 including CloudFormation, DynamoDB, DynamoDB Streams, and Lambda.
 
 To run these tests locally:
-    docker run -p 4566:4566 \
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
+    docker run -p 4566:4566 \\
+      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \\
+      -v /var/run/docker.sock:/var/run/docker.sock \\
       localstack/localstack
 
     AWS_ENDPOINT_URL=http://localhost:4566 pytest tests/test_repository_localstack.py -v
 """
 
-import os
 import time
 
 import pytest
@@ -22,19 +22,12 @@ from zae_limiter.repository import Repository
 
 pytestmark = pytest.mark.integration
 
-
-@pytest.fixture
-def localstack_endpoint():
-    """Get LocalStack endpoint from environment."""
-    endpoint = os.getenv("AWS_ENDPOINT_URL")
-    if not endpoint:
-        pytest.skip("AWS_ENDPOINT_URL not set - LocalStack not available")
-    return endpoint
+# localstack_endpoint and StackOptions fixtures are defined in conftest.py
 
 
 @pytest.fixture
 async def localstack_repo(localstack_endpoint):
-    """Repository connected to LocalStack."""
+    """Repository connected to LocalStack (direct table creation, no CloudFormation)."""
     repo = Repository(
         table_name="integration_test_repo",
         endpoint_url=localstack_endpoint,
@@ -49,16 +42,14 @@ async def localstack_repo(localstack_endpoint):
     await repo.close()
 
 
-@pytest.mark.xfail(
-    reason="CloudFormation stack creation fails in LocalStack. See #70",
-    strict=False,
-)
 class TestRepositoryLocalStackCloudFormation:
     """Integration tests for CloudFormation stack operations."""
 
     @pytest.mark.asyncio
-    async def test_create_table_or_stack_uses_cloudformation(self, localstack_endpoint):
-        """Should create CloudFormation stack with full infrastructure."""
+    async def test_create_table_or_stack_uses_cloudformation(
+        self, localstack_endpoint, minimal_stack_options
+    ):
+        """Should create CloudFormation stack with minimal infrastructure."""
         repo = Repository(
             table_name="test_cf_stack",
             endpoint_url=localstack_endpoint,
@@ -66,8 +57,8 @@ class TestRepositoryLocalStackCloudFormation:
         )
 
         try:
-            # Create stack using CloudFormation
-            await repo.create_stack()
+            # Create stack using CloudFormation (minimal - no aggregator, no alarms)
+            await repo.create_stack(stack_options=minimal_stack_options)
 
             # Verify table was created by trying to use it
             await repo.create_entity("test-entity", name="Test Entity")
@@ -94,10 +85,12 @@ class TestRepositoryLocalStackCloudFormation:
         )
 
         try:
-            # Create with custom parameters using StackOptions
+            # Create with custom parameters using StackOptions (minimal stack)
             stack_options = StackOptions(
                 snapshot_windows="hourly,daily",
                 retention_days=90,
+                enable_aggregator=False,
+                enable_alarms=False,
             )
             await repo.create_stack(stack_options=stack_options)
 

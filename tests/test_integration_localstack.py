@@ -5,75 +5,39 @@ including CloudFormation, DynamoDB, DynamoDB Streams, and Lambda.
 
 To run these tests locally:
     docker run -p 4566:4566 \\
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \\
+      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \\
+      -v /var/run/docker.sock:/var/run/docker.sock \\
       localstack/localstack
 
     AWS_ENDPOINT_URL=http://localhost:4566 pytest -m integration -v
 """
 
-import os
-
 import pytest
 
-from zae_limiter import Limit, RateLimiter, RateLimitExceeded, StackOptions, SyncRateLimiter
+from zae_limiter import Limit, RateLimiter, RateLimitExceeded
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.xfail(
-        reason="CloudFormation stack creation fails in LocalStack. See #70",
-        strict=False,
-    ),
-]
+pytestmark = pytest.mark.integration
 
-
-@pytest.fixture
-def localstack_endpoint():
-    """Get LocalStack endpoint from environment."""
-    endpoint = os.getenv("AWS_ENDPOINT_URL")
-    if not endpoint:
-        pytest.skip("AWS_ENDPOINT_URL not set - LocalStack not available")
-    return endpoint
-
-
-@pytest.fixture
-async def localstack_limiter(localstack_endpoint):
-    """Create RateLimiter with LocalStack for integration testing."""
-    limiter = RateLimiter(
-        table_name="integration_test_rate_limits",
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-        stack_options=StackOptions(),  # Test full stack deployment
-    )
-
-    async with limiter:
-        yield limiter
-
-
-@pytest.fixture
-def sync_localstack_limiter(localstack_endpoint):
-    """Create SyncRateLimiter with LocalStack for integration testing."""
-    limiter = SyncRateLimiter(
-        table_name="integration_test_rate_limits_sync",
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-        stack_options=StackOptions(),
-    )
-
-    with limiter:
-        yield limiter
+# Fixtures are defined in conftest.py:
+# - localstack_endpoint
+# - localstack_limiter (minimal stack - no aggregator, no alarms)
+# - localstack_limiter_with_aggregator (with Lambda aggregator)
+# - localstack_limiter_full (full stack with alarms)
+# - sync_localstack_limiter
+# - minimal_stack_options, aggregator_stack_options, full_stack_options
 
 
 class TestLocalStackIntegration:
     """Integration tests with full LocalStack deployment."""
 
     @pytest.mark.asyncio
-    async def test_cloudformation_stack_deployment(self, localstack_endpoint):
-        """Test CloudFormation stack creation in LocalStack."""
+    async def test_cloudformation_stack_deployment(self, localstack_endpoint, full_stack_options):
+        """Test full CloudFormation stack creation in LocalStack (with aggregator and alarms)."""
         limiter = RateLimiter(
             table_name="test_cloudformation_deployment",
             endpoint_url=localstack_endpoint,
             region="us-east-1",
-            stack_options=StackOptions(),
+            stack_options=full_stack_options,
         )
 
         async with limiter:
