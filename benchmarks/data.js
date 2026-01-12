@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768187357849,
+  "lastUpdate": 1768190750007,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -101,6 +101,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.006780573326925634",
             "extra": "mean: 53.427777312503366 msec\nrounds: 16"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d41d05fa837a0c9df1271425f09fed1087f0ca3",
+          "message": "📝 docs: add migration strategy documentation (#40)\n\n- Create comprehensive docs/migrations.md documenting migration strategy\n- Add migrations.md to mkdocs.yml nav under Infrastructure\n- Fix Repository API usage in code examples (save_entity -> create_entity)\n- Fix Entity access patterns (dataclass attributes vs dict access)\n- Fix broken anchor link #running-migrations -> #sample-migration-v200\n- Add link to migrations guide in docs/index.md\n\nCloses #40",
+          "timestamp": "2026-01-11T23:03:11-05:00",
+          "tree_id": "bf1de356be9bf2a153c70a1816212a764a1ae6b7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/5d41d05fa837a0c9df1271425f09fed1087f0ca3"
+        },
+        "date": 1768190749652,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 92.66634696844257,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01421671146845248",
+            "extra": "mean: 10.791404136612282 msec\nrounds: 183"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 20.389594678736017,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07462624167045724",
+            "extra": "mean: 49.04462377777838 msec\nrounds: 216"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1064.0188267398137,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00006161812551905303",
+            "extra": "mean: 939.8329943691228 usec\nrounds: 888"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 50.84364429286368,
+            "unit": "iter/sec",
+            "range": "stddev: 0.089593296975668",
+            "extra": "mean: 19.668141690235966 msec\nrounds: 297"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 53.740421623465195,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05373142490525829",
+            "extra": "mean: 18.60796714634186 msec\nrounds: 287"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 25.01478308506301,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07883597322830305",
+            "extra": "mean: 39.976361042168165 msec\nrounds: 166"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 25.785419417882828,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10652326094964418",
+            "extra": "mean: 38.78160691489374 msec\nrounds: 94"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 5.8033811515072795,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12016242758579125",
+            "extra": "mean: 172.31334180769352 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 21.760253396584922,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009136357034651361",
+            "extra": "mean: 45.95534719999819 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.441425830802014,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00933390046941291",
+            "extra": "mean: 44.560448499998984 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.808426360161572,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02722667726883063",
+            "extra": "mean: 56.15319286363532 msec\nrounds: 22"
           }
         ]
       }
