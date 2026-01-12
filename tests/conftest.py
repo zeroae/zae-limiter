@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from moto import mock_aws
 
-from zae_limiter import RateLimiter, SyncRateLimiter
+from zae_limiter import RateLimiter, StackOptions, SyncRateLimiter
 
 
 @pytest.fixture
@@ -103,7 +103,7 @@ async def localstack_limiter(localstack_endpoint):
         table_name="integration_test_rate_limits",
         endpoint_url=localstack_endpoint,
         region="us-east-1",
-        create_stack=True,
+        stack_options=StackOptions(),
     )
 
     async with limiter:
@@ -117,7 +117,7 @@ def sync_localstack_limiter(localstack_endpoint):
         table_name="integration_test_rate_limits_sync",
         endpoint_url=localstack_endpoint,
         region="us-east-1",
-        create_stack=True,
+        stack_options=StackOptions(),
     )
 
     with limiter:

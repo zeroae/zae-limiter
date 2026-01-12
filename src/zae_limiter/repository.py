@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 
 from . import schema
 from .exceptions import EntityExistsError
-from .models import BucketState, Entity, Limit
+from .models import BucketState, Entity, Limit, StackOptions
 
 
 class Repository:
@@ -80,39 +80,26 @@ class Repository:
             if e.response["Error"]["Code"] != "ResourceNotFoundException":
                 raise
 
-    async def create_table_or_stack(
+    async def create_stack(
         self,
-        use_cloudformation: bool = True,
-        stack_parameters: dict[str, str] | None = None,
+        stack_options: StackOptions | None = None,
     ) -> None:
         """
-        Create DynamoDB infrastructure via CloudFormation or direct API.
-
-        Automatically detects local DynamoDB (via endpoint_url) and uses
-        direct table creation instead of CloudFormation.
+        Create DynamoDB infrastructure via CloudFormation.
 
         Args:
-            use_cloudformation: Use CloudFormation if True, else direct table creation
-            stack_parameters: Parameters for CloudFormation stack (e.g.,
-                {'snapshot_windows': 'hourly,daily', 'retention_days': '90'})
+            stack_options: Configuration for CloudFormation stack
 
         Raises:
             StackCreationError: If CloudFormation stack creation fails
         """
-        # If endpoint_url is set (local DynamoDB), always use direct creation
-        if self.endpoint_url:
-            await self.create_table()
-            return
+        from .infra.stack_manager import StackManager
 
-        if use_cloudformation:
-            # Use stack manager for CloudFormation deployment
-            from .infra.stack_manager import StackManager
-
-            async with StackManager(self.table_name, self.region, self.endpoint_url) as manager:
-                await manager.create_stack(parameters=stack_parameters)
-        else:
-            # Fallback to direct table creation
-            await self.create_table()
+        async with StackManager(self.table_name, self.region, self.endpoint_url) as manager:
+            await manager.create_stack(
+                stack_name=stack_options.stack_name if stack_options else None,
+                stack_options=stack_options,
+            )
 
     # -------------------------------------------------------------------------
     # Entity operations

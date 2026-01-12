@@ -131,21 +131,36 @@ zae-limiter delete --stack-name zae-limiter-rate_limits --yes
 - No S3 bucket required - deployment package (~30KB) is uploaded directly
 - Lambda only depends on `boto3` (provided by AWS Lambda runtime)
 
-### Auto-Creation in Code
+### Auto-Creation in Code (Recommended)
 
-For development/testing, stacks can be auto-created:
+The library is designed to be self-deploying. Pass `StackOptions` to auto-create infrastructure:
 
 ```python
+from zae_limiter import RateLimiter, StackOptions
+
+# Production - stack auto-creates on first use with sensible defaults
 limiter = RateLimiter(
     table_name="rate_limits",
     region="us-east-1",
-    create_stack=True,  # Auto-creates CloudFormation stack
-    stack_parameters={
-        'snapshot_windows': 'hourly,daily',
-        'retention_days': '90',
-    }
+    stack_options=StackOptions(),
+)
+
+# With custom configuration
+limiter = RateLimiter(
+    table_name="rate_limits",
+    region="us-east-1",
+    stack_options=StackOptions(
+        lambda_memory=512,
+        retention_days=30,
+        enable_alarms=True,
+        alarm_sns_topic="arn:aws:sns:us-east-1:123456789012:alerts",
+    ),
 )
 ```
+
+**When to use `StackOptions` vs CLI:**
+- **StackOptions**: Self-contained apps, serverless deployments, minimal onboarding friction
+- **CLI**: Strict infra/app separation, audit requirements, Terraform/CDK integration
 
 
 ### Local Development with LocalStack
@@ -161,23 +176,23 @@ docker run -p 4566:4566 \
 # Deploy infrastructure with CLI
 zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566
 
-# Or auto-create in code
+# Or auto-create in code (recommended)
 limiter = RateLimiter(
     table_name="rate_limits",
     endpoint_url="http://localhost:4566",
     region="us-east-1",
-    create_stack=True,  # Uses CloudFormation with LocalStack
+    stack_options=StackOptions(),  # Creates full CloudFormation stack
 )
 ```
 
-**Note:** The `endpoint_url` parameter works with any AWS-compatible service (LocalStack, custom AWS endpoints, etc.). LocalStack is recommended for local development as it supports all required services including Lambda and DynamoDB Streams.
+**Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services.
 
 ## Project Structure
 
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, BucketState
+├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions
 ├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders

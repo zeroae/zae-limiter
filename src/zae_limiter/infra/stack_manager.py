@@ -7,6 +7,7 @@ import aioboto3  # type: ignore
 from botocore.exceptions import ClientError
 
 from ..exceptions import StackAlreadyExistsError, StackCreationError
+from ..models import StackOptions
 from .lambda_builder import build_lambda_package
 
 # Version tag keys for infrastructure
@@ -213,18 +214,17 @@ class StackManager:
     async def create_stack(
         self,
         stack_name: str | None = None,
-        parameters: dict[str, str] | None = None,
+        stack_options: StackOptions | None = None,
         wait: bool = True,
     ) -> dict[str, Any]:
         """
         Create CloudFormation stack.
 
-        Auto-skips for local DynamoDB environments. Handles stack already
-        exists gracefully.
+        Handles stack already exists gracefully.
 
         Args:
-            stack_name: Override stack name (default: auto-generated)
-            parameters: Stack parameters dict (keys: snake_case or PascalCase)
+            stack_name: Override stack name (default: auto-generated or from stack_options)
+            stack_options: Stack configuration
             wait: Wait for stack to be CREATE_COMPLETE
 
         Returns:
@@ -234,7 +234,13 @@ class StackManager:
             StackCreationError: If stack creation fails
             StackAlreadyExistsError: If stack already exists
         """
+        # Determine stack name from options, parameter, or default
+        if stack_name is None and stack_options is not None:
+            stack_name = stack_options.stack_name
         stack_name = stack_name or self.get_stack_name()
+
+        # Convert stack_options to parameters
+        parameters = stack_options.to_parameters() if stack_options else None
         client = await self._get_client()
 
         # Check if stack already exists

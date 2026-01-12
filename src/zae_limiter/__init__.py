@@ -9,12 +9,12 @@ This library provides a token bucket rate limiter with:
 - Usage analytics via Lambda aggregator
 
 Example:
-    from zae_limiter import RateLimiter, Limit, FailureMode
+    from zae_limiter import RateLimiter, Limit, StackOptions
 
     limiter = RateLimiter(
         table_name="rate_limits",
         region="us-east-1",
-        create_stack=True,
+        stack_options=StackOptions(),  # Auto-creates CloudFormation stack
     )
 
     async with limiter.acquire(
@@ -74,6 +74,7 @@ from .models import (
     LimitName,
     LimitStatus,
     ResourceCapacity,
+    StackOptions,
     UsageSnapshot,
 )
 
@@ -108,6 +109,7 @@ __all__ = [
     "UsageSnapshot",
     "ResourceCapacity",
     "EntityCapacity",
+    "StackOptions",
     # Enums
     "FailureMode",
     # Exceptions - Base

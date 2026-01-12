@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+from zae_limiter import StackOptions
 from zae_limiter.exceptions import StackAlreadyExistsError, StackCreationError
 from zae_limiter.infra.stack_manager import StackManager
 
@@ -178,10 +179,10 @@ class TestStackManager:
             )
 
             result = await manager.create_stack(
-                parameters={
-                    "snapshot_windows": "hourly",
-                    "retention_days": "30",
-                }
+                stack_options=StackOptions(
+                    snapshot_windows="hourly",
+                    retention_days=30,
+                )
             )
 
             assert result["status"] == "CREATE_COMPLETE"

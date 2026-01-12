@@ -26,6 +26,7 @@ from .models import (
     Limit,
     LimitStatus,
     ResourceCapacity,
+    StackOptions,
 )
 from .repository import Repository
 from .schema import DEFAULT_RESOURCE
@@ -57,8 +58,7 @@ class RateLimiter:
         table_name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
-        create_stack: bool = False,
-        stack_parameters: dict[str, str] | None = None,
+        stack_options: StackOptions | None = None,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
         auto_update: bool = True,
         strict_version: bool = True,
@@ -71,8 +71,7 @@ class RateLimiter:
             table_name: DynamoDB table name
             region: AWS region
             endpoint_url: DynamoDB endpoint URL (for local development)
-            create_stack: Create CloudFormation stack if it doesn't exist
-            stack_parameters: Parameters for CloudFormation stack
+            stack_options: Stack configuration for auto-creation (None = don't create)
             failure_mode: Behavior when DynamoDB is unavailable
             auto_update: Auto-update Lambda when version mismatch detected
             strict_version: Fail if version mismatch (when auto_update is False)
@@ -84,8 +83,7 @@ class RateLimiter:
         self._strict_version = strict_version
         self._skip_version_check = skip_version_check
 
-        self._create_stack = create_stack
-        self._stack_parameters = stack_parameters or {}
+        self._stack_options = stack_options
         self._repository = Repository(
             table_name=table_name,
             region=region,
@@ -98,10 +96,9 @@ class RateLimiter:
         if self._initialized:
             return
 
-        if self._create_stack:
-            await self._repository.create_table_or_stack(
-                use_cloudformation=True,
-                stack_parameters=self._stack_parameters,
+        if self._stack_options is not None:
+            await self._repository.create_stack(
+                stack_options=self._stack_options,
             )
 
         # Version check (skip for local DynamoDB without CloudFormation)
@@ -618,15 +615,14 @@ class RateLimiter:
     async def create_stack(
         self,
         stack_name: str | None = None,
-        parameters: dict[str, str] | None = None,
+        stack_options: StackOptions | None = None,
     ) -> dict[str, Any]:
         """
         Create CloudFormation stack for infrastructure.
 
         Args:
             stack_name: Override stack name (default: auto-generated)
-            parameters: Stack parameters dict (e.g.,
-                {'snapshot_windows': 'hourly,daily', 'retention_days': '90'})
+            stack_options: Stack configuration
 
         Returns:
             Dict with stack_id, stack_name, and status
@@ -639,7 +635,7 @@ class RateLimiter:
         async with StackManager(
             self.table_name, self._repository.region, self._repository.endpoint_url
         ) as manager:
-            return await manager.create_stack(stack_name, parameters)
+            return await manager.create_stack(stack_name, stack_options)
 
     async def delete_stack(self, stack_name: str | None = None) -> None:
         """
@@ -672,8 +668,7 @@ class SyncRateLimiter:
         table_name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
-        create_stack: bool = False,
-        stack_parameters: dict[str, str] | None = None,
+        stack_options: StackOptions | None = None,
         failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
         auto_update: bool = True,
         strict_version: bool = True,
@@ -683,8 +678,7 @@ class SyncRateLimiter:
             table_name=table_name,
             region=region,
             endpoint_url=endpoint_url,
-            create_stack=create_stack,
-            stack_parameters=stack_parameters,
+            stack_options=stack_options,
             failure_mode=failure_mode,
             auto_update=auto_update,
             strict_version=strict_version,
@@ -888,10 +882,10 @@ class SyncRateLimiter:
     def create_stack(
         self,
         stack_name: str | None = None,
-        parameters: dict[str, str] | None = None,
+        stack_options: StackOptions | None = None,
     ) -> dict[str, Any]:
         """Create CloudFormation stack for infrastructure."""
-        return self._run(self._limiter.create_stack(stack_name, parameters))
+        return self._run(self._limiter.create_stack(stack_name, stack_options))
 
     def delete_stack(self, stack_name: str | None = None) -> None:
         """Delete CloudFormation stack."""

@@ -8,6 +8,7 @@ import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
 from .infra.stack_manager import StackManager
+from .models import StackOptions
 
 
 @click.group()
@@ -145,50 +146,43 @@ def deploy(
 
     async def _deploy() -> None:
         async with StackManager(table_name, region, endpoint_url) as manager:
-            actual_stack_name = stack_name or manager.get_stack_name()
+            # Build StackOptions from CLI arguments
+            stack_options = StackOptions(
+                snapshot_windows=snapshot_windows,
+                retention_days=retention_days,
+                enable_aggregator=enable_aggregator,
+                pitr_recovery_days=pitr_recovery_days,
+                log_retention_days=int(log_retention_days),
+                lambda_timeout=lambda_timeout,
+                lambda_memory=lambda_memory,
+                enable_alarms=enable_alarms,
+                alarm_sns_topic=alarm_sns_topic,
+                lambda_duration_threshold_pct=lambda_duration_threshold_pct,
+                stack_name=stack_name,
+            )
+
+            actual_stack_name = stack_options.stack_name or manager.get_stack_name()
 
             click.echo(f"Deploying stack: {actual_stack_name}")
             click.echo(f"  Table name: {table_name}")
             click.echo(f"  Region: {region or 'default'}")
-            click.echo(f"  Snapshot windows: {snapshot_windows}")
-            click.echo(f"  Retention days: {retention_days}")
-            click.echo(f"  Aggregator: {'enabled' if enable_aggregator else 'disabled'}")
-            if enable_aggregator:
-                click.echo(f"  Lambda timeout: {lambda_timeout}s")
-                click.echo(f"  Lambda memory: {lambda_memory}MB")
-            click.echo(f"  Alarms: {'enabled' if enable_alarms else 'disabled'}")
-            if enable_alarms and alarm_sns_topic:
-                click.echo(f"  Alarm SNS topic: {alarm_sns_topic}")
-            click.echo()
-
-            # Calculate the duration threshold in milliseconds
-            # duration_threshold_ms = timeout_seconds * 1000 * (percentage / 100)
-            lambda_duration_threshold_ms = int(
-                lambda_timeout * 1000 * (lambda_duration_threshold_pct / 100)
+            click.echo(f"  Snapshot windows: {stack_options.snapshot_windows}")
+            click.echo(f"  Retention days: {stack_options.retention_days}")
+            click.echo(
+                f"  Aggregator: {'enabled' if stack_options.enable_aggregator else 'disabled'}"
             )
-
-            parameters = {
-                "snapshot_windows": snapshot_windows,
-                "retention_days": str(retention_days),
-                "enable_aggregator": "true" if enable_aggregator else "false",
-                "log_retention_days": log_retention_days,
-                "lambda_timeout": str(lambda_timeout),
-                "lambda_memory_size": str(lambda_memory),
-                "enable_alarms": "true" if enable_alarms else "false",
-                "lambda_duration_threshold": str(lambda_duration_threshold_ms),
-            }
-
-            if pitr_recovery_days is not None:
-                parameters["pitr_recovery_days"] = str(pitr_recovery_days)
-
-            if alarm_sns_topic:
-                parameters["alarm_sns_topic_arn"] = alarm_sns_topic
+            if stack_options.enable_aggregator:
+                click.echo(f"  Lambda timeout: {stack_options.lambda_timeout}s")
+                click.echo(f"  Lambda memory: {stack_options.lambda_memory}MB")
+            click.echo(f"  Alarms: {'enabled' if stack_options.enable_alarms else 'disabled'}")
+            if stack_options.enable_alarms and stack_options.alarm_sns_topic:
+                click.echo(f"  Alarm SNS topic: {stack_options.alarm_sns_topic}")
+            click.echo()
 
             try:
                 # Step 1: Create CloudFormation stack
                 result = await manager.create_stack(
-                    stack_name=actual_stack_name,
-                    parameters=parameters,
+                    stack_options=stack_options,
                     wait=wait,
                 )
 
@@ -203,7 +197,7 @@ def deploy(
                     click.echo(f"  Stack ID: {result['stack_id']}")
 
                 # Step 2: Deploy Lambda code if aggregator is enabled
-                if enable_aggregator and wait:
+                if stack_options.enable_aggregator and wait:
                     click.echo()
                     click.echo("Deploying Lambda function code...")
 
@@ -229,7 +223,7 @@ def deploy(
                 if not wait:
                     click.echo()
                     click.echo("Stack creation initiated. Use 'status' command to check progress.")
-                    if enable_aggregator:
+                    if stack_options.enable_aggregator:
                         click.echo(
                             "Note: Lambda code will not be deployed until stack is ready. "
                             "Run 'zae-limiter deploy' again with --wait to deploy Lambda."
