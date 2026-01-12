@@ -47,6 +47,28 @@ class TestLocalStackIntegration:
             assert entity.name == "Test Entity"
 
     @pytest.mark.asyncio
+    async def test_cloudformation_stack_deployment_no_alarms(
+        self, localstack_endpoint, aggregator_stack_options
+    ):
+        """Test CloudFormation stack creation with aggregator but without alarms.
+
+        This tests the edge case where EnableAggregator=true but EnableAlarms=false.
+        The AggregatorDLQAlarmName output should not be created in this scenario.
+        """
+        limiter = RateLimiter(
+            table_name="test_cloudformation_no_alarms",
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+            stack_options=aggregator_stack_options,
+        )
+
+        async with limiter:
+            # Verify stack was created by checking if we can perform operations
+            entity = await limiter.create_entity("test-entity", name="Test Entity")
+            assert entity.id == "test-entity"
+            assert entity.name == "Test Entity"
+
+    @pytest.mark.asyncio
     async def test_rate_limiting_operations(self, localstack_limiter):
         """Test basic rate limiting against real DynamoDB in LocalStack."""
         limits = [
