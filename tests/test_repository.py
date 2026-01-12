@@ -5,6 +5,7 @@ import time
 import pytest
 
 from zae_limiter import Limit
+from zae_limiter.exceptions import InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
 
@@ -356,3 +357,85 @@ class TestRepositoryVersionOperations:
         assert version["schema_version"] == "1.0.0"
         assert version["lambda_version"] == "0.1.0"
         assert version["updated_by"] is None
+
+
+class TestRepositoryEntityValidation:
+    """Tests for input validation in Repository.create_entity()."""
+
+    @pytest.mark.asyncio
+    async def test_create_entity_valid(self, repo):
+        """Valid entity_id should be accepted."""
+        entity = await repo.create_entity("user-123", name="Test User")
+        assert entity.id == "user-123"
+        assert entity.name == "Test User"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_hash_in_id(self, repo):
+        """Entity ID with # delimiter should be rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity("user#123")
+        assert exc_info.value.field == "entity_id"
+        assert "#" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_empty_id(self, repo):
+        """Empty entity ID should be rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity("")
+        assert exc_info.value.field == "entity_id"
+        assert "empty" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_too_long_id(self, repo):
+        """Entity ID exceeding max length should be rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity("a" * 300)
+        assert exc_info.value.field == "entity_id"
+        assert "length" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_invalid_start_char(self, repo):
+        """Entity ID must start with alphanumeric."""
+        with pytest.raises(InvalidIdentifierError):
+            await repo.create_entity("_user123")
+
+    @pytest.mark.asyncio
+    async def test_create_entity_valid_parent_id(self, repo):
+        """Valid parent_id should be accepted."""
+        await repo.create_entity("parent-1")
+        entity = await repo.create_entity("child-1", parent_id="parent-1")
+        assert entity.parent_id == "parent-1"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_hash_in_parent_id(self, repo):
+        """Parent ID with # delimiter should be rejected."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity("child-1", parent_id="parent#123")
+        assert exc_info.value.field == "parent_id"
+        assert "#" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_rejects_empty_parent_id(self, repo):
+        """Empty parent ID should be rejected (use None instead)."""
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.create_entity("child-1", parent_id="")
+        assert exc_info.value.field == "parent_id"
+        assert "empty" in exc_info.value.reason
+
+    @pytest.mark.asyncio
+    async def test_create_entity_accepts_uuid(self, repo):
+        """UUID format should be accepted."""
+        entity = await repo.create_entity("550e8400-e29b-41d4-a716-446655440000")
+        assert entity.id == "550e8400-e29b-41d4-a716-446655440000"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_accepts_api_key_format(self, repo):
+        """API key format (sk-proj-xxx) should be accepted."""
+        entity = await repo.create_entity("sk-proj-abc123_xyz")
+        assert entity.id == "sk-proj-abc123_xyz"
+
+    @pytest.mark.asyncio
+    async def test_create_entity_accepts_email_like(self, repo):
+        """Email-like format should be accepted."""
+        entity = await repo.create_entity("user@example.com")
+        assert entity.id == "user@example.com"

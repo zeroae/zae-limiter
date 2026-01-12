@@ -332,84 +332,41 @@ class TestInputValidation:
                 Limit.per_minute(name, 100)
 
     # -------------------------------------------------------------------------
-    # Entity ID Validation Tests
+    # Entity Tests (internal model - no __post_init__ validation)
     # -------------------------------------------------------------------------
 
-    def test_entity_id_valid(self):
-        """Test valid entity IDs are accepted."""
-        valid_ids = [
-            "user123",
-            "550e8400-e29b-41d4-a716-446655440000",  # UUID
-            "sk-proj-abc123_xyz",  # API key format
-            "user@example.com",  # Email-like
-            "org:team:user",  # Colon-separated
-            "a",  # Single char
-        ]
-        for entity_id in valid_ids:
-            entity = Entity(id=entity_id)
-            assert entity.id == entity_id
+    def test_entity_valid(self):
+        """Test valid Entity is created."""
+        entity = Entity(id="user-123", name="Test User")
+        assert entity.id == "user-123"
 
-    def test_entity_id_rejects_hash(self):
-        """Test entity ID with # is rejected."""
-        with pytest.raises(InvalidIdentifierError) as exc_info:
-            Entity(id="user#123")
-        assert exc_info.value.field == "id"
-        assert "#" in exc_info.value.reason
+    def test_entity_allows_any_values_direct_construction(self):
+        """Test Entity allows any values when constructed directly.
 
-    def test_entity_id_rejects_empty(self):
-        """Test empty entity ID is rejected."""
-        with pytest.raises(InvalidIdentifierError) as exc_info:
-            Entity(id="")
-        assert exc_info.value.field == "id"
-        assert "empty" in exc_info.value.reason
+        Entity is used for DynamoDB deserialization. Validation is performed
+        in Repository.create_entity() instead of __post_init__ to support
+        reading existing data and avoid performance overhead.
+        """
+        # This should NOT raise - direct construction bypasses validation
+        entity = Entity(
+            id="user#123",  # Would be invalid in Repository.create_entity
+            parent_id="",  # Empty - from DynamoDB deserialization
+        )
+        assert entity.id == "user#123"
 
-    def test_entity_id_rejects_too_long(self):
-        """Test entity ID exceeding max length is rejected."""
-        with pytest.raises(InvalidIdentifierError) as exc_info:
-            Entity(id="a" * 300)
-        assert exc_info.value.field == "id"
-        assert "length" in exc_info.value.reason
-
-    def test_entity_id_must_start_alphanumeric(self):
-        """Test entity ID must start with alphanumeric."""
-        invalid_starts = ["_user", "-user", ".user", "@user", ":user"]
-        for entity_id in invalid_starts:
-            with pytest.raises(InvalidIdentifierError):
-                Entity(id=entity_id)
-
-    def test_entity_id_rejects_special_chars(self):
-        """Test entity ID with invalid special characters is rejected."""
-        invalid_ids = ["user/path", "user\\path", "user\nid", "user\tid", "user id"]
-        for entity_id in invalid_ids:
-            with pytest.raises(InvalidIdentifierError):
-                Entity(id=entity_id)
-
-    # -------------------------------------------------------------------------
-    # Parent ID Validation Tests
-    # -------------------------------------------------------------------------
-
-    def test_parent_id_valid(self):
-        """Test valid parent IDs are accepted."""
+    def test_entity_with_parent(self):
+        """Test Entity with parent_id."""
         entity = Entity(id="child-1", parent_id="parent-123")
         assert entity.parent_id == "parent-123"
+        assert entity.is_child is True
+        assert entity.is_parent is False
 
-    def test_parent_id_none_is_valid(self):
-        """Test None parent_id is valid (root entity)."""
+    def test_entity_without_parent(self):
+        """Test Entity without parent_id (root entity)."""
         entity = Entity(id="root-1", parent_id=None)
         assert entity.parent_id is None
         assert entity.is_parent is True
-
-    def test_parent_id_rejects_hash(self):
-        """Test parent ID with # is rejected."""
-        with pytest.raises(InvalidIdentifierError) as exc_info:
-            Entity(id="child-1", parent_id="parent#123")
-        assert exc_info.value.field == "parent_id"
-
-    def test_parent_id_rejects_empty(self):
-        """Test empty parent ID is rejected."""
-        with pytest.raises(InvalidIdentifierError) as exc_info:
-            Entity(id="child-1", parent_id="")
-        assert exc_info.value.field == "parent_id"
+        assert entity.is_child is False
 
     # -------------------------------------------------------------------------
     # BucketState Tests (internal model - no __post_init__ validation)
@@ -538,10 +495,16 @@ class TestInputValidation:
 
     def test_can_catch_validation_error_category(self):
         """Test that ValidationError can catch all validation errors."""
-        # InvalidIdentifierError
+        # InvalidIdentifierError (via BucketState.from_limit)
+        limit = Limit.per_minute("rpm", 100)
         with pytest.raises(ValidationError):
-            Entity(id="user#123")
+            BucketState.from_limit(
+                entity_id="user#123",
+                resource="api",
+                limit=limit,
+                now_ms=1000000,
+            )
 
-        # InvalidNameError
+        # InvalidNameError (via Limit)
         with pytest.raises(ValidationError):
             Limit.per_minute("rpm#test", 100)

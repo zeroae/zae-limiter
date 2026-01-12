@@ -250,6 +250,10 @@ class Entity:
 
     Entities can be parents (projects) or children (API keys).
     Children have a parent_id reference.
+
+    Note: This model does not validate in __post_init__ to support DynamoDB
+    deserialization and avoid performance overhead. Validation is performed
+    in Repository.create_entity() at the API boundary.
     """
 
     id: str
@@ -257,11 +261,6 @@ class Entity:
     parent_id: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
     created_at: str | None = None
-
-    def __post_init__(self) -> None:
-        validate_identifier(self.id, "id")
-        if self.parent_id is not None:
-            validate_identifier(self.parent_id, "parent_id")
 
     @property
     def is_parent(self) -> bool:
