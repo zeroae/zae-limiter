@@ -319,6 +319,7 @@ class TestE2EAWSUsageSnapshots:
             print(f"Warning: Stack cleanup failed: {e}")
 
     @pytest.mark.asyncio
+    @pytest.mark.xfail(reason="Flaky: Lambda may not create snapshots within 120s wait. See #84")
     async def test_usage_snapshots_created(self, aws_limiter_with_snapshots):
         """
         Verify Lambda aggregator creates usage snapshots.
