@@ -95,6 +95,7 @@ nav:
       - Deployment: infra/deployment.md
       - LocalStack: infra/localstack.md
       - CloudFormation: infra/cloudformation.md
+      - Migrations: migrations.md
   - CLI Reference: cli.md
   - API Reference:
       - Overview: api/index.md
