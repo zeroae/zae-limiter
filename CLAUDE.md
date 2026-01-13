@@ -189,15 +189,11 @@ limiter = RateLimiter(
 
 ### Local Development with LocalStack
 
-LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Streams, Lambda):
+LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Streams, Lambda). Use the provided `docker-compose.yml` at the project root (preferred method):
 
 ```bash
-# Start LocalStack (with Docker socket for Lambda execution)
-docker run -p 4566:4566 \
-  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
-  localstack/localstack
+# Start LocalStack with docker compose (preferred)
+docker compose up -d
 
 # Deploy infrastructure with CLI
 zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566 --region us-east-1
@@ -209,9 +205,12 @@ limiter = RateLimiter(
     region="us-east-1",
     stack_options=StackOptions(),  # Creates full CloudFormation stack
 )
+
+# Stop LocalStack when done
+docker compose down
 ```
 
-**Important:** The Docker socket mount (`-v /var/run/docker.sock:/var/run/docker.sock`) is required for LocalStack to spawn Lambda functions as Docker containers. Without this, CloudFormation stack creation will fail when the aggregator Lambda is enabled.
+**Important:** The Docker socket mount is required for LocalStack to spawn Lambda functions as Docker containers. The `docker-compose.yml` is pre-configured with this mount. Without it, CloudFormation stack creation will fail when the aggregator Lambda is enabled.
 
 **Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services.
 
@@ -338,12 +337,8 @@ tests/
 # Unit tests only (fast, no Docker)
 uv run pytest tests/unit/ -v
 
-# Start LocalStack (required for integration/e2e tests)
-docker run -d -p 4566:4566 \
-  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
-  localstack/localstack
+# Start LocalStack using docker compose (preferred)
+docker compose up -d
 
 # Integration tests (requires LocalStack)
 AWS_ENDPOINT_URL=http://localhost:4566 uv run pytest tests/integration/ -v
@@ -362,9 +357,12 @@ AWS_ENDPOINT_URL=http://localhost:4566 uv run pytest tests/benchmark/test_locals
 
 # Export benchmark results to JSON
 uv run pytest tests/benchmark/ -v --benchmark-json=benchmark.json
+
+# Stop LocalStack when done
+docker compose down
 ```
 
-**Important:** The Docker socket mount is required for Lambda execution in LocalStack.
+**Note:** The `docker-compose.yml` is pre-configured with the Docker socket mount required for Lambda execution in LocalStack.
 
 ### Test Coverage
 
