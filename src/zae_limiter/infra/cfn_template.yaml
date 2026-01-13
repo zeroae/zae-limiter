@@ -4,11 +4,6 @@ Description: >
   Lambda aggregator for usage snapshots.
 
 Parameters:
-  TableName:
-    Type: String
-    Default: ZAEL-rate-limits
-    Description: Name of the DynamoDB table (matches stack name with ZAEL- prefix)
-
   SnapshotWindows:
     Type: String
     Default: hourly,daily
@@ -139,7 +134,7 @@ Resources:
   RateLimitsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Ref TableName
+      TableName: !Ref AWS::StackName
       BillingMode: PAY_PER_REQUEST
 
       AttributeDefinitions:
@@ -206,7 +201,7 @@ Resources:
     Type: AWS::SQS::Queue
     Condition: DeployAggregator
     Properties:
-      QueueName: !Sub ${TableName}-aggregator-dlq
+      QueueName: !Sub ${AWS::StackName}-aggregator-dlq
       MessageRetentionPeriod: 1209600  # 14 days (max retention)
       VisibilityTimeout: 300  # 5 minutes
       Tags:
@@ -217,7 +212,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Condition: DeployAggregatorAlarms
     Properties:
-      AlarmName: !Sub ${TableName}-aggregator-dlq-alarm
+      AlarmName: !Sub ${AWS::StackName}-aggregator-dlq-alarm
       AlarmDescription: Alert when messages appear in the aggregator DLQ
       MetricName: ApproximateNumberOfMessagesVisible
       Namespace: AWS/SQS
@@ -235,7 +230,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Condition: DeployAggregator
     Properties:
-      LogGroupName: !Sub /aws/lambda/${TableName}-aggregator
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-aggregator
       RetentionInDays: !Ref LogRetentionDays
 
   AggregatorRole:
@@ -245,7 +240,7 @@ Resources:
       RoleName: !If
         - HasCustomRoleName
         - !Ref RoleName
-        - !Sub ${TableName}-aggregator-role
+        - !Sub ${AWS::StackName}-aggregator-role
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !If
@@ -302,7 +297,7 @@ Resources:
     Condition: DeployAggregator
     DependsOn: AggregatorLogGroup
     Properties:
-      FunctionName: !Sub ${TableName}-aggregator
+      FunctionName: !Sub ${AWS::StackName}-aggregator
       Description: Aggregates rate limiter usage into hourly/daily snapshots
       Runtime: python3.12
       Handler: zae_limiter.aggregator.handler.handler
@@ -312,7 +307,7 @@ Resources:
 
       Environment:
         Variables:
-          TABLE_NAME: !Ref TableName
+          TABLE_NAME: !Ref AWS::StackName
           SNAPSHOT_WINDOWS: !Ref SnapshotWindows
           SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
           ZAE_LIMITER_SCHEMA_VERSION: !Ref SchemaVersion
@@ -369,7 +364,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Condition: DeployAggregatorAlarms
     Properties:
-      AlarmName: !Sub ${TableName}-aggregator-error-rate
+      AlarmName: !Sub ${AWS::StackName}-aggregator-error-rate
       AlarmDescription: Alert when Lambda error rate exceeds 1%
       MetricName: Errors
       Namespace: AWS/Lambda
@@ -391,7 +386,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Condition: DeployAggregatorAlarms
     Properties:
-      AlarmName: !Sub ${TableName}-aggregator-duration
+      AlarmName: !Sub ${AWS::StackName}-aggregator-duration
       AlarmDescription: !Sub Alert when Lambda duration exceeds threshold (${LambdaDurationThreshold}ms)
       MetricName: Duration
       Namespace: AWS/Lambda
@@ -413,7 +408,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Condition: DeployAlarms
     Properties:
-      AlarmName: !Sub ${TableName}-read-throttle
+      AlarmName: !Sub ${AWS::StackName}-read-throttle
       AlarmDescription: Alert when DynamoDB read requests are throttled
       MetricName: ReadThrottleEvents
       Namespace: AWS/DynamoDB
@@ -435,7 +430,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Condition: DeployAlarms
     Properties:
-      AlarmName: !Sub ${TableName}-write-throttle
+      AlarmName: !Sub ${AWS::StackName}-write-throttle
       AlarmDescription: Alert when DynamoDB write requests are throttled
       MetricName: WriteThrottleEvents
       Namespace: AWS/DynamoDB
@@ -457,7 +452,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Condition: DeployAggregatorAlarms
     Properties:
-      AlarmName: !Sub ${TableName}-stream-iterator-age
+      AlarmName: !Sub ${AWS::StackName}-stream-iterator-age
       AlarmDescription: Alert when stream processing lag exceeds 30 seconds
       MetricName: IteratorAge
       Namespace: AWS/Lambda

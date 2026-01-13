@@ -41,6 +41,8 @@ zae-limiter cfn-template | less
 
 ## Template Parameters
 
+The DynamoDB table name is automatically derived from the CloudFormation stack name using the `AWS::StackName` pseudo-parameter. This ensures consistency between stack and resource names.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `SnapshotWindows` | String | `hourly,daily` | Comma-separated list of snapshot windows |
@@ -131,7 +133,7 @@ AggregatorFunction:
     Timeout: 60
     Environment:
       Variables:
-        TABLE_NAME: !Ref TableName
+        TABLE_NAME: !Ref AWS::StackName
         SNAPSHOT_WINDOWS: !Ref SnapshotWindows
         SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
 ```
@@ -202,7 +204,7 @@ Resources:
     Type: AWS::SQS::Queue
     Condition: CreateDLQ
     Properties:
-      QueueName: !Sub "${TableName}-aggregator-dlq"
+      QueueName: !Sub "${AWS::StackName}-aggregator-dlq"
       MessageRetentionPeriod: 1209600  # 14 days
 
   StreamEventMapping:
@@ -221,7 +223,7 @@ Resources:
 ReadThrottleAlarm:
   Type: AWS::CloudWatch::Alarm
   Properties:
-    AlarmName: !Sub "${TableName}-read-throttle"
+    AlarmName: !Sub "${AWS::StackName}-read-throttle"
     AlarmDescription: Alert when DynamoDB read requests are throttled
     MetricName: ReadThrottleEvents
     Namespace: AWS/DynamoDB
@@ -284,6 +286,8 @@ aws cloudformation deploy \
         EnableAlarms=true \
     --capabilities CAPABILITY_NAMED_IAM
 ```
+
+Note: The DynamoDB table name is automatically set to match the stack name (e.g., `ZAEL-prod`).
 
 ### Using SAM
 

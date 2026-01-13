@@ -104,13 +104,11 @@ class StackManager:
         if not parameters:
             # Use defaults from template with schema version
             return [
-                {"ParameterKey": "TableName", "ParameterValue": self.table_name},
                 {"ParameterKey": "SchemaVersion", "ParameterValue": schema_version},
             ]
 
         result = []
-        # Always include TableName and SchemaVersion
-        result.append({"ParameterKey": "TableName", "ParameterValue": self.table_name})
+        # Always include SchemaVersion
         result.append({"ParameterKey": "SchemaVersion", "ParameterValue": schema_version})
 
         # Map common parameter names
