@@ -863,6 +863,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;name
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.close" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1365,6 +1376,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;name
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.close" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1783,7 +1805,7 @@
 
 
 <a href="#zae_limiter.limiter.RateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">table_name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;limiter&#39;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -1799,6 +1821,15 @@
 - Usage analytics</p>
 
 
+<details class="example" open>
+  <summary>Example</summary>
+  <p>limiter = RateLimiter(
+    name="my-app",  # Creates ZAEL-my-app resources
+    region="us-east-1",
+    stack_options=StackOptions(),
+)</p>
+</details>
+
 
 <p><span class="doc-section-title">Parameters:</span></p>
     <table>
@@ -1813,18 +1844,20 @@
       <tbody>
           <tr class="doc-section-item">
             <td>
-                <code>table_name</code>
+                <code>name</code>
             </td>
             <td>
                   <code><span title="str">str</span></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>DynamoDB table name</p>
+                <p>Resource identifier (e.g., 'my-app').
+Will be prefixed with 'ZAEL-' automatically.
+Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
               </div>
             </td>
             <td>
-                <em>required</em>
+                  <code>&#39;limiter&#39;</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -1959,6 +1992,30 @@
 
 
 
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.limiter.RateLimiter.name" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">name</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.limiter.RateLimiter.name" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">name</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The resource identifier (with ZAEL- prefix).</p>
+
+    </div>
+
+</div>
 
 
 
@@ -3089,7 +3146,7 @@ Can return negative values if bucket is in debt.</p>
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.create_stack" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_stack</span><span class="p">(</span><span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_stack</span><span class="p">(</span><span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -3108,22 +3165,6 @@ Can return negative values if bucket is in debt.</p>
         </tr>
       </thead>
       <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>stack_name</code>
-            </td>
-            <td>
-                  <code><span title="str">str</span> | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Override stack name (default: auto-generated)</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
           <tr class="doc-section-item">
             <td>
                 <code>stack_options</code>
@@ -3206,7 +3247,7 @@ Can return negative values if bucket is in debt.</p>
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.delete_stack" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_stack</span><span class="p">(</span><span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_stack</span><span class="p">()</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -3221,38 +3262,6 @@ Can return negative values if bucket is in debt.</p>
 </ul>
 <p>The method waits for deletion to complete before returning.
 If the stack doesn't exist, no error is raised.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>stack_name</code>
-            </td>
-            <td>
-                  <code><span title="str">str</span> | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>CloudFormation stack name to delete.
-Default: auto-generated from table name (<code>zae-limiter-{table_name}</code>)</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-      </tbody>
-    </table>
 
 
 <p><span class="doc-section-title">Raises:</span></p>
@@ -3283,7 +3292,7 @@ resources in use, or CloudFormation service error)</p>
   <summary>Example</summary>
   <p>Cleanup after integration testing::</p>
 <div class="language-text highlight"><pre><span></span><code>limiter = RateLimiter(
-    table_name=&quot;test_limits&quot;,
+    name=&quot;test-limits&quot;,
     region=&quot;us-east-1&quot;,
     stack_options=StackOptions(),
 )
@@ -3325,7 +3334,7 @@ and usage history will be permanently deleted.</p>
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">table_name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;limiter&#39;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -3335,6 +3344,15 @@ and usage history will be permanently deleted.</p>
         <p>Synchronous rate limiter backed by DynamoDB.</p>
 <p>Wraps RateLimiter, running async operations in an event loop.</p>
 
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>limiter = SyncRateLimiter(
+    name="my-app",  # Creates ZAEL-my-app resources
+    region="us-east-1",
+    stack_options=StackOptions(),
+)</p>
+</details>
 
 
 
@@ -3604,7 +3622,7 @@ and usage history will be permanently deleted.</p>
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.create_stack" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_stack</span><span class="p">(</span><span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_stack</span><span class="p">(</span><span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -3624,7 +3642,7 @@ and usage history will be permanently deleted.</p>
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.delete_stack" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_stack</span><span class="p">(</span><span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_stack</span><span class="p">()</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -3632,38 +3650,6 @@ and usage history will be permanently deleted.</p>
         <p>Delete the CloudFormation stack and all associated resources.</p>
 <p>Synchronous wrapper for :meth:<code>RateLimiter.delete_stack</code>.
 See the async version for full documentation.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>stack_name</code>
-            </td>
-            <td>
-                  <code><span title="str">str</span> | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>CloudFormation stack name to delete.
-Default: auto-generated from table name (<code>zae-limiter-{table_name}</code>)</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-      </tbody>
-    </table>
 
 
 <p><span class="doc-section-title">Raises:</span></p>
@@ -3693,7 +3679,7 @@ Default: auto-generated from table name (<code>zae-limiter-{table_name}</code>)<
   <summary>Example</summary>
   <p>Cleanup after testing::</p>
 <div class="language-text highlight"><pre><span></span><code>limiter = SyncRateLimiter(
-    table_name=&quot;test_limits&quot;,
+    name=&quot;test-limits&quot;,
     region=&quot;us-east-1&quot;,
     stack_options=StackOptions(),
 )

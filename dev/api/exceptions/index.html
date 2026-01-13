@@ -1774,7 +1774,7 @@ both passed and failed, to help callers understand the full picture.</p>
 
 
 <a href="#zae_limiter.exceptions.RateLimiterUnavailable" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiterUnavailable</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="n">cause</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">table_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">entity_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiterUnavailable</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="n">cause</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">entity_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -1808,12 +1808,12 @@ both passed and failed, to help callers understand the full picture.</p>
             </td>
           </tr>
           <tr class="doc-section-item">
-            <td><code><span title="zae_limiter.exceptions.RateLimiterUnavailable.table_name">table_name</span></code></td>
+            <td><code><span title="zae_limiter.exceptions.RateLimiterUnavailable.stack_name">stack_name</span></code></td>
             <td>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The DynamoDB table that was being accessed</p>
+                <p>The stack/table that was being accessed</p>
               </div>
             </td>
           </tr>
@@ -2076,7 +2076,7 @@ both passed and failed, to help callers understand the full picture.</p>
 
 
 <a href="#zae_limiter.exceptions.InfrastructureNotFoundError" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">InfrastructureNotFoundError</span><span class="p">(</span><span class="n">table_name</span><span class="p">,</span> <span class="n">stack_name</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">InfrastructureNotFoundError</span><span class="p">(</span><span class="n">stack_name</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
