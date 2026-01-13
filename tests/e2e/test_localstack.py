@@ -19,7 +19,7 @@ To run these tests locally:
     AWS_ACCESS_KEY_ID=test \
     AWS_SECRET_ACCESS_KEY=test \
     AWS_DEFAULT_REGION=us-east-1 \
-    pytest tests/test_e2e_localstack.py -v
+    pytest tests/e2e/test_localstack.py -v
 
 Note: The Docker socket mount (-v /var/run/docker.sock:/var/run/docker.sock) is
 required for LocalStack to spawn Lambda functions as Docker containers.
@@ -571,3 +571,57 @@ class TestE2ELocalStackErrorHandling:
         assert available["rpm"] < 0, "Bucket should be negative"
         # Consumed 15 tokens with capacity 10, so at least -3 after some refill
         assert available["rpm"] <= -3, "Bucket should still be significantly negative"
+
+
+class TestE2ECloudFormationStackVariations:
+    """E2E tests for CloudFormation stack deployment variations."""
+
+    @pytest.mark.asyncio
+    async def test_cloudformation_full_stack_deployment(
+        self, localstack_endpoint, full_stack_options, unique_table_name
+    ):
+        """Test full CloudFormation stack creation (with aggregator and alarms)."""
+        limiter = RateLimiter(
+            table_name=unique_table_name,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+            stack_options=full_stack_options,
+        )
+
+        async with limiter:
+            entity = await limiter.create_entity("cfn-full-entity", name="CFN Full Entity")
+            assert entity.id == "cfn-full-entity"
+            assert entity.name == "CFN Full Entity"
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.mark.asyncio
+    async def test_cloudformation_aggregator_no_alarms(
+        self, localstack_endpoint, aggregator_stack_options, unique_table_name
+    ):
+        """Test CloudFormation stack with aggregator but without alarms.
+
+        This tests the edge case where EnableAggregator=true but EnableAlarms=false.
+        The AggregatorDLQAlarmName output should not be created in this scenario.
+        """
+        limiter = RateLimiter(
+            table_name=unique_table_name,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+            stack_options=aggregator_stack_options,
+        )
+
+        async with limiter:
+            entity = await limiter.create_entity(
+                "cfn-no-alarms-entity", name="CFN No Alarms Entity"
+            )
+            assert entity.id == "cfn-no-alarms-entity"
+            assert entity.name == "CFN No Alarms Entity"
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")

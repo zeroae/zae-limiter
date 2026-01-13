@@ -563,7 +563,7 @@ class TestRateLimiterStackOptions:
 
         # mock_dynamodb fixture is needed to set up AWS credentials
         # Patch aiobotocore for moto compatibility
-        from tests.conftest import _patch_aiobotocore_response
+        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import RateLimiter, StackOptions
 
         with _patch_aiobotocore_response():
@@ -595,7 +595,7 @@ class TestRateLimiterStackOptions:
         from unittest.mock import AsyncMock
 
         # mock_dynamodb fixture is needed to set up AWS credentials
-        from tests.conftest import _patch_aiobotocore_response
+        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import RateLimiter
 
         with _patch_aiobotocore_response():

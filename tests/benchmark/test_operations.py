@@ -1,4 +1,4 @@
-"""Performance benchmark tests for zae-limiter.
+"""Performance benchmark tests for zae-limiter (moto-based).
 
 These benchmarks measure:
 - Acquire/release latency (p50/p95/p99)
@@ -7,11 +7,7 @@ These benchmarks measure:
 - Cascade overhead (hierarchical limits)
 
 Run with:
-    pytest tests/test_performance.py -v --benchmark-json=benchmark_results.json
-
-For LocalStack integration benchmarks:
-    AWS_ENDPOINT_URL=http://localhost:4566 \\
-        pytest tests/test_performance.py -v -m "benchmark and integration"
+    pytest tests/benchmark/test_operations.py -v --benchmark-json=benchmark.json
 
 Skip benchmarks in regular test runs:
     pytest -m "not benchmark" -v
@@ -229,61 +225,5 @@ class TestConcurrentThroughputBenchmarks:
                     consume={"rpm": 1},
                 ):
                     pass
-
-        benchmark(operation)
-
-
-@pytest.mark.integration
-class TestLocalStackBenchmarks:
-    """Benchmarks against LocalStack for realistic DynamoDB latency.
-
-    These tests require LocalStack to be running.
-    Run with:
-        AWS_ENDPOINT_URL=http://localhost:4566 pytest -m "benchmark and integration" -v
-    """
-
-    def test_acquire_release_localstack(self, benchmark, sync_localstack_limiter):
-        """Benchmark acquire/release against real DynamoDB (LocalStack).
-
-        Measures realistic latency including network round-trip.
-        """
-        limits = [Limit.per_minute("rpm", 1_000_000)]
-
-        def operation():
-            with sync_localstack_limiter.acquire(
-                entity_id="ls-bench-entity",
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1},
-            ):
-                pass
-
-        benchmark(operation)
-
-    @pytest.fixture
-    def cascade_hierarchy(self, sync_localstack_limiter):
-        """Setup parent-child hierarchy for cascade tests."""
-        sync_localstack_limiter.create_entity("ls-cascade-parent", name="Parent")
-        sync_localstack_limiter.create_entity(
-            "ls-cascade-child", name="Child", parent_id="ls-cascade-parent"
-        )
-        return sync_localstack_limiter
-
-    def test_cascade_localstack(self, benchmark, cascade_hierarchy):
-        """Benchmark cascade against LocalStack.
-
-        Measures realistic cascade overhead including network latency.
-        """
-        limits = [Limit.per_minute("rpm", 1_000_000)]
-
-        def operation():
-            with cascade_hierarchy.acquire(
-                entity_id="ls-cascade-child",
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1},
-                cascade=True,
-            ):
-                pass
 
         benchmark(operation)

@@ -73,7 +73,8 @@ packages = ["src/zae_limiter"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --tb=short -n auto --dist loadscope"
+pythonpath = ["."]
+addopts = "-v --tb=short -n auto --dist loadscope --import-mode=importlib"
 markers = [
     "integration: marks tests as integration tests (require Docker or AWS)",
     "benchmark: marks tests as performance benchmarks",
