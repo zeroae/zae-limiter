@@ -411,6 +411,62 @@ open htmlcov/index.html
 - All public APIs must have docstrings
 - Async is primary, sync is wrapper
 
+## Documentation
+
+### Docs Framework
+
+The project uses **MkDocs Material** for documentation. Configuration is in `mkdocs.yml`.
+
+### Diagrams
+
+Use diagrams-as-code for all visual documentation. The project supports two diagram types:
+
+**Markmap** (interactive mind maps) - Use for:
+- Navigation and overview pages
+- Hierarchical decision trees
+- Complex topic exploration
+
+```markmap
+# Topic
+## Branch 1
+- Leaf 1
+- Leaf 2
+## Branch 2
+- Leaf 3
+```
+
+**Mermaid** (flowcharts) - Use for:
+- Linear decision flows
+- Step-by-step procedures
+- Simple yes/no decision trees
+
+```mermaid
+flowchart TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Action 1]
+    B -->|No| D[Action 2]
+```
+
+**Guidelines:**
+- Prefer Markmap for index/overview pages (collapsible, interactive)
+- Prefer Mermaid for inline decision trees within component docs
+- Never use external image files for diagrams that can be expressed as code
+- Keep diagrams focused - split complex diagrams into multiple smaller ones
+
+### Docs Structure
+
+```
+docs/
+├── index.md                 # Landing page
+├── monitoring.md            # Observability setup
+├── performance.md           # Capacity planning
+├── migrations.md            # Schema migrations
+├── api/                     # API reference
+├── guide/                   # User guides
+├── infra/                   # Infrastructure docs
+└── operations/              # Operational runbooks (troubleshooting + procedures)
+```
+
 ## Code Review Guidelines
 
 When reviewing PRs, check the following based on files changed:
