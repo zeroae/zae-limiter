@@ -154,15 +154,16 @@ DynamoDB enforces these limits:
 async with limiter.acquire(
     "entity-id",
     "llm-api",
-    [rpm_limit, tpm_limit]
+    [rpm_limit, tpm_limit],
+    {"rpm": 1},  # Initial consumption (1 request)
 ) as lease:
     # 2 GetItems + 1 TransactWrite (2 items)
     response = await call_llm()
     lease.adjust({"tpm": response.usage.total_tokens})
 
 # Inefficient: Separate acquisitions
-async with limiter.acquire("entity-id", "llm-api", [rpm_limit]):
-    async with limiter.acquire("entity-id", "llm-api", [tpm_limit]):
+async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
+    async with limiter.acquire("entity-id", "llm-api", [tpm_limit], {"tpm": 100}):
         # 2 GetItems + 2 TransactWrites (doubles write cost!)
         pass
 ```
@@ -175,7 +176,8 @@ async with limiter.acquire(
     "api-key",
     "llm-api",
     limits,
-    cascade=False  # Saves 1 GetEntity + parent bucket operations
+    {"rpm": 1},
+    cascade=False,  # Saves 1 GetEntity + parent bucket operations
 ):
     pass
 
@@ -184,7 +186,8 @@ async with limiter.acquire(
     "api-key",
     "llm-api",
     limits,
-    cascade=True  # Checks and updates parent limits too
+    {"rpm": 1},
+    cascade=True,  # Checks and updates parent limits too
 ):
     pass
 ```
@@ -210,8 +213,8 @@ limiter = RateLimiter(
 
 ```python
 # Efficient bulk limit setup
-await limiter.set_limits("entity-1", "llm-api", [rpm_limit, tpm_limit])
-await limiter.set_limits("entity-2", "llm-api", [rpm_limit, tpm_limit])
+await limiter.set_limits("entity-1", [rpm_limit, tpm_limit], resource="llm-api")
+await limiter.set_limits("entity-2", [rpm_limit, tpm_limit], resource="llm-api")
 # Runs 2 Queries + 2×2 PutItems
 
 # Entity deletion (automatically batched in 25-item chunks)
@@ -398,11 +401,11 @@ Total (provisioned with auto-scaling): ~$70/month
 
 ```python
 # Skip cascade if not needed (saves 1-2 WCUs per request)
-async with limiter.acquire(..., cascade=False):
+async with limiter.acquire("entity", "api", limits, {"rpm": 1}, cascade=False):
     pass
 
 # Disable stored limits if static (saves 2 RCUs per request)
-limiter = RateLimiter(..., use_stored_limits=False)
+limiter = RateLimiter(table_name="rate_limits", region="us-east-1")
 ```
 
 #### 2. Optimize TTL Settings
@@ -410,7 +413,8 @@ limiter = RateLimiter(..., use_stored_limits=False)
 ```python
 # Shorter TTL = faster cleanup = less storage
 limiter = RateLimiter(
-    ...,
+    table_name="rate_limits",
+    region="us-east-1",
     bucket_ttl_seconds=3600,  # 1 hour vs 24 hour default
 )
 ```
@@ -435,7 +439,8 @@ zae-limiter deploy --table-name rate_limits --no-aggregator
 async with limiter.acquire(
     "entity",
     "api",
-    [rpm_limit, tpm_limit, daily_limit]  # 1 transaction vs 3
+    [rpm_limit, tpm_limit, daily_limit],
+    {"rpm": 1},  # 1 transaction vs 3
 ):
     pass
 ```
