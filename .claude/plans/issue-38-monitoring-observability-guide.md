@@ -1,7 +1,7 @@
 # Plan: Monitoring and Observability Guide (Issue #38)
 
 **Issue:** https://github.com/zeroae/zae-limiter/issues/38
-**Status:** Ready for Implementation
+**Status:** Implementation Complete
 **Dependencies:**
 - #45 (performance benchmarks) - CLOSED
 - #46 (E2E tests) - CLOSED
@@ -166,25 +166,25 @@ Common issues and diagnostic steps:
 
 ## Implementation Steps
 
-1. [ ] Create `docs/monitoring.md` with document structure
-2. [ ] Write Overview section with architecture context
-3. [ ] Document Structured Logging patterns with examples from code
-4. [ ] Create CloudWatch Metrics reference tables
-5. [ ] Write CloudWatch Logs Insights queries (test against real logs)
-6. [ ] Add X-Ray section marked as future work
-7. [ ] Create Dashboard templates (JSON for CloudFormation)
-8. [ ] Document Alert thresholds with tuning guidance
-9. [ ] Write Troubleshooting guide
-10. [ ] Add cross-references to performance.md and deployment.md
-11. [ ] Update docs/index.md with link to new guide
+1. [x] Create `docs/monitoring.md` with document structure
+2. [x] Write Overview section with architecture context
+3. [x] Document Structured Logging patterns with examples from code
+4. [x] Create CloudWatch Metrics reference tables
+5. [x] Write CloudWatch Logs Insights queries (test against real logs)
+6. [x] Add X-Ray section marked as future work
+7. [x] Create Dashboard templates (JSON for CloudFormation)
+8. [x] Document Alert thresholds with tuning guidance
+9. [x] Write Troubleshooting guide
+10. [x] Add cross-references to performance.md and deployment.md
+11. [x] Update docs/index.md with link to new guide
 
 ## File Changes
 
-| File | Action | Description |
-|------|--------|-------------|
-| `docs/monitoring.md` | Create | Main monitoring guide |
-| `docs/index.md` | Update | Add navigation link |
-| `docs/infra/deployment.md` | Update | Cross-reference to monitoring guide |
+| File | Action | Status |
+|------|--------|--------|
+| `docs/monitoring.md` | Create | Done |
+| `docs/index.md` | Update | Done |
+| `docs/infra/deployment.md` | Update | Done |
 
 ## Testing the Documentation
 
@@ -195,11 +195,40 @@ Common issues and diagnostic steps:
 
 ## Follow-up Actions
 
-- [ ] **Open GitHub issue for X-Ray tracing integration** - Create a new issue for a future release to add AWS X-Ray distributed tracing support. Suggested title: `✨ feat(infra): add X-Ray tracing integration`. Include:
-  - Lambda function active tracing
-  - DynamoDB SDK instrumentation via AWS X-Ray SDK
-  - Custom subsegments for acquire/release operations
-  - Trace header propagation for client libraries
+- [ ] **Open GitHub issue for X-Ray tracing integration** (requires manual creation)
+
+**Issue Details:**
+
+- **Title:** `✨ feat(infra): add X-Ray tracing integration`
+- **Labels:** `enhancement`, `infra`
+- **Body:**
+
+```markdown
+## Summary
+
+Add AWS X-Ray distributed tracing support for enhanced observability.
+
+## Scope
+
+- **Lambda Active Tracing** - Enable X-Ray tracing for the aggregator Lambda function
+- **DynamoDB SDK Instrumentation** - Instrument boto3 DynamoDB calls via AWS X-Ray SDK
+- **Custom Subsegments** - Add timing for acquire/release operations in the client library
+- **Trace Header Propagation** - Support trace context propagation for cross-service correlation
+
+## Implementation Notes
+
+1. Add `aws-xray-sdk` as optional dependency
+2. Update CloudFormation template to enable Lambda tracing
+3. Instrument `Repository` class with X-Ray subsegments
+4. Add `enable_tracing` option to `StackOptions`
+5. Document X-Ray setup in monitoring guide
+
+## References
+
+- Created as follow-up from #38 (monitoring guide)
+- [AWS X-Ray SDK for Python](https://docs.aws.amazon.com/xray/latest/devguide/xray-sdk-python.html)
+- [Instrumenting Python with X-Ray](https://docs.aws.amazon.com/xray/latest/devguide/xray-sdk-python-middleware.html)
+```
 
 ## References
 
