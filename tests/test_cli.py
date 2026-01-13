@@ -677,9 +677,7 @@ class TestCLI:
         assert "✗" in result.output
 
     @patch("zae_limiter.cli.StackManager")
-    def test_status_with_endpoint_url(
-        self, mock_stack_manager: Mock, runner: CliRunner
-    ) -> None:
+    def test_status_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test status command with --endpoint-url for LocalStack."""
         mock_instance = Mock()
         mock_instance.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
@@ -703,9 +701,7 @@ class TestCLI:
         assert result.exit_code == 0
         assert "CREATE_COMPLETE" in result.output
         # Verify StackManager was called with endpoint_url
-        mock_stack_manager.assert_called_once_with(
-            "dummy", "us-east-1", "http://localhost:4566"
-        )
+        mock_stack_manager.assert_called_once_with("dummy", "us-east-1", "http://localhost:4566")
 
     def test_version_help(self, runner: CliRunner) -> None:
         """Test version command help."""
