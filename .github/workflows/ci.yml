@@ -16,7 +16,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            ci:
+              - '.github/workflows/ci.yml'
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -31,6 +52,8 @@ jobs:
         run: uv run ruff format --check .
 
   typecheck:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -43,6 +66,8 @@ jobs:
         run: uv run mypy src/zae_limiter
 
   unit:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -75,6 +100,8 @@ jobs:
           fail_ci_if_error: false
 
   integration:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -128,6 +155,8 @@ jobs:
           fail_ci_if_error: false
 
   e2e:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -181,6 +210,8 @@ jobs:
           fail_ci_if_error: false
 
   benchmark:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     services:
       localstack:
