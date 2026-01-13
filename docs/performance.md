@@ -197,13 +197,13 @@ async with limiter.acquire(
 ```python
 # Default: No stored limits lookup (saves 2 RCUs per acquire)
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="rate_limits",
     region="us-east-1",
 )
 
 # Enable only when limits vary per entity
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="rate_limits",
     region="us-east-1",
     use_stored_limits=True,  # +2 Queries per acquire
 )
@@ -405,7 +405,7 @@ async with limiter.acquire("entity", "api", limits, {"rpm": 1}, cascade=False):
     pass
 
 # Disable stored limits if static (saves 2 RCUs per request)
-limiter = RateLimiter(table_name="rate_limits", region="us-east-1")
+limiter = RateLimiter(name="rate_limits", region="us-east-1")
 ```
 
 #### 2. Optimize TTL Settings
@@ -413,7 +413,7 @@ limiter = RateLimiter(table_name="rate_limits", region="us-east-1")
 ```python
 # Shorter TTL = faster cleanup = less storage
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="rate_limits",
     region="us-east-1",
     bucket_ttl_seconds=3600,  # 1 hour vs 24 hour default
 )

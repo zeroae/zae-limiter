@@ -34,7 +34,7 @@ class TestAWSLatencyBenchmarks:
     """
 
     @pytest.fixture(scope="class")
-    def aws_benchmark_limiter(self, unique_table_name_class):
+    def aws_benchmark_limiter(self, unique_name_class):
         """Create SyncRateLimiter on real AWS with minimal stack.
 
         Uses class scope to share the stack across all tests in the class,
@@ -49,7 +49,7 @@ class TestAWSLatencyBenchmarks:
         )
 
         limiter = SyncRateLimiter(
-            table_name=unique_table_name_class,
+            name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -171,10 +171,10 @@ class TestAWSThroughputBenchmarks:
     """
 
     @pytest.fixture(scope="class")
-    def aws_throughput_limiter(self, unique_table_name_class):
+    def aws_throughput_limiter(self, unique_name_class):
         """Create SyncRateLimiter for throughput tests."""
         # Use a different table from latency tests
-        table_name = f"{unique_table_name_class}-throughput"
+        table_name = f"{unique_name_class}-throughput"
 
         stack_options = StackOptions(
             enable_aggregator=False,
@@ -185,7 +185,7 @@ class TestAWSThroughputBenchmarks:
         )
 
         limiter = SyncRateLimiter(
-            table_name=table_name,
+            name=table_name,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -376,9 +376,9 @@ class TestAWSCascadeBenchmarks:
     """
 
     @pytest.fixture(scope="class")
-    def aws_cascade_limiter(self, unique_table_name_class):
+    def aws_cascade_limiter(self, unique_name_class):
         """Create SyncRateLimiter for cascade tests."""
-        table_name = f"{unique_table_name_class}-cascade"
+        table_name = f"{unique_name_class}-cascade"
 
         stack_options = StackOptions(
             enable_aggregator=False,
@@ -389,7 +389,7 @@ class TestAWSCascadeBenchmarks:
         )
 
         limiter = SyncRateLimiter(
-            table_name=table_name,
+            name=table_name,
             region="us-east-1",
             stack_options=stack_options,
         )

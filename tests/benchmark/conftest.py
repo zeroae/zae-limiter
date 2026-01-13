@@ -16,6 +16,7 @@ from tests.integration.conftest import (
     minimal_stack_options,
     sync_localstack_limiter,
     unique_name,
+    unique_name_class,
 )
 from tests.unit.conftest import (
     _patch_aiobotocore_response,
@@ -34,6 +35,7 @@ __all__ = [
     "minimal_stack_options",
     "sync_localstack_limiter",
     "unique_name",
+    "unique_name_class",
     "capacity_counter",
     "benchmark_entities",
 ]
