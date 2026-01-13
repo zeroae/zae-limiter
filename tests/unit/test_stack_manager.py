@@ -30,11 +30,11 @@ class TestStackManager:
         manager = StackManager(stack_name="rate-limits", region="us-east-1")
         params = manager._format_parameters(None)
 
-        # Should include TableName and SchemaVersion
-        assert len(params) == 2
+        # Should include only SchemaVersion (TableName derived from AWS::StackName)
+        assert len(params) == 1
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
-        assert param_dict["TableName"] == "ZAEL-rate-limits"
         assert "SchemaVersion" in param_dict
+        assert "TableName" not in param_dict
 
     def test_format_parameters_with_values(self) -> None:
         """Test parameter formatting with custom values."""
@@ -47,11 +47,11 @@ class TestStackManager:
             }
         )
 
-        # Should include TableName, SchemaVersion, plus custom params
-        assert len(params) == 5
+        # Should include SchemaVersion plus custom params (TableName derived from AWS::StackName)
+        assert len(params) == 4
 
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
-        assert param_dict["TableName"] == "ZAEL-rate-limits"
+        assert "TableName" not in param_dict
         assert "SchemaVersion" in param_dict
         assert param_dict["SnapshotWindows"] == "hourly,daily,monthly"
         assert param_dict["SnapshotRetentionDays"] == "180"
@@ -66,11 +66,11 @@ class TestStackManager:
             }
         )
 
-        # Should include TableName, SchemaVersion, plus PITR parameter
-        assert len(params) == 3
+        # Should include SchemaVersion plus PITR parameter (TableName derived from AWS::StackName)
+        assert len(params) == 2
 
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
-        assert param_dict["TableName"] == "ZAEL-rate-limits"
+        assert "TableName" not in param_dict
         assert "SchemaVersion" in param_dict
         assert param_dict["PITRRecoveryPeriodDays"] == "7"
 
@@ -97,11 +97,11 @@ class TestStackManager:
             }
         )
 
-        # Should include TableName, SchemaVersion, plus log retention parameter
-        assert len(params) == 3
+        # SchemaVersion + log retention (TableName derived from AWS::StackName)
+        assert len(params) == 2
 
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
-        assert param_dict["TableName"] == "ZAEL-rate-limits"
+        assert "TableName" not in param_dict
         assert "SchemaVersion" in param_dict
         assert param_dict["LogRetentionDays"] == "90"
 
