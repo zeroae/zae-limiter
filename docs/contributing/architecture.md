@@ -35,6 +35,43 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 
 ## Token Bucket Implementation
 
+For a conceptual overview of the token bucket algorithm, see the [User Guide](../guide/token-bucket.md). This section covers implementation details for contributors.
+
+### Core Functions
+
+The algorithm is implemented in [`bucket.py`](https://github.com/zeroae/zae-limiter/blob/main/src/zae_limiter/bucket.py):
+
+| Function | Purpose | Lines |
+|----------|---------|-------|
+| `refill_bucket()` | Calculate refilled tokens with drift compensation | 27-75 |
+| `try_consume()` | Atomic check-and-consume operation | 78-134 |
+| `force_consume()` | Force consume (can go negative) | 224-255 |
+| `calculate_retry_after()` | Calculate wait time for deficit | 137-159 |
+
+### Mathematical Formulas
+
+**Refill calculation** (lazy, on-demand):
+
+```
+tokens_to_add = (elapsed_ms × refill_amount_milli) // refill_period_ms
+```
+
+**Drift compensation** (prevents accumulated rounding errors):
+
+```
+time_used_ms = (tokens_to_add × refill_period_ms) // refill_amount_milli
+new_last_refill = last_refill_ms + time_used_ms
+```
+
+The inverse calculation ensures we only "consume" the time that corresponds to whole tokens, preventing drift over many refill cycles.
+
+**Retry-after calculation**:
+
+```
+time_ms = (deficit_milli × refill_period_ms) // refill_amount_milli
+retry_seconds = (time_ms + 1) / 1000.0  # +1ms rounds up
+```
+
 ### Integer Arithmetic for Precision
 
 All token values are stored as **millitokens** (×1000) to avoid floating-point precision issues in distributed systems:
@@ -42,7 +79,14 @@ All token values are stored as **millitokens** (×1000) to avoid floating-point 
 ```python
 # User sees: 100 tokens/minute
 # Stored as: 100,000 millitokens/minute
+capacity_milli = 100_000
 ```
+
+**Why integers matter in distributed systems:**
+
+- Floating-point operations can produce different results on different hardware
+- DynamoDB stores numbers as strings, so precision loss can occur during serialization
+- Rate limiting across multiple nodes requires identical calculations
 
 ### Refill Rate Storage
 
@@ -50,9 +94,35 @@ Refill rates are stored as a fraction (amount/period) rather than a decimal:
 
 ```python
 # 100 tokens per minute stored as:
-refill_amount = 100_000  # millitokens
-refill_period_seconds = 60
+refill_amount_milli = 100_000  # millitokens (numerator)
+refill_period_ms = 60_000      # milliseconds (denominator)
 ```
+
+This avoids representing `1.6667 tokens/second` as a float. Instead:
+
+```python
+# 100 tokens/minute = 100,000 millitokens / 60,000 ms
+# Integer division handles the math precisely
+```
+
+### Lazy Refill with Drift Compensation
+
+Tokens are calculated on-demand rather than via a background timer. The `refill_bucket()` function:
+
+1. Calculates elapsed time since last refill
+2. Computes tokens to add using integer division
+3. Tracks "time consumed" to prevent drift
+
+```python
+# From bucket.py:refill_bucket()
+tokens_to_add = (elapsed_ms * refill_amount_milli) // refill_period_ms
+
+# Drift compensation: only advance time for tokens actually added
+time_used_ms = (tokens_to_add * refill_period_ms) // refill_amount_milli
+new_last_refill = last_refill_ms + time_used_ms
+```
+
+Without drift compensation, repeated calls with small time intervals would accumulate rounding errors.
 
 ### Negative Buckets (Debt)
 
@@ -65,7 +135,15 @@ async with limiter.acquire(consume={"tpm": 500}) as lease:
     await lease.adjust(tpm=2000 - 500)  # Bucket at -1500
 ```
 
-The debt is repaid as tokens refill over time.
+The `force_consume()` function handles this:
+
+```python
+# From bucket.py:force_consume()
+# Consume can go negative - no bounds checking
+new_tokens_milli = refill.new_tokens_milli - (amount * 1000)
+```
+
+The debt is repaid as tokens refill over time. A bucket at -1500 millitokens needs 1.5 minutes to reach 0 (at 1000 tokens/minute).
 
 ### Burst Capacity
 
@@ -78,6 +156,15 @@ Limit.per_minute("tpm", 10_000, burst=15_000)
 ```
 
 When `burst > capacity`, users can consume up to `burst` tokens immediately, then sustain at `capacity` rate.
+
+### Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Integer over float | Identical results across distributed nodes; no precision drift |
+| Lazy over continuous | No background timers; accurate retry_after; efficient |
+| Negative allowed | Estimate-then-reconcile pattern; operations with unknown cost |
+| Fraction over decimal | Exact representation of rates like 100/minute |
 
 ## Atomicity
 

@@ -94,6 +94,7 @@ nav:
   - Home: index.md
   - User Guide:
       - Getting Started: getting-started.md
+      - Token Bucket Algorithm: guide/token-bucket.md
       - Basic Usage: guide/basic-usage.md
       - Hierarchical Limits: guide/hierarchical.md
       - LLM Integration: guide/llm-integration.md

@@ -2,6 +2,9 @@
 
 zae-limiter is designed for LLM API rate limiting where token counts are unknown until after the call completes. This guide covers patterns for integrating with LLM providers.
 
+!!! tip "Understanding the Algorithm"
+    This guide assumes familiarity with how rate limiting works. If you're new to token buckets, start with [Token Bucket Algorithm](token-bucket.md) to understand concepts like negative buckets (debt) that enable the estimate-then-reconcile pattern.
+
 ## The Challenge
 
 LLM APIs present unique rate limiting challenges:
