@@ -125,19 +125,19 @@ def localstack_endpoint():
 # StackOptions fixtures for different test scenarios
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def minimal_stack_options():
     """Minimal stack - no aggregator, no alarms. Fastest deployment."""
     return StackOptions(enable_aggregator=False, enable_alarms=False)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def aggregator_stack_options():
     """Stack with aggregator Lambda but no CloudWatch alarms."""
     return StackOptions(enable_aggregator=True, enable_alarms=False)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def full_stack_options():
     """Full stack with aggregator and CloudWatch alarms."""
     return StackOptions(enable_aggregator=True, enable_alarms=True)

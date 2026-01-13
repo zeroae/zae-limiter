@@ -14,21 +14,57 @@ To run these tests locally:
 
 import pytest
 
-from zae_limiter import Limit, RateLimiter, RateLimitExceeded
+from zae_limiter import Limit, RateLimiter, RateLimitExceeded, SyncRateLimiter
 
 pytestmark = pytest.mark.integration
 
 # Fixtures are defined in conftest.py:
 # - localstack_endpoint
-# - localstack_limiter (minimal stack - no aggregator, no alarms)
-# - localstack_limiter_with_aggregator (with Lambda aggregator)
-# - localstack_limiter_full (full stack with alarms)
-# - sync_localstack_limiter
 # - minimal_stack_options, aggregator_stack_options, full_stack_options
 
 
 class TestLocalStackIntegration:
     """Integration tests with full LocalStack deployment."""
+
+    @pytest.fixture(scope="class")
+    async def shared_stack(self, localstack_endpoint, minimal_stack_options):
+        """
+        Create and manage the CloudFormation stack for all tests in this class.
+
+        This fixture creates the stack once when the first test runs and
+        deletes it after all tests in the class complete.
+        """
+        limiter = RateLimiter(
+            table_name="integration_test_rate_limits",
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+            stack_options=minimal_stack_options,
+        )
+
+        async with limiter:
+            yield "integration_test_rate_limits"
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.fixture
+    async def localstack_limiter(self, localstack_endpoint, shared_stack):
+        """
+        Create a fresh RateLimiter instance for each test.
+
+        Uses the shared stack (no stack_options) so no new stack is created.
+        Each test gets its own RateLimiter to avoid event loop issues.
+        """
+        limiter = RateLimiter(
+            table_name=shared_stack,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+        )
+
+        async with limiter:
+            yield limiter
 
     @pytest.mark.asyncio
     async def test_cloudformation_stack_deployment(self, localstack_endpoint, full_stack_options):
@@ -42,9 +78,9 @@ class TestLocalStackIntegration:
 
         async with limiter:
             # Verify stack was created by checking if we can perform operations
-            entity = await limiter.create_entity("test-entity", name="Test Entity")
-            assert entity.id == "test-entity"
-            assert entity.name == "Test Entity"
+            entity = await limiter.create_entity("cfn-full-entity", name="CFN Full Entity")
+            assert entity.id == "cfn-full-entity"
+            assert entity.name == "CFN Full Entity"
 
     @pytest.mark.asyncio
     async def test_cloudformation_stack_deployment_no_alarms(
@@ -64,9 +100,9 @@ class TestLocalStackIntegration:
 
         async with limiter:
             # Verify stack was created by checking if we can perform operations
-            entity = await limiter.create_entity("test-entity", name="Test Entity")
-            assert entity.id == "test-entity"
-            assert entity.name == "Test Entity"
+            entity = await limiter.create_entity("cfn-no-alarms-entity", name="CFN No Alarms Entity")
+            assert entity.id == "cfn-no-alarms-entity"
+            assert entity.name == "CFN No Alarms Entity"
 
     @pytest.mark.asyncio
     async def test_rate_limiting_operations(self, localstack_limiter):
@@ -214,6 +250,46 @@ class TestLocalStackIntegration:
 
 class TestSyncLocalStackIntegration:
     """Integration tests for sync API with LocalStack."""
+
+    @pytest.fixture(scope="class")
+    def shared_stack_sync(self, localstack_endpoint, minimal_stack_options):
+        """
+        Create and manage the CloudFormation stack for all sync tests in this class.
+
+        This fixture creates the stack once when the first test runs and
+        deletes it after all tests in the class complete.
+        """
+        limiter = SyncRateLimiter(
+            table_name="integration_test_rate_limits_sync",
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+            stack_options=minimal_stack_options,
+        )
+
+        with limiter:
+            yield "integration_test_rate_limits_sync"
+
+        try:
+            limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.fixture
+    def sync_localstack_limiter(self, localstack_endpoint, shared_stack_sync):
+        """
+        Create a fresh SyncRateLimiter instance for each test.
+
+        Uses the shared stack (no stack_options) so no new stack is created.
+        Each test gets its own SyncRateLimiter to avoid issues.
+        """
+        limiter = SyncRateLimiter(
+            table_name=shared_stack_sync,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+        )
+
+        with limiter:
+            yield limiter
 
     def test_sync_rate_limiting(self, sync_localstack_limiter):
         """Test sync rate limiting operations."""
