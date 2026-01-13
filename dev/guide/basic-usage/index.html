@@ -900,6 +900,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../cli/" class="md-nav__link">
         
   
@@ -942,10 +969,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
             
   
   
@@ -963,8 +990,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1361,6 +1388,10 @@
 </span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call_llm</span><span class="p">()</span>
 </span></code></pre></div>
 <p>All limits are checked atomically. If any limit is exceeded, the request is rejected.</p>
+<div class="admonition tip">
+<p class="admonition-title">Performance Tip</p>
+<p>Combining multiple limits into a single <code>acquire()</code> call is more efficient than separate calls. See <a href="../../performance/#3-batch-operation-patterns">Batch Operation Patterns</a> for details.</p>
+</div>
 <h2 id="burst-capacity">Burst Capacity<a class="headerlink" href="#burst-capacity" title="Permanent link">&para;</a></h2>
 <p>Allow temporary bursts above the sustained rate:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Sustain 10k tokens/minute, but allow bursts up to 15k</span>
