@@ -1019,3 +1019,61 @@ class TestLambdaExport:
 
         assert result.exit_code == 0
         assert output_file.exists()
+
+
+class TestCLIValidationErrors:
+    """Test CLI commands reject invalid names with helpful error messages."""
+
+    def test_deploy_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test deploy rejects names with underscores."""
+        result = runner.invoke(cli, ["deploy", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_deploy_invalid_name_starts_with_number(self, runner: CliRunner) -> None:
+        """Test deploy rejects names starting with numbers."""
+        result = runner.invoke(cli, ["deploy", "--name", "123app"])
+        assert result.exit_code == 1
+        assert "error" in result.output.lower()
+
+    def test_delete_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test delete rejects names with underscores."""
+        result = runner.invoke(cli, ["delete", "--name", "rate_limits", "--yes"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_status_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test status rejects names with underscores."""
+        result = runner.invoke(cli, ["status", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_version_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test version rejects names with underscores."""
+        result = runner.invoke(cli, ["version", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_check_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test check rejects names with underscores."""
+        result = runner.invoke(cli, ["check", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_upgrade_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test upgrade rejects names with underscores."""
+        result = runner.invoke(cli, ["upgrade", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_deploy_invalid_name_with_period(self, runner: CliRunner) -> None:
+        """Test deploy rejects names with periods."""
+        result = runner.invoke(cli, ["deploy", "--name", "my.app"])
+        assert result.exit_code == 1
+        assert "period" in result.output.lower()
+
+    def test_deploy_invalid_name_with_space(self, runner: CliRunner) -> None:
+        """Test deploy rejects names with spaces."""
+        result = runner.invoke(cli, ["deploy", "--name", "my app"])
+        assert result.exit_code == 1
+        assert "space" in result.output.lower()
