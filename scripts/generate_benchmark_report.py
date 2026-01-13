@@ -83,7 +83,7 @@ def generate_latency_table(results: dict[str, Any], title: str = "Latency Benchm
     # Group benchmarks by group name
     groups: dict[str, list[dict[str, Any]]] = {}
     for bench in benchmarks:
-        group = bench.get("group", "default")
+        group = bench.get("group") or "default"
         if group not in groups:
             groups[group] = []
         groups[group].append(bench)

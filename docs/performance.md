@@ -232,10 +232,10 @@ Latencies vary by environment and depend on network conditions, DynamoDB utiliza
 
 | Operation | Moto p50 | LocalStack p50 | AWS p50 |
 |-----------|----------|----------------|---------|
-| `acquire()` - single limit | 14ms | 26ms | 36ms |
-| `acquire()` - two limits | 30ms | 36ms | 43ms |
-| `acquire(cascade=True)` | 28ms | 42ms | 51ms |
-| `available()` check | 1ms | 7ms | 8ms |
+| `acquire()` - single limit | 14ms | 36ms | 36ms |
+| `acquire()` - two limits | 30ms | 52ms | 43ms |
+| `acquire(cascade=True)` | 28ms | 57ms | 51ms |
+| `available()` check | 1ms | 9ms | 8ms |
 
 !!! note "Environment Differences"
     - **Moto**: In-memory mock, measures code overhead only
