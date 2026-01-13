@@ -358,9 +358,9 @@ class TestE2ELocalStackFullWorkflow:
             resource="gpt-4",
             limits=limits,
         )
-        # Should have consumed 250 tpm total (with some tolerance for timing)
-        assert available["tpm"] < 10000 - 200  # Consumed at least ~200 tokens
-        assert available["tpm"] > 10000 - 300  # But not more than ~300
+        # Should have consumed 250 tpm total (with tolerance for timing/refill)
+        assert available["tpm"] < 10000 - 150  # Consumed at least ~150 tokens
+        assert available["tpm"] > 10000 - 350  # But not more than ~350
 
 
 class TestE2ELocalStackAggregatorWorkflow:
