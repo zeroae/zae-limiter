@@ -18,7 +18,7 @@
         <link rel="prev" href="../migrations/">
       
       
-        <link rel="next" href="../performance/">
+        <link rel="next" href="../troubleshooting/">
       
       
         
@@ -1046,67 +1046,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Troubleshooting">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#high-lambda-duration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        High Lambda Duration
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#increasing-iterator-age" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Increasing Iterator Age
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#messages-in-dead-letter-queue" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Messages in Dead Letter Queue
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#dynamodb-throttling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DynamoDB Throttling
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#next-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1121,6 +1060,33 @@
   
 </nav>
       
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1201,10 +1167,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
             
   
   
@@ -1222,8 +1188,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1683,67 +1649,6 @@
     <span class="md-ellipsis">
       
         Programmatic Configuration
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Troubleshooting">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#high-lambda-duration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        High Lambda Duration
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#increasing-iterator-age" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Increasing Iterator Age
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#messages-in-dead-letter-queue" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Messages in Dead Letter Queue
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#dynamodb-throttling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DynamoDB Throttling
       
     </span>
   </a>
@@ -2458,91 +2363,9 @@
 </span><span id="__span-13-11"><a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>    <span class="p">),</span>
 </span><span id="__span-13-12"><a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="p">)</span>
 </span></code></pre></div>
-<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
-<h3 id="high-lambda-duration">High Lambda Duration<a class="headerlink" href="#high-lambda-duration" title="Permanent link">&para;</a></h3>
-<p><strong>Symptoms:</strong> Duration alarm triggered, processing_time_ms &gt; 80% of timeout</p>
-<p><strong>Diagnostic steps:</strong></p>
-<ol>
-<li>
-<p>Check CloudWatch Logs for slow operations:
-   <div class="language-sql highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="n">fields</span><span class="w"> </span><span class="o">@</span><span class="k">timestamp</span><span class="p">,</span><span class="w"> </span><span class="o">@</span><span class="n">message</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="o">|</span><span class="w"> </span><span class="n">filter</span><span class="w"> </span><span class="o">@</span><span class="n">message</span><span class="w"> </span><span class="k">like</span><span class="w"> </span><span class="o">/</span><span class="n">processing_time_ms</span><span class="o">/</span>
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="o">|</span><span class="w"> </span><span class="n">parse</span><span class="w"> </span><span class="o">@</span><span class="n">message</span><span class="w"> </span><span class="o">/</span><span class="n">processing_time_ms</span><span class="err">&quot;</span><span class="p">:(</span><span class="o">?&lt;</span><span class="n">duration</span><span class="o">&gt;</span><span class="p">[</span><span class="err">\</span><span class="n">d</span><span class="p">.]</span><span class="o">+</span><span class="p">)</span><span class="o">/</span>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="o">|</span><span class="w"> </span><span class="n">filter</span><span class="w"> </span><span class="n">duration</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">40000</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="o">|</span><span class="w"> </span><span class="n">sort</span><span class="w"> </span><span class="o">@</span><span class="k">timestamp</span><span class="w"> </span><span class="k">desc</span>
-</span></code></pre></div></p>
-</li>
-<li>
-<p>Analyze batch sizes:
-   <div class="language-sql highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="n">fields</span><span class="w"> </span><span class="o">@</span><span class="k">timestamp</span><span class="p">,</span><span class="w"> </span><span class="o">@</span><span class="n">message</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="o">|</span><span class="w"> </span><span class="n">filter</span><span class="w"> </span><span class="o">@</span><span class="n">message</span><span class="w"> </span><span class="k">like</span><span class="w"> </span><span class="o">/</span><span class="n">record_count</span><span class="o">/</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="o">|</span><span class="w"> </span><span class="n">parse</span><span class="w"> </span><span class="o">@</span><span class="n">message</span><span class="w"> </span><span class="o">/</span><span class="n">record_count</span><span class="err">&quot;</span><span class="p">:(</span><span class="o">?&lt;</span><span class="n">records</span><span class="o">&gt;</span><span class="err">\</span><span class="n">d</span><span class="o">+</span><span class="p">)</span><span class="o">/</span>
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="o">|</span><span class="w"> </span><span class="n">stats</span><span class="w"> </span><span class="k">avg</span><span class="p">(</span><span class="n">records</span><span class="p">),</span><span class="w"> </span><span class="k">max</span><span class="p">(</span><span class="n">records</span><span class="p">)</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="n">bin</span><span class="p">(</span><span class="mi">1</span><span class="n">h</span><span class="p">)</span>
-</span></code></pre></div></p>
-</li>
-</ol>
-<p><strong>Solutions:</strong></p>
-<ul>
-<li>Increase Lambda memory (CPU scales with memory)</li>
-<li>Reduce batch size in event source mapping</li>
-<li>Check DynamoDB latency metrics</li>
-</ul>
-<h3 id="increasing-iterator-age">Increasing Iterator Age<a class="headerlink" href="#increasing-iterator-age" title="Permanent link">&para;</a></h3>
-<p><strong>Symptoms:</strong> Stream iterator age alarm triggered, growing lag</p>
-<p><strong>Diagnostic steps:</strong></p>
-<ol>
-<li>Check Lambda errors and throttles</li>
-<li>Verify DynamoDB stream is enabled</li>
-<li>Check Lambda concurrent execution limits</li>
-</ol>
-<p><strong>Solutions:</strong></p>
-<ul>
-<li>Increase Lambda reserved concurrency</li>
-<li>Fix Lambda errors (check DLQ for failed batches)</li>
-<li>Scale DynamoDB capacity if throttling</li>
-</ul>
-<h3 id="messages-in-dead-letter-queue">Messages in Dead Letter Queue<a class="headerlink" href="#messages-in-dead-letter-queue" title="Permanent link">&para;</a></h3>
-<p><strong>Symptoms:</strong> DLQ alarm triggered, messages accumulating</p>
-<p><strong>Diagnostic steps:</strong></p>
-<ol>
-<li>
-<p>Inspect DLQ messages:
-   <div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>aws<span class="w"> </span>sqs<span class="w"> </span>receive-message<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">    </span>--queue-url<span class="w"> </span>https://sqs.us-east-1.amazonaws.com/123456789012/ZAEL-limiter-aggregator-dlq<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">    </span>--max-number-of-messages<span class="w"> </span><span class="m">10</span>
-</span></code></pre></div></p>
-</li>
-<li>
-<p>Check Lambda logs around failure time</p>
-</li>
-<li>Verify DynamoDB table schema matches expected format</li>
-</ol>
-<p><strong>Solutions:</strong></p>
-<ul>
-<li>Fix data format issues in stream records</li>
-<li>Reprocess DLQ messages after fixing root cause</li>
-<li>Increase Lambda timeout if processing takes too long</li>
-</ul>
-<h3 id="dynamodb-throttling">DynamoDB Throttling<a class="headerlink" href="#dynamodb-throttling" title="Permanent link">&para;</a></h3>
-<p><strong>Symptoms:</strong> Read/write throttle alarms triggered</p>
-<p><strong>Diagnostic steps:</strong></p>
-<ol>
-<li>Check capacity utilization in CloudWatch</li>
-<li>Identify hot partitions using CloudWatch Contributor Insights</li>
-<li>Review access patterns for inefficiencies</li>
-</ol>
-<p><strong>Solutions:</strong></p>
-<ul>
-<li>Switch to provisioned capacity with auto-scaling</li>
-<li>Distribute load across more partition keys</li>
-<li>Optimize access patterns (reduce cascade operations)</li>
-</ul>
-<div class="admonition tip">
-<p class="admonition-title">Capacity Planning</p>
-<p>For detailed capacity calculations and cost optimization, see the <a href="../performance/#1-dynamodb-capacity-planning">Performance Tuning Guide</a>.</p>
-</div>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
+<li><a href="../troubleshooting/">Troubleshooting Guide</a> - Diagnose and resolve operational issues</li>
 <li><a href="../performance/">Performance Tuning</a> - Capacity planning and optimization</li>
 <li><a href="../infra/deployment/">Deployment Guide</a> - Infrastructure setup</li>
 <li><a href="../infra/cloudformation/">CloudFormation Reference</a> - Template customization</li>
@@ -2599,13 +2422,13 @@
         
         
           
-          <a href="../performance/" class="md-footer__link md-footer__link--next" aria-label="Next: Performance Tuning">
+          <a href="../troubleshooting/" class="md-footer__link md-footer__link--next" aria-label="Next: Troubleshooting">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Performance Tuning
+                Troubleshooting
               </div>
             </div>
             <div class="md-footer__button md-icon">
