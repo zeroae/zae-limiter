@@ -219,6 +219,6 @@ limiter = RateLimiter(
 
 ## Next Steps
 
-- [Troubleshooting Guide](../troubleshooting.md) - Diagnose and resolve operational issues
+- [Operations Guide](../operations/index.md) - Troubleshooting and operational procedures
 - [Deployment](../infra/deployment.md) - Infrastructure setup
 - [API Reference](../api/limiter.md) - Complete API documentation
