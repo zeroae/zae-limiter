@@ -3,8 +3,15 @@
 These benchmarks measure realistic DynamoDB latency including network round-trips.
 
 Run with:
-    AWS_ENDPOINT_URL=http://localhost:4566 \\
-        pytest tests/benchmark/test_localstack.py -v --benchmark-json=benchmark.json
+    # Start LocalStack (from project root)
+    docker compose up -d
+
+    # Set environment variables and run benchmarks
+    export AWS_ENDPOINT_URL=http://localhost:4566
+    export AWS_ACCESS_KEY_ID=test
+    export AWS_SECRET_ACCESS_KEY=test
+    export AWS_DEFAULT_REGION=us-east-1
+    pytest tests/benchmark/test_localstack.py -v --benchmark-json=benchmark.json
 
 Skip benchmarks in regular test runs:
     pytest -m "not benchmark" -v

@@ -7,8 +7,12 @@ To run these tests locally:
     # Start LocalStack (from project root)
     docker compose up -d
 
-    # Run tests
-    AWS_ENDPOINT_URL=http://localhost:4566 pytest tests/integration/test_repository.py -v
+    # Set environment variables and run tests
+    export AWS_ENDPOINT_URL=http://localhost:4566
+    export AWS_ACCESS_KEY_ID=test
+    export AWS_SECRET_ACCESS_KEY=test
+    export AWS_DEFAULT_REGION=us-east-1
+    pytest tests/integration/test_repository.py -v
 """
 
 import time

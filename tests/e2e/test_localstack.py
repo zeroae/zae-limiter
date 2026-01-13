@@ -12,8 +12,12 @@ To run these tests locally:
     # Start LocalStack (from project root)
     docker compose up -d
 
-    # Run tests
-    AWS_ENDPOINT_URL=http://localhost:4566 pytest tests/e2e/test_localstack.py -v
+    # Set environment variables and run tests
+    export AWS_ENDPOINT_URL=http://localhost:4566
+    export AWS_ACCESS_KEY_ID=test
+    export AWS_SECRET_ACCESS_KEY=test
+    export AWS_DEFAULT_REGION=us-east-1
+    pytest tests/e2e/test_localstack.py -v
 
 Note: The docker-compose.yml includes the Docker socket mount required for
 LocalStack to spawn Lambda functions as Docker containers.

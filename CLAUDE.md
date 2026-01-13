@@ -323,8 +323,8 @@ tests/
 | Marker | Description | How to Run |
 |--------|-------------|------------|
 | (none) | Unit tests | `pytest tests/unit/` |
-| `@pytest.mark.integration` | Requires LocalStack | `AWS_ENDPOINT_URL=http://localhost:4566 pytest -m integration` |
-| `@pytest.mark.e2e` | End-to-end workflows | `pytest -m e2e` |
+| `@pytest.mark.integration` | Requires LocalStack | `pytest -m integration` (with LocalStack env vars) |
+| `@pytest.mark.e2e` | End-to-end workflows | `pytest -m e2e` (with LocalStack env vars) |
 | `@pytest.mark.aws` | Real AWS (requires `--run-aws`) | `pytest -m aws --run-aws` |
 | `@pytest.mark.benchmark` | Performance benchmarks | `pytest -m benchmark` |
 | `@pytest.mark.slow` | Tests with >30s waits | Skip with `-m "not slow"` |
@@ -340,11 +340,17 @@ uv run pytest tests/unit/ -v
 # Start LocalStack using docker compose (preferred)
 docker compose up -d
 
+# Set environment variables for LocalStack
+export AWS_ENDPOINT_URL=http://localhost:4566
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=us-east-1
+
 # Integration tests (requires LocalStack)
-AWS_ENDPOINT_URL=http://localhost:4566 uv run pytest tests/integration/ -v
+uv run pytest tests/integration/ -v
 
 # E2E tests with LocalStack
-AWS_ENDPOINT_URL=http://localhost:4566 uv run pytest tests/e2e/test_localstack.py -v
+uv run pytest tests/e2e/test_localstack.py -v
 
 # E2E tests with real AWS (costs money!)
 uv run pytest tests/e2e/test_aws.py --run-aws -v
@@ -353,7 +359,7 @@ uv run pytest tests/e2e/test_aws.py --run-aws -v
 uv run pytest tests/benchmark/test_operations.py -v
 
 # Benchmarks (LocalStack - realistic latency)
-AWS_ENDPOINT_URL=http://localhost:4566 uv run pytest tests/benchmark/test_localstack.py -v
+uv run pytest tests/benchmark/test_localstack.py -v
 
 # Export benchmark results to JSON
 uv run pytest tests/benchmark/ -v --benchmark-json=benchmark.json
