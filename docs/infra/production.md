@@ -50,6 +50,13 @@ zae-limiter deploy \
 - Use AWS Secrets Manager or Parameter Store for API keys
 - Rate limit entity IDs should not contain sensitive data
 
+### Audit Logging
+
+- All entity and limit changes are automatically logged
+- Track who made changes with optional `principal` parameter
+- Events auto-expire after 90 days (configurable)
+- For compliance requirements, see [Audit Logging Guide](auditing.md)
+
 ## Multi-Region Considerations
 
 zae-limiter is designed for **single-region deployment**:
@@ -105,5 +112,6 @@ For detailed capacity planning and optimization, see [Performance Guide](../perf
 ## Next Steps
 
 - [Monitoring Guide](../monitoring.md) - Dashboards, alerts, Logs Insights
+- [Audit Logging](auditing.md) - Compliance tracking and incident investigation
 - [Performance Guide](../performance.md) - Capacity planning, optimization
 - [Operations Guide](../operations/index.md) - Troubleshooting, recovery

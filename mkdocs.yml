@@ -105,6 +105,7 @@ nav:
       - Migrations: migrations.md
       - Troubleshooting: operations/index.md
       - Monitoring: monitoring.md
+      - Auditing: infra/auditing.md
       - Performance: performance.md
   - Reference:
       - CLI: cli.md
