@@ -16,6 +16,24 @@ Create a comprehensive troubleshooting guide (`docs/troubleshooting.md`) coverin
 
 These dependencies affect verification/validation procedures in the guide. The troubleshooting guide can be written independently but should reference benchmark and e2e test commands for validation.
 
+## Consolidation Decision
+
+**Decision:** Consolidate all troubleshooting content into `docs/troubleshooting.md`.
+
+The `docs/monitoring.md` file currently contains a Troubleshooting section (lines 466-552) covering:
+- High Lambda Duration
+- Increasing Iterator Age
+- Messages in Dead Letter Queue
+- DynamoDB Throttling
+
+**Action required:**
+1. Migrate existing troubleshooting content from `monitoring.md` to `troubleshooting.md`
+2. Expand migrated content with additional detail where needed
+3. Replace `monitoring.md` Troubleshooting section with a link to `troubleshooting.md`
+4. Keep `monitoring.md` focused on metrics, dashboards, alerts, and logs configuration
+
+This consolidation ensures operators have a single reference for all troubleshooting scenarios.
+
 ## Target Document Structure
 
 ```
@@ -69,6 +87,7 @@ Create the basic document with section headers and introductory content.
 - [ ] Add table of contents with anchor links
 
 **Existing resources to reference:**
+- `docs/monitoring.md` (lines 466-552) - **migrate and expand** existing troubleshooting content
 - `docs/guide/failure-modes.md` - for failure handling patterns
 - `docs/performance.md` - for capacity/throttling context
 - `docs/migrations.md` - for version/migration context
@@ -103,7 +122,10 @@ aws dynamodb get-item --table-name ZAEL-<name> \
 
 Document capacity-related problems and fixes.
 
-**Content to cover:**
+**Migrate from `monitoring.md`:** "DynamoDB Throttling" section (lines 537-552)
+- Existing content covers: symptoms, diagnostic steps (CloudWatch, Contributor Insights), solutions
+
+**Content to cover (expand migrated content):**
 - `ProvisionedThroughputExceededException` handling
 - CloudWatch metrics: `ConsumedReadCapacityUnits`, `ConsumedWriteCapacityUnits`, `ThrottledRequests`
 - On-demand vs provisioned capacity selection
@@ -122,7 +144,11 @@ Document capacity-related problems and fixes.
 
 Document Lambda-specific operational issues.
 
-**Content to cover:**
+**Migrate from `monitoring.md`:**
+- "High Lambda Duration" section (lines 468-496) - symptoms, Logs Insights queries, solutions
+- "Messages in Dead Letter Queue" section (lines 517-534) - symptoms, diagnostic steps, solutions
+
+**Content to cover (expand migrated content):**
 - Dead Letter Queue (DLQ) monitoring and processing
 - CloudWatch Logs error patterns
 - Lambda timeout issues (80% duration alarm)
@@ -182,7 +208,10 @@ zae-limiter upgrade --name <name> --region <region>
 
 Document DynamoDB Streams latency issues.
 
-**Content to cover:**
+**Migrate from `monitoring.md`:** "Increasing Iterator Age" section (lines 498-515)
+- Existing content covers: symptoms, diagnostic steps, solutions (concurrency, errors, capacity)
+
+**Content to cover (expand migrated content):**
 - `IteratorAge` metric monitoring
 - Shard splitting and scaling
 - Lambda concurrency vs stream shards
@@ -233,7 +262,24 @@ Create a condensed reference for operators.
 3. Exception → likely cause → fix mapping
 4. DynamoDB key patterns for manual queries
 
-### Step 9: Cross-linking and Integration
+### Step 9: Update monitoring.md
+
+Remove the Troubleshooting section from `monitoring.md` and replace with a link.
+
+**Tasks:**
+- [ ] Remove lines 466-559 (Troubleshooting section and Next Steps)
+- [ ] Add new "Next Steps" section with link to troubleshooting guide:
+  ```markdown
+  ## Next Steps
+
+  - [Troubleshooting Guide](troubleshooting.md) - Diagnose and resolve operational issues
+  - [Performance Tuning](performance.md) - Capacity planning and optimization
+  - [Deployment Guide](infra/deployment.md) - Infrastructure setup
+  ```
+
+This keeps `monitoring.md` focused on observability configuration (logging, metrics, dashboards, alerts).
+
+### Step 10: Cross-linking and Integration
 
 Ensure proper integration with existing documentation.
 
@@ -267,7 +313,8 @@ zae-limiter deploy --name test --endpoint-url http://localhost:4566 --region us-
 
 | File | Action | Description |
 |------|--------|-------------|
-| `docs/troubleshooting.md` | Create | Main troubleshooting guide |
+| `docs/troubleshooting.md` | Create | Main troubleshooting guide (consolidates all troubleshooting content) |
+| `docs/monitoring.md` | Update | Remove Troubleshooting section, add link to troubleshooting.md |
 | `docs/index.md` | Update | Add navigation link |
 | `docs/guide/failure-modes.md` | Update | Add cross-reference |
 
@@ -280,6 +327,8 @@ zae-limiter deploy --name test --endpoint-url http://localhost:4566 --region us-
 - [ ] Recovery procedures are actionable
 - [ ] Cross-links to related documentation are in place
 - [ ] Document follows existing docs style (markdown, code blocks, tables)
+- [ ] `monitoring.md` Troubleshooting section removed and replaced with link
+- [ ] No duplicate troubleshooting content across docs
 
 ## Notes
 
