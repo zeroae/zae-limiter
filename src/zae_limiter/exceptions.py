@@ -147,6 +147,28 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
         return str(int(self.retry_after_seconds) + 1)  # round up
 
 
+class BucketNotFoundError(RateLimitError):
+    """
+    Raised when a bucket is not found.
+
+    This typically means the entity hasn't consumed any rate limit capacity
+    for the specified resource/limit combination yet.
+
+    Attributes:
+        entity_id: The entity ID
+        resource: The resource name
+        limit_name: The limit name
+    """
+
+    def __init__(self, entity_id: str, resource: str, limit_name: str) -> None:
+        self.entity_id = entity_id
+        self.resource = resource
+        self.limit_name = limit_name
+        super().__init__(
+            f"Bucket not found: entity={entity_id}, resource={resource}, limit={limit_name}"
+        )
+
+
 class RateLimiterUnavailable(RateLimitError):  # noqa: N818
     """
     Raised when DynamoDB is unavailable and failure_mode=FAIL_CLOSED.

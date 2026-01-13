@@ -264,6 +264,70 @@ class RateLimiter:
         await self._ensure_initialized()
         await self._repository.delete_entity(entity_id)
 
+    async def update_entity(
+        self,
+        entity_id: str,
+        name: str | None = None,
+        metadata: dict[str, str] | None = None,
+        parent_id: str | None = None,
+        *,
+        clear_parent: bool = False,
+    ) -> Entity:
+        """
+        Update an existing entity.
+
+        Only the fields that are explicitly provided will be updated.
+        Note: entity_id cannot be changed as it is the primary key.
+
+        Args:
+            entity_id: ID of the entity to update (cannot be changed)
+            name: New display name (omit to leave unchanged)
+            metadata: New metadata dict (omit to leave unchanged)
+            parent_id: New parent entity ID (omit to leave unchanged)
+            clear_parent: Set to True to remove the parent (make entity a root)
+
+        Returns:
+            The updated Entity
+
+        Raises:
+            EntityNotFoundError: If entity does not exist
+            InvalidIdentifierError: If entity_id or parent_id is invalid
+
+        Example:
+            # Update name only
+            entity = await limiter.update_entity("key-abc", name="New Name")
+
+            # Change parent
+            entity = await limiter.update_entity("key-abc", parent_id="new-parent")
+
+            # Make entity a root (remove parent)
+            entity = await limiter.update_entity("key-abc", clear_parent=True)
+        """
+        from .repository import UNSET
+
+        await self._ensure_initialized()
+
+        # Build kwargs, using UNSET for unchanged fields
+        kwargs: dict[str, Any] = {}
+        if name is not None:
+            kwargs["name"] = name
+        else:
+            kwargs["name"] = UNSET
+
+        if metadata is not None:
+            kwargs["metadata"] = metadata
+        else:
+            kwargs["metadata"] = UNSET
+
+        if clear_parent:
+            kwargs["parent_id"] = None
+        elif parent_id is not None:
+            kwargs["parent_id"] = parent_id
+        else:
+            kwargs["parent_id"] = UNSET
+
+        return await self._repository.update_entity(entity_id, **kwargs)
+
     async def get_children(self, parent_id: str) -> list[Entity]:
         """Get all children of a parent entity."""
         await self._ensure_initialized()
@@ -566,6 +630,59 @@ class RateLimiter:
         await self._repository.delete_limits(entity_id, resource)
 
     # -------------------------------------------------------------------------
+    # Bucket management
+    # -------------------------------------------------------------------------
+
+    async def reset_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limit_name: str,
+    ) -> BucketState:
+        """
+        Reset a bucket to its full burst capacity.
+
+        This is useful for administrative operations like clearing rate limit
+        debt or restoring capacity after an incident.
+
+        Args:
+            entity_id: ID of the entity
+            resource: Resource name (e.g., "gpt-4")
+            limit_name: Limit name (e.g., "rpm", "tpm")
+
+        Returns:
+            The reset BucketState with tokens at burst capacity
+
+        Raises:
+            BucketNotFoundError: If the bucket does not exist
+
+        Example:
+            # Reset the RPM bucket after an incident
+            bucket = await limiter.reset_bucket("key-abc", "gpt-4", "rpm")
+            print(f"Reset to {bucket.tokens} tokens")
+        """
+        await self._ensure_initialized()
+        return await self._repository.reset_bucket(entity_id, resource, limit_name)
+
+    async def get_buckets(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+    ) -> list[BucketState]:
+        """
+        Get all buckets for an entity.
+
+        Args:
+            entity_id: ID of the entity
+            resource: Optional resource to filter by
+
+        Returns:
+            List of BucketState objects
+        """
+        await self._ensure_initialized()
+        return await self._repository.get_buckets(entity_id, resource)
+
+    # -------------------------------------------------------------------------
     # Capacity queries
     # -------------------------------------------------------------------------
 
@@ -799,6 +916,45 @@ class SyncRateLimiter:
         """Delete an entity and all its related data."""
         self._run(self._limiter.delete_entity(entity_id))
 
+    def update_entity(
+        self,
+        entity_id: str,
+        name: str | None = None,
+        metadata: dict[str, str] | None = None,
+        parent_id: str | None = None,
+        *,
+        clear_parent: bool = False,
+    ) -> Entity:
+        """
+        Update an existing entity.
+
+        Only the fields that are explicitly provided will be updated.
+        Note: entity_id cannot be changed as it is the primary key.
+
+        Args:
+            entity_id: ID of the entity to update (cannot be changed)
+            name: New display name (omit to leave unchanged)
+            metadata: New metadata dict (omit to leave unchanged)
+            parent_id: New parent entity ID (omit to leave unchanged)
+            clear_parent: Set to True to remove the parent (make entity a root)
+
+        Returns:
+            The updated Entity
+
+        Raises:
+            EntityNotFoundError: If entity does not exist
+            InvalidIdentifierError: If entity_id or parent_id is invalid
+        """
+        return self._run(
+            self._limiter.update_entity(
+                entity_id=entity_id,
+                name=name,
+                metadata=metadata,
+                parent_id=parent_id,
+                clear_parent=clear_parent,
+            )
+        )
+
     def get_children(self, parent_id: str) -> list[Entity]:
         """Get all children of a parent entity."""
         return self._run(self._limiter.get_children(parent_id))
@@ -914,6 +1070,58 @@ class SyncRateLimiter:
     ) -> None:
         """Delete stored limit configs for an entity."""
         self._run(self._limiter.delete_limits(entity_id, resource))
+
+    # -------------------------------------------------------------------------
+    # Bucket management
+    # -------------------------------------------------------------------------
+
+    def reset_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limit_name: str,
+    ) -> BucketState:
+        """
+        Reset a bucket to its full burst capacity.
+
+        This is useful for administrative operations like clearing rate limit
+        debt or restoring capacity after an incident.
+
+        Args:
+            entity_id: ID of the entity
+            resource: Resource name (e.g., "gpt-4")
+            limit_name: Limit name (e.g., "rpm", "tpm")
+
+        Returns:
+            The reset BucketState with tokens at burst capacity
+
+        Raises:
+            BucketNotFoundError: If the bucket does not exist
+        """
+        return self._run(
+            self._limiter.reset_bucket(
+                entity_id=entity_id,
+                resource=resource,
+                limit_name=limit_name,
+            )
+        )
+
+    def get_buckets(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+    ) -> list[BucketState]:
+        """
+        Get all buckets for an entity.
+
+        Args:
+            entity_id: ID of the entity
+            resource: Optional resource to filter by
+
+        Returns:
+            List of BucketState objects
+        """
+        return self._run(self._limiter.get_buckets(entity_id, resource))
 
     # -------------------------------------------------------------------------
     # Capacity queries

@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from zae_limiter import AuditAction, Limit
-from zae_limiter.exceptions import InvalidIdentifierError
+from zae_limiter import AuditAction, BucketNotFoundError, Limit
+from zae_limiter.exceptions import EntityNotFoundError, InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
 
@@ -671,3 +671,239 @@ class TestRepositoryAuditLogging:
             assert event_ids[i] > event_ids[i - 1], (
                 f"Event IDs not monotonic: {event_ids[i - 1]} >= {event_ids[i]}"
             )
+
+
+class TestRepositoryUpdateEntity:
+    """Tests for update_entity method."""
+
+    @pytest.mark.asyncio
+    async def test_update_entity_name(self, repo):
+        """Should update entity name."""
+        await repo.create_entity("test-entity", name="Original Name")
+
+        updated = await repo.update_entity("test-entity", name="New Name")
+
+        assert updated.name == "New Name"
+        assert updated.id == "test-entity"
+
+        # Verify persisted
+        fetched = await repo.get_entity("test-entity")
+        assert fetched.name == "New Name"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_metadata(self, repo):
+        """Should update entity metadata."""
+        await repo.create_entity(
+            "test-entity", metadata={"tier": "free", "region": "us-east-1"}
+        )
+
+        updated = await repo.update_entity(
+            "test-entity", metadata={"tier": "premium", "features": "all"}
+        )
+
+        assert updated.metadata == {"tier": "premium", "features": "all"}
+
+    @pytest.mark.asyncio
+    async def test_update_entity_parent_id(self, repo):
+        """Should update parent_id and GSI1 keys."""
+        await repo.create_entity("parent-1")
+        await repo.create_entity("parent-2")
+        await repo.create_entity("child", parent_id="parent-1")
+
+        # Verify initial parent
+        children_of_1 = await repo.get_children("parent-1")
+        assert len(children_of_1) == 1
+        assert children_of_1[0].id == "child"
+
+        # Update parent
+        updated = await repo.update_entity("child", parent_id="parent-2")
+        assert updated.parent_id == "parent-2"
+
+        # Verify GSI1 updated
+        children_of_1 = await repo.get_children("parent-1")
+        assert len(children_of_1) == 0
+
+        children_of_2 = await repo.get_children("parent-2")
+        assert len(children_of_2) == 1
+        assert children_of_2[0].id == "child"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_clear_parent(self, repo):
+        """Should clear parent_id and remove GSI1 keys."""
+        from zae_limiter.repository import UNSET
+
+        await repo.create_entity("parent")
+        await repo.create_entity("child", parent_id="parent")
+
+        # Clear parent (make entity a root)
+        updated = await repo.update_entity("child", parent_id=None)
+        assert updated.parent_id is None
+
+        # Verify GSI1 cleared
+        children = await repo.get_children("parent")
+        assert len(children) == 0
+
+    @pytest.mark.asyncio
+    async def test_update_entity_add_parent(self, repo):
+        """Should add parent to root entity."""
+        await repo.create_entity("parent")
+        await repo.create_entity("root-entity")  # No parent
+
+        # Add parent
+        updated = await repo.update_entity("root-entity", parent_id="parent")
+        assert updated.parent_id == "parent"
+
+        # Verify GSI1 set
+        children = await repo.get_children("parent")
+        assert len(children) == 1
+        assert children[0].id == "root-entity"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_not_found(self, repo):
+        """Should raise EntityNotFoundError for nonexistent entity."""
+        with pytest.raises(EntityNotFoundError) as exc_info:
+            await repo.update_entity("nonexistent", name="New Name")
+        assert exc_info.value.entity_id == "nonexistent"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_invalid_parent_id(self, repo):
+        """Should reject invalid parent_id."""
+        await repo.create_entity("test-entity")
+
+        with pytest.raises(InvalidIdentifierError) as exc_info:
+            await repo.update_entity("test-entity", parent_id="invalid#parent")
+        assert exc_info.value.field == "parent_id"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_no_changes(self, repo):
+        """Should return existing entity when no changes provided."""
+        await repo.create_entity("test-entity", name="Original")
+
+        # Update with no changes (all UNSET)
+        from zae_limiter.repository import UNSET
+
+        updated = await repo.update_entity("test-entity")
+        assert updated.name == "Original"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_logs_audit(self, repo):
+        """Should log audit event for updates."""
+        await repo.create_entity("audit-entity", name="Original")
+
+        await repo.update_entity(
+            "audit-entity", name="Updated", principal="admin@example.com"
+        )
+
+        events = await repo.get_audit_events("audit-entity")
+        assert len(events) == 2  # create + update
+
+        update_event = events[0]
+        assert update_event.action == AuditAction.ENTITY_UPDATED
+        assert update_event.principal == "admin@example.com"
+        assert update_event.details["name"] == "Updated"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_preserves_created_at(self, repo):
+        """Should preserve original created_at timestamp."""
+        original = await repo.create_entity("test-entity")
+        await repo.update_entity("test-entity", name="New Name")
+
+        fetched = await repo.get_entity("test-entity")
+        assert fetched.created_at == original.created_at
+
+
+class TestRepositoryResetBucket:
+    """Tests for reset_bucket method."""
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_to_burst(self, repo):
+        """Should reset tokens to burst capacity."""
+        await repo.create_entity("test-entity")
+
+        # Create a bucket via transaction
+        limit = Limit.per_minute("rpm", capacity=100, burst=150)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("test-entity", "gpt-4", limit, now_ms)
+
+        # Simulate some consumption - set tokens to 50 (was 150)
+        state = BucketState(
+            entity_id=state.entity_id,
+            resource=state.resource,
+            limit_name=state.limit_name,
+            tokens_milli=50_000,  # Consumed some tokens
+            last_refill_ms=state.last_refill_ms,
+            capacity_milli=state.capacity_milli,
+            burst_milli=state.burst_milli,
+            refill_amount_milli=state.refill_amount_milli,
+            refill_period_ms=state.refill_period_ms,
+        )
+        await repo.transact_write([repo.build_bucket_put_item(state)])
+
+        # Reset the bucket
+        reset_bucket = await repo.reset_bucket("test-entity", "gpt-4", "rpm")
+
+        # Verify reset to burst capacity
+        assert reset_bucket.tokens_milli == 150_000
+        assert reset_bucket.burst_milli == 150_000
+
+        # Verify persisted
+        fetched = await repo.get_bucket("test-entity", "gpt-4", "rpm")
+        assert fetched.tokens_milli == 150_000
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_not_found(self, repo):
+        """Should raise BucketNotFoundError for nonexistent bucket."""
+        await repo.create_entity("test-entity")
+
+        with pytest.raises(BucketNotFoundError) as exc_info:
+            await repo.reset_bucket("test-entity", "gpt-4", "rpm")
+        assert exc_info.value.entity_id == "test-entity"
+        assert exc_info.value.resource == "gpt-4"
+        assert exc_info.value.limit_name == "rpm"
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_logs_audit(self, repo):
+        """Should log audit event for bucket reset."""
+        await repo.create_entity("test-entity")
+
+        # Create a bucket
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("test-entity", "gpt-4", limit, now_ms)
+        await repo.transact_write([repo.build_bucket_put_item(state)])
+
+        # Reset with principal
+        await repo.reset_bucket(
+            "test-entity", "gpt-4", "rpm", principal="admin@example.com"
+        )
+
+        events = await repo.get_audit_events("test-entity")
+        # Find the reset event
+        reset_event = next(
+            (e for e in events if e.action == AuditAction.BUCKET_RESET), None
+        )
+        assert reset_event is not None
+        assert reset_event.principal == "admin@example.com"
+        assert reset_event.resource == "gpt-4"
+        assert reset_event.details["limit_name"] == "rpm"
+        assert "previous_tokens_milli" in reset_event.details
+        assert "reset_tokens_milli" in reset_event.details
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_updates_refill_time(self, repo):
+        """Should update last_refill_ms to current time."""
+        await repo.create_entity("test-entity")
+
+        # Create a bucket with old refill time
+        limit = Limit.per_minute("rpm", 100)
+        old_time_ms = int(time.time() * 1000) - 3600_000  # 1 hour ago
+        state = BucketState.from_limit("test-entity", "gpt-4", limit, old_time_ms)
+        await repo.transact_write([repo.build_bucket_put_item(state)])
+
+        before_reset = time.time() * 1000
+        reset_bucket = await repo.reset_bucket("test-entity", "gpt-4", "rpm")
+        after_reset = time.time() * 1000
+
+        # Verify refill time is updated
+        assert reset_bucket.last_refill_ms >= before_reset
+        assert reset_bucket.last_refill_ms <= after_reset

@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 from ulid import ULID
 
 from . import schema
-from .exceptions import EntityExistsError
+from .exceptions import BucketNotFoundError, EntityExistsError, EntityNotFoundError
 from .models import (
     AuditAction,
     AuditEvent,
@@ -19,6 +19,24 @@ from .models import (
     validate_identifier,
 )
 from .naming import normalize_stack_name
+
+
+class _UnsetType:
+    """Sentinel type to distinguish 'not provided' from None."""
+
+    _instance: "_UnsetType | None" = None
+
+    def __new__(cls) -> "_UnsetType":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = _UnsetType()
+"""Sentinel value to indicate a parameter was not provided."""
 
 
 class Repository:
@@ -284,6 +302,165 @@ class Repository:
 
         return entities
 
+    async def update_entity(
+        self,
+        entity_id: str,
+        name: str | None | _UnsetType = UNSET,
+        metadata: dict[str, str] | None | _UnsetType = UNSET,
+        parent_id: str | None | _UnsetType = UNSET,
+        principal: str | None = None,
+    ) -> Entity:
+        """
+        Update an existing entity.
+
+        Only the fields that are explicitly provided will be updated.
+        Use None to clear a field, or omit the parameter to leave unchanged.
+
+        Note: entity_id cannot be changed as it is the primary key.
+
+        Args:
+            entity_id: ID of the entity to update (cannot be changed)
+            name: New display name (None to clear, UNSET to leave unchanged)
+            metadata: New metadata dict (None to clear, UNSET to leave unchanged)
+            parent_id: New parent entity ID (None to make root, UNSET to leave unchanged)
+            principal: Caller identity for audit logging
+
+        Returns:
+            The updated Entity
+
+        Raises:
+            EntityNotFoundError: If entity does not exist
+            InvalidIdentifierError: If entity_id or parent_id is invalid
+        """
+        # Validate inputs
+        validate_identifier(entity_id, "entity_id")
+        if not isinstance(parent_id, _UnsetType) and parent_id is not None:
+            validate_identifier(parent_id, "parent_id")
+
+        # Get existing entity first
+        existing = await self.get_entity(entity_id)
+        if existing is None:
+            raise EntityNotFoundError(entity_id)
+
+        # Build update expression
+        client = await self._get_client()
+        update_parts: list[str] = []
+        remove_parts: list[str] = []
+        expr_names: dict[str, str] = {"#data": "data"}
+        expr_values: dict[str, Any] = {}
+        changes: dict[str, Any] = {}
+
+        # Track the new values for returning the updated entity
+        new_name = existing.name
+        new_metadata = existing.metadata
+        new_parent_id = existing.parent_id
+
+        # Handle name update
+        if not isinstance(name, _UnsetType):
+            if name is not None:
+                update_parts.append("#data.#name = :name")
+                expr_names["#name"] = "name"
+                expr_values[":name"] = {"S": name}
+                new_name = name
+                changes["name"] = name
+            else:
+                # Set to entity_id when clearing name
+                update_parts.append("#data.#name = :name")
+                expr_names["#name"] = "name"
+                expr_values[":name"] = {"S": entity_id}
+                new_name = entity_id
+                changes["name"] = entity_id
+
+        # Handle metadata update
+        if not isinstance(metadata, _UnsetType):
+            if metadata is not None:
+                update_parts.append("#data.#metadata = :metadata")
+                expr_names["#metadata"] = "metadata"
+                expr_values[":metadata"] = {"M": self._serialize_map(metadata)}
+                new_metadata = metadata
+                changes["metadata"] = metadata
+            else:
+                update_parts.append("#data.#metadata = :metadata")
+                expr_names["#metadata"] = "metadata"
+                expr_values[":metadata"] = {"M": {}}
+                new_metadata = {}
+                changes["metadata"] = {}
+
+        # Handle parent_id update (affects GSI1 keys)
+        if not isinstance(parent_id, _UnsetType):
+            old_parent_id = existing.parent_id
+            new_parent_id = parent_id
+
+            if parent_id != old_parent_id:
+                # Update the parent_id in data
+                if parent_id is not None:
+                    update_parts.append("#data.#parent_id = :parent_id")
+                    expr_names["#parent_id"] = "parent_id"
+                    expr_values[":parent_id"] = {"S": parent_id}
+
+                    # Update GSI1 keys
+                    update_parts.append("#gsi1pk = :gsi1pk")
+                    update_parts.append("#gsi1sk = :gsi1sk")
+                    expr_names["#gsi1pk"] = "GSI1PK"
+                    expr_names["#gsi1sk"] = "GSI1SK"
+                    expr_values[":gsi1pk"] = {"S": schema.gsi1_pk_parent(parent_id)}
+                    expr_values[":gsi1sk"] = {"S": schema.gsi1_sk_child(entity_id)}
+                else:
+                    # Clearing parent - set to NULL and remove GSI1 keys
+                    update_parts.append("#data.#parent_id = :parent_id")
+                    expr_names["#parent_id"] = "parent_id"
+                    expr_values[":parent_id"] = {"NULL": True}
+
+                    # Remove GSI1 keys (entity becomes a root)
+                    remove_parts.append("#gsi1pk")
+                    remove_parts.append("#gsi1sk")
+                    expr_names["#gsi1pk"] = "GSI1PK"
+                    expr_names["#gsi1sk"] = "GSI1SK"
+
+                changes["parent_id"] = {"old": old_parent_id, "new": parent_id}
+
+        # If no updates, return existing entity
+        if not update_parts and not remove_parts:
+            return existing
+
+        # Build update expression
+        update_expr = ""
+        if update_parts:
+            update_expr = "SET " + ", ".join(update_parts)
+        if remove_parts:
+            if update_expr:
+                update_expr += " "
+            update_expr += "REMOVE " + ", ".join(remove_parts)
+
+        # Execute update
+        await client.update_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_meta()},
+            },
+            UpdateExpression=update_expr,
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values if expr_values else None,
+            ConditionExpression="attribute_exists(PK)",
+        )
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.ENTITY_UPDATED,
+            entity_id=entity_id,
+            principal=principal,
+            details=changes,
+        )
+
+        return Entity(
+            id=entity_id,
+            name=new_name,
+            parent_id=new_parent_id,
+            metadata=new_metadata if new_metadata else {},
+            created_at=existing.created_at,
+        )
+
     # -------------------------------------------------------------------------
     # Bucket operations
     # -------------------------------------------------------------------------
@@ -332,6 +509,85 @@ class Repository:
         )
 
         return [self._deserialize_bucket(item) for item in response.get("Items", [])]
+
+    async def reset_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limit_name: str,
+        principal: str | None = None,
+    ) -> BucketState:
+        """
+        Reset a bucket to its full burst capacity.
+
+        This is useful for administrative operations like clearing rate limit
+        debt or restoring capacity after an incident.
+
+        Args:
+            entity_id: ID of the entity
+            resource: Resource name (e.g., "gpt-4")
+            limit_name: Limit name (e.g., "rpm", "tpm")
+            principal: Caller identity for audit logging
+
+        Returns:
+            The reset BucketState with tokens at burst capacity
+
+        Raises:
+            BucketNotFoundError: If the bucket does not exist
+        """
+        # Get existing bucket
+        bucket = await self.get_bucket(entity_id, resource, limit_name)
+        if bucket is None:
+            raise BucketNotFoundError(entity_id, resource, limit_name)
+
+        # Reset to burst capacity
+        client = await self._get_client()
+        now_ms = self._now_ms()
+
+        await client.update_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_bucket(resource, limit_name)},
+            },
+            UpdateExpression="SET #data.#tokens = :tokens, #data.#refill = :refill",
+            ExpressionAttributeNames={
+                "#data": "data",
+                "#tokens": "tokens_milli",
+                "#refill": "last_refill_ms",
+            },
+            ExpressionAttributeValues={
+                ":tokens": {"N": str(bucket.burst_milli)},
+                ":refill": {"N": str(now_ms)},
+            },
+            ConditionExpression="attribute_exists(PK)",
+        )
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.BUCKET_RESET,
+            entity_id=entity_id,
+            principal=principal,
+            resource=resource,
+            details={
+                "limit_name": limit_name,
+                "previous_tokens_milli": bucket.tokens_milli,
+                "reset_tokens_milli": bucket.burst_milli,
+            },
+        )
+
+        # Return the updated bucket state
+        return BucketState(
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=limit_name,
+            tokens_milli=bucket.burst_milli,
+            last_refill_ms=now_ms,
+            capacity_milli=bucket.capacity_milli,
+            burst_milli=bucket.burst_milli,
+            refill_amount_milli=bucket.refill_amount_milli,
+            refill_period_ms=bucket.refill_period_ms,
+        )
 
     def build_bucket_put_item(
         self,

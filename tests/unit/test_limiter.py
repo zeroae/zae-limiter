@@ -786,3 +786,101 @@ class TestRateLimiterInputValidation:
         # Should not raise
         async with limiter.acquire("user-123", "gpt-3.5-turbo", limits, {"rpm": 1}):
             pass
+
+
+class TestRateLimiterUpdateEntity:
+    """Tests for update_entity method."""
+
+    @pytest.mark.asyncio
+    async def test_update_entity_name(self, limiter):
+        """Should update entity name."""
+        await limiter.create_entity("test-entity", name="Original")
+
+        updated = await limiter.update_entity("test-entity", name="Updated")
+        assert updated.name == "Updated"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_metadata(self, limiter):
+        """Should update entity metadata."""
+        await limiter.create_entity("test-entity", metadata={"tier": "free"})
+
+        updated = await limiter.update_entity(
+            "test-entity", metadata={"tier": "premium", "features": "all"}
+        )
+        assert updated.metadata == {"tier": "premium", "features": "all"}
+
+    @pytest.mark.asyncio
+    async def test_update_entity_parent(self, limiter):
+        """Should change parent entity."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("parent-2")
+        await limiter.create_entity("child", parent_id="parent-1")
+
+        updated = await limiter.update_entity("child", parent_id="parent-2")
+        assert updated.parent_id == "parent-2"
+
+    @pytest.mark.asyncio
+    async def test_update_entity_clear_parent(self, limiter):
+        """Should clear parent using clear_parent=True."""
+        await limiter.create_entity("parent")
+        await limiter.create_entity("child", parent_id="parent")
+
+        updated = await limiter.update_entity("child", clear_parent=True)
+        assert updated.parent_id is None
+
+
+class TestRateLimiterBucketManagement:
+    """Tests for bucket management methods."""
+
+    @pytest.mark.asyncio
+    async def test_get_buckets(self, limiter):
+        """Should return all buckets for an entity."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10000),
+        ]
+
+        # Create some buckets by acquiring capacity
+        async with limiter.acquire("entity-1", "gpt-4", limits, {"rpm": 1, "tpm": 500}):
+            pass
+
+        buckets = await limiter.get_buckets("entity-1")
+        assert len(buckets) == 2
+
+        limit_names = {b.limit_name for b in buckets}
+        assert limit_names == {"rpm", "tpm"}
+
+    @pytest.mark.asyncio
+    async def test_get_buckets_filtered_by_resource(self, limiter):
+        """Should filter buckets by resource."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Create buckets for two resources
+        async with limiter.acquire("entity-1", "gpt-4", limits, {"rpm": 1}):
+            pass
+        async with limiter.acquire("entity-1", "gpt-3.5", limits, {"rpm": 1}):
+            pass
+
+        gpt4_buckets = await limiter.get_buckets("entity-1", resource="gpt-4")
+        assert len(gpt4_buckets) == 1
+        assert gpt4_buckets[0].resource == "gpt-4"
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket(self, limiter):
+        """Should reset bucket to burst capacity."""
+        limits = [Limit.per_minute("rpm", capacity=100, burst=150)]
+
+        # Consume some capacity
+        async with limiter.acquire("entity-1", "gpt-4", limits, {"rpm": 50}):
+            pass
+
+        # Check bucket is depleted
+        buckets_before = await limiter.get_buckets("entity-1", resource="gpt-4")
+        assert buckets_before[0].tokens < 150
+
+        # Reset the bucket
+        reset_bucket = await limiter.reset_bucket("entity-1", "gpt-4", "rpm")
+
+        # Verify reset to burst capacity
+        assert reset_bucket.tokens == 150
+        assert reset_bucket.burst == 150

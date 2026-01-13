@@ -50,6 +50,7 @@ Example:
 from typing import TYPE_CHECKING
 
 from .exceptions import (
+    BucketNotFoundError,
     EntityError,
     EntityExistsError,
     EntityNotFoundError,
@@ -130,6 +131,7 @@ __all__ = [
     # Exceptions - Rate Limit
     "RateLimitExceeded",
     "RateLimiterUnavailable",
+    "BucketNotFoundError",
     # Exceptions - Entity
     "EntityNotFoundError",
     "EntityExistsError",
