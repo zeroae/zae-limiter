@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768295896746,
+  "lastUpdate": 1768299424180,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -1414,6 +1414,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.17647758826558285",
             "extra": "mean: 186.4294320999979 msec\nrounds: 30"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fccf670778873dd7e9a28bef6df73a3cabab7a52",
+          "message": "✨ feat(limiter): rename stack_name to name for cloud-agnostic API (#95)\n\n* ✨ feat(limiter): rename stack_name to name for cloud-agnostic API\n\nBREAKING CHANGE: The `stack_name` parameter has been renamed to `name` in the public API.\n\nThis change makes the API cloud-agnostic, hiding AWS CloudFormation terminology from end users:\n\n**Python API:**\n- Before: `RateLimiter(stack_name=\"rate-limits\", region=\"us-east-1\")`\n- After: `RateLimiter(name=\"my-app\", region=\"us-east-1\")`\n\n**CLI:**\n- Before: `zae-limiter deploy --stack-name rate-limits`\n- After: `zae-limiter deploy --name my-app` (or `-n my-app`)\n\n**Default value:**\n- Changed from `\"rate-limits\"` to `\"limiter\"` (creates `ZAEL-limiter` resources)\n\n**New module:**\n- Added `naming.py` with `validate_name()` and `normalize_name()` functions\n- Centralizes ZAEL- prefix logic and validation rules\n\n**Internal code unchanged:**\n- `Repository` and `StackManager` still use `stack_name` internally (AWS-specific)\n- Only the public-facing API uses the generic `name` parameter\n\n**Test fixtures:**\n- Renamed `unique_table_name` to `unique_name` for consistency\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(naming): add comprehensive unit tests for naming module\n\n- Add tests/unit/test_naming.py with 33 tests covering:\n  - validate_name() for valid names (simple, hyphenated, alphanumeric)\n  - Error cases (empty, underscore, period, space, starts with number)\n  - Length validation (max 38 chars)\n  - normalize_name() with/without ZAEL- prefix\n  - Backward compatibility aliases (validate_stack_name, normalize_stack_name)\n  - Edge cases (unicode, emoji, special chars)\n\n- Add CLI validation error tests to test_cli.py:\n  - All commands (deploy, delete, status, version, check, upgrade)\n  - Verify helpful error messages for invalid names\n\nCoverage improvement:\n- naming.py: 75% → 96%\n- cli.py: Error handling paths now covered\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(tests): widen tolerance for flaky lease adjustment test\n\nThe test_lease_adjustment_workflow test failed intermittently because\ntoken bucket refill was occurring during test execution. With a refill\nrate of ~167 tokens/second, even a few milliseconds of delay caused\nthe assertion to fail.\n\nWidened tolerance from (200-300) to (150-350) tokens consumed, providing\n±100 token variance around the expected 250 consumed.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T05:14:35-05:00",
+          "tree_id": "7c31ec57ca33892f6070c72adec5e3cfedbfaa11",
+          "url": "https://github.com/zeroae/zae-limiter/commit/fccf670778873dd7e9a28bef6df73a3cabab7a52"
+        },
+        "date": 1768299423939,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.145762300172827,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008264701074089683",
+            "extra": "mean: 45.15536590908844 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.717607629895728,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006126497051596935",
+            "extra": "mean: 46.04558738889056 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 74.61836266986057,
+            "unit": "iter/sec",
+            "range": "stddev: 0.020460293574706072",
+            "extra": "mean: 13.40152697298348 msec\nrounds: 259"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 22.51144176751148,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06617648361435995",
+            "extra": "mean: 44.42185490949763 msec\nrounds: 221"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1081.377766664992,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000020730377474360403",
+            "extra": "mean: 924.7462180437055 usec\nrounds: 931"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 52.010321892697824,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12821069382376307",
+            "extra": "mean: 19.226952720329127 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 63.30200035325784,
+            "unit": "iter/sec",
+            "range": "stddev: 0.027813065130639126",
+            "extra": "mean: 15.797289097018794 msec\nrounds: 268"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 36.52124965150867,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07231618036857076",
+            "extra": "mean: 27.381319356324127 msec\nrounds: 87"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 36.42535952166524,
+            "unit": "iter/sec",
+            "range": "stddev: 0.048219623887067714",
+            "extra": "mean: 27.453400958340996 msec\nrounds: 48"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 16.91026409401087,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009385970655188484",
+            "extra": "mean: 59.13568200003283 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 4.9571569025510085,
+            "unit": "iter/sec",
+            "range": "stddev: 0.14307850310504766",
+            "extra": "mean: 201.72853505713906 msec\nrounds: 35"
           }
         ]
       }
