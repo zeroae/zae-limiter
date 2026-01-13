@@ -92,7 +92,7 @@ if TYPE_CHECKING:
     from .limiter import SyncRateLimiter as SyncRateLimiter
 
 try:
-    from ._version import __version__  # type: ignore[import-untyped]
+    from ._version import __version__  # type: ignore[import-not-found]
 except ImportError:
     __version__ = "0.0.0+unknown"
 
