@@ -121,6 +121,9 @@ zae-limiter lambda-export --info
 # Check stack status
 zae-limiter status --stack-name zae-limiter-rate_limits --region us-east-1
 
+# Check stack status (LocalStack)
+zae-limiter status --stack-name zae-limiter-rate_limits --endpoint-url http://localhost:4566 --region us-east-1
+
 # Delete stack
 zae-limiter delete --stack-name zae-limiter-rate_limits --yes
 ```

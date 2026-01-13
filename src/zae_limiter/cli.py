@@ -247,6 +247,13 @@ def deploy(
     help="AWS region (default: use boto3 defaults)",
 )
 @click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+@click.option(
     "--wait/--no-wait",
     default=True,
     help="Wait for stack deletion to complete",
@@ -260,6 +267,7 @@ def deploy(
 def delete(
     stack_name: str,
     region: str | None,
+    endpoint_url: str | None,
     wait: bool,
     yes: bool,
 ) -> None:
@@ -272,7 +280,7 @@ def delete(
         )
 
     async def _delete() -> None:
-        async with StackManager("dummy", region, None) as manager:
+        async with StackManager("dummy", region, endpoint_url) as manager:
             click.echo(f"Deleting stack: {stack_name}")
 
             try:
@@ -436,12 +444,20 @@ def status(stack_name: str, region: str | None, endpoint_url: str | None) -> Non
     help="AWS region (default: use boto3 defaults)",
 )
 @click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+@click.option(
     "--stack-name",
     help="CloudFormation stack name (default: zae-limiter-{table-name})",
 )
 def version_cmd(
     table_name: str,
     region: str | None,
+    endpoint_url: str | None,
     stack_name: str | None,
 ) -> None:
     """Show infrastructure version information."""
@@ -456,7 +472,7 @@ def version_cmd(
         # Import here to avoid loading aioboto3 at CLI startup
         from .repository import Repository
 
-        repo = Repository(table_name, region, None)
+        repo = Repository(table_name, region, endpoint_url)
 
         try:
             click.echo()
@@ -525,6 +541,13 @@ def version_cmd(
     help="AWS region (default: use boto3 defaults)",
 )
 @click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+@click.option(
     "--stack-name",
     help="CloudFormation stack name (default: zae-limiter-{table-name})",
 )
@@ -541,6 +564,7 @@ def version_cmd(
 def upgrade(
     table_name: str,
     region: str | None,
+    endpoint_url: str | None,
     stack_name: str | None,
     lambda_only: bool,
     force: bool,
@@ -556,7 +580,7 @@ def upgrade(
     async def _upgrade() -> None:
         from .repository import Repository
 
-        repo = Repository(table_name, region, None)
+        repo = Repository(table_name, region, endpoint_url)
 
         try:
             click.echo()
@@ -591,7 +615,7 @@ def upgrade(
             click.echo(f"Target:  Lambda {__version__}")
             click.echo()
 
-            async with StackManager(table_name, region, None) as manager:
+            async with StackManager(table_name, region, endpoint_url) as manager:
                 # Step 1: Update Lambda code
                 click.echo("[1/2] Deploying Lambda code...")
                 try:
@@ -639,9 +663,17 @@ def upgrade(
     "--region",
     help="AWS region (default: use boto3 defaults)",
 )
+@click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
 def check(
     table_name: str,
     region: str | None,
+    endpoint_url: str | None,
 ) -> None:
     """Check infrastructure compatibility without modifying."""
     from . import __version__
@@ -653,7 +685,7 @@ def check(
     async def _check() -> None:
         from .repository import Repository
 
-        repo = Repository(table_name, region, None)
+        repo = Repository(table_name, region, endpoint_url)
 
         try:
             click.echo()
