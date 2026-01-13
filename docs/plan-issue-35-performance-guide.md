@@ -388,24 +388,228 @@ Set up billing alerts:
 
 ## Implementation Tasks
 
-### Phase 1: Core Documentation (2-3 hours)
+### Phase 0: Create Performance Tests (2-3 hours)
+
+Create new benchmark tests that will generate the data needed for documentation. These tests serve dual purposes: validating performance claims and providing reproducible benchmarks for users.
+
+#### 0.1 New Test File: `tests/benchmark/test_capacity.py`
+
+Tests to measure and validate RCU/WCU consumption per operation:
+
+```python
+# tests/benchmark/test_capacity.py
+"""
+Capacity consumption tests for documentation.
+These tests validate the RCU/WCU claims in docs/performance.md.
+"""
+import pytest
+from unittest.mock import patch
+
+class TestCapacityConsumption:
+    """Verify DynamoDB capacity consumption per operation."""
+
+    def test_acquire_single_limit_capacity(self, sync_limiter):
+        """Verify: acquire() with single limit = 1 RCU + 1 WCU."""
+        # Count DynamoDB calls made during acquire
+        # Assert: 1 GetItem (bucket) + 1 TransactWriteItems (1 item)
+
+    def test_acquire_multiple_limits_capacity(self, sync_limiter):
+        """Verify: acquire() with N limits = N RCUs + N WCUs."""
+        # Test with 2, 3, 5 limits
+        # Assert: N GetItems + 1 TransactWriteItems (N items)
+
+    def test_acquire_with_cascade_capacity(self, sync_limiter):
+        """Verify: acquire(cascade=True) = 3 RCUs + 2 WCUs."""
+        # Assert: 1 GetEntity + 2 GetBucket + TransactWrite(2 items)
+
+    def test_acquire_with_stored_limits_capacity(self, sync_limiter):
+        """Verify: acquire(use_stored_limits=True) adds 2 RCUs."""
+        # Assert: +2 Query operations for limit lookups
+
+    def test_available_check_capacity(self, sync_limiter):
+        """Verify: available() = 1 RCU per limit, 0 WCUs."""
+        # Assert: Only GetItem calls, no writes
+
+    def test_set_limits_capacity(self, sync_limiter):
+        """Verify: set_limits() = 1 RCU + N WCUs."""
+        # Assert: 1 Query + N PutItems
+
+    def test_delete_entity_capacity(self, sync_limiter):
+        """Verify: delete_entity() batches in 25-item chunks."""
+        # Create entity with 30 items, verify BatchWrite chunking
+```
+
+#### 0.2 New Test File: `tests/benchmark/test_latency.py`
+
+Tests to capture p50/p95/p99 latency metrics:
+
+```python
+# tests/benchmark/test_latency.py
+"""
+Latency benchmark tests for documentation.
+Run with: pytest tests/benchmark/test_latency.py -v --benchmark-json=latency.json
+"""
+import pytest
+
+class TestLatencyBenchmarks:
+    """Capture latency percentiles for documentation."""
+
+    @pytest.mark.benchmark(group="acquire")
+    def test_acquire_single_limit_latency(self, benchmark, sync_limiter):
+        """Measure p50/p95/p99 for single-limit acquire."""
+        # benchmark() returns stats with percentiles
+
+    @pytest.mark.benchmark(group="acquire")
+    def test_acquire_two_limits_latency(self, benchmark, sync_limiter):
+        """Measure overhead of multi-limit acquire (rpm + tpm pattern)."""
+
+    @pytest.mark.benchmark(group="acquire")
+    def test_acquire_with_cascade_latency(self, benchmark, sync_limiter):
+        """Measure cascade overhead."""
+
+    @pytest.mark.benchmark(group="check")
+    def test_available_check_latency(self, benchmark, sync_limiter):
+        """Measure read-only availability check."""
+
+    @pytest.mark.benchmark(group="acquire")
+    def test_acquire_with_stored_limits_latency(self, benchmark, sync_limiter):
+        """Measure stored limits query overhead."""
+```
+
+#### 0.3 New Test File: `tests/benchmark/test_throughput.py`
+
+Tests to measure maximum throughput and contention:
+
+```python
+# tests/benchmark/test_throughput.py
+"""
+Throughput benchmark tests for documentation.
+These validate the throughput claims in the performance guide.
+"""
+import pytest
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+class TestThroughputBenchmarks:
+    """Measure maximum throughput under various conditions."""
+
+    def test_sequential_throughput_single_entity(self, sync_limiter):
+        """Measure max sequential TPS for single entity."""
+        # 1000 sequential acquires, measure total time
+        # Calculate: ops/second
+
+    def test_sequential_throughput_multiple_entities(self, sync_limiter):
+        """Measure max sequential TPS across multiple entities."""
+        # Round-robin across 10 entities
+        # Should show higher throughput (no contention)
+
+    def test_concurrent_throughput_single_entity(self, sync_limiter):
+        """Measure contention impact on single entity."""
+        # 10 concurrent threads, same entity
+        # Expect transaction retries, lower effective TPS
+
+    def test_concurrent_throughput_multiple_entities(self, sync_limiter):
+        """Measure parallel throughput with no contention."""
+        # 10 concurrent threads, different entities
+        # Should scale linearly
+
+    def test_contention_retry_rate(self, sync_limiter):
+        """Measure transaction retry rate under contention."""
+        # High concurrency on single entity
+        # Count ConditionalCheckFailed exceptions
+```
+
+#### 0.4 Extend Existing: `tests/benchmark/test_localstack.py`
+
+Add realistic latency tests using LocalStack:
+
+```python
+# Add to tests/benchmark/test_localstack.py
+
+class TestLocalStackLatencyBenchmarks:
+    """Realistic latency measurements with LocalStack."""
+
+    @pytest.mark.benchmark(group="localstack-acquire")
+    def test_acquire_realistic_latency(self, benchmark, sync_localstack_limiter):
+        """Measure realistic latency including network overhead."""
+
+    @pytest.mark.benchmark(group="localstack-acquire")
+    def test_cascade_realistic_latency(self, benchmark, sync_localstack_limiter):
+        """Measure cascade with realistic network latency."""
+```
+
+#### 0.5 Test Utilities: `tests/benchmark/conftest.py`
+
+Add shared fixtures and utilities:
+
+```python
+# Add to tests/benchmark/conftest.py
+
+@pytest.fixture
+def capacity_counter():
+    """Fixture to count DynamoDB API calls."""
+    # Returns a context manager that tracks:
+    # - GetItem calls (RCUs)
+    # - Query calls (RCUs)
+    # - PutItem calls (WCUs)
+    # - TransactWriteItems (WCUs per item)
+    # - BatchWriteItem (WCUs per item)
+
+@pytest.fixture
+def benchmark_entities(sync_limiter):
+    """Pre-create entities for throughput tests."""
+    # Create 100 entities with pre-warmed buckets
+    # Avoids cold-start overhead in benchmarks
+```
+
+#### 0.6 Test Output for Documentation
+
+Create a script to generate documentation-ready output:
+
+```python
+# scripts/generate_benchmark_report.py
+"""
+Generate markdown tables from benchmark JSON output.
+Usage: python scripts/generate_benchmark_report.py benchmark.json
+"""
+
+def generate_latency_table(results):
+    """Convert pytest-benchmark JSON to markdown table."""
+    # Output format matching docs/performance.md tables
+
+def generate_capacity_summary(results):
+    """Summarize capacity test results."""
+    # Verify actual vs documented RCU/WCU counts
+```
+
+### Phase 1: Run Tests and Collect Data (1 hour)
+
+- [ ] Run capacity tests to verify RCU/WCU claims
+- [ ] Run latency benchmarks (moto) for baseline metrics
+- [ ] Run latency benchmarks (LocalStack) for realistic metrics
+- [ ] Run throughput tests to validate TPS claims
+- [ ] Generate benchmark report with `scripts/generate_benchmark_report.py`
+- [ ] Update documentation tables with actual measured values
+
+### Phase 2: Core Documentation (2-3 hours)
 - [ ] Create `docs/performance.md` with all 6 main sections
 - [ ] Add practical code examples for each section
-- [ ] Include tables with concrete numbers
+- [ ] Include tables with concrete numbers from Phase 1 tests
 - [ ] Add cost estimation formulas
+- [ ] Reference benchmark tests for reproducibility
 
-### Phase 2: Integration (30 minutes)
+### Phase 3: Integration (30 minutes)
 - [ ] Update `mkdocs.yml` navigation
 - [ ] Cross-link from related docs (deployment.md, cloudformation.md)
 - [ ] Add "See Performance Tuning" callouts in relevant sections
 
-### Phase 3: Validation (1 hour)
+### Phase 4: Validation (1 hour)
 - [ ] Run benchmarks to verify latency claims
 - [ ] Test all code examples
 - [ ] Verify cost calculations against AWS pricing
 - [ ] Review with mkdocs serve locally
 
-### Phase 4: Review (30 minutes)
+### Phase 5: Review (30 minutes)
 - [ ] Self-review for accuracy
 - [ ] Check formatting and readability
 - [ ] Ensure examples match current API
