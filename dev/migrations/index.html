@@ -1914,7 +1914,7 @@
 <h3 id="checking-compatibility">Checking Compatibility<a class="headerlink" href="#checking-compatibility" title="Permanent link">&para;</a></h3>
 <p>Use the CLI to check compatibility without modifying anything:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Check current compatibility status</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1
 </span></code></pre></div>
 <p>Output:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Compatibility Check
@@ -1932,7 +1932,7 @@
 </span></code></pre></div>
 <h3 id="viewing-version-information">Viewing Version Information<a class="headerlink" href="#viewing-version-information" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Show detailed version information</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1
 </span></code></pre></div>
 <p>Output:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>zae-limiter Infrastructure Version
@@ -1954,7 +1954,7 @@
 <h3 id="upgrading-infrastructure">Upgrading Infrastructure<a class="headerlink" href="#upgrading-infrastructure" title="Permanent link">&para;</a></h3>
 <p>For minor updates (Lambda code, no schema changes):</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Upgrade Lambda to match client version</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1
 </span></code></pre></div>
 <p>For major version upgrades requiring schema migration, see <a href="#sample-migration-v200">Sample Migration: v2.0.0</a>.</p>
 <h2 id="schema-modification-approaches">Schema Modification Approaches<a class="headerlink" href="#schema-modification-approaches" title="Permanent link">&para;</a></h2>
@@ -2216,12 +2216,12 @@
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># Create on-demand backup before migration</span>
 </span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>create-backup<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-limiter<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="w">  </span>--backup-name<span class="w"> </span><span class="s2">&quot;pre-migration-</span><span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span><span class="s2">&quot;</span>
 </span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>
 </span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="c1"># Verify PITR is enabled</span>
 </span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-continuous-backups<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="w">  </span>--table-name<span class="w"> </span>rate_limits
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-limiter
 </span></code></pre></div>
 <h2 id="rollback-strategies">Rollback Strategies<a class="headerlink" href="#rollback-strategies" title="Permanent link">&para;</a></h2>
 <h3 id="reversible-migrations">Reversible Migrations<a class="headerlink" href="#reversible-migrations" title="Permanent link">&para;</a></h3>
@@ -2269,8 +2269,8 @@
 <p><strong>2. Restore from backup (if needed):</strong>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="c1"># Restore from PITR</span>
 </span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>restore-table-to-point-in-time<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">  </span>--source-table-name<span class="w"> </span>rate_limits<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="w">  </span>--target-table-name<span class="w"> </span>rate_limits_restored<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">  </span>--source-table-name<span class="w"> </span>ZAEL-limiter<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="w">  </span>--target-table-name<span class="w"> </span>ZAEL-limiter-restored<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="w">  </span>--restore-date-time<span class="w"> </span><span class="s2">&quot;2024-01-15T10:00:00Z&quot;</span>
 </span></code></pre></div></p>
 <p><strong>3. Run rollback (if reversible):</strong>
@@ -2278,7 +2278,7 @@
 </span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.repository</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span>
 </span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>
 </span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">emergency_rollback</span><span class="p">():</span>
-</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span><span class="s2">&quot;ZAEL-limiter&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
 </span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a>
 </span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a>    <span class="n">migrations</span> <span class="o">=</span> <span class="n">get_migrations</span><span class="p">()</span>
 </span><span id="__span-23-8"><a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a>    <span class="n">target_migration</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span><span class="n">m</span> <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">migrations</span> <span class="k">if</span> <span class="n">m</span><span class="o">.</span><span class="n">version</span> <span class="o">==</span> <span class="s2">&quot;1.1.0&quot;</span><span class="p">)</span>
@@ -2452,17 +2452,17 @@
 <h3 id="running-the-migration">Running the Migration<a class="headerlink" href="#running-the-migration" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="c1"># 1. Create backup</span>
 </span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>create-backup<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="w">  </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-limiter<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="w">  </span>--backup-name<span class="w"> </span><span class="s2">&quot;pre-v2-migration-</span><span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span><span class="s2">&quot;</span>
 </span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>
 </span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="c1"># 2. Update CloudFormation stack (adds GSI3)</span>
 </span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a>aws<span class="w"> </span>cloudformation<span class="w"> </span>update-stack<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a><span class="w">  </span>--stack-name<span class="w"> </span>zae-limiter-rate_limits<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a><span class="w">  </span>--stack-name<span class="w"> </span>ZAEL-limiter<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="w">  </span>--template-body<span class="w"> </span>file://updated-template.yaml<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a><span class="w">  </span>--capabilities<span class="w"> </span>CAPABILITY_NAMED_IAM
 </span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11" href="#__codelineno-27-11"></a>
 </span><span id="__span-27-12"><a id="__codelineno-27-12" name="__codelineno-27-12" href="#__codelineno-27-12"></a><span class="c1"># 3. Wait for GSI to be active</span>
-</span><span id="__span-27-13"><a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span><span class="nb">wait</span><span class="w"> </span>table-exists<span class="w"> </span>--table-name<span class="w"> </span>rate_limits
+</span><span id="__span-27-13"><a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span><span class="nb">wait</span><span class="w"> </span>table-exists<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-limiter
 </span><span id="__span-27-14"><a id="__codelineno-27-14" name="__codelineno-27-14" href="#__codelineno-27-14"></a>
 </span><span id="__span-27-15"><a id="__codelineno-27-15" name="__codelineno-27-15" href="#__codelineno-27-15"></a><span class="c1"># 4. Install new client version</span>
 </span><span id="__span-27-16"><a id="__codelineno-27-16" name="__codelineno-27-16" href="#__codelineno-27-16"></a>pip<span class="w"> </span>install<span class="w"> </span>zae-limiter<span class="o">==</span><span class="m">2</span>.0.0
@@ -2474,7 +2474,7 @@
 </span><span id="__span-27-22"><a id="__codelineno-27-22" name="__codelineno-27-22" href="#__codelineno-27-22"></a><span class="s2">from zae_limiter.repository import Repository</span>
 </span><span id="__span-27-23"><a id="__codelineno-27-23" name="__codelineno-27-23" href="#__codelineno-27-23"></a>
 </span><span id="__span-27-24"><a id="__codelineno-27-24" name="__codelineno-27-24" href="#__codelineno-27-24"></a><span class="s2">async def run():</span>
-</span><span id="__span-27-25"><a id="__codelineno-27-25" name="__codelineno-27-25" href="#__codelineno-27-25"></a><span class="s2">    repo = Repository(&#39;rate_limits&#39;, &#39;us-east-1&#39;, None)</span>
+</span><span id="__span-27-25"><a id="__codelineno-27-25" name="__codelineno-27-25" href="#__codelineno-27-25"></a><span class="s2">    repo = Repository(&#39;ZAEL-limiter&#39;, &#39;us-east-1&#39;, None)</span>
 </span><span id="__span-27-26"><a id="__codelineno-27-26" name="__codelineno-27-26" href="#__codelineno-27-26"></a><span class="s2">    applied = await apply_migrations(repo, &#39;1.0.0&#39;, &#39;2.0.0&#39;)</span>
 </span><span id="__span-27-27"><a id="__codelineno-27-27" name="__codelineno-27-27" href="#__codelineno-27-27"></a><span class="s2">    print(f&#39;Applied migrations: {applied}&#39;)</span>
 </span><span id="__span-27-28"><a id="__codelineno-27-28" name="__codelineno-27-28" href="#__codelineno-27-28"></a><span class="s2">    await repo.close()</span>
@@ -2483,7 +2483,7 @@
 </span><span id="__span-27-31"><a id="__codelineno-27-31" name="__codelineno-27-31" href="#__codelineno-27-31"></a><span class="s2">&quot;</span>
 </span><span id="__span-27-32"><a id="__codelineno-27-32" name="__codelineno-27-32" href="#__codelineno-27-32"></a>
 </span><span id="__span-27-33"><a id="__codelineno-27-33" name="__codelineno-27-33" href="#__codelineno-27-33"></a><span class="c1"># 6. Verify migration</span>
-</span><span id="__span-27-34"><a id="__codelineno-27-34" name="__codelineno-27-34" href="#__codelineno-27-34"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-27-34"><a id="__codelineno-27-34" name="__codelineno-27-34" href="#__codelineno-27-34"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1
 </span></code></pre></div>
 <h3 id="testing-the-migration">Testing the Migration<a class="headerlink" href="#testing-the-migration" title="Permanent link">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
@@ -2655,13 +2655,13 @@
 </span></code></pre></div>
 <h3 id="cli-commands">CLI Commands<a class="headerlink" href="#cli-commands" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="c1"># Check compatibility</span>
-</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--table-name<span class="w"> </span>TABLE<span class="w"> </span>--region<span class="w"> </span>REGION
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--name<span class="w"> </span>NAME<span class="w"> </span>--region<span class="w"> </span>REGION
 </span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>
 </span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="c1"># Show version information</span>
-</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--table-name<span class="w"> </span>TABLE<span class="w"> </span>--region<span class="w"> </span>REGION
+</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>NAME<span class="w"> </span>--region<span class="w"> </span>REGION
 </span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>
 </span><span id="__span-30-7"><a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="c1"># Upgrade infrastructure</span>
-</span><span id="__span-30-8"><a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--table-name<span class="w"> </span>TABLE<span class="w"> </span>--region<span class="w"> </span>REGION<span class="w"> </span><span class="o">[</span>--lambda-only<span class="o">]</span><span class="w"> </span><span class="o">[</span>--force<span class="o">]</span>
+</span><span id="__span-30-8"><a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>NAME<span class="w"> </span>--region<span class="w"> </span>REGION<span class="w"> </span><span class="o">[</span>--lambda-only<span class="o">]</span><span class="w"> </span><span class="o">[</span>--force<span class="o">]</span>
 </span></code></pre></div>
 
 
