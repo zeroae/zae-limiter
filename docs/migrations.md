@@ -384,13 +384,15 @@ async def test_migration_with_localstack():
 Run integration tests:
 
 ```bash
-# Start LocalStack
-docker run -d -p 4566:4566 \
-  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation \
-  localstack/localstack
+# Start LocalStack (from project root)
+docker compose up -d
 
-# Run integration tests
-AWS_ENDPOINT_URL=http://localhost:4566 pytest -m integration -v
+# Set environment variables and run integration tests
+export AWS_ENDPOINT_URL=http://localhost:4566
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=us-east-1
+pytest -m integration -v
 ```
 
 ### Production Validation Checklist

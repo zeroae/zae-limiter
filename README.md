@@ -338,10 +338,8 @@ zae-limiter deploy --table-name rate_limits --no-aggregator
 ### Local Development with LocalStack
 
 ```bash
-# Start LocalStack
-docker run -p 4566:4566 \
-  -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation \
-  localstack/localstack
+# Start LocalStack with docker compose (preferred)
+docker compose up -d
 
 # Deploy with CLI
 zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566
@@ -352,6 +350,9 @@ limiter = RateLimiter(
     endpoint_url="http://localhost:4566",
     create_stack=True,
 )
+
+# Stop LocalStack when done
+docker compose down
 ```
 
 For a complete demo with FastAPI and dashboard, see `examples/fastapi-demo/`.

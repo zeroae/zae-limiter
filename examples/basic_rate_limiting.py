@@ -5,10 +5,8 @@ Basic Rate Limiting Example
 Demonstrates the core zae-limiter API with LocalStack.
 
 Setup:
-    # Start LocalStack
-    docker run -p 4566:4566 \
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
-      localstack/localstack
+    # Start LocalStack (from project root)
+    docker compose up -d
 
     # Run this example
     uv run python examples/basic_rate_limiting.py

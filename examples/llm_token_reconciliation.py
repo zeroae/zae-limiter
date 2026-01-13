@@ -13,9 +13,8 @@ Key patterns:
 - Handling negative bucket states (actual > estimate)
 
 Setup:
-    docker run -p 4566:4566 \
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
-      localstack/localstack
+    # Start LocalStack (from project root)
+    docker compose up -d
     uv run python examples/llm_token_reconciliation.py
 """
 

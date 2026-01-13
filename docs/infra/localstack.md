@@ -13,6 +13,17 @@ LocalStack provides a local AWS environment for development and testing. This gu
 
 ### 1. Start LocalStack
 
+=== "Docker Compose (Preferred)"
+
+    The project includes a pre-configured `docker-compose.yml` at the repository root:
+
+    ```bash
+    # From the project root
+    docker compose up -d
+    ```
+
+    This is the preferred method as it includes all required configuration for Lambda execution.
+
 === "Docker"
 
     ```bash
@@ -27,27 +38,6 @@ LocalStack provides a local AWS environment for development and testing. This gu
 
     !!! important "Docker Socket Required"
         The Docker socket mount (`-v /var/run/docker.sock:/var/run/docker.sock`) is required for LocalStack to spawn Lambda functions as Docker containers.
-
-=== "Docker Compose"
-
-    ```yaml
-    # docker-compose.yml
-    services:
-      localstack:
-        image: localstack/localstack
-        ports:
-          - "4566:4566"
-        environment:
-          - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
-          - DEBUG=0
-        volumes:
-          - "/var/run/docker.sock:/var/run/docker.sock"
-          - "./localstack:/var/lib/localstack"
-    ```
-
-    ```bash
-    docker compose up -d
-    ```
 
 === "LocalStack CLI"
 
