@@ -19,7 +19,7 @@ To run these tests locally:
     AWS_ACCESS_KEY_ID=test \
     AWS_SECRET_ACCESS_KEY=test \
     AWS_DEFAULT_REGION=us-east-1 \
-    pytest tests/test_e2e_localstack.py -v
+    pytest tests/e2e/test_localstack.py -v
 
 Note: The Docker socket mount (-v /var/run/docker.sock:/var/run/docker.sock) is
 required for LocalStack to spawn Lambda functions as Docker containers.
@@ -28,6 +28,7 @@ required for LocalStack to spawn Lambda functions as Docker containers.
 import asyncio
 
 import pytest
+import pytest_asyncio
 from click.testing import CliRunner
 
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded, StackOptions, SyncRateLimiter
@@ -144,15 +145,16 @@ class TestE2ELocalStackCLIWorkflow:
 class TestE2ELocalStackFullWorkflow:
     """E2E tests for full rate limiting workflow."""
 
-    @pytest.fixture
-    async def e2e_limiter(self, localstack_endpoint, unique_table_name, e2e_stack_options):
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def e2e_limiter(self, localstack_endpoint, unique_table_name_class, e2e_stack_options):
         """
-        Create RateLimiter with full stack for E2E tests.
+        Create and manage the RateLimiter with CloudFormation stack for all tests in this class.
 
-        Fixture handles setup (stack creation) and teardown (stack deletion).
+        This fixture creates the stack once when the first test runs and
+        deletes it after all tests in the class complete.
         """
         limiter = RateLimiter(
-            table_name=unique_table_name,
+            table_name=unique_table_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=e2e_stack_options,
@@ -161,14 +163,12 @@ class TestE2ELocalStackFullWorkflow:
         async with limiter:
             yield limiter
 
-        # Explicitly delete the stack after test completes
         try:
             await limiter.delete_stack()
         except Exception as e:
-            # LocalStack may have issues with stack deletion, log but don't fail
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_hierarchical_rate_limiting_workflow(self, e2e_limiter):
         """
         Test hierarchical rate limiting with parent-child entities.
@@ -196,10 +196,11 @@ class TestE2ELocalStackFullWorkflow:
         assert len(children) == 1
         assert children[0].id == "api-key-123"
 
-        # Set limits
+        # Use per_hour limits to prevent refill during test execution
+        # per_minute refills ~1.67 tokens/second, per_hour refills ~0.028 tokens/second
         limits = [
-            Limit.per_minute("rpm", 100),
-            Limit.per_minute("tpm", 10000),
+            Limit.per_hour("rph", 100),
+            Limit.per_hour("tph", 10000),
         ]
 
         # Consume from child with cascade
@@ -207,12 +208,12 @@ class TestE2ELocalStackFullWorkflow:
             entity_id="api-key-123",
             resource="gpt-4",
             limits=limits,
-            consume={"rpm": 1, "tpm": 500},
+            consume={"rph": 1, "tph": 500},
             cascade=True,
         ) as lease:
             # With cascade, consumes from both child and parent
-            assert lease.consumed["rpm"] == 2  # 1 from child + 1 from parent
-            assert lease.consumed["tpm"] == 1000  # 500 from each
+            assert lease.consumed["rph"] == 2  # 1 from child + 1 from parent
+            assert lease.consumed["tph"] == 1000  # 500 from each
 
         # Verify both entities have reduced capacity
         child_available = await e2e_limiter.available(
@@ -226,10 +227,11 @@ class TestE2ELocalStackFullWorkflow:
             limits=limits,
         )
 
-        assert child_available["rpm"] < 100
-        assert parent_available["rpm"] < 100
+        # After consuming 1 rph from each, both should have 99 available
+        assert child_available["rph"] == 99, f"child rph={child_available['rph']}"
+        assert parent_available["rph"] == 99, f"parent rph={parent_available['rph']}"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_rate_limit_exceeded_workflow(self, e2e_limiter):
         """
         Test rate limit exceeded scenario.
@@ -275,7 +277,7 @@ class TestE2ELocalStackFullWorkflow:
         assert "limits" in error_dict
         assert "retry_after_seconds" in error_dict
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_stored_limits_workflow(self, e2e_limiter):
         """
         Test stored limits (premium vs default tiers).
@@ -321,7 +323,7 @@ class TestE2ELocalStackFullWorkflow:
         )
         assert premium_available["rpm"] > 900  # High limit
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_lease_adjustment_workflow(self, e2e_limiter):
         """
         Test lease adjustment for post-hoc token counting (LLM tokens).
@@ -443,16 +445,21 @@ class TestE2ELocalStackAggregatorWorkflow:
 class TestE2ELocalStackErrorHandling:
     """E2E tests for error handling scenarios."""
 
-    @pytest.fixture
-    async def e2e_limiter_minimal(self, localstack_endpoint, unique_table_name):
-        """Create RateLimiter with minimal stack."""
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def e2e_limiter_minimal(self, localstack_endpoint, unique_table_name_class):
+        """
+        Create and manage the minimal RateLimiter for all tests in this class.
+
+        This fixture creates the stack once when the first test runs and
+        deletes it after all tests in the class complete.
+        """
         stack_options = StackOptions(
             enable_aggregator=False,
             enable_alarms=False,
         )
 
         limiter = RateLimiter(
-            table_name=unique_table_name,
+            table_name=unique_table_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=stack_options,
@@ -461,14 +468,12 @@ class TestE2ELocalStackErrorHandling:
         async with limiter:
             yield limiter
 
-        # Explicitly delete the stack after test completes
         try:
             await limiter.delete_stack()
         except Exception as e:
-            # LocalStack may have issues with stack deletion, log but don't fail
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_concurrent_lease_acquisition(self, e2e_limiter_minimal):
         """
         Test concurrent lease acquisitions don't cause conflicts.
@@ -508,7 +513,7 @@ class TestE2ELocalStackErrorHandling:
         # The exact amount varies based on timing and retry behavior.
         assert available["rph"] < 1000, "Some tokens should have been consumed"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_lease_rollback_on_exception(self, e2e_limiter_minimal):
         """Test that lease is rolled back when exception occurs."""
         await e2e_limiter_minimal.create_entity("rollback-user")
@@ -535,7 +540,7 @@ class TestE2ELocalStackErrorHandling:
         )
         assert available["rpm"] == 100  # Full capacity restored
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_negative_bucket_handling(self, e2e_limiter_minimal):
         """
         Test that buckets can go negative for post-hoc reconciliation.
@@ -568,3 +573,57 @@ class TestE2ELocalStackErrorHandling:
         assert available["rpm"] < 0, "Bucket should be negative"
         # Consumed 15 tokens with capacity 10, so at least -3 after some refill
         assert available["rpm"] <= -3, "Bucket should still be significantly negative"
+
+
+class TestE2ECloudFormationStackVariations:
+    """E2E tests for CloudFormation stack deployment variations."""
+
+    @pytest.mark.asyncio
+    async def test_cloudformation_full_stack_deployment(
+        self, localstack_endpoint, full_stack_options, unique_table_name
+    ):
+        """Test full CloudFormation stack creation (with aggregator and alarms)."""
+        limiter = RateLimiter(
+            table_name=unique_table_name,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+            stack_options=full_stack_options,
+        )
+
+        async with limiter:
+            entity = await limiter.create_entity("cfn-full-entity", name="CFN Full Entity")
+            assert entity.id == "cfn-full-entity"
+            assert entity.name == "CFN Full Entity"
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.mark.asyncio
+    async def test_cloudformation_aggregator_no_alarms(
+        self, localstack_endpoint, aggregator_stack_options, unique_table_name
+    ):
+        """Test CloudFormation stack with aggregator but without alarms.
+
+        This tests the edge case where EnableAggregator=true but EnableAlarms=false.
+        The AggregatorDLQAlarmName output should not be created in this scenario.
+        """
+        limiter = RateLimiter(
+            table_name=unique_table_name,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+            stack_options=aggregator_stack_options,
+        )
+
+        async with limiter:
+            entity = await limiter.create_entity(
+                "cfn-no-alarms-entity", name="CFN No Alarms Entity"
+            )
+            assert entity.id == "cfn-no-alarms-entity"
+            assert entity.name == "CFN No Alarms Entity"
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")

@@ -283,36 +283,91 @@ src/zae_limiter/
 
 ## Testing
 
-### Run Tests with Moto (Unit Tests)
-```bash
-pytest tests/ -v  # Fast unit tests with mocked DynamoDB
+Tests are organized by execution environment and scope:
+
+```
+tests/
+├── conftest.py                  # Shared config (--run-aws flag)
+├── unit/                        # Fast tests with mocked AWS (moto)
+│   ├── test_limiter.py
+│   ├── test_repository.py
+│   └── test_sync_limiter.py
+├── integration/                 # LocalStack tests (repository-level)
+│   └── test_repository.py
+├── e2e/                         # Full workflow tests (LocalStack + AWS)
+│   ├── test_localstack.py
+│   └── test_aws.py
+└── benchmark/                   # Performance benchmarks (pytest-benchmark)
+    ├── test_operations.py       # Mocked benchmarks
+    └── test_localstack.py       # LocalStack benchmarks
 ```
 
-### Test with LocalStack (Integration Tests)
+### Test Categories
+
+| Category | Directory | Backend | What to Test | Speed |
+|----------|-----------|---------|--------------|-------|
+| **Unit** | `tests/unit/` | moto (mocked) | Business logic, bucket math, schema, exceptions | Fast (~seconds) |
+| **Integration** | `tests/integration/` | LocalStack | Repository operations, transactions, GSI queries, optimistic locking | Medium |
+| **E2E** | `tests/e2e/` | LocalStack or AWS | Full workflows: CLI, rate limiting, hierarchical limits, aggregator | Slow |
+| **Benchmark** | `tests/benchmark/` | moto or LocalStack | Latency (p50/p95/p99), throughput, cascade overhead | Variable |
+
+### When to Add Tests
+
+- **New business logic** (bucket calculations, limit validation) → `unit/`
+- **New DynamoDB operations** (queries, transactions, GSI) → `integration/`
+- **New user-facing features** (CLI commands, rate limiting workflows) → `e2e/`
+- **AWS-specific behavior** (alarms, DLQ, CloudWatch metrics) → `e2e/test_aws.py`
+- **Performance-sensitive code** (new operations, optimizations) → `benchmark/`
+
+### Pytest Markers
+
+| Marker | Description | How to Run |
+|--------|-------------|------------|
+| (none) | Unit tests | `pytest tests/unit/` |
+| `@pytest.mark.integration` | Requires LocalStack | `AWS_ENDPOINT_URL=http://localhost:4566 pytest -m integration` |
+| `@pytest.mark.e2e` | End-to-end workflows | `pytest -m e2e` |
+| `@pytest.mark.aws` | Real AWS (requires `--run-aws`) | `pytest -m aws --run-aws` |
+| `@pytest.mark.benchmark` | Performance benchmarks | `pytest -m benchmark` |
+| `@pytest.mark.slow` | Tests with >30s waits | Skip with `-m "not slow"` |
+| `@pytest.mark.monitoring` | CloudWatch/DLQ verification | Skip with `-m "not monitoring"` |
+| `@pytest.mark.snapshots` | Usage snapshot verification | Skip with `-m "not snapshots"` |
+
+### Running Tests
+
 ```bash
-# Start LocalStack (with Docker socket for Lambda execution)
-docker run -p 4566:4566 \
+# Unit tests only (fast, no Docker)
+uv run pytest tests/unit/ -v
+
+# Start LocalStack (required for integration/e2e tests)
+docker run -d -p 4566:4566 \
   -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
   localstack/localstack
 
-# Run integration tests (includes full stack lifecycle tests)
-AWS_ENDPOINT_URL=http://localhost:4566 \
-AWS_ACCESS_KEY_ID=test \
-AWS_SECRET_ACCESS_KEY=test \
-AWS_DEFAULT_REGION=us-east-1 \
-pytest -m integration -v
+# Integration tests (requires LocalStack)
+AWS_ENDPOINT_URL=http://localhost:4566 uv run pytest tests/integration/ -v
+
+# E2E tests with LocalStack
+AWS_ENDPOINT_URL=http://localhost:4566 uv run pytest tests/e2e/test_localstack.py -v
+
+# E2E tests with real AWS (costs money!)
+uv run pytest tests/e2e/test_aws.py --run-aws -v
+
+# Benchmarks (mocked - fast)
+uv run pytest tests/benchmark/test_operations.py -v
+
+# Benchmarks (LocalStack - realistic latency)
+AWS_ENDPOINT_URL=http://localhost:4566 uv run pytest tests/benchmark/test_localstack.py -v
+
+# Export benchmark results to JSON
+uv run pytest tests/benchmark/ -v --benchmark-json=benchmark.json
 ```
 
 **Important:** The Docker socket mount is required for Lambda execution in LocalStack.
 
-**Testing Strategy:**
-- Unit tests use moto for speed (no Docker required)
-- Integration tests use LocalStack for full AWS service testing (includes stack lifecycle)
-- CI runs both unit and integration tests in parallel
-
 ### Test Coverage
+
 ```bash
 pytest --cov=zae_limiter --cov-report=html
 open htmlcov/index.html
@@ -330,7 +385,7 @@ open htmlcov/index.html
 When reviewing PRs, check the following based on files changed:
 
 ### Test Coverage (changes to src/)
-- Verify corresponding tests exist in tests/
+- Verify corresponding tests exist in appropriate test directory (unit/integration/e2e)
 - Check edge cases: negative values, empty collections, None
 - Ensure async tests have sync counterparts
 - Flag if new public methods lack tests
@@ -339,7 +394,7 @@ When reviewing PRs, check the following based on files changed:
 - Verify SyncRateLimiter has matching sync methods
 - Check SyncLease matches AsyncLease functionality
 - Ensure error handling is consistent
-- Confirm both test files updated
+- Confirm both unit test files updated (tests/unit/)
 
 ### Infrastructure (changes to infra/, aggregator/)
 - Validate CloudFormation template syntax
@@ -377,7 +432,7 @@ When fixing DynamoDB-related bugs, prefer solutions that preserve the existing s
 
 Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md).
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `test`
 
 **Examples:**
 ```bash

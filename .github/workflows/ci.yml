@@ -42,7 +42,7 @@ jobs:
       - name: Type check with mypy
         run: uv run mypy src/zae_limiter
 
-  test:
+  unit:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -54,13 +54,14 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --extra dev
-      - name: Run tests
-        run: uv run pytest --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+      - name: Run unit tests
+        run: uv run pytest tests/unit/ --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
       - name: Upload coverage
         uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.12'
         with:
           files: coverage.xml
+          flags: unit
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
       - name: Upload test results to Codecov
@@ -68,6 +69,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           files: junit.xml
+          flags: unit
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: test_results
           fail_ci_if_error: false
@@ -125,6 +127,59 @@ jobs:
           report_type: test_results
           fail_ci_if_error: false
 
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    services:
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
+          DEBUG: 0
+          DOCKER_HOST: unix:///var/run/docker.sock
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+        options: >-
+          --health-cmd "curl -f http://localhost:4566/_localstack/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Run E2E tests (LocalStack)
+        run: uv run pytest -m e2e tests/e2e/test_localstack.py -v --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ENDPOINT_URL: http://localhost:4566
+      - name: Upload E2E coverage
+        uses: codecov/codecov-action@v5
+        if: matrix.python-version == '3.12'
+        with:
+          files: coverage.xml
+          flags: e2e
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+      - name: Upload E2E test results to Codecov
+        if: "!cancelled() && matrix.python-version == '3.12'"
+        uses: codecov/codecov-action@v5
+        with:
+          files: junit.xml
+          flags: e2e
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          fail_ci_if_error: false
+
   benchmark:
     runs-on: ubuntu-latest
     services:
@@ -153,7 +208,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
       - name: Run benchmarks
-        run: uv run pytest tests/test_performance.py --benchmark-json=benchmark.json
+        run: uv run pytest tests/benchmark/ --benchmark-json=benchmark.json -n 0
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test

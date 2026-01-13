@@ -109,45 +109,6 @@ class TestStackManager:
         assert "AWS::DynamoDB::Table" in template
         assert "RateLimitsTable" in template
 
-    @pytest.mark.integration
-    @pytest.mark.asyncio
-    async def test_stack_exists_false(self, localstack_endpoint) -> None:
-        """Test stack_exists returns False for non-existent stack."""
-        manager = StackManager(
-            table_name="test",
-            region="us-east-1",
-            endpoint_url=localstack_endpoint,
-        )
-
-        exists = await manager.stack_exists("non-existent-stack-123456")
-        assert not exists
-
-    @pytest.mark.integration
-    @pytest.mark.asyncio
-    async def test_get_stack_status_none(self, localstack_endpoint) -> None:
-        """Test get_stack_status returns None for non-existent stack."""
-        manager = StackManager(
-            table_name="test",
-            region="us-east-1",
-            endpoint_url=localstack_endpoint,
-        )
-
-        status = await manager.get_stack_status("non-existent-stack-123456")
-        assert status is None
-
-    @pytest.mark.integration
-    @pytest.mark.asyncio
-    async def test_delete_stack_nonexistent(self, localstack_endpoint) -> None:
-        """Test deleting a non-existent stack doesn't raise error."""
-        manager = StackManager(
-            table_name="test",
-            region="us-east-1",
-            endpoint_url=localstack_endpoint,
-        )
-
-        # Should not raise
-        await manager.delete_stack("non-existent-stack-123456")
-
     @pytest.mark.asyncio
     async def test_create_stack_with_parameters(self) -> None:
         """Test create_stack parameter handling with CloudFormation."""
@@ -553,26 +514,6 @@ class TestDeployLambdaCode:
 
             assert "Build failed" in str(exc_info.value)
 
-    @pytest.mark.integration
-    @pytest.mark.asyncio
-    async def test_raises_on_update_failure(self, localstack_endpoint) -> None:
-        """deploy_lambda_code raises on Lambda update failure with invalid function."""
-        manager = StackManager(
-            table_name="test",
-            region="us-east-1",
-            endpoint_url=localstack_endpoint,
-        )
-
-        # Attempting to update a non-existent Lambda function should raise
-        with pytest.raises(Exception):  # Will be ClientError or similar
-            # Mock the get_stack_outputs to return a fake function name
-            with patch.object(
-                manager,
-                "_get_stack_outputs",
-                return_value={"aggregator_function_name": "non-existent-function-123456"},
-            ):
-                await manager.deploy_lambda_code()
-
 
 class TestContextManager:
     """Tests for async context manager functionality."""
@@ -695,80 +636,3 @@ class TestGetStackEvents:
         events = await manager._get_stack_events(mock_client, "test-stack")
 
         assert events == []
-
-
-class TestStackManagerIntegration:
-    """Integration tests for stack manager (require real AWS)."""
-
-    @pytest.mark.integration
-    @pytest.mark.asyncio
-    async def test_stack_create_and_delete_minimal(
-        self, localstack_endpoint, minimal_stack_options
-    ) -> None:
-        """Test creating and deleting a minimal stack (no aggregator, no alarms).
-
-        This test verifies the full stack lifecycle with LocalStack.
-        Stack deletion may fail due to a known LocalStack v2 engine bug.
-        See: https://github.com/localstack/localstack/issues/13609
-        """
-        manager = StackManager(
-            table_name="test_minimal_stack",
-            region="us-east-1",
-            endpoint_url=localstack_endpoint,
-        )
-        stack_name = manager.get_stack_name()
-
-        try:
-            # Create minimal stack
-            result = await manager.create_stack(
-                stack_options=minimal_stack_options,
-                wait=True,
-            )
-            assert result["status"] == "CREATE_COMPLETE"
-
-            # Verify stack exists
-            assert await manager.stack_exists(stack_name)
-
-            # Try to delete - may fail due to LocalStack v2 bug
-            try:
-                await manager.delete_stack(stack_name, wait=True)
-                assert not await manager.stack_exists(stack_name)
-            except Exception as e:
-                # Known issue: LocalStack v2 engine has deletion bugs
-                # See: https://github.com/localstack/localstack/issues/13609
-                pytest.skip(f"Stack deletion failed (known LocalStack v2 bug): {e}")
-        finally:
-            # Best-effort cleanup
-            try:
-                await manager.delete_stack(stack_name)
-            except Exception:
-                pass
-
-    @pytest.mark.skip(reason="Requires real AWS credentials and creates resources")
-    @pytest.mark.asyncio
-    async def test_create_and_delete_stack_real_aws(self) -> None:
-        """Test creating and deleting a real CloudFormation stack."""
-        manager = StackManager(table_name="test_rate_limits", region="us-east-1")
-        stack_name = manager.get_stack_name()
-
-        try:
-            # Create stack
-            result = await manager.create_stack(wait=True)
-            assert result["status"] == "CREATE_COMPLETE"
-            assert result["stack_id"] is not None
-
-            # Verify stack exists
-            exists = await manager.stack_exists(stack_name)
-            assert exists
-
-            # Get status
-            status = await manager.get_stack_status(stack_name)
-            assert status == "CREATE_COMPLETE"
-
-        finally:
-            # Clean up
-            await manager.delete_stack(stack_name, wait=True)
-
-            # Verify deleted
-            exists = await manager.stack_exists(stack_name)
-            assert not exists

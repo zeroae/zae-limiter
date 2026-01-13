@@ -36,6 +36,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-benchmark>=4.0.0",
     "pytest-cov>=4.0.0",
+    "pytest-xdist>=3.5.0",
     "moto[dynamodb]>=5.0.0",
     "openapi-spec-validator>=0.7.1",  # Required by moto but not declared
     "ruff>=0.1.0",
@@ -72,12 +73,16 @@ packages = ["src/zae_limiter"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+pythonpath = ["."]
+addopts = "-v --tb=short -n auto --dist loadscope --import-mode=importlib"
 markers = [
     "integration: marks tests as integration tests (require Docker or AWS)",
     "benchmark: marks tests as performance benchmarks",
     "aws: marks tests as real AWS tests (require --run-aws flag)",
     "e2e: marks tests as end-to-end tests (full stack lifecycle)",
+    "slow: marks tests with significant wait times (>30s sleeps)",
+    "monitoring: marks tests that verify CloudWatch alarms, metrics, DLQ",
+    "snapshots: marks tests that verify usage snapshot creation",
 ]
 
 [tool.ruff]

@@ -13,7 +13,7 @@ from zae_limiter.repository import Repository
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Basic repository instance."""
-    from tests.conftest import _patch_aiobotocore_response
+    from tests.unit.conftest import _patch_aiobotocore_response
 
     with _patch_aiobotocore_response():
         repo = Repository(table_name="test_repo", region="us-east-1")
