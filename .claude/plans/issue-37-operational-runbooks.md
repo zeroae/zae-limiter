@@ -1,266 +1,286 @@
 # Plan: Issue #37 - Create Operational Runbooks
 
 **Issue**: [#37 - docs: create operational runbooks](https://github.com/zeroae/zae-limiter/issues/37)
-**Target File**: `docs/operations.md`
+**Target**: `docs/operations/` directory (consolidated with troubleshooting)
 **Estimated Effort**: 4-5 hours
 **Dependencies**: #45 (benchmarks), #46 (E2E tests) - tracked in #68
 
 ## Overview
 
-Create comprehensive operational runbooks for common procedures. The runbooks should be actionable, include verification steps, and reference existing documentation where appropriate.
+Create a consolidated operations guide that combines troubleshooting (reactive) and runbooks (proactive) into a component-centric structure. This replaces the current `docs/troubleshooting.md` with a more comprehensive `docs/operations/` directory.
 
-## Requested Runbook Sections
+## Key Decisions
 
-1. Emergency rollback
-2. Version upgrade process (0.x → 1.0.0)
-3. Lambda failure recovery
-4. Scaling limits dynamically
-5. Monitoring aggregator health
-6. Handling infrastructure failures
-
----
-
-## Implementation Plan
-
-### Phase 1: Document Structure & Prerequisites
-
-**Task 1.1**: Create `docs/operations.md` with standard structure
-- Title and purpose
-- Prerequisites section (AWS CLI, permissions, CLI installed)
-- Quick reference table linking to each runbook
-- Conventions (warning boxes, verification steps)
-
-**Task 1.2**: Cross-reference existing documentation
-- Link to `docs/cli.md` for command reference
-- Link to `docs/infra/deployment.md` for deployment details
-- Link to `docs/migrations.md` for migration framework
-- Link to `docs/guide/failure-modes.md` for failure handling
-
----
-
-### Phase 2: Emergency Rollback Runbook
-
-**Task 2.1**: Document CloudFormation rollback scenarios
-- Stack update rollback (automatic on failure)
-- Manual rollback via CloudFormation console
-- When to use `zae-limiter delete` vs CloudFormation rollback
-
-**Task 2.2**: Document Lambda rollback
-- Rolling back Lambda code via `zae-limiter upgrade --lambda-only`
-- Using AWS Lambda console to revert to previous version
-- Considerations: Lambda versions are not versioned by this library (future enhancement)
-
-**Task 2.3**: Document schema rollback considerations
-- Current limitation: migrations are forward-only (no built-in rollback)
-- Manual DynamoDB item cleanup if needed
-- Point-in-time recovery (PITR) as last resort
-- When to engage support vs self-recovery
-
-**Verification Steps**:
-- `zae-limiter status --name <stack>` shows healthy state
-- `zae-limiter check --name <stack>` shows COMPATIBLE
-
----
-
-### Phase 3: Version Upgrade Runbook (0.x → 1.0.0)
-
-**Task 3.1**: Pre-upgrade checklist
-- Verify current version: `zae-limiter version --name <stack>`
-- Check compatibility: `zae-limiter check --name <stack>`
-- Review release notes for breaking changes
-- Backup considerations (PITR enabled?)
-- Notify stakeholders / schedule maintenance window
-
-**Task 3.2**: Upgrade execution steps
-- Step-by-step CLI commands
-- Expected output for each step
-- How to interpret CompatibilityResult statuses:
-  - COMPATIBLE: Safe to proceed
-  - UPGRADE_AVAILABLE: Lambda update available
-  - MIGRATION_REQUIRED: Schema migration needed
-  - INCOMPATIBLE: Major version mismatch, manual intervention
-
-**Task 3.3**: Post-upgrade verification
-- Version verification commands
-- Functional smoke tests
-- Monitoring checks (no new errors)
-
-**Task 3.4**: Rollback procedure if upgrade fails
-- Reference emergency rollback section
-- When upgrade can be retried vs requires manual fix
-
----
-
-### Phase 4: Lambda Failure Recovery Runbook
-
-**Task 4.1**: Identify Lambda failures
-- CloudWatch alarm triggers (error rate, duration, DLQ)
-- CloudWatch Logs Insights queries for error analysis
-- DLQ message inspection
-
-**Task 4.2**: Common failure scenarios and resolution
-| Scenario | Symptoms | Resolution |
-|----------|----------|------------|
-| Timeout | Duration alarm, incomplete processing | Increase `--lambda-timeout` |
-| Memory exhaustion | OOM in logs | Increase `--lambda-memory` |
-| Permission denied | AccessDenied errors | Check IAM role, permission boundary |
-| DynamoDB throttling | ProvisionedThroughputExceeded | Check table capacity, back off |
-| Code bug | Consistent errors in logs | Deploy fix, check for bad data |
-
-**Task 4.3**: DLQ processing
-- How to inspect DLQ messages
-- Reprocessing strategy (manual replay)
-- Purging DLQ after resolution
-
-**Task 4.4**: Redeployment
-- `zae-limiter upgrade --lambda-only` for code updates
-- Full `zae-limiter deploy` for configuration changes
-
----
-
-### Phase 5: Scaling Limits Dynamically Runbook
-
-**Task 5.1**: Understanding rate limit configuration
-- Limits defined in code via `Limit` class
-- Stored limits in DynamoDB (when `use_stored_limits=True`)
-- Default vs stored limit precedence
-
-**Task 5.2**: Adjusting limits at runtime
-- Programmatic updates via `RateLimiter` API
-- Direct DynamoDB updates (advanced, with caveats)
-- No downtime required for limit changes
-
-**Task 5.3**: Capacity planning for scale
-- Reference `docs/performance.md` for RCU/WCU formulas
-- DynamoDB on-demand vs provisioned considerations
-- When to consider table partition strategies
-
-**Task 5.4**: Monitoring after scaling changes
-- Watch for throttling alarms
-- Verify limit changes applied correctly
-
----
-
-### Phase 6: Monitoring Aggregator Health Runbook
-
-**Task 6.1**: Health indicators
-- Lambda invocation success rate
-- Stream iterator age (processing lag)
-- DLQ depth (failed batches)
-- Snapshot update frequency
-
-**Task 6.2**: CloudWatch dashboard setup
-- Key metrics to display
-- Suggested widget configuration
-- Sample dashboard JSON template
-
-**Task 6.3**: CloudWatch Logs Insights queries
-```
-# Find errors in aggregator
-fields @timestamp, @message
-| filter @message like /ERROR/
-| sort @timestamp desc
-| limit 50
-
-# Processing summary
-fields @timestamp, processed, snapshots_updated, errors
-| filter @message like /Processing complete/
-| stats sum(processed) as total_records, sum(errors) as total_errors by bin(1h)
-```
-
-**Task 6.4**: Alert response procedures
-- What each alarm means
-- Escalation path
-- When to disable aggregator temporarily
-
----
-
-### Phase 7: Infrastructure Failure Handling Runbook
-
-**Task 7.1**: CloudFormation stack failure recovery
-- Reading CloudFormation events for root cause
-- Common failures: IAM permissions, resource limits, naming conflicts
-- Retry strategies
-- Manual resource cleanup if stack is stuck
-
-**Task 7.2**: DynamoDB unavailability
-- FAIL_OPEN vs FAIL_CLOSED behavior (reference failure-modes.md)
-- Monitoring for availability issues
-- Failover considerations (multi-region is not yet supported)
-
-**Task 7.3**: Network/connectivity issues
-- LocalStack endpoint configuration errors
-- VPC configuration (if applicable)
-- Timeout tuning
-
-**Task 7.4**: Point-in-time recovery (PITR)
-- When PITR is enabled (--pitr-recovery-days)
-- How to restore to a specific point in time
-- Post-restoration verification steps
+1. **Consolidate troubleshooting + runbooks** - Operators shouldn't jump between files for the same component
+2. **Split by component** - Each component gets its own file for manageable size
+3. **Interactive navigation** - Use Markmap for collapsible/expandable decision trees
+4. **Mermaid for flowcharts** - Use within component files for specific decision flows
 
 ---
 
 ## File Structure
 
-```markdown
-# Operational Runbooks
-
-## Prerequisites
-## Quick Reference
-
-## 1. Emergency Rollback
-### 1.1 CloudFormation Rollback
-### 1.2 Lambda Rollback
-### 1.3 Schema Rollback Considerations
-
-## 2. Version Upgrade (0.x → 1.0.0)
-### 2.1 Pre-upgrade Checklist
-### 2.2 Upgrade Execution
-### 2.3 Post-upgrade Verification
-### 2.4 Rollback if Failed
-
-## 3. Lambda Failure Recovery
-### 3.1 Identifying Failures
-### 3.2 Common Scenarios
-### 3.3 DLQ Processing
-### 3.4 Redeployment
-
-## 4. Scaling Limits Dynamically
-### 4.1 Rate Limit Configuration
-### 4.2 Runtime Adjustments
-### 4.3 Capacity Planning
-### 4.4 Post-scaling Monitoring
-
-## 5. Monitoring Aggregator Health
-### 5.1 Health Indicators
-### 5.2 Dashboard Setup
-### 5.3 Log Insights Queries
-### 5.4 Alert Response
-
-## 6. Infrastructure Failure Handling
-### 6.1 CloudFormation Failures
-### 6.2 DynamoDB Unavailability
-### 6.3 Network Issues
-### 6.4 Point-in-time Recovery
 ```
+docs/operations/
+├── index.md              # Markmap interactive overview, quick reference
+├── version.md            # Version management & upgrades
+├── lambda.md             # Lambda aggregator operations
+├── dynamodb.md           # DynamoDB capacity & throttling
+├── rate-limits.md        # Rate limit configuration
+├── streams.md            # Stream processing & lag
+└── recovery.md           # Backup, restore, rollback
+```
+
+**Migration**: Content from `docs/troubleshooting.md` will be reorganized into these files, then the original file deleted.
+
+---
+
+## Implementation Plan
+
+### Phase 1: Setup and Index Page
+
+**Task 1.1**: Create `docs/operations/` directory structure
+
+**Task 1.2**: Create `docs/operations/index.md` with Markmap decision tree
+
+```markmap
+# Operations Guide
+
+## Alerts & Issues
+### Lambda Aggregator
+- Error rate alarm → [lambda.md]
+- Duration/timeout → [lambda.md]
+- DLQ messages → [lambda.md]
+### DynamoDB
+- Read/write throttling → [dynamodb.md]
+- Capacity planning → [dynamodb.md]
+### Streams
+- Iterator age alarm → [streams.md]
+- Processing lag → [streams.md]
+### Version
+- Compatibility errors → [version.md]
+- Migration required → [version.md]
+
+## Planned Operations
+### Upgrades
+- Version upgrade → [version.md]
+- Lambda update → [lambda.md]
+### Scaling
+- Adjust rate limits → [rate-limits.md]
+- DynamoDB capacity → [dynamodb.md]
+### Recovery
+- Emergency rollback → [recovery.md]
+- Backup/restore → [recovery.md]
+- PITR recovery → [recovery.md]
+```
+
+**Task 1.3**: Add quick reference table linking to each section
+
+---
+
+### Phase 2: Version Management (version.md)
+
+**Source**: `troubleshooting.md` §4 (Version Compatibility Errors) + NEW runbook content
+
+**Task 2.1**: Mermaid decision tree for version issues
+```mermaid
+flowchart TD
+    START([Version Issue]) --> Q1{What's happening?}
+    Q1 -->|VersionMismatchError| A1[Run upgrade command]
+    Q1 -->|IncompatibleSchemaError| A2[Follow migration guide]
+    Q1 -->|Planning upgrade| A3[Pre-upgrade checklist]
+```
+
+**Task 2.2**: Troubleshooting section (from existing troubleshooting.md)
+- VersionMismatchError resolution
+- IncompatibleSchemaError resolution
+- Minimum client version errors
+
+**Task 2.3**: Upgrade procedure runbook (NEW)
+- Pre-upgrade checklist
+- Step-by-step upgrade execution
+- Post-upgrade verification
+- Rollback if failed (link to recovery.md)
+
+---
+
+### Phase 3: Lambda Aggregator (lambda.md)
+
+**Source**: `troubleshooting.md` §3 (Lambda Aggregator Malfunctions)
+
+**Task 3.1**: Mermaid decision tree for Lambda issues
+
+**Task 3.2**: Health indicators and monitoring (link to monitoring.md)
+
+**Task 3.3**: Troubleshooting section
+- Error rate issues
+- Timeout/duration issues
+- Permission errors
+- DynamoDB throttling (link to dynamodb.md)
+
+**Task 3.4**: DLQ processing runbook
+- Inspect DLQ messages
+- Reprocessing strategy
+- Purging after resolution
+
+**Task 3.5**: Redeployment runbook
+- `zae-limiter upgrade --lambda-only`
+- Full redeployment scenarios
+
+---
+
+### Phase 4: DynamoDB & Capacity (dynamodb.md)
+
+**Source**: `troubleshooting.md` §2 (DynamoDB Throttling)
+
+**Task 4.1**: Mermaid decision tree for DynamoDB issues
+
+**Task 4.2**: Troubleshooting section
+- Read throttling resolution
+- Write throttling resolution
+- Capacity analysis
+
+**Task 4.3**: Scaling procedures runbook (NEW)
+- Capacity planning (link to performance.md)
+- On-demand vs provisioned considerations
+- Monitoring after scaling changes
+
+---
+
+### Phase 5: Rate Limit Configuration (rate-limits.md)
+
+**Source**: `troubleshooting.md` §1 (Rate Limit Enforcement Issues) + NEW runbook content
+
+**Task 5.1**: Mermaid decision tree for rate limit issues
+
+**Task 5.2**: Troubleshooting section
+- Unexpected RateLimitExceeded
+- Limits not enforcing
+- Cascade behavior issues
+
+**Task 5.3**: Runtime limit adjustment runbook (NEW)
+- Programmatic updates via RateLimiter API
+- Stored vs default limit precedence
+- Verification after changes
+
+---
+
+### Phase 6: Stream Processing (streams.md)
+
+**Source**: `troubleshooting.md` §5 (DynamoDB Stream Processing Issues)
+
+**Task 6.1**: Mermaid decision tree for stream issues
+
+**Task 6.2**: Troubleshooting section
+- Iterator age alarm response
+- Processing lag diagnosis
+
+**Task 6.3**: Concurrency tuning runbook
+- Batch size configuration
+- Concurrent execution tuning
+
+---
+
+### Phase 7: Recovery & Rollback (recovery.md)
+
+**Source**: `troubleshooting.md` §6 (Recovery Procedures) + NEW runbook content
+
+**Task 7.1**: Markmap decision tree for recovery scenarios
+```markmap
+# Recovery Decision Tree
+
+## What happened?
+### Bad deployment
+- CloudFormation rollback
+- Lambda rollback
+### Bad migration
+- Migration rollback
+- Data reconciliation
+### Data loss/corruption
+- PITR recovery
+- Manual backup restore
+### Complete failure
+- Stack redeployment
+- Data reconciliation
+```
+
+**Task 7.2**: Emergency rollback decision matrix (NEW)
+- When to rollback vs fix forward
+- Stakeholder notification checklist
+
+**Task 7.3**: Backup & restore procedures
+- PITR restoration steps
+- Manual backup options
+
+**Task 7.4**: Migration rollback procedures
+- Current limitation: forward-only migrations
+- Manual cleanup procedures
+- When to engage support
+
+**Task 7.5**: Data reconciliation procedures
+
+---
+
+### Phase 8: Cleanup and Cross-references
+
+**Task 8.1**: Delete `docs/troubleshooting.md` (content migrated)
+
+**Task 8.2**: Update cross-references in other docs
+- `docs/monitoring.md` → link to `docs/operations/`
+- `docs/cli.md` → link to relevant operations sections
+- `docs/migrations.md` → link to `docs/operations/version.md`
+
+**Task 8.3**: Update CLAUDE.md with documentation guidelines
 
 ---
 
 ## Acceptance Criteria
 
 - [ ] All six requested runbook sections documented
-- [ ] Each runbook has clear prerequisites
-- [ ] Step-by-step commands with expected output
-- [ ] Verification steps after each procedure
-- [ ] Cross-references to existing documentation
-- [ ] CloudWatch Logs Insights queries included
+- [ ] Interactive Markmap navigation in index.md
+- [ ] Mermaid decision trees in each component file
+- [ ] Content from troubleshooting.md fully migrated
+- [ ] troubleshooting.md deleted
+- [ ] Cross-references updated throughout docs/
+- [ ] Each procedure has verification steps
 - [ ] Warning callouts for destructive operations
-- [ ] Tested against LocalStack where applicable
+
+---
+
+## Diagram Guidelines
+
+### Markmap (Interactive Mind Maps)
+Use for:
+- Top-level navigation (index.md)
+- Complex hierarchical decision trees
+- Overview/orientation diagrams
+
+```markmap
+# Topic
+## Branch 1
+- Leaf 1
+- Leaf 2
+## Branch 2
+- Leaf 3
+```
+
+### Mermaid Flowcharts
+Use for:
+- Linear decision flows within a component
+- Step-by-step procedures
+- Simple yes/no decision trees
+
+```mermaid
+flowchart TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Action 1]
+    B -->|No| D[Action 2]
+```
 
 ---
 
 ## Notes
 
-- **Dependency on #45/#46**: Some verification steps and metrics thresholds depend on benchmark data from #45 and E2E test validation from #46. Placeholder values can be used initially.
-- **Future enhancements**: Lambda versioning, automated rollback, multi-region support are not currently implemented and should be noted as limitations.
-- **Style**: Follow existing docs style (see `docs/cli.md` for reference). Use tables for quick reference, code blocks for commands.
+- **MkDocs Material + mkdocs-markmap plugin** required for interactive diagrams
+- **Dependency on #45/#46**: Some metrics thresholds depend on benchmark data
+- **Future enhancements**: Lambda versioning, automated rollback not yet implemented
