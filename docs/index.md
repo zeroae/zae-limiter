@@ -66,4 +66,5 @@ async with limiter.acquire(
 - [User Guide](guide/basic-usage.md) - Detailed usage patterns
 - [API Reference](api/index.md) - Complete API documentation
 - [Monitoring](monitoring.md) - Observability and alerting guide
+- [Troubleshooting](troubleshooting.md) - Diagnose and resolve operational issues
 - [Migrations](migrations.md) - Schema migration strategy and versioning

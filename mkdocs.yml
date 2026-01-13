@@ -97,6 +97,7 @@ nav:
       - CloudFormation: infra/cloudformation.md
       - Migrations: migrations.md
   - Monitoring: monitoring.md
+  - Troubleshooting: troubleshooting.md
   - Performance Tuning: performance.md
   - CLI Reference: cli.md
   - API Reference:
