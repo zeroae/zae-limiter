@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768257849919,
+  "lastUpdate": 1768267855527,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -909,6 +909,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.03479643273802465",
             "extra": "mean: 63.41543846666582 msec\nrounds: 15"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5c5aeda4bc140ad5db7fd20b105b312dbda7932f",
+          "message": "feat(infra): add IAM permission boundary and role name format support (#90)\n\n* 📝 docs(infra): add implementation plan for IAM permission boundaries (#83)\n\nPlan for adding:\n- Permission boundary support for Lambda execution role\n- Customizable role naming for enterprise compliance\n\n* 📝 docs(infra): update plan with final design for #83\n\n- permission_boundary: accepts policy name or full ARN\n- role_name_format: uses {} placeholder for internal role name\n- Handle substitution in Python, keep CFN template simple\n\n* ✨ feat(infra): add IAM permission boundary and role name format support (#83)\n\n- Add PermissionBoundary parameter to CloudFormation template\n- Add RoleName parameter with conditional logic for custom naming\n- Add permission_boundary and role_name_format fields to StackOptions\n- Add get_role_name() method for {} placeholder substitution\n- Add --permission-boundary and --role-name-format CLI options\n- Update AWS E2E tests to use permission boundary\n- Add comprehensive unit tests for new StackOptions features\n- Update CLAUDE.md documentation with new options\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T20:28:19-05:00",
+          "tree_id": "5e666c6e18e34eb63155577564be9384f088ecf3",
+          "url": "https://github.com/zeroae/zae-limiter/commit/5c5aeda4bc140ad5db7fd20b105b312dbda7932f"
+        },
+        "date": 1768267854860,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 102.86233237646833,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012016918482400083",
+            "extra": "mean: 9.721731725274086 msec\nrounds: 182"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 24.086175293159368,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06370496416459502",
+            "extra": "mean: 41.517592055555895 msec\nrounds: 216"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1099.1418360291568,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000019351736625499745",
+            "extra": "mean: 909.8006892474186 usec\nrounds: 930"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 159.35361140721088,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0023018509735592057",
+            "extra": "mean: 6.27535197457564 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 50.53219799699656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09972374753882803",
+            "extra": "mean: 19.789362814960793 msec\nrounds: 254"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 36.240277995422716,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0640571566842085",
+            "extra": "mean: 27.593607315217167 msec\nrounds: 92"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 32.46714711941593,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04458357139753476",
+            "extra": "mean: 30.800365560976015 msec\nrounds: 82"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 16.542068443594378,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010105197369256443",
+            "extra": "mean: 60.45193220000442 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 5.248421266223238,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1469435694461826",
+            "extra": "mean: 190.533486028571 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.5384404091461,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011287071498665318",
+            "extra": "mean: 48.68918866666642 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.16259108237426,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03321751095772111",
+            "extra": "mean: 58.26626033332379 msec\nrounds: 12"
           }
         ]
       }
