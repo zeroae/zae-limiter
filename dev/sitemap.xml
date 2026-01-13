@@ -25,10 +25,6 @@
          <lastmod>2026-01-13</lastmod>
     </url>
     <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/troubleshooting/</loc>
-         <lastmod>2026-01-13</lastmod>
-    </url>
-    <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/</loc>
          <lastmod>2026-01-13</lastmod>
     </url>
@@ -70,6 +66,34 @@
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/infra/localstack/</loc>
+         <lastmod>2026-01-13</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/operations/</loc>
+         <lastmod>2026-01-13</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/operations/dynamodb/</loc>
+         <lastmod>2026-01-13</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/operations/lambda/</loc>
+         <lastmod>2026-01-13</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/operations/rate-limits/</loc>
+         <lastmod>2026-01-13</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/operations/recovery/</loc>
+         <lastmod>2026-01-13</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/operations/streams/</loc>
+         <lastmod>2026-01-13</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/operations/version/</loc>
          <lastmod>2026-01-13</lastmod>
     </url>
 </urlset>
