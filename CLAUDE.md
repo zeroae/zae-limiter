@@ -4,10 +4,11 @@ This file provides context for AI assistants working on the zae-limiter codebase
 
 ## Project Overview
 
-zae-limiter is a rate limiting library backed by DynamoDB using the token bucket algorithm. It's designed for limiting LLM API calls where:
+zae-limiter is a rate limiting library backed by DynamoDB using the token bucket algorithm. It excels at scenarios where:
 - Multiple limits are tracked per call (rpm, tpm)
-- Token counts are unknown until after the call completes
-- Hierarchical limits exist (API key → project)
+- Consumption is unknown upfront (adjust after the operation completes)
+- Hierarchical limits exist (API key → project, tenant → user)
+- Cost matters (~$1/1M requests)
 
 ## Build & Development
 
