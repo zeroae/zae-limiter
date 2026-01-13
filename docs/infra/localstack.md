@@ -106,7 +106,7 @@ AWS_DEFAULT_REGION=us-east-1
 import os
 
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",  # Connects to ZAEL-limiter
     endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
     region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
 )

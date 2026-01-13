@@ -17,7 +17,7 @@ When DynamoDB is unavailable, reject all rate-limited requests:
 from zae_limiter import RateLimiter, FailureMode, RateLimiterUnavailable
 
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",  # Connects to ZAEL-limiter
     failure_mode=FailureMode.FAIL_CLOSED,  # Default
 )
 
@@ -45,7 +45,7 @@ When DynamoDB is unavailable, allow requests to proceed:
 
 ```python
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",  # Connects to ZAEL-limiter
     failure_mode=FailureMode.FAIL_OPEN,
 )
 
@@ -68,7 +68,7 @@ Override the default failure mode for specific requests:
 ```python
 # Default to FAIL_CLOSED
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",  # Connects to ZAEL-limiter
     failure_mode=FailureMode.FAIL_CLOSED,
 )
 
@@ -133,13 +133,13 @@ async def monitored_acquire(limiter, **kwargs):
 ```python
 # High-risk: billing, security
 billing_limiter = RateLimiter(
-    name="billing",  # Creates ZAEL-billing resources
+    name="billing",  # Connects to ZAEL-billing
     failure_mode=FailureMode.FAIL_CLOSED,
 )
 
 # Lower-risk: general API
 api_limiter = RateLimiter(
-    name="api",  # Creates ZAEL-api resources
+    name="api",  # Connects to ZAEL-api
     failure_mode=FailureMode.FAIL_OPEN,
 )
 ```
@@ -212,14 +212,8 @@ DynamoDB itself is highly available, but consider:
 
 ```python
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",  # Connects to ZAEL-limiter
     region="us-east-1",
-    # Configure boto3 client options
-    client_config={
-        "connect_timeout": 5,
-        "read_timeout": 10,
-        "retries": {"max_attempts": 3},
-    },
 )
 ```
 

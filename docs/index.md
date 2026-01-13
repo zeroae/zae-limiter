@@ -32,7 +32,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 from zae_limiter import RateLimiter, Limit
 
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",  # Connects to ZAEL-limiter
     region="us-east-1",
 )
 

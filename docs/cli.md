@@ -95,7 +95,7 @@ Status: CREATE_COMPLETE
 Created: 2024-01-15 10:30:00
 
 Resources:
-  - LimiterTable (AWS::DynamoDB::Table): CREATE_COMPLETE
+  - RateLimitsTable (AWS::DynamoDB::Table): CREATE_COMPLETE
   - AggregatorFunction (AWS::Lambda::Function): CREATE_COMPLETE
   - AggregatorRole (AWS::IAM::Role): CREATE_COMPLETE
 
