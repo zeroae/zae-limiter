@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768267855527,
+  "lastUpdate": 1768268286967,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -1010,6 +1010,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.03321751095772111",
             "extra": "mean: 58.26626033332379 msec\nrounds: 12"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b09c8d68dbd9882976168230dc4b30ebffb394ad",
+          "message": "feat(cli): add --endpoint-url option to all AWS-interacting commands (#89)\n\nAdd the --endpoint-url parameter to all AWS-interacting CLI commands\nfor LocalStack consistency:\n\n- status: Pass endpoint_url to StackManager\n- delete: Pass endpoint_url to StackManager\n- version: Pass endpoint_url to Repository\n- upgrade: Pass endpoint_url to both Repository and StackManager\n- check: Pass endpoint_url to Repository\n\nAlso adds tests for each command and updates CLAUDE.md documentation.\n\nCloses #78",
+          "timestamp": "2026-01-12T20:35:39-05:00",
+          "tree_id": "70c3bf1e585bb0a9a5a1f4dc9ecebf52eb11135f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/b09c8d68dbd9882976168230dc4b30ebffb394ad"
+        },
+        "date": 1768268286577,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 103.47075707786198,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01159779925891029",
+            "extra": "mean: 9.664566378377783 msec\nrounds: 185"
+          },
+          {
+            "name": "tests/test_performance.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 23.357896272471805,
+            "unit": "iter/sec",
+            "range": "stddev: 0.062441863635488835",
+            "extra": "mean: 42.81207469777744 msec\nrounds: 225"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1086.3696177106056,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002431758142278774",
+            "extra": "mean: 920.4970239386673 usec\nrounds: 919"
+          },
+          {
+            "name": "tests/test_performance.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 51.118216626501145,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08528161089914642",
+            "extra": "mean: 19.562497794212394 msec\nrounds: 311"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 60.10652145267505,
+            "unit": "iter/sec",
+            "range": "stddev: 0.054606227560115815",
+            "extra": "mean: 16.637129812733406 msec\nrounds: 267"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 26.436647986424433,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06729712832598551",
+            "extra": "mean: 37.82627814666644 msec\nrounds: 150"
+          },
+          {
+            "name": "tests/test_performance.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 29.97327238896217,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09080379038828626",
+            "extra": "mean: 33.36305716049395 msec\nrounds: 81"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 5.433450025547147,
+            "unit": "iter/sec",
+            "range": "stddev: 0.11524072234577602",
+            "extra": "mean: 184.04512700000404 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/test_performance.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 4.760333621241159,
+            "unit": "iter/sec",
+            "range": "stddev: 0.18281387924377462",
+            "extra": "mean: 210.0693101714309 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.366310609924543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007529637099960871",
+            "extra": "mean: 46.80265199999035 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.45917759520124,
+            "unit": "iter/sec",
+            "range": "stddev: 0.030176964898677158",
+            "extra": "mean: 54.173594400000034 msec\nrounds: 15"
           }
         ]
       }
