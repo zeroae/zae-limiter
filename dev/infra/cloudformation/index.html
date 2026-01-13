@@ -1565,6 +1565,7 @@
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>zae-limiter<span class="w"> </span>cfn-template<span class="w"> </span><span class="p">|</span><span class="w"> </span>less
 </span></code></pre></div>
 <h2 id="template-parameters">Template Parameters<a class="headerlink" href="#template-parameters" title="Permanent link">&para;</a></h2>
+<p>The DynamoDB table name is automatically derived from the CloudFormation stack name using the <code>AWS::StackName</code> pseudo-parameter. This ensures consistency between stack and resource names.</p>
 <table>
 <thead>
 <tr>
@@ -1697,7 +1698,7 @@
 </span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="nt">Timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
 </span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">    </span><span class="nt">Environment</span><span class="p">:</span>
 </span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="w">      </span><span class="nt">Variables</span><span class="p">:</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="w">        </span><span class="nt">TABLE_NAME</span><span class="p">:</span><span class="w"> </span><span class="kt">!Ref</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TableName</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="w">        </span><span class="nt">TABLE_NAME</span><span class="p">:</span><span class="w"> </span><span class="kt">!Ref</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AWS::StackName</span>
 </span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">        </span><span class="nt">SNAPSHOT_WINDOWS</span><span class="p">:</span><span class="w"> </span><span class="kt">!Ref</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SnapshotWindows</span>
 </span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">        </span><span class="nt">SNAPSHOT_TTL_DAYS</span><span class="p">:</span><span class="w"> </span><span class="kt">!Ref</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SnapshotRetentionDays</span>
 </span></code></pre></div>
@@ -1757,7 +1758,7 @@
 </span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">    </span><span class="nt">Type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AWS::SQS::Queue</span>
 </span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="w">    </span><span class="nt">Condition</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">CreateDLQ</span>
 </span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="w">    </span><span class="nt">Properties</span><span class="p">:</span>
-</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="w">      </span><span class="nt">QueueName</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">&quot;${TableName}-aggregator-dlq&quot;</span>
+</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="w">      </span><span class="nt">QueueName</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">&quot;${AWS::StackName}-aggregator-dlq&quot;</span>
 </span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="w">      </span><span class="nt">MessageRetentionPeriod</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1209600</span><span class="w">  </span><span class="c1"># 14 days</span>
 </span><span id="__span-9-17"><a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a>
 </span><span id="__span-9-18"><a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="w">  </span><span class="nt">StreamEventMapping</span><span class="p">:</span>
@@ -1773,7 +1774,7 @@
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">ReadThrottleAlarm</span><span class="p">:</span>
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">Type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AWS::CloudWatch::Alarm</span>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">Properties</span><span class="p">:</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">AlarmName</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">&quot;${TableName}-read-throttle&quot;</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">AlarmName</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">&quot;${AWS::StackName}-read-throttle&quot;</span>
 </span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">AlarmDescription</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Alert when DynamoDB read requests are throttled</span>
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nt">MetricName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ReadThrottleEvents</span>
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">    </span><span class="nt">Namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AWS/DynamoDB</span>
@@ -1826,6 +1827,7 @@
 </span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="w">        </span><span class="nv">EnableAlarms</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="w">    </span>--capabilities<span class="w"> </span>CAPABILITY_NAMED_IAM
 </span></code></pre></div>
+<p>Note: The DynamoDB table name is automatically set to match the stack name (e.g., <code>ZAEL-prod</code>).</p>
 <h3 id="using-sam">Using SAM<a class="headerlink" href="#using-sam" title="Permanent link">&para;</a></h3>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># samconfig.toml</span>
 </span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="p p-Indicator">[</span><span class="nv">default.deploy.parameters</span><span class="p p-Indicator">]</span>
