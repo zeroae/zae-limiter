@@ -50,7 +50,7 @@ class TestStackManagerLocalStack:
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_stack_create_and_delete_minimal(
-        self, localstack_endpoint, minimal_stack_options
+        self, localstack_endpoint, minimal_stack_options, unique_table_name
     ) -> None:
         """Test creating and deleting a minimal stack (no aggregator, no alarms).
 
@@ -59,7 +59,7 @@ class TestStackManagerLocalStack:
         See: https://github.com/localstack/localstack/issues/13609
         """
         manager = StackManager(
-            table_name="test_minimal_stack",
+            table_name=unique_table_name,
             region="us-east-1",
             endpoint_url=localstack_endpoint,
         )
