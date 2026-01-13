@@ -7,7 +7,7 @@ on:
       - 'v*'
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened, closed, labeled]
 
 permissions:
   contents: write
@@ -23,11 +23,13 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     # Always run for push events and PR close events
-    # For other PR events, detect if docs changed
+    # For other PR events, detect if docs changed or label applied
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action == 'closed') || github.event_name == 'pull_request'
     outputs:
       docs: ${{ steps.filter.outputs.docs }}
-      should_build: ${{ github.event_name == 'push' || steps.filter.outputs.docs == 'true' }}
+      has_label: ${{ steps.check-label.outputs.has_label }}
+      should_build: ${{ github.event_name == 'push' || steps.filter.outputs.docs == 'true' || steps.check-label.outputs.has_label == 'true' }}
+      should_deploy_preview: ${{ steps.filter.outputs.docs == 'true' || steps.check-label.outputs.has_label == 'true' }}
       should_cleanup: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' }}
     steps:
       - uses: actions/checkout@v6
@@ -41,6 +43,15 @@ jobs:
               - 'mkdocs.yml'
               - 'src/**/*.py'
               - '.github/workflows/docs.yml'
+      - name: Check for docs-preview label
+        id: check-label
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        run: |
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'docs-preview') }}" == "true" ]]; then
+            echo "has_label=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_label=false" >> $GITHUB_OUTPUT
+          fi
 
   build:
     needs: changes
@@ -65,7 +76,7 @@ jobs:
 
   deploy-preview:
     needs: [changes, build]
-    if: github.event_name == 'pull_request' && github.event.action != 'closed' && needs.changes.outputs.docs == 'true'
+    if: github.event_name == 'pull_request' && github.event.action != 'closed' && needs.changes.outputs.should_deploy_preview == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
