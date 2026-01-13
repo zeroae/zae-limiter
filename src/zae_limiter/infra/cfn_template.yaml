@@ -6,8 +6,8 @@ Description: >
 Parameters:
   TableName:
     Type: String
-    Default: rate_limits
-    Description: Name of the DynamoDB table
+    Default: ZAEL-rate-limits
+    Description: Name of the DynamoDB table (matches stack name with ZAEL- prefix)
 
   SnapshotWindows:
     Type: String
@@ -116,7 +116,7 @@ Parameters:
     Default: ''
     Description: >
       (Optional) Custom name for the Lambda execution role.
-      If empty, uses default: {TableName}-aggregator-role.
+      If empty, uses default: {stack_name}-aggregator-role.
 
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']

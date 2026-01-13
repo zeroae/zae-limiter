@@ -7,7 +7,7 @@ from tests.integration.conftest import (
     localstack_endpoint,
     minimal_stack_options,
     sync_localstack_limiter,
-    unique_table_name,
+    unique_name,
 )
 from tests.unit.conftest import (
     _patch_aiobotocore_response,
@@ -24,5 +24,5 @@ __all__ = [
     "localstack_endpoint",
     "minimal_stack_options",
     "sync_localstack_limiter",
-    "unique_table_name",
+    "unique_name",
 ]

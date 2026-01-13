@@ -29,7 +29,7 @@ class TestCLI:
         result = runner.invoke(cli, ["deploy", "--help"])
         assert result.exit_code == 0
         assert "Deploy CloudFormation stack" in result.output
-        assert "--table-name" in result.output
+        assert "--name" in result.output
         assert "--region" in result.output
         assert "--endpoint-url" in result.output
         # New options
@@ -45,7 +45,7 @@ class TestCLI:
         result = runner.invoke(cli, ["delete", "--help"])
         assert result.exit_code == 0
         assert "Delete CloudFormation stack" in result.output
-        assert "--stack-name" in result.output
+        assert "--name" in result.output
 
     def test_status_help(self, runner: CliRunner) -> None:
         """Test status command help."""
@@ -85,12 +85,13 @@ class TestCLI:
         """Test deploy command with default parameters."""
         # Mock stack manager
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
                 "stack_id": "test-stack-id",
-                "stack_name": "zae-limiter-rate_limits",
+                "stack_name": "ZAEL-rate-limits",
             }
         )
         mock_instance.deploy_lambda_code = AsyncMock(
@@ -108,7 +109,7 @@ class TestCLI:
         result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 0
-        assert "Deploying stack: zae-limiter-rate_limits" in result.output
+        assert "Deploying stack: ZAEL-rate-limits" in result.output
         assert "✓" in result.output
 
         # Verify default values for new parameters via StackOptions
@@ -125,7 +126,8 @@ class TestCLI:
     def test_deploy_custom_parameters(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with custom parameters."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="my-custom-stack")
+        mock_instance.stack_name = "ZAEL-my-custom-stack"
+        mock_instance.table_name = "ZAEL-my-custom-stack"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -140,9 +142,7 @@ class TestCLI:
             cli,
             [
                 "deploy",
-                "--table-name",
-                "my_table",
-                "--stack-name",
+                "--name",
                 "my-custom-stack",
                 "--region",
                 "us-west-2",
@@ -155,7 +155,7 @@ class TestCLI:
         )
 
         assert result.exit_code == 0
-        assert "my-custom-stack" in result.output
+        assert "ZAEL-my-custom-stack" in result.output
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_pitr_recovery_days(
@@ -163,7 +163,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --pitr-recovery-days parameter."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -197,7 +198,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --log-retention-days parameter."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -231,7 +233,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --lambda-timeout and --lambda-memory parameters."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -276,7 +279,8 @@ class TestCLI:
     def test_deploy_with_alarms_disabled(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with --no-alarms parameter."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -309,7 +313,8 @@ class TestCLI:
     def test_deploy_with_alarm_sns_topic(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with --alarm-sns-topic parameter."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -346,7 +351,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --lambda-duration-threshold-pct parameter."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -385,7 +391,8 @@ class TestCLI:
     ) -> None:
         """Test that duration threshold is correctly calculated from timeout and percentage."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -492,7 +499,8 @@ class TestCLI:
     def test_deploy_lambda_skipped_local(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy shows correct message when Lambda deployment is skipped for local."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-rate_limits")
+        mock_instance.stack_name = "ZAEL-rate-limits"
+        mock_instance.table_name = "ZAEL-rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -518,7 +526,8 @@ class TestCLI:
     def test_deploy_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy command with --endpoint-url for LocalStack."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="zae-limiter-test")
+        mock_instance.stack_name = "ZAEL-test"
+        mock_instance.table_name = "ZAEL-test"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -541,8 +550,8 @@ class TestCLI:
             cli,
             [
                 "deploy",
-                "--table-name",
-                "test_table",
+                "--name",
+                "test-table",
                 "--endpoint-url",
                 "http://localhost:4566",
                 "--region",
@@ -553,14 +562,15 @@ class TestCLI:
         assert result.exit_code == 0
         # Verify StackManager was called with endpoint_url
         mock_stack_manager.assert_called_once_with(
-            "test_table", "us-east-1", "http://localhost:4566"
+            "test-table", "us-east-1", "http://localhost:4566"
         )
 
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_skip_local(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy skips CloudFormation for local DynamoDB."""
         mock_instance = Mock()
-        mock_instance.get_stack_name = Mock(return_value="test-stack")
+        mock_instance.stack_name = "ZAEL-test-stack"
+        mock_instance.table_name = "ZAEL-test-stack"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "skipped_local",
@@ -584,7 +594,7 @@ class TestCLI:
         mock_stack_manager.return_value = mock_instance
 
         # No confirmation - should abort
-        result = runner.invoke(cli, ["delete", "--stack-name", "test-stack"], input="n\n")
+        result = runner.invoke(cli, ["delete", "--name", "test-stack"], input="n\n")
         assert result.exit_code == 1
         assert "Aborted" in result.output
 
@@ -597,7 +607,7 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
-        result = runner.invoke(cli, ["delete", "--stack-name", "test-stack", "--yes", "--wait"])
+        result = runner.invoke(cli, ["delete", "--name", "test-stack", "--yes", "--wait"])
 
         assert result.exit_code == 0
         assert "✓" in result.output
@@ -612,7 +622,7 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
-        result = runner.invoke(cli, ["delete", "--stack-name", "test-stack", "--yes", "--no-wait"])
+        result = runner.invoke(cli, ["delete", "--name", "test-stack", "--yes", "--no-wait"])
 
         assert result.exit_code == 0
         assert "initiated" in result.output
@@ -630,7 +640,7 @@ class TestCLI:
             cli,
             [
                 "delete",
-                "--stack-name",
+                "--name",
                 "test-stack",
                 "--endpoint-url",
                 "http://localhost:4566",
@@ -642,7 +652,9 @@ class TestCLI:
 
         assert result.exit_code == 0
         # Verify StackManager was called with endpoint_url
-        mock_stack_manager.assert_called_once_with("dummy", "us-east-1", "http://localhost:4566")
+        mock_stack_manager.assert_called_once_with(
+            "test-stack", "us-east-1", "http://localhost:4566"
+        )
 
     @patch("zae_limiter.cli.StackManager")
     def test_status_exists(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
@@ -653,7 +665,7 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
-        result = runner.invoke(cli, ["status", "--stack-name", "test-stack"])
+        result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
         assert result.exit_code == 0
         assert "CREATE_COMPLETE" in result.output
@@ -668,7 +680,7 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
-        result = runner.invoke(cli, ["status", "--stack-name", "nonexistent"])
+        result = runner.invoke(cli, ["status", "--name", "nonexistent"])
 
         assert result.exit_code == 1
         assert "not found" in result.output
@@ -682,7 +694,7 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
-        result = runner.invoke(cli, ["status", "--stack-name", "test-stack"])
+        result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
         assert result.exit_code == 0
         assert "CREATE_IN_PROGRESS" in result.output
@@ -697,7 +709,7 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
-        result = runner.invoke(cli, ["status", "--stack-name", "test-stack"])
+        result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
         assert result.exit_code == 1
         assert "CREATE_FAILED" in result.output
@@ -716,7 +728,7 @@ class TestCLI:
             cli,
             [
                 "status",
-                "--stack-name",
+                "--name",
                 "test-stack",
                 "--endpoint-url",
                 "http://localhost:4566",
@@ -728,21 +740,23 @@ class TestCLI:
         assert result.exit_code == 0
         assert "CREATE_COMPLETE" in result.output
         # Verify StackManager was called with endpoint_url
-        mock_stack_manager.assert_called_once_with("dummy", "us-east-1", "http://localhost:4566")
+        mock_stack_manager.assert_called_once_with(
+            "test-stack", "us-east-1", "http://localhost:4566"
+        )
 
     def test_version_help(self, runner: CliRunner) -> None:
         """Test version command help."""
         result = runner.invoke(cli, ["version", "--help"])
         assert result.exit_code == 0
         assert "Show infrastructure version information" in result.output
-        assert "--table-name" in result.output
+        assert "--name" in result.output
 
     def test_upgrade_help(self, runner: CliRunner) -> None:
         """Test upgrade command help."""
         result = runner.invoke(cli, ["upgrade", "--help"])
         assert result.exit_code == 0
         assert "Upgrade infrastructure to match client version" in result.output
-        assert "--table-name" in result.output
+        assert "--name" in result.output
         assert "--lambda-only" in result.output
         assert "--force" in result.output
 
@@ -751,7 +765,7 @@ class TestCLI:
         result = runner.invoke(cli, ["check", "--help"])
         assert result.exit_code == 0
         assert "Check infrastructure compatibility" in result.output
-        assert "--table-name" in result.output
+        assert "--name" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_version_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -761,7 +775,7 @@ class TestCLI:
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["version", "--table-name", "test_table"])
+        result = runner.invoke(cli, ["version", "--name", "test-table"])
 
         assert result.exit_code == 0
         assert "Not initialized" in result.output
@@ -782,7 +796,7 @@ class TestCLI:
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["version", "--table-name", "test_table"])
+        result = runner.invoke(cli, ["version", "--name", "test-table"])
 
         assert result.exit_code == 0
         assert "Infrastructure Version" in result.output
@@ -800,8 +814,8 @@ class TestCLI:
             cli,
             [
                 "version",
-                "--table-name",
-                "test_table",
+                "--name",
+                "test-table",
                 "--endpoint-url",
                 "http://localhost:4566",
                 "--region",
@@ -811,7 +825,7 @@ class TestCLI:
 
         assert result.exit_code == 0
         # Verify Repository was called with endpoint_url
-        mock_repo_class.assert_called_once_with("test_table", "us-east-1", "http://localhost:4566")
+        mock_repo_class.assert_called_once_with("test-table", "us-east-1", "http://localhost:4566")
 
     @patch("zae_limiter.repository.Repository")
     def test_check_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -821,7 +835,7 @@ class TestCLI:
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["check", "--table-name", "test_table"])
+        result = runner.invoke(cli, ["check", "--name", "test-table"])
 
         assert result.exit_code == 1
         assert "NOT INITIALIZED" in result.output
@@ -841,7 +855,7 @@ class TestCLI:
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["check", "--table-name", "test_table"])
+        result = runner.invoke(cli, ["check", "--name", "test-table"])
 
         assert result.exit_code == 0
         assert "Compatibility Check" in result.output
@@ -858,8 +872,8 @@ class TestCLI:
             cli,
             [
                 "check",
-                "--table-name",
-                "test_table",
+                "--name",
+                "test-table",
                 "--endpoint-url",
                 "http://localhost:4566",
                 "--region",
@@ -869,7 +883,7 @@ class TestCLI:
 
         assert result.exit_code == 1  # Not initialized
         # Verify Repository was called with endpoint_url
-        mock_repo_class.assert_called_once_with("test_table", "us-east-1", "http://localhost:4566")
+        mock_repo_class.assert_called_once_with("test-table", "us-east-1", "http://localhost:4566")
 
     @patch("zae_limiter.repository.Repository")
     def test_upgrade_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -879,7 +893,7 @@ class TestCLI:
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["upgrade", "--table-name", "test_table"])
+        result = runner.invoke(cli, ["upgrade", "--name", "test-table"])
 
         assert result.exit_code == 1
         assert "not initialized" in result.output.lower()
@@ -897,8 +911,8 @@ class TestCLI:
             cli,
             [
                 "upgrade",
-                "--table-name",
-                "test_table",
+                "--name",
+                "test-table",
                 "--endpoint-url",
                 "http://localhost:4566",
                 "--region",
@@ -908,7 +922,7 @@ class TestCLI:
 
         assert result.exit_code == 1  # Not initialized
         # Verify Repository was called with endpoint_url
-        mock_repo_class.assert_called_once_with("test_table", "us-east-1", "http://localhost:4566")
+        mock_repo_class.assert_called_once_with("test-table", "us-east-1", "http://localhost:4566")
 
 
 class TestLambdaExport:
@@ -1005,3 +1019,61 @@ class TestLambdaExport:
 
         assert result.exit_code == 0
         assert output_file.exists()
+
+
+class TestCLIValidationErrors:
+    """Test CLI commands reject invalid names with helpful error messages."""
+
+    def test_deploy_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test deploy rejects names with underscores."""
+        result = runner.invoke(cli, ["deploy", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_deploy_invalid_name_starts_with_number(self, runner: CliRunner) -> None:
+        """Test deploy rejects names starting with numbers."""
+        result = runner.invoke(cli, ["deploy", "--name", "123app"])
+        assert result.exit_code == 1
+        assert "error" in result.output.lower()
+
+    def test_delete_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test delete rejects names with underscores."""
+        result = runner.invoke(cli, ["delete", "--name", "rate_limits", "--yes"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_status_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test status rejects names with underscores."""
+        result = runner.invoke(cli, ["status", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_version_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test version rejects names with underscores."""
+        result = runner.invoke(cli, ["version", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_check_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test check rejects names with underscores."""
+        result = runner.invoke(cli, ["check", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_upgrade_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test upgrade rejects names with underscores."""
+        result = runner.invoke(cli, ["upgrade", "--name", "rate_limits"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+    def test_deploy_invalid_name_with_period(self, runner: CliRunner) -> None:
+        """Test deploy rejects names with periods."""
+        result = runner.invoke(cli, ["deploy", "--name", "my.app"])
+        assert result.exit_code == 1
+        assert "period" in result.output.lower()
+
+    def test_deploy_invalid_name_with_space(self, runner: CliRunner) -> None:
+        """Test deploy rejects names with spaces."""
+        result = runner.invoke(cli, ["deploy", "--name", "my app"])
+        assert result.exit_code == 1
+        assert "space" in result.output.lower()

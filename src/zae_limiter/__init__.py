@@ -12,9 +12,9 @@ Example:
     from zae_limiter import RateLimiter, Limit, StackOptions
 
     limiter = RateLimiter(
-        table_name="rate_limits",
+        name="my-app",  # Creates ZAEL-my-app resources
         region="us-east-1",
-        stack_options=StackOptions(),  # Auto-creates CloudFormation stack
+        stack_options=StackOptions(),  # Auto-creates infrastructure
     )
 
     async with limiter.acquire(

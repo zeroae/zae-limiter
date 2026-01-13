@@ -54,11 +54,18 @@ class RateLimiter:
     - Cascade mode (consume from entity + parent)
     - Stored limit configs
     - Usage analytics
+
+    Example:
+        limiter = RateLimiter(
+            name="my-app",  # Creates ZAEL-my-app resources
+            region="us-east-1",
+            stack_options=StackOptions(),
+        )
     """
 
     def __init__(
         self,
-        table_name: str,
+        name: str = "limiter",
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
@@ -71,7 +78,9 @@ class RateLimiter:
         Initialize the rate limiter.
 
         Args:
-            table_name: DynamoDB table name
+            name: Resource identifier (e.g., 'my-app').
+                Will be prefixed with 'ZAEL-' automatically.
+                Default: 'limiter' (creates 'ZAEL-limiter' resources)
             region: AWS region
             endpoint_url: DynamoDB endpoint URL (for local development)
             stack_options: Stack configuration for auto-creation (None = don't create)
@@ -80,7 +89,13 @@ class RateLimiter:
             strict_version: Fail if version mismatch (when auto_update is False)
             skip_version_check: Skip all version checks (dangerous)
         """
-        self.table_name = table_name
+        from .naming import normalize_name
+
+        # Validate and normalize name (adds ZAEL- prefix)
+        self._name = normalize_name(name)
+        # Internal: stack_name and table_name for AWS resources
+        self.stack_name = self._name
+        self.table_name = self._name
         self.failure_mode = failure_mode
         self._auto_update = auto_update
         self._strict_version = strict_version
@@ -88,11 +103,16 @@ class RateLimiter:
 
         self._stack_options = stack_options
         self._repository = Repository(
-            table_name=table_name,
+            stack_name=self._name,
             region=region,
             endpoint_url=endpoint_url,
         )
         self._initialized = False
+
+    @property
+    def name(self) -> str:
+        """The resource identifier (with ZAEL- prefix)."""
+        return self._name
 
     async def _ensure_initialized(self) -> None:
         """Ensure infrastructure exists and version is compatible."""
@@ -174,7 +194,7 @@ class RateLimiter:
         from .version import get_schema_version
 
         async with StackManager(
-            self.table_name,
+            self.stack_name,
             self._repository.region,
             self._repository.endpoint_url,
         ) as manager:
@@ -307,7 +327,7 @@ class RateLimiter:
                 raise RateLimiterUnavailable(
                     str(e),
                     cause=e,
-                    table_name=self.table_name,
+                    stack_name=self.stack_name,
                     entity_id=entity_id,
                     resource=resource,
                 ) from e
@@ -621,14 +641,12 @@ class RateLimiter:
 
     async def create_stack(
         self,
-        stack_name: str | None = None,
         stack_options: StackOptions | None = None,
     ) -> dict[str, Any]:
         """
         Create CloudFormation stack for infrastructure.
 
         Args:
-            stack_name: Override stack name (default: auto-generated)
             stack_options: Stack configuration
 
         Returns:
@@ -640,11 +658,11 @@ class RateLimiter:
         from .infra.stack_manager import StackManager
 
         async with StackManager(
-            self.table_name, self._repository.region, self._repository.endpoint_url
+            self.stack_name, self._repository.region, self._repository.endpoint_url
         ) as manager:
-            return await manager.create_stack(stack_name, stack_options)
+            return await manager.create_stack(stack_options)
 
-    async def delete_stack(self, stack_name: str | None = None) -> None:
+    async def delete_stack(self) -> None:
         """
         Delete the CloudFormation stack and all associated resources.
 
@@ -658,10 +676,6 @@ class RateLimiter:
         The method waits for deletion to complete before returning.
         If the stack doesn't exist, no error is raised.
 
-        Args:
-            stack_name: CloudFormation stack name to delete.
-                Default: auto-generated from table name (``zae-limiter-{table_name}``)
-
         Raises:
             StackCreationError: If deletion fails (e.g., permission denied,
                 resources in use, or CloudFormation service error)
@@ -670,7 +684,7 @@ class RateLimiter:
             Cleanup after integration testing::
 
                 limiter = RateLimiter(
-                    table_name="test_limits",
+                    name="test-limits",
                     region="us-east-1",
                     stack_options=StackOptions(),
                 )
@@ -689,10 +703,9 @@ class RateLimiter:
         from .infra.stack_manager import StackManager
 
         async with StackManager(
-            self.table_name, self._repository.region, self._repository.endpoint_url
+            self.stack_name, self._repository.region, self._repository.endpoint_url
         ) as manager:
-            stack_name = stack_name or manager.get_stack_name(self.table_name)
-            await manager.delete_stack(stack_name)
+            await manager.delete_stack(self.stack_name)
 
 
 class SyncRateLimiter:
@@ -700,11 +713,18 @@ class SyncRateLimiter:
     Synchronous rate limiter backed by DynamoDB.
 
     Wraps RateLimiter, running async operations in an event loop.
+
+    Example:
+        limiter = SyncRateLimiter(
+            name="my-app",  # Creates ZAEL-my-app resources
+            region="us-east-1",
+            stack_options=StackOptions(),
+        )
     """
 
     def __init__(
         self,
-        table_name: str,
+        name: str = "limiter",
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
@@ -714,7 +734,7 @@ class SyncRateLimiter:
         skip_version_check: bool = False,
     ) -> None:
         self._limiter = RateLimiter(
-            table_name=table_name,
+            name=name,
             region=region,
             endpoint_url=endpoint_url,
             stack_options=stack_options,
@@ -920,22 +940,17 @@ class SyncRateLimiter:
 
     def create_stack(
         self,
-        stack_name: str | None = None,
         stack_options: StackOptions | None = None,
     ) -> dict[str, Any]:
         """Create CloudFormation stack for infrastructure."""
-        return self._run(self._limiter.create_stack(stack_name, stack_options))
+        return self._run(self._limiter.create_stack(stack_options))
 
-    def delete_stack(self, stack_name: str | None = None) -> None:
+    def delete_stack(self) -> None:
         """
         Delete the CloudFormation stack and all associated resources.
 
         Synchronous wrapper for :meth:`RateLimiter.delete_stack`.
         See the async version for full documentation.
-
-        Args:
-            stack_name: CloudFormation stack name to delete.
-                Default: auto-generated from table name (``zae-limiter-{table_name}``)
 
         Raises:
             StackCreationError: If deletion fails
@@ -944,7 +959,7 @@ class SyncRateLimiter:
             Cleanup after testing::
 
                 limiter = SyncRateLimiter(
-                    table_name="test_limits",
+                    name="test-limits",
                     region="us-east-1",
                     stack_options=StackOptions(),
                 )
@@ -959,4 +974,4 @@ class SyncRateLimiter:
         Warning:
             This operation is irreversible. All data will be permanently deleted.
         """
-        self._run(self._limiter.delete_stack(stack_name))
+        self._run(self._limiter.delete_stack())

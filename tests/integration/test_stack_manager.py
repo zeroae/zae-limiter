@@ -13,7 +13,7 @@ class TestStackManagerLocalStack:
     async def test_stack_exists_false(self, localstack_endpoint) -> None:
         """Test stack_exists returns False for non-existent stack."""
         manager = StackManager(
-            table_name="test",
+            stack_name="test",
             region="us-east-1",
             endpoint_url=localstack_endpoint,
         )
@@ -26,7 +26,7 @@ class TestStackManagerLocalStack:
     async def test_get_stack_status_none(self, localstack_endpoint) -> None:
         """Test get_stack_status returns None for non-existent stack."""
         manager = StackManager(
-            table_name="test",
+            stack_name="test",
             region="us-east-1",
             endpoint_url=localstack_endpoint,
         )
@@ -39,7 +39,7 @@ class TestStackManagerLocalStack:
     async def test_delete_stack_nonexistent(self, localstack_endpoint) -> None:
         """Test deleting a non-existent stack doesn't raise error."""
         manager = StackManager(
-            table_name="test",
+            stack_name="test",
             region="us-east-1",
             endpoint_url=localstack_endpoint,
         )
@@ -50,7 +50,7 @@ class TestStackManagerLocalStack:
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_stack_create_and_delete_minimal(
-        self, localstack_endpoint, minimal_stack_options, unique_table_name
+        self, localstack_endpoint, minimal_stack_options, unique_name
     ) -> None:
         """Test creating and deleting a minimal stack (no aggregator, no alarms).
 
@@ -59,11 +59,11 @@ class TestStackManagerLocalStack:
         See: https://github.com/localstack/localstack/issues/13609
         """
         manager = StackManager(
-            table_name=unique_table_name,
+            stack_name=unique_name,
             region="us-east-1",
             endpoint_url=localstack_endpoint,
         )
-        stack_name = manager.get_stack_name()
+        stack_name = manager.stack_name
 
         try:
             # Create minimal stack
@@ -102,7 +102,7 @@ class TestDeployLambdaCodeLocalStack:
         from unittest.mock import patch
 
         manager = StackManager(
-            table_name="test",
+            stack_name="test",
             region="us-east-1",
             endpoint_url=localstack_endpoint,
         )

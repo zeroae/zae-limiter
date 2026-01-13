@@ -40,10 +40,10 @@ def full_stack_options():
 
 
 @pytest.fixture
-def unique_table_name():
-    """Generate unique table name for test isolation.
+def unique_name():
+    """Generate unique resource name for test isolation.
 
-    Uses hyphens instead of underscores because CloudFormation stack names
+    Uses hyphens instead of underscores because AWS resource names
     must match pattern [a-zA-Z][-a-zA-Z0-9]*.
     """
     timestamp = int(time.time())
@@ -52,13 +52,13 @@ def unique_table_name():
 
 
 @pytest.fixture(scope="class")
-def unique_table_name_class():
-    """Generate unique table name for class-level test isolation.
+def unique_name_class():
+    """Generate unique resource name for class-level test isolation.
 
-    Uses hyphens instead of underscores because CloudFormation stack names
+    Uses hyphens instead of underscores because AWS resource names
     must match pattern [a-zA-Z][-a-zA-Z0-9]*.
 
-    This fixture is class-scoped to allow sharing a single stack across
+    This fixture is class-scoped to allow sharing a single resource across
     all tests within a test class.
     """
     timestamp = int(time.time())
@@ -70,10 +70,10 @@ def unique_table_name_class():
 
 
 @pytest.fixture
-async def localstack_limiter(localstack_endpoint, minimal_stack_options, unique_table_name):
+async def localstack_limiter(localstack_endpoint, minimal_stack_options, unique_name):
     """RateLimiter with minimal stack for core rate limiting tests."""
     limiter = RateLimiter(
-        table_name=unique_table_name,
+        name=unique_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=minimal_stack_options,
@@ -90,11 +90,11 @@ async def localstack_limiter(localstack_endpoint, minimal_stack_options, unique_
 
 @pytest.fixture
 async def localstack_limiter_with_aggregator(
-    localstack_endpoint, aggregator_stack_options, unique_table_name
+    localstack_endpoint, aggregator_stack_options, unique_name
 ):
     """RateLimiter with Lambda aggregator for stream testing."""
     limiter = RateLimiter(
-        table_name=unique_table_name,
+        name=unique_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=aggregator_stack_options,
@@ -110,10 +110,10 @@ async def localstack_limiter_with_aggregator(
 
 
 @pytest.fixture
-async def localstack_limiter_full(localstack_endpoint, full_stack_options, unique_table_name):
+async def localstack_limiter_full(localstack_endpoint, full_stack_options, unique_name):
     """RateLimiter with full stack including alarms."""
     limiter = RateLimiter(
-        table_name=unique_table_name,
+        name=unique_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=full_stack_options,
@@ -129,10 +129,10 @@ async def localstack_limiter_full(localstack_endpoint, full_stack_options, uniqu
 
 
 @pytest.fixture
-def sync_localstack_limiter(localstack_endpoint, minimal_stack_options, unique_table_name):
+def sync_localstack_limiter(localstack_endpoint, minimal_stack_options, unique_name):
     """SyncRateLimiter with minimal stack for sync integration tests."""
     limiter = SyncRateLimiter(
-        table_name=unique_table_name,
+        name=unique_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=minimal_stack_options,

@@ -155,7 +155,7 @@ class RateLimiterUnavailable(RateLimitError):  # noqa: N818
 
     Attributes:
         cause: The underlying exception that caused the unavailability
-        table_name: The DynamoDB table that was being accessed
+        stack_name: The stack/table that was being accessed
         entity_id: The entity being rate limited (if applicable)
         resource: The resource being rate limited (if applicable)
     """
@@ -165,12 +165,14 @@ class RateLimiterUnavailable(RateLimitError):  # noqa: N818
         message: str,
         cause: Exception | None = None,
         *,
-        table_name: str | None = None,
+        stack_name: str | None = None,
         entity_id: str | None = None,
         resource: str | None = None,
     ) -> None:
         self.cause = cause
-        self.table_name = table_name
+        self.stack_name = stack_name
+        # For backwards compatibility, table_name is same as stack_name
+        self.table_name = stack_name
         self.entity_id = entity_id
         self.resource = resource
         super().__init__(self._format_message(message))
@@ -178,8 +180,8 @@ class RateLimiterUnavailable(RateLimitError):  # noqa: N818
     def _format_message(self, message: str) -> str:
         parts = [message]
         context = []
-        if self.table_name:
-            context.append(f"table={self.table_name}")
+        if self.stack_name:
+            context.append(f"stack={self.stack_name}")
         if self.entity_id:
             context.append(f"entity={self.entity_id}")
         if self.resource:
@@ -241,13 +243,12 @@ class InfrastructureNotFoundError(InfrastructureError):
     hasn't been deployed yet.
     """
 
-    def __init__(self, table_name: str, stack_name: str | None = None) -> None:
-        self.table_name = table_name
+    def __init__(self, stack_name: str) -> None:
         self.stack_name = stack_name
-        msg = f"Infrastructure not found for table '{table_name}'"
-        if stack_name:
-            msg += f" (stack: {stack_name})"
-        msg += ". Run 'zae-limiter deploy' or use create_stack=True."
+        # Stack name and table name are always identical with ZAEL- prefix
+        self.table_name = stack_name
+        msg = f"Infrastructure not found for stack '{stack_name}'"
+        msg += ". Run 'zae-limiter deploy' or use stack_options=StackOptions()."
         super().__init__(msg)
 
 

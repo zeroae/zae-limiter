@@ -13,26 +13,32 @@ from zae_limiter.infra.stack_manager import StackManager
 class TestStackManager:
     """Test StackManager functionality."""
 
-    def test_stack_name_generation(self) -> None:
-        """Test stack name generation from table name."""
-        manager = StackManager(table_name="my_table", region="us-east-1")
-        assert manager.get_stack_name() == "zae-limiter-my_table"
-        assert manager.get_stack_name("other_table") == "zae-limiter-other_table"
+    def test_stack_name_normalization(self) -> None:
+        """Test stack name normalization with ZAEL- prefix."""
+        manager = StackManager(stack_name="my-table", region="us-east-1")
+        assert manager.stack_name == "ZAEL-my-table"
+        assert manager.table_name == "ZAEL-my-table"
+
+    def test_stack_name_already_prefixed(self) -> None:
+        """Test stack name when already prefixed."""
+        manager = StackManager(stack_name="ZAEL-my-table", region="us-east-1")
+        assert manager.stack_name == "ZAEL-my-table"
+        assert manager.table_name == "ZAEL-my-table"
 
     def test_format_parameters_defaults(self) -> None:
         """Test parameter formatting with defaults."""
-        manager = StackManager(table_name="rate_limits", region="us-east-1")
+        manager = StackManager(stack_name="rate-limits", region="us-east-1")
         params = manager._format_parameters(None)
 
         # Should include TableName and SchemaVersion
         assert len(params) == 2
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
-        assert param_dict["TableName"] == "rate_limits"
+        assert param_dict["TableName"] == "ZAEL-rate-limits"
         assert "SchemaVersion" in param_dict
 
     def test_format_parameters_with_values(self) -> None:
         """Test parameter formatting with custom values."""
-        manager = StackManager(table_name="rate_limits", region="us-east-1")
+        manager = StackManager(stack_name="rate-limits", region="us-east-1")
         params = manager._format_parameters(
             {
                 "snapshot_windows": "hourly,daily,monthly",
@@ -45,7 +51,7 @@ class TestStackManager:
         assert len(params) == 5
 
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
-        assert param_dict["TableName"] == "rate_limits"
+        assert param_dict["TableName"] == "ZAEL-rate-limits"
         assert "SchemaVersion" in param_dict
         assert param_dict["SnapshotWindows"] == "hourly,daily,monthly"
         assert param_dict["SnapshotRetentionDays"] == "180"
@@ -53,7 +59,7 @@ class TestStackManager:
 
     def test_format_parameters_with_pitr_recovery_days(self) -> None:
         """Test parameter formatting with PITR recovery period."""
-        manager = StackManager(table_name="rate_limits", region="us-east-1")
+        manager = StackManager(stack_name="rate-limits", region="us-east-1")
         params = manager._format_parameters(
             {
                 "pitr_recovery_days": "7",
@@ -64,13 +70,13 @@ class TestStackManager:
         assert len(params) == 3
 
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
-        assert param_dict["TableName"] == "rate_limits"
+        assert param_dict["TableName"] == "ZAEL-rate-limits"
         assert "SchemaVersion" in param_dict
         assert param_dict["PITRRecoveryPeriodDays"] == "7"
 
     def test_format_parameters_pitr_edge_cases(self) -> None:
         """Test PITR parameter with edge case values."""
-        manager = StackManager(table_name="rate_limits", region="us-east-1")
+        manager = StackManager(stack_name="rate-limits", region="us-east-1")
 
         # Test minimum value (1 day)
         params_min = manager._format_parameters({"pitr_recovery_days": "1"})
@@ -84,7 +90,7 @@ class TestStackManager:
 
     def test_format_parameters_with_log_retention_days(self) -> None:
         """Test parameter formatting with log retention days."""
-        manager = StackManager(table_name="rate_limits", region="us-east-1")
+        manager = StackManager(stack_name="rate-limits", region="us-east-1")
         params = manager._format_parameters(
             {
                 "log_retention_days": "90",
@@ -95,13 +101,13 @@ class TestStackManager:
         assert len(params) == 3
 
         param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
-        assert param_dict["TableName"] == "rate_limits"
+        assert param_dict["TableName"] == "ZAEL-rate-limits"
         assert "SchemaVersion" in param_dict
         assert param_dict["LogRetentionDays"] == "90"
 
     def test_load_template(self) -> None:
         """Test loading CloudFormation template."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(stack_name="test", region="us-east-1")
         template = manager._load_template()
 
         assert template is not None
@@ -134,7 +140,7 @@ class TestStackManager:
             mock_get_client.return_value = mock_client
 
             manager = StackManager(
-                table_name="test",
+                stack_name="test",
                 region="us-east-1",
                 endpoint_url="http://localhost:4566",
             )
@@ -164,7 +170,7 @@ class TestStackExists:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.stack_exists("test-stack")
 
             assert result is True
@@ -179,7 +185,7 @@ class TestStackExists:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.stack_exists("test-stack")
 
             assert result is False
@@ -197,7 +203,7 @@ class TestStackExists:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.stack_exists("non-existent")
 
             assert result is False
@@ -210,7 +216,7 @@ class TestStackExists:
             mock_client.describe_stacks = AsyncMock(return_value={"Stacks": []})
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.stack_exists("test-stack")
 
             assert result is False
@@ -229,7 +235,7 @@ class TestGetStackStatus:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.get_stack_status("test-stack")
 
             assert result == "UPDATE_COMPLETE"
@@ -247,7 +253,7 @@ class TestGetStackStatus:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.get_stack_status("non-existent")
 
             assert result is None
@@ -260,7 +266,7 @@ class TestGetStackStatus:
             mock_client.describe_stacks = AsyncMock(return_value={"Stacks": []})
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.get_stack_status("test-stack")
 
             assert result is None
@@ -284,7 +290,7 @@ class TestCreateStackErrors:
 
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.create_stack(wait=True)
 
             assert result["status"] == "already_exists_and_ready"
@@ -300,7 +306,7 @@ class TestCreateStackErrors:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.create_stack(wait=True)
 
             assert result["status"] == "CREATE_COMPLETE"
@@ -332,7 +338,7 @@ class TestCreateStackErrors:
 
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
 
             with pytest.raises(StackAlreadyExistsError):
                 await manager.create_stack()
@@ -356,7 +362,7 @@ class TestCreateStackErrors:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
 
             with pytest.raises(StackCreationError) as exc_info:
                 await manager.create_stack()
@@ -384,7 +390,7 @@ class TestCreateStackErrors:
 
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
 
             with pytest.raises(StackCreationError) as exc_info:
                 await manager.create_stack(wait=True)
@@ -408,7 +414,7 @@ class TestDeleteStack:
 
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             await manager.delete_stack("test-stack", wait=True)
 
             mock_client.delete_stack.assert_called_once_with(StackName="test-stack")
@@ -432,7 +438,7 @@ class TestDeleteStack:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
 
             # Should not raise
             await manager.delete_stack("non-existent")
@@ -450,7 +456,7 @@ class TestDeleteStack:
             )
             mock_get_client.return_value = mock_client
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
 
             with pytest.raises(StackCreationError) as exc_info:
                 await manager.delete_stack("test-stack")
@@ -493,7 +499,7 @@ class TestDeployLambdaCode:
             mock_session.client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
             result = await manager.deploy_lambda_code()
 
             assert result["status"] == "deployed"
@@ -507,7 +513,7 @@ class TestDeployLambdaCode:
             "zae_limiter.infra.stack_manager.build_lambda_package",
             side_effect=Exception("Build failed"),
         ):
-            manager = StackManager(table_name="test", region="us-east-1")
+            manager = StackManager(stack_name="test", region="us-east-1")
 
             with pytest.raises(StackCreationError) as exc_info:
                 await manager.deploy_lambda_code()
@@ -521,7 +527,7 @@ class TestContextManager:
     @pytest.mark.asyncio
     async def test_aenter_returns_self(self) -> None:
         """__aenter__ returns the manager instance."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(stack_name="test", region="us-east-1")
 
         result = await manager.__aenter__()
 
@@ -530,7 +536,7 @@ class TestContextManager:
     @pytest.mark.asyncio
     async def test_aexit_calls_close(self) -> None:
         """__aexit__ calls close."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(stack_name="test", region="us-east-1")
 
         with patch.object(manager, "close", new_callable=AsyncMock) as mock_close:
             await manager.__aexit__(None, None, None)
@@ -540,7 +546,7 @@ class TestContextManager:
     async def test_context_manager_usage(self) -> None:
         """Context manager works correctly."""
         with patch.object(StackManager, "close", new_callable=AsyncMock) as mock_close:
-            async with StackManager(table_name="test", region="us-east-1") as manager:
+            async with StackManager(stack_name="test", region="us-east-1") as manager:
                 assert manager is not None
 
             mock_close.assert_called_once()
@@ -552,7 +558,7 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_cleans_up_client(self) -> None:
         """close cleans up client and session."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(stack_name="test", region="us-east-1")
 
         # Setup mock client
         mock_client = MagicMock()
@@ -569,7 +575,7 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_handles_none_client(self) -> None:
         """close handles None client gracefully."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(stack_name="test", region="us-east-1")
         manager._client = None
         manager._session = None
 
@@ -582,7 +588,7 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_handles_client_exit_error(self) -> None:
         """close handles errors from client __aexit__."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(stack_name="test", region="us-east-1")
 
         mock_client = MagicMock()
         mock_client.__aexit__ = AsyncMock(side_effect=Exception("Cleanup error"))
@@ -602,7 +608,7 @@ class TestGetStackEvents:
     @pytest.mark.asyncio
     async def test_returns_formatted_events(self) -> None:
         """_get_stack_events returns formatted event list."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(stack_name="test", region="us-east-1")
 
         mock_client = MagicMock()
         mock_client.describe_stack_events = AsyncMock(
@@ -628,7 +634,7 @@ class TestGetStackEvents:
     @pytest.mark.asyncio
     async def test_returns_empty_on_error(self) -> None:
         """_get_stack_events returns empty list on error."""
-        manager = StackManager(table_name="test", region="us-east-1")
+        manager = StackManager(stack_name="test", region="us-east-1")
 
         mock_client = MagicMock()
         mock_client.describe_stack_events = AsyncMock(side_effect=Exception("API error"))

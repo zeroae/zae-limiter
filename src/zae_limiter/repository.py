@@ -18,6 +18,7 @@ from .models import (
     StackOptions,
     validate_identifier,
 )
+from .naming import normalize_stack_name
 
 
 class Repository:
@@ -26,15 +27,21 @@ class Repository:
 
     Handles all DynamoDB operations including entities, buckets,
     limit configs, and transactions.
+
+    The stack_name is automatically prefixed with 'ZAEL-' if not already present.
+    The table_name is always identical to the stack_name.
     """
 
     def __init__(
         self,
-        table_name: str,
+        stack_name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
     ) -> None:
-        self.table_name = table_name
+        # Validate and normalize stack name (adds ZAEL- prefix)
+        self.stack_name = normalize_stack_name(stack_name)
+        # Table name is always identical to stack name
+        self.table_name = self.stack_name
         self.region = region
         self.endpoint_url = endpoint_url
         self._session: aioboto3.Session | None = None
@@ -104,9 +111,8 @@ class Repository:
         """
         from .infra.stack_manager import StackManager
 
-        async with StackManager(self.table_name, self.region, self.endpoint_url) as manager:
+        async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             await manager.create_stack(
-                stack_name=stack_options.stack_name if stack_options else None,
                 stack_options=stack_options,
             )
 
