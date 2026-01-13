@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768287706482,
+  "lastUpdate": 1768293036096,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -1212,6 +1212,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.1720830707461193",
             "extra": "mean: 200.59928694117994 msec\nrounds: 34"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bdefbfcf7fb6c9a5b4b4e9f5d5110ee2b62ecc52",
+          "message": "✨ feat(models): add PEP 561 py.typed marker for type export support (#93)\n\n* ✨ feat(models): add PEP 561 py.typed marker for type export support\n\nAdd py.typed marker file to enable downstream type checkers (mypy,\npyright) to recognize this package as fully typed.\n\n* 🐛 fix(models): correct type ignore comment for _version import\n\nChange type ignore from `import-untyped` to `import-not-found` since\nthe _version module is generated at build time by hatch-vcs.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T03:27:23-05:00",
+          "tree_id": "fb74bf7867c99b915ec18209032a8246a9e29de7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/bdefbfcf7fb6c9a5b4b4e9f5d5110ee2b62ecc52"
+        },
+        "date": 1768293035511,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.095952105344153,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011415370034880107",
+            "extra": "mean: 41.5007464999988 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 23.262100826046936,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007659549760779457",
+            "extra": "mean: 42.98837871428553 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 74.4085921213095,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02077905173192902",
+            "extra": "mean: 13.43930816981034 msec\nrounds: 265"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 21.407823640635844,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07353449443824646",
+            "extra": "mean: 46.71189452914881 msec\nrounds: 223"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1067.3167558742928,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024581156915393308",
+            "extra": "mean: 936.9289805450958 usec\nrounds: 771"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 53.174503719013494,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08692113381480057",
+            "extra": "mean: 18.806005323232235 msec\nrounds: 297"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 58.158208944618295,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04595345026886007",
+            "extra": "mean: 17.194477239700753 msec\nrounds: 267"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 27.937432163223406,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06235987781403676",
+            "extra": "mean: 35.794270359478176 msec\nrounds: 153"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 35.599483675936966,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02536407417433995",
+            "extra": "mean: 28.090295047619968 msec\nrounds: 84"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 5.160334689854191,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12269008462080012",
+            "extra": "mean: 193.78588020000223 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 5.611193054157807,
+            "unit": "iter/sec",
+            "range": "stddev: 0.16567534540496626",
+            "extra": "mean: 178.21521917856944 msec\nrounds: 28"
           }
         ]
       }
