@@ -18,11 +18,11 @@ The simplest way to deploy:
 
 ```bash
 # Deploy with defaults
-zae-limiter deploy --table-name rate_limits --region us-east-1
+zae-limiter deploy --name limiter --region us-east-1
 
 # Deploy with custom settings
 zae-limiter deploy \
-    --table-name rate_limits \
+    --name limiter \
     --region us-east-1 \
     --log-retention-days 90 \
     --pitr-recovery-days 7
@@ -32,9 +32,8 @@ zae-limiter deploy \
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--table-name` | DynamoDB table name | Required |
+| `--name` | Resource identifier (creates ZAEL-{name} resources) | Required |
 | `--region` | AWS region | Required |
-| `--stack-name` | CloudFormation stack name | `zae-limiter-{table}` |
 | `--no-aggregator` | Skip Lambda deployment | `false` |
 | `--log-retention-days` | CloudWatch log retention | `14` |
 | `--pitr-recovery-days` | Point-in-time recovery | `0` (disabled) |
@@ -43,13 +42,13 @@ zae-limiter deploy \
 ### Check Stack Status
 
 ```bash
-zae-limiter status --stack-name zae-limiter-rate_limits --region us-east-1
+zae-limiter status --name limiter --region us-east-1
 ```
 
 ### Delete Stack
 
 ```bash
-zae-limiter delete --stack-name zae-limiter-rate_limits --region us-east-1 --yes
+zae-limiter delete --name limiter --region us-east-1 --yes
 ```
 
 ## Stack Lifecycle Management
@@ -63,7 +62,7 @@ from zae_limiter import RateLimiter, StackOptions
 
 # Create stack
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Creates ZAEL-limiter resources
     region="us-east-1",
     stack_options=StackOptions(),
 )
@@ -86,7 +85,7 @@ For rapid iteration, use auto-creation with cleanup:
 ```python
 async def dev_session():
     limiter = RateLimiter(
-        table_name="dev_limits",
+        name="dev",  # Creates ZAEL-dev resources
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
     )
@@ -113,7 +112,7 @@ from zae_limiter import RateLimiter, StackOptions
 async def integration_limiter():
     """Session-scoped fixture with automatic cleanup."""
     limiter = RateLimiter(
-        table_name=f"test_{uuid.uuid4().hex[:8]}",  # Unique name
+        name=f"test-{uuid.uuid4().hex[:8]}",  # Unique name
         endpoint_url="http://localhost:4566",
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
@@ -131,10 +130,10 @@ For production, prefer CLI or CloudFormation-managed deployments:
 
 ```bash
 # Deploy via CLI (with review)
-zae-limiter deploy --table-name prod_limits --region us-east-1
+zae-limiter deploy --name prod --region us-east-1
 
 # Delete via CLI (requires confirmation)
-zae-limiter delete --stack-name zae-limiter-prod_limits --region us-east-1
+zae-limiter delete --name prod --region us-east-1
 ```
 
 !!! note "Production Best Practice"
@@ -155,9 +154,8 @@ zae-limiter cfn-template > template.yaml
 # Deploy with AWS CLI
 aws cloudformation deploy \
     --template-file template.yaml \
-    --stack-name zae-limiter \
+    --stack-name ZAEL-limiter \
     --parameter-overrides \
-        TableName=rate_limits \
         SnapshotRetentionDays=90 \
         EnablePITR=true \
     --capabilities CAPABILITY_NAMED_IAM
@@ -173,7 +171,6 @@ aws lambda update-function-code \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `TableName` | DynamoDB table name | `rate_limits` |
 | `SnapshotWindows` | Aggregation windows | `hourly,daily` |
 | `SnapshotRetentionDays` | Usage data retention | `90` |
 | `EnablePITR` | Point-in-time recovery | `false` |
@@ -184,16 +181,15 @@ aws lambda update-function-code \
 For development, create infrastructure programmatically:
 
 ```python
-from zae_limiter import RateLimiter
+from zae_limiter import RateLimiter, StackOptions
 
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Creates ZAEL-limiter resources
     region="us-east-1",
-    create_stack=True,
-    stack_parameters={
-        "snapshot_windows": "hourly,daily",
-        "retention_days": "90",
-    },
+    stack_options=StackOptions(
+        snapshot_windows="hourly,daily",
+        retention_days=90,
+    ),
 )
 ```
 
@@ -258,7 +254,7 @@ The stack includes optional alarms:
 
 ```bash
 zae-limiter deploy \
-    --table-name rate_limits \
+    --name limiter \
     --enable-alarms \
     --alarm-sns-topic arn:aws:sns:us-east-1:123456789:alerts
 ```

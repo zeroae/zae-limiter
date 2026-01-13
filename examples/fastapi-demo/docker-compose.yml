@@ -27,7 +27,7 @@ services:
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
       - AWS_DEFAULT_REGION=us-east-1
-      - TABLE_NAME=rate_limits
+      - NAME=demo
     volumes:
       - ../..:/zae-limiter:ro
     depends_on:
@@ -47,7 +47,7 @@ services:
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
       - AWS_DEFAULT_REGION=us-east-1
-      - TABLE_NAME=rate_limits
+      - NAME=demo
     volumes:
       - ../..:/zae-limiter:ro
     depends_on:

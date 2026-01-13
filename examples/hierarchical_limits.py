@@ -27,11 +27,12 @@ from zae_limiter import (
     Limit,
     RateLimiter,
     RateLimitExceeded,
+    StackOptions,
 )
 
 # Configuration
 ENDPOINT_URL = "http://localhost:4566"
-TABLE_NAME = "hierarchical_limits"
+NAME = "hierarchical"  # Creates ZAEL-hierarchical resources
 
 
 async def main() -> None:
@@ -39,9 +40,9 @@ async def main() -> None:
     print("=== Hierarchical Rate Limits Example ===\n")
 
     limiter = RateLimiter(
-        table_name=TABLE_NAME,
+        name=NAME,  # Creates ZAEL-hierarchical resources
         endpoint_url=ENDPOINT_URL,
-        create_stack=True,
+        stack_options=StackOptions(),
         skip_version_check=True,
     )
 

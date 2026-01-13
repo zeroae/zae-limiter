@@ -237,8 +237,8 @@ docker compose down && docker compose up -d
 # List tables
 aws --endpoint-url=http://localhost:4566 dynamodb list-tables
 
-# Scan rate limits table
-aws --endpoint-url=http://localhost:4566 dynamodb scan --table-name rate_limits
+# Scan rate limits table (name "demo" creates table "ZAEL-demo")
+aws --endpoint-url=http://localhost:4566 dynamodb scan --table-name ZAEL-demo
 ```
 
 ## Cleanup
@@ -273,7 +273,7 @@ docker compose logs init
 Verify table was created:
 ```bash
 aws --endpoint-url=http://localhost:4566 dynamodb describe-table \
-  --table-name rate_limits
+  --table-name ZAEL-demo
 ```
 
 ## Learn More

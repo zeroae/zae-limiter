@@ -26,11 +26,12 @@ from zae_limiter import (
     Limit,
     RateLimiter,
     RateLimitExceeded,
+    StackOptions,
 )
 
 # Configuration
 ENDPOINT_URL = "http://localhost:4566"
-TABLE_NAME = "llm_rate_limits"
+NAME = "llm"  # Creates ZAEL-llm resources
 
 
 @dataclass
@@ -82,9 +83,9 @@ async def main() -> None:
     print("=== LLM Token Reconciliation Example ===\n")
 
     limiter = RateLimiter(
-        table_name=TABLE_NAME,
+        name=NAME,  # Creates ZAEL-llm resources
         endpoint_url=ENDPOINT_URL,
-        create_stack=True,
+        stack_options=StackOptions(),
         skip_version_check=True,
     )
 

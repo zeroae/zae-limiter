@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     aws_secret_access_key: str = "test"
     aws_default_region: str = "us-east-1"
 
-    # DynamoDB
-    table_name: str = "rate_limits"
+    # Rate Limiter
+    name: str = "demo"  # Creates ZAEL-demo resources
 
     # API
     api_host: str = "0.0.0.0"

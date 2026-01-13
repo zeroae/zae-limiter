@@ -30,9 +30,8 @@ zae-limiter deploy [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--table-name` | DynamoDB table name | Required |
+| `--name` | Resource identifier (creates ZAEL-{name} resources) | Required |
 | `--region` | AWS region | Required |
-| `--stack-name` | CloudFormation stack name | `zae-limiter-{table}` |
 | `--no-aggregator` | Skip Lambda aggregator | `false` |
 | `--log-retention-days` | CloudWatch log retention (days) | `14` |
 | `--pitr-recovery-days` | Point-in-time recovery (days, 0=disabled) | `0` |
@@ -42,25 +41,24 @@ zae-limiter deploy [OPTIONS]
 
 ```bash
 # Basic deployment
-zae-limiter deploy --table-name rate_limits --region us-east-1
+zae-limiter deploy --name limiter --region us-east-1
 
 # With custom settings
 zae-limiter deploy \
-    --table-name prod_limits \
+    --name prod \
     --region us-west-2 \
-    --stack-name my-rate-limiter \
     --log-retention-days 90 \
     --pitr-recovery-days 7
 
 # Deploy to LocalStack
 zae-limiter deploy \
-    --table-name rate_limits \
+    --name limiter \
     --endpoint-url http://localhost:4566 \
     --region us-east-1
 
 # Without Lambda aggregator
 zae-limiter deploy \
-    --table-name rate_limits \
+    --name limiter \
     --region us-east-1 \
     --no-aggregator
 ```
@@ -79,31 +77,31 @@ zae-limiter status [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--stack-name` | CloudFormation stack name | Required |
+| `--name` | Resource identifier (ZAEL-{name}) | Required |
 | `--region` | AWS region | Required |
 | `--endpoint-url` | Custom AWS endpoint | None |
 
 **Example:**
 
 ```bash
-zae-limiter status --stack-name zae-limiter-rate_limits --region us-east-1
+zae-limiter status --name limiter --region us-east-1
 ```
 
 **Output:**
 
 ```
-Stack: zae-limiter-rate_limits
+Stack: ZAEL-limiter
 Status: CREATE_COMPLETE
 Created: 2024-01-15 10:30:00
 
 Resources:
-  - RateLimitsTable (AWS::DynamoDB::Table): CREATE_COMPLETE
+  - LimiterTable (AWS::DynamoDB::Table): CREATE_COMPLETE
   - AggregatorFunction (AWS::Lambda::Function): CREATE_COMPLETE
   - AggregatorRole (AWS::IAM::Role): CREATE_COMPLETE
 
 Outputs:
-  - TableName: rate_limits
-  - TableArn: arn:aws:dynamodb:us-east-1:123456789:table/rate_limits
+  - TableName: ZAEL-limiter
+  - TableArn: arn:aws:dynamodb:us-east-1:123456789:table/ZAEL-limiter
 ```
 
 ---
@@ -120,7 +118,7 @@ zae-limiter delete [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--stack-name` | CloudFormation stack name | Required |
+| `--name` | Resource identifier (ZAEL-{name}) | Required |
 | `--region` | AWS region | Required |
 | `--yes` | Skip confirmation prompt | `false` |
 | `--endpoint-url` | Custom AWS endpoint | None |
@@ -129,10 +127,10 @@ zae-limiter delete [OPTIONS]
 
 ```bash
 # With confirmation
-zae-limiter delete --stack-name zae-limiter-rate_limits --region us-east-1
+zae-limiter delete --name limiter --region us-east-1
 
 # Skip confirmation
-zae-limiter delete --stack-name zae-limiter-rate_limits --region us-east-1 --yes
+zae-limiter delete --name limiter --region us-east-1 --yes
 ```
 
 !!! warning "Data Loss"
@@ -235,14 +233,14 @@ zae-limiter check [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--table-name` | DynamoDB table name | Required |
+| `--name` | Resource identifier (ZAEL-{name}) | Required |
 | `--region` | AWS region | Required |
 | `--endpoint-url` | Custom AWS endpoint | None |
 
 **Example:**
 
 ```bash
-zae-limiter check --table-name rate_limits --region us-east-1
+zae-limiter check --name limiter --region us-east-1
 ```
 
 **Output:**
@@ -267,7 +265,7 @@ zae-limiter upgrade [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--table-name` | DynamoDB table name | Required |
+| `--name` | Resource identifier (ZAEL-{name}) | Required |
 | `--region` | AWS region | Required |
 | `--endpoint-url` | Custom AWS endpoint | None |
 | `--dry-run` | Show changes without applying | `false` |
@@ -276,10 +274,10 @@ zae-limiter upgrade [OPTIONS]
 
 ```bash
 # Preview changes
-zae-limiter upgrade --table-name rate_limits --region us-east-1 --dry-run
+zae-limiter upgrade --name limiter --region us-east-1 --dry-run
 
 # Apply upgrade
-zae-limiter upgrade --table-name rate_limits --region us-east-1
+zae-limiter upgrade --name limiter --region us-east-1
 ```
 
 ## Environment Variables

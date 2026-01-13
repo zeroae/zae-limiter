@@ -43,7 +43,6 @@ zae-limiter cfn-template | less
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `TableName` | String | `rate_limits` | DynamoDB table name |
 | `SnapshotWindows` | String | `hourly,daily` | Comma-separated list of snapshot windows |
 | `SnapshotRetentionDays` | Number | `90` | Days to retain usage snapshots (1-3650) |
 | `LambdaMemorySize` | Number | `256` | Memory for aggregator Lambda (128-3008 MB) |
@@ -127,7 +126,7 @@ AggregatorFunction:
     Timeout: 60
     Environment:
       Variables:
-        TABLE_NAME: !Ref TableName
+        TABLE_NAME: !Ref AWS::StackName
         SNAPSHOT_WINDOWS: !Ref SnapshotWindows
         RETENTION_DAYS: !Ref SnapshotRetentionDays
 ```
@@ -198,7 +197,7 @@ Resources:
     Type: AWS::SQS::Queue
     Condition: CreateDLQ
     Properties:
-      QueueName: !Sub "${TableName}-dlq"
+      QueueName: !Sub "${AWS::StackName}-dlq"
       MessageRetentionPeriod: 1209600  # 14 days
 
   StreamEventMapping:
@@ -217,12 +216,12 @@ Resources:
 ThrottleAlarm:
   Type: AWS::CloudWatch::Alarm
   Properties:
-    AlarmName: !Sub "${TableName}-throttle"
+    AlarmName: !Sub "${AWS::StackName}-throttle"
     MetricName: ThrottledRequests
     Namespace: AWS/DynamoDB
     Dimensions:
       - Name: TableName
-        Value: !Ref Table
+        Value: !Ref AWS::StackName
     Statistic: Sum
     Period: 60
     EvaluationPeriods: 1
@@ -268,9 +267,8 @@ aws cloudformation deploy \
 ```bash
 aws cloudformation deploy \
     --template-file template.yaml \
-    --stack-name zae-limiter-prod \
+    --stack-name ZAEL-prod \
     --parameter-overrides \
-        TableName=prod_rate_limits \
         PITRRecoveryPeriodDays=35 \
         SnapshotRetentionDays=365 \
         LogRetentionDays=90 \
@@ -283,9 +281,8 @@ aws cloudformation deploy \
 ```yaml
 # samconfig.toml
 [default.deploy.parameters]
-stack_name = "zae-limiter"
+stack_name = "ZAEL-limiter"
 capabilities = "CAPABILITY_NAMED_IAM"
-parameter_overrides = "TableName=rate_limits"
 ```
 
 ```bash
@@ -298,7 +295,6 @@ The template exports:
 
 | Output | Description |
 |--------|-------------|
-| `TableName` | DynamoDB table name |
 | `TableArn` | DynamoDB table ARN |
 | `StreamArn` | DynamoDB stream ARN |
 | `FunctionArn` | Lambda function ARN |
