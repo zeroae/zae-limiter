@@ -195,7 +195,7 @@ Common issues and diagnostic steps:
 
 ## Follow-up Actions
 
-- [ ] **Open GitHub issue for X-Ray tracing integration** (requires manual creation)
+- [x] **Open GitHub issue for X-Ray tracing integration** - Created as [#107](https://github.com/zeroae/zae-limiter/issues/107)
 
 **Issue Details:**
 
