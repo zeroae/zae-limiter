@@ -618,6 +618,33 @@ class TestCLI:
         assert "initiated" in result.output
 
     @patch("zae_limiter.cli.StackManager")
+    def test_delete_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+        """Test delete command with --endpoint-url for LocalStack."""
+        mock_instance = Mock()
+        mock_instance.delete_stack = AsyncMock(return_value=None)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(
+            cli,
+            [
+                "delete",
+                "--stack-name",
+                "test-stack",
+                "--endpoint-url",
+                "http://localhost:4566",
+                "--region",
+                "us-east-1",
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify StackManager was called with endpoint_url
+        mock_stack_manager.assert_called_once_with("dummy", "us-east-1", "http://localhost:4566")
+
+    @patch("zae_limiter.cli.StackManager")
     def test_status_exists(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test status command for existing stack."""
         mock_instance = Mock()
@@ -675,6 +702,33 @@ class TestCLI:
         assert result.exit_code == 1
         assert "CREATE_FAILED" in result.output
         assert "✗" in result.output
+
+    @patch("zae_limiter.cli.StackManager")
+    def test_status_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+        """Test status command with --endpoint-url for LocalStack."""
+        mock_instance = Mock()
+        mock_instance.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(
+            cli,
+            [
+                "status",
+                "--stack-name",
+                "test-stack",
+                "--endpoint-url",
+                "http://localhost:4566",
+                "--region",
+                "us-east-1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "CREATE_COMPLETE" in result.output
+        # Verify StackManager was called with endpoint_url
+        mock_stack_manager.assert_called_once_with("dummy", "us-east-1", "http://localhost:4566")
 
     def test_version_help(self, runner: CliRunner) -> None:
         """Test version command help."""
@@ -735,6 +789,31 @@ class TestCLI:
         assert "Schema Version:" in result.output
 
     @patch("zae_limiter.repository.Repository")
+    def test_version_with_endpoint_url(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test version command with --endpoint-url for LocalStack."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "version",
+                "--table-name",
+                "test_table",
+                "--endpoint-url",
+                "http://localhost:4566",
+                "--region",
+                "us-east-1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify Repository was called with endpoint_url
+        mock_repo_class.assert_called_once_with("test_table", "us-east-1", "http://localhost:4566")
+
+    @patch("zae_limiter.repository.Repository")
     def test_check_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test check command when infrastructure not initialized."""
         mock_repo = Mock()
@@ -768,6 +847,31 @@ class TestCLI:
         assert "Compatibility Check" in result.output
 
     @patch("zae_limiter.repository.Repository")
+    def test_check_with_endpoint_url(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test check command with --endpoint-url for LocalStack."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "check",
+                "--table-name",
+                "test_table",
+                "--endpoint-url",
+                "http://localhost:4566",
+                "--region",
+                "us-east-1",
+            ],
+        )
+
+        assert result.exit_code == 1  # Not initialized
+        # Verify Repository was called with endpoint_url
+        mock_repo_class.assert_called_once_with("test_table", "us-east-1", "http://localhost:4566")
+
+    @patch("zae_limiter.repository.Repository")
     def test_upgrade_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test upgrade command when infrastructure not initialized."""
         mock_repo = Mock()
@@ -780,6 +884,31 @@ class TestCLI:
         assert result.exit_code == 1
         assert "not initialized" in result.output.lower()
         assert "zae-limiter deploy" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_upgrade_with_endpoint_url(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test upgrade command with --endpoint-url for LocalStack."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "upgrade",
+                "--table-name",
+                "test_table",
+                "--endpoint-url",
+                "http://localhost:4566",
+                "--region",
+                "us-east-1",
+            ],
+        )
+
+        assert result.exit_code == 1  # Not initialized
+        # Verify Repository was called with endpoint_url
+        mock_repo_class.assert_called_once_with("test_table", "us-east-1", "http://localhost:4566")
 
 
 class TestLambdaExport:
