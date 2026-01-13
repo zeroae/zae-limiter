@@ -126,9 +126,9 @@ AggregatorFunction:
     Timeout: 60
     Environment:
       Variables:
-        TABLE_NAME: !Ref AWS::StackName
+        TABLE_NAME: !Ref TableName
         SNAPSHOT_WINDOWS: !Ref SnapshotWindows
-        RETENTION_DAYS: !Ref SnapshotRetentionDays
+        SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
 ```
 
 ### Event Source Mapping
@@ -197,7 +197,7 @@ Resources:
     Type: AWS::SQS::Queue
     Condition: CreateDLQ
     Properties:
-      QueueName: !Sub "${AWS::StackName}-dlq"
+      QueueName: !Sub "${TableName}-aggregator-dlq"
       MessageRetentionPeriod: 1209600  # 14 days
 
   StreamEventMapping:
@@ -213,22 +213,26 @@ Resources:
 ### Add CloudWatch Alarms
 
 ```yaml
-ThrottleAlarm:
+ReadThrottleAlarm:
   Type: AWS::CloudWatch::Alarm
   Properties:
-    AlarmName: !Sub "${AWS::StackName}-throttle"
-    MetricName: ThrottledRequests
+    AlarmName: !Sub "${TableName}-read-throttle"
+    AlarmDescription: Alert when DynamoDB read requests are throttled
+    MetricName: ReadThrottleEvents
     Namespace: AWS/DynamoDB
+    Statistic: Sum
+    Period: 300  # 5 minutes
+    EvaluationPeriods: 2
+    Threshold: 1
+    ComparisonOperator: GreaterThanThreshold
     Dimensions:
       - Name: TableName
-        Value: !Ref AWS::StackName
-    Statistic: Sum
-    Period: 60
-    EvaluationPeriods: 1
-    Threshold: 1
-    ComparisonOperator: GreaterThanOrEqualToThreshold
-    AlarmActions:
-      - !Ref AlertTopic
+        Value: !Ref RateLimitsTable
+    TreatMissingData: notBreaching
+    AlarmActions: !If
+      - HasSNSTopic
+      - [!Ref AlarmSNSTopicArn]
+      - !Ref AWS::NoValue
 ```
 
 ### Enable Encryption with CMK
