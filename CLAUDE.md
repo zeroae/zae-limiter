@@ -18,7 +18,8 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 uv sync --all-extras
 
 # Deploy infrastructure (CloudFormation)
-uv run zae-limiter deploy --table-name rate_limits --region us-east-1
+# Uses ZAEL- prefix: "limiter" becomes "ZAEL-limiter" resources
+uv run zae-limiter deploy --name limiter --region us-east-1
 
 # Run tests
 uv run pytest
@@ -86,37 +87,38 @@ The library uses CloudFormation for infrastructure deployment. The `deploy` comm
 
 ```bash
 # Deploy stack with CLI (includes Lambda deployment)
-zae-limiter deploy --table-name rate_limits --region us-east-1
+# Name is prefixed with ZAEL-: "my-app" becomes "ZAEL-my-app" resources
+zae-limiter deploy --name my-app --region us-east-1
 
 # Deploy to LocalStack (for local development)
-zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566 --region us-east-1
+zae-limiter deploy --name my-app --endpoint-url http://localhost:4566 --region us-east-1
 
 # Deploy without aggregator Lambda
-zae-limiter deploy --table-name rate_limits --no-aggregator
+zae-limiter deploy --name my-app --no-aggregator
 
 # Deploy with custom log retention (90 days)
-zae-limiter deploy --table-name rate_limits --log-retention-days 90
+zae-limiter deploy --name my-app --log-retention-days 90
 
 # Deploy with custom Lambda settings
-zae-limiter deploy --table-name rate_limits --lambda-timeout 120 --lambda-memory 512
+zae-limiter deploy --name my-app --lambda-timeout 120 --lambda-memory 512
 
 # Deploy with alarms and SNS notifications
-zae-limiter deploy --table-name rate_limits --alarm-sns-topic arn:aws:sns:us-east-1:123456789012:my-topic
+zae-limiter deploy --name my-app --alarm-sns-topic arn:aws:sns:us-east-1:123456789012:my-topic
 
 # Deploy with custom duration threshold (90% of timeout)
-zae-limiter deploy --table-name rate_limits --lambda-duration-threshold-pct 90
+zae-limiter deploy --name my-app --lambda-duration-threshold-pct 90
 
 # Disable CloudWatch alarms
-zae-limiter deploy --table-name rate_limits --no-alarms
+zae-limiter deploy --name my-app --no-alarms
 
 # Deploy with permission boundary (for restricted IAM environments)
-zae-limiter deploy --table-name rate_limits --permission-boundary MyBoundaryPolicy
+zae-limiter deploy --name my-app --permission-boundary MyBoundaryPolicy
 
 # Deploy with custom role name format (for organizational naming policies)
-zae-limiter deploy --table-name rate_limits --role-name-format "app-{}"
+zae-limiter deploy --name my-app --role-name-format "app-{}"
 
 # Enterprise deployment with both options
-zae-limiter deploy --table-name rate_limits \
+zae-limiter deploy --name my-app \
   --permission-boundary arn:aws:iam::aws:policy/PowerUserAccess \
   --role-name-format "pb-{}-PowerUser"
 
@@ -129,14 +131,14 @@ zae-limiter lambda-export --output lambda.zip
 # Show Lambda package info without building
 zae-limiter lambda-export --info
 
-# Check stack status
-zae-limiter status --stack-name zae-limiter-rate_limits --region us-east-1
+# Check stack status (use the full prefixed name or short name)
+zae-limiter status --name ZAEL-my-app --region us-east-1
 
 # Check stack status (LocalStack)
-zae-limiter status --stack-name zae-limiter-rate_limits --endpoint-url http://localhost:4566 --region us-east-1
+zae-limiter status --name my-app --endpoint-url http://localhost:4566 --region us-east-1
 
 # Delete stack
-zae-limiter delete --stack-name zae-limiter-rate_limits --yes
+zae-limiter delete --name my-app --yes
 ```
 
 **Lambda Deployment Details:**
@@ -153,15 +155,16 @@ The library is designed to be self-deploying. Pass `StackOptions` to auto-create
 from zae_limiter import RateLimiter, StackOptions
 
 # Production - stack auto-creates on first use with sensible defaults
+# "my-app" becomes "ZAEL-my-app" (all AWS resources use this name)
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",  # Creates ZAEL-my-app resources
     region="us-east-1",
     stack_options=StackOptions(),
 )
 
 # With custom configuration
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",
     region="us-east-1",
     stack_options=StackOptions(
         lambda_memory=512,
@@ -173,7 +176,7 @@ limiter = RateLimiter(
 
 # Enterprise deployment with permission boundary and custom role naming
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",
     region="us-east-1",
     stack_options=StackOptions(
         permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
@@ -196,11 +199,11 @@ LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Stream
 docker compose up -d
 
 # Deploy infrastructure with CLI
-zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566 --region us-east-1
+zae-limiter deploy --name my-app --endpoint-url http://localhost:4566 --region us-east-1
 
 # Or auto-create in code (recommended)
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",  # Creates ZAEL-my-app resources
     endpoint_url="http://localhost:4566",
     region="us-east-1",
     stack_options=StackOptions(),  # Creates full CloudFormation stack
@@ -221,6 +224,7 @@ src/zae_limiter/
 ├── __init__.py        # Public API exports
 ├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction
 ├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError
+├── naming.py          # Resource name validation and ZAEL- prefix logic
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders
 ├── repository.py      # DynamoDB operations
@@ -239,6 +243,29 @@ src/zae_limiter/
     ├── lambda_builder.py   # Lambda deployment package builder
     └── cfn_template.yaml   # CloudFormation template
 ```
+
+## Naming Convention
+
+### Resource Name and ZAEL- Prefix
+
+Users provide a short identifier (e.g., `my-app`), and the system automatically prefixes it with `ZAEL-`:
+
+| User Provides | AWS Resources |
+|---------------|---------------|
+| `limiter` | `ZAEL-limiter` (stack, table, Lambda, etc.) |
+| `my-app` | `ZAEL-my-app` (stack, table, Lambda, etc.) |
+
+**Key points:**
+- All AWS resources use the same name pattern: `ZAEL-{identifier}`
+- The `name` parameter is cloud-agnostic (not tied to CloudFormation terminology)
+- Names must use **hyphens** (not underscores) due to CloudFormation rules
+- Names must start with a letter and contain only alphanumeric characters and hyphens
+- Maximum identifier length: 38 characters (IAM role name constraints)
+
+**Invalid names (rejected by validation):**
+- `rate_limits` ❌ (underscores not allowed)
+- `my.app` ❌ (periods not allowed)
+- `123app` ❌ (must start with letter)
 
 ## Key Design Decisions
 

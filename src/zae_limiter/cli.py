@@ -20,13 +20,10 @@ def cli() -> None:
 
 @cli.command()
 @click.option(
-    "--table-name",
-    default="rate_limits",
-    help="DynamoDB table name",
-)
-@click.option(
-    "--stack-name",
-    help="CloudFormation stack name (default: zae-limiter-{table-name})",
+    "--name",
+    "-n",
+    default="limiter",
+    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -142,8 +139,7 @@ def cli() -> None:
     ),
 )
 def deploy(
-    table_name: str,
-    stack_name: str | None,
+    name: str,
     region: str | None,
     endpoint_url: str | None,
     snapshot_windows: str,
@@ -161,9 +157,16 @@ def deploy(
     role_name_format: str | None,
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
+    from .exceptions import ValidationError
+
+    try:
+        manager = StackManager(name, region, endpoint_url)
+    except ValidationError as e:
+        click.echo(f"Error: {e.reason}", err=True)
+        sys.exit(1)
 
     async def _deploy() -> None:
-        async with StackManager(table_name, region, endpoint_url) as manager:
+        async with manager:
             # Build StackOptions from CLI arguments
             stack_options = StackOptions(
                 snapshot_windows=snapshot_windows,
@@ -176,15 +179,12 @@ def deploy(
                 enable_alarms=enable_alarms,
                 alarm_sns_topic=alarm_sns_topic,
                 lambda_duration_threshold_pct=lambda_duration_threshold_pct,
-                stack_name=stack_name,
                 permission_boundary=permission_boundary,
                 role_name_format=role_name_format,
             )
 
-            actual_stack_name = stack_options.stack_name or manager.get_stack_name()
-
-            click.echo(f"Deploying stack: {actual_stack_name}")
-            click.echo(f"  Table name: {table_name}")
+            click.echo(f"Deploying stack: {manager.stack_name}")
+            click.echo(f"  Table name: {manager.table_name}")
             click.echo(f"  Region: {region or 'default'}")
             click.echo(f"  Snapshot windows: {stack_options.snapshot_windows}")
             click.echo(f"  Retention days: {stack_options.retention_days}")
@@ -258,9 +258,10 @@ def deploy(
 
 @cli.command()
 @click.option(
-    "--stack-name",
+    "--name",
+    "-n",
     required=True,
-    help="CloudFormation stack name to delete",
+    help="Resource identifier (will be prefixed with 'ZAEL-' if not already)",
 )
 @click.option(
     "--region",
@@ -285,29 +286,37 @@ def deploy(
     help="Skip confirmation prompt",
 )
 def delete(
-    stack_name: str,
+    name: str,
     region: str | None,
     endpoint_url: str | None,
     wait: bool,
     yes: bool,
 ) -> None:
     """Delete CloudFormation stack."""
+    from .exceptions import ValidationError
+    from .naming import normalize_name
+
+    try:
+        normalized_name = normalize_name(name)
+    except ValidationError as e:
+        click.echo(f"Error: {e.reason}", err=True)
+        sys.exit(1)
 
     if not yes:
         click.confirm(
-            f"Are you sure you want to delete stack '{stack_name}'?",
+            f"Are you sure you want to delete stack '{normalized_name}'?",
             abort=True,
         )
 
     async def _delete() -> None:
-        async with StackManager("dummy", region, endpoint_url) as manager:
-            click.echo(f"Deleting stack: {stack_name}")
+        async with StackManager(name, region, endpoint_url) as manager:
+            click.echo(f"Deleting stack: {manager.stack_name}")
 
             try:
-                await manager.delete_stack(stack_name=stack_name, wait=wait)
+                await manager.delete_stack(stack_name=manager.stack_name, wait=wait)
 
                 if wait:
-                    click.echo(f"✓ Stack '{stack_name}' deleted successfully")
+                    click.echo(f"✓ Stack '{manager.stack_name}' deleted successfully")
                 else:
                     click.echo("Stack deletion initiated. Use 'status' command to check progress.")
 
@@ -405,9 +414,10 @@ def lambda_export(output: str, info: bool, force: bool) -> None:
 
 @cli.command()
 @click.option(
-    "--stack-name",
+    "--name",
+    "-n",
     required=True,
-    help="CloudFormation stack name",
+    help="Resource identifier (will be prefixed with 'ZAEL-' if not already)",
 )
 @click.option(
     "--region",
@@ -420,19 +430,26 @@ def lambda_export(output: str, info: bool, force: bool) -> None:
         "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
     ),
 )
-def status(stack_name: str, region: str | None, endpoint_url: str | None) -> None:
+def status(name: str, region: str | None, endpoint_url: str | None) -> None:
     """Get CloudFormation stack status."""
+    from .exceptions import ValidationError
+
+    try:
+        manager = StackManager(name, region, endpoint_url)
+    except ValidationError as e:
+        click.echo(f"Error: {e.reason}", err=True)
+        sys.exit(1)
 
     async def _status() -> None:
-        async with StackManager("dummy", region, endpoint_url) as manager:
+        async with manager:
             try:
-                stack_status = await manager.get_stack_status(stack_name)
+                stack_status = await manager.get_stack_status(manager.stack_name)
 
                 if stack_status is None:
-                    click.echo(f"Stack '{stack_name}' not found")
+                    click.echo(f"Stack '{manager.stack_name}' not found")
                     sys.exit(1)
 
-                click.echo(f"Stack: {stack_name}")
+                click.echo(f"Stack: {manager.stack_name}")
                 click.echo(f"Status: {stack_status}")
 
                 # Interpret status
@@ -455,9 +472,10 @@ def status(stack_name: str, region: str | None, endpoint_url: str | None) -> Non
 
 @cli.command("version")
 @click.option(
-    "--table-name",
-    required=True,
-    help="DynamoDB table name",
+    "--name",
+    "-n",
+    default="limiter",
+    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -470,18 +488,14 @@ def status(stack_name: str, region: str | None, endpoint_url: str | None) -> Non
         "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
     ),
 )
-@click.option(
-    "--stack-name",
-    help="CloudFormation stack name (default: zae-limiter-{table-name})",
-)
 def version_cmd(
-    table_name: str,
+    name: str,
     region: str | None,
     endpoint_url: str | None,
-    stack_name: str | None,
 ) -> None:
     """Show infrastructure version information."""
     from . import __version__
+    from .exceptions import ValidationError
     from .version import (
         InfrastructureVersion,
         check_compatibility,
@@ -492,7 +506,11 @@ def version_cmd(
         # Import here to avoid loading aioboto3 at CLI startup
         from .repository import Repository
 
-        repo = Repository(table_name, region, endpoint_url)
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
 
         try:
             click.echo()
@@ -552,9 +570,10 @@ def version_cmd(
 
 @cli.command()
 @click.option(
-    "--table-name",
-    required=True,
-    help="DynamoDB table name",
+    "--name",
+    "-n",
+    default="limiter",
+    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -568,10 +587,6 @@ def version_cmd(
     ),
 )
 @click.option(
-    "--stack-name",
-    help="CloudFormation stack name (default: zae-limiter-{table-name})",
-)
-@click.option(
     "--lambda-only",
     is_flag=True,
     help="Only update Lambda code",
@@ -582,10 +597,9 @@ def version_cmd(
     help="Force update even if version matches",
 )
 def upgrade(
-    table_name: str,
+    name: str,
     region: str | None,
     endpoint_url: str | None,
-    stack_name: str | None,
     lambda_only: bool,
     force: bool,
 ) -> None:
@@ -598,9 +612,14 @@ def upgrade(
     )
 
     async def _upgrade() -> None:
+        from .exceptions import ValidationError
         from .repository import Repository
 
-        repo = Repository(table_name, region, endpoint_url)
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
 
         try:
             click.echo()
@@ -635,7 +654,7 @@ def upgrade(
             click.echo(f"Target:  Lambda {__version__}")
             click.echo()
 
-            async with StackManager(table_name, region, endpoint_url) as manager:
+            async with StackManager(name, region, endpoint_url) as manager:
                 # Step 1: Update Lambda code
                 click.echo("[1/2] Deploying Lambda code...")
                 try:
@@ -675,9 +694,10 @@ def upgrade(
 
 @cli.command()
 @click.option(
-    "--table-name",
-    required=True,
-    help="DynamoDB table name",
+    "--name",
+    "-n",
+    default="limiter",
+    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -691,12 +711,13 @@ def upgrade(
     ),
 )
 def check(
-    table_name: str,
+    name: str,
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
     """Check infrastructure compatibility without modifying."""
     from . import __version__
+    from .exceptions import ValidationError
     from .version import (
         InfrastructureVersion,
         check_compatibility,
@@ -705,7 +726,11 @@ def check(
     async def _check() -> None:
         from .repository import Repository
 
-        repo = Repository(table_name, region, endpoint_url)
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
 
         try:
             click.echo()

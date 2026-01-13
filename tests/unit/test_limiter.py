@@ -569,7 +569,7 @@ class TestRateLimiterStackOptions:
         with _patch_aiobotocore_response():
             stack_options = StackOptions(lambda_timeout=120)
             limiter = RateLimiter(
-                table_name="test_with_stack_options",
+                name="test-with-stack-options",
                 region="us-east-1",
                 stack_options=stack_options,
                 skip_version_check=True,  # Skip version check to isolate test
@@ -600,7 +600,7 @@ class TestRateLimiterStackOptions:
 
         with _patch_aiobotocore_response():
             limiter = RateLimiter(
-                table_name="test_without_stack_options",
+                name="test-without-stack-options",
                 region="us-east-1",
                 stack_options=None,  # No stack options
                 skip_version_check=True,

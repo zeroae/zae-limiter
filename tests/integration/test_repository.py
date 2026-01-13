@@ -29,10 +29,10 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-async def localstack_repo(localstack_endpoint, unique_table_name):
+async def localstack_repo(localstack_endpoint, unique_name):
     """Repository connected to LocalStack (direct table creation, no CloudFormation)."""
     repo = Repository(
-        table_name=unique_table_name,
+        stack_name=unique_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
     )
@@ -50,11 +50,11 @@ class TestRepositoryLocalStackCloudFormation:
 
     @pytest.mark.asyncio
     async def test_create_table_or_stack_uses_cloudformation(
-        self, localstack_endpoint, minimal_stack_options, unique_table_name
+        self, localstack_endpoint, minimal_stack_options, unique_name
     ):
         """Should create CloudFormation stack with minimal infrastructure."""
         repo = Repository(
-            table_name=unique_table_name,
+            stack_name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
         )
@@ -79,12 +79,10 @@ class TestRepositoryLocalStackCloudFormation:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_create_stack_with_custom_parameters(
-        self, localstack_endpoint, unique_table_name
-    ):
+    async def test_create_stack_with_custom_parameters(self, localstack_endpoint, unique_name):
         """Should pass custom parameters to CloudFormation stack."""
         repo = Repository(
-            table_name=unique_table_name,
+            stack_name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
         )

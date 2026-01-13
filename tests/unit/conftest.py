@@ -62,7 +62,7 @@ async def limiter(mock_dynamodb):
     with _patch_aiobotocore_response():
         # Create limiter without auto-creation
         limiter = RateLimiter(
-            table_name="test_rate_limits",
+            name="test-rate-limits",
             region="us-east-1",
         )
         # Manually create table using direct API (not CloudFormation)
@@ -77,7 +77,7 @@ def sync_limiter(mock_dynamodb):
     with _patch_aiobotocore_response():
         # Create limiter without auto-creation
         limiter = SyncRateLimiter(
-            table_name="test_rate_limits",
+            name="test-rate-limits",
             region="us-east-1",
         )
         # Manually create table using direct API (not CloudFormation)

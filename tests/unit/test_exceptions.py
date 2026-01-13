@@ -203,15 +203,16 @@ class TestRateLimiterUnavailable:
         exc = RateLimiterUnavailable(
             "DynamoDB unavailable",
             cause=cause,
-            table_name="rate_limits",
+            stack_name="rate-limits",
             entity_id="entity-1",
             resource="gpt-4",
         )
-        assert exc.table_name == "rate_limits"
+        assert exc.stack_name == "rate-limits"
+        assert exc.table_name == "rate-limits"  # Backwards compatibility
         assert exc.entity_id == "entity-1"
         assert exc.resource == "gpt-4"
         msg = str(exc)
-        assert "table=rate_limits" in msg
+        assert "stack=rate-limits" in msg
         assert "entity=entity-1" in msg
         assert "resource=gpt-4" in msg
 
@@ -219,12 +220,13 @@ class TestRateLimiterUnavailable:
         """Context fields are optional."""
         exc = RateLimiterUnavailable(
             "DynamoDB timeout",
-            table_name="my_table",
+            stack_name="my-table",
         )
-        assert exc.table_name == "my_table"
+        assert exc.stack_name == "my-table"
+        assert exc.table_name == "my-table"  # Backwards compatibility
         assert exc.entity_id is None
         assert exc.resource is None
-        assert "table=my_table" in str(exc)
+        assert "stack=my-table" in str(exc)
         assert "entity=" not in str(exc)
         assert "resource=" not in str(exc)
 
@@ -423,38 +425,23 @@ class TestInfrastructureNotFoundError:
 
     def test_attributes_stored(self) -> None:
         """All attributes are stored correctly."""
-        exc = InfrastructureNotFoundError(
-            table_name="rate_limits",
-            stack_name="zae-limiter-rate_limits",
-        )
+        exc = InfrastructureNotFoundError(stack_name="ZAEL-rate-limits")
 
-        assert exc.table_name == "rate_limits"
-        assert exc.stack_name == "zae-limiter-rate_limits"
+        assert exc.stack_name == "ZAEL-rate-limits"
+        # table_name is same as stack_name for backwards compatibility
+        assert exc.table_name == "ZAEL-rate-limits"
 
-    def test_message_without_stack_name(self) -> None:
-        """Message format when no stack name."""
-        exc = InfrastructureNotFoundError(table_name="my_table")
+    def test_message_format(self) -> None:
+        """Message includes stack name and deploy hint."""
+        exc = InfrastructureNotFoundError(stack_name="ZAEL-my-table")
 
         msg = str(exc)
-        assert "my_table" in msg
-        assert "stack:" not in msg
+        assert "ZAEL-my-table" in msg
         assert "zae-limiter deploy" in msg
-
-    def test_message_with_stack_name(self) -> None:
-        """Message includes stack name when provided."""
-        exc = InfrastructureNotFoundError(
-            table_name="my_table",
-            stack_name="my-stack",
-        )
-
-        msg = str(exc)
-        assert "my_table" in msg
-        assert "my-stack" in msg
-        assert "stack:" in msg
 
     def test_inherits_from_infrastructure_error(self) -> None:
         """InfrastructureNotFoundError is an InfrastructureError."""
-        exc = InfrastructureNotFoundError("table")
+        exc = InfrastructureNotFoundError("ZAEL-table")
         assert isinstance(exc, InfrastructureError)
         assert isinstance(exc, ZAELimiterError)
 

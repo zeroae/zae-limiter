@@ -160,7 +160,6 @@ class TestStackOptions:
         assert opts.enable_alarms is True
         assert opts.alarm_sns_topic is None
         assert opts.lambda_duration_threshold_pct == 80
-        assert opts.stack_name is None
         assert opts.permission_boundary is None
         assert opts.role_name_format is None
 
@@ -338,14 +337,14 @@ class TestStackOptions:
         opts = StackOptions()
         assert opts.get_role_name("mytable") is None
 
-    def test_role_name_in_params_with_table_name(self):
-        """Test role_name is in params when table_name is provided."""
+    def test_role_name_in_params_with_stack_name(self):
+        """Test role_name is in params when stack_name is provided."""
         opts = StackOptions(role_name_format="app-{}")
-        params = opts.to_parameters(table_name="mytable")
-        assert params["role_name"] == "app-mytable-aggregator-role"
+        params = opts.to_parameters(stack_name="ZAEL-mytable")
+        assert params["role_name"] == "app-ZAEL-mytable-aggregator-role"
 
-    def test_role_name_not_in_params_without_table_name(self):
-        """Test role_name is not in params when table_name is not provided."""
+    def test_role_name_not_in_params_without_stack_name(self):
+        """Test role_name is not in params when stack_name is not provided."""
         opts = StackOptions(role_name_format="app-{}")
         params = opts.to_parameters()
         assert "role_name" not in params
@@ -353,7 +352,7 @@ class TestStackOptions:
     def test_role_name_not_in_params_when_format_none(self):
         """Test role_name is not in params when role_name_format is None."""
         opts = StackOptions()
-        params = opts.to_parameters(table_name="mytable")
+        params = opts.to_parameters(stack_name="ZAEL-mytable")
         assert "role_name" not in params
 
 

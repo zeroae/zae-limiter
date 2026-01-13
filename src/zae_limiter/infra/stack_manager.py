@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..exceptions import StackAlreadyExistsError, StackCreationError
 from ..models import StackOptions
+from ..naming import normalize_stack_name
 from .lambda_builder import build_lambda_package
 
 # Version tag keys for infrastructure
@@ -23,11 +24,14 @@ class StackManager:
 
     Supports both AWS and LocalStack environments. When endpoint_url is provided,
     CloudFormation operations are performed against that endpoint.
+
+    The stack_name is automatically prefixed with 'ZAEL-' if not already present.
+    The table_name is always identical to the stack_name.
     """
 
     def __init__(
         self,
-        table_name: str,
+        stack_name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
     ) -> None:
@@ -35,28 +39,18 @@ class StackManager:
         Initialize stack manager.
 
         Args:
-            table_name: Name of the DynamoDB table
+            stack_name: Stack identifier (e.g., 'rate-limits'). Will be prefixed with 'ZAEL-'.
             region: AWS region (default: use boto3 defaults)
             endpoint_url: Optional endpoint URL (for LocalStack or other AWS-compatible services)
         """
-        self.table_name = table_name
+        # Validate and normalize stack name (adds ZAEL- prefix)
+        self.stack_name = normalize_stack_name(stack_name)
+        # Table name is always identical to stack name
+        self.table_name = self.stack_name
         self.region = region
         self.endpoint_url = endpoint_url
         self._session: aioboto3.Session | None = None
         self._client: Any = None
-
-    def get_stack_name(self, table_name: str | None = None) -> str:
-        """
-        Generate stack name from table name.
-
-        Args:
-            table_name: Table name (default: use self.table_name)
-
-        Returns:
-            CloudFormation stack name
-        """
-        name = table_name or self.table_name
-        return f"zae-limiter-{name}"
 
     async def _get_client(self) -> Any:
         """Get or create CloudFormation client."""
@@ -215,7 +209,6 @@ class StackManager:
 
     async def create_stack(
         self,
-        stack_name: str | None = None,
         stack_options: StackOptions | None = None,
         wait: bool = True,
     ) -> dict[str, Any]:
@@ -225,7 +218,6 @@ class StackManager:
         Handles stack already exists gracefully.
 
         Args:
-            stack_name: Override stack name (default: auto-generated or from stack_options)
             stack_options: Stack configuration
             wait: Wait for stack to be CREATE_COMPLETE
 
@@ -236,13 +228,11 @@ class StackManager:
             StackCreationError: If stack creation fails
             StackAlreadyExistsError: If stack already exists
         """
-        # Determine stack name from options, parameter, or default
-        if stack_name is None and stack_options is not None:
-            stack_name = stack_options.stack_name
-        stack_name = stack_name or self.get_stack_name()
+        # Use the normalized stack name from constructor
+        stack_name = self.stack_name
 
         # Convert stack_options to parameters
-        parameters = stack_options.to_parameters(self.table_name) if stack_options else None
+        parameters = stack_options.to_parameters(self.stack_name) if stack_options else None
         client = await self._get_client()
 
         # Check if stack already exists
@@ -427,7 +417,7 @@ class StackManager:
             zip_bytes = build_lambda_package()
         except Exception as e:
             raise StackCreationError(
-                stack_name=self.get_stack_name(),
+                stack_name=self.stack_name,
                 reason=f"Failed to build Lambda package: {e}",
             ) from e
 
@@ -457,7 +447,7 @@ class StackManager:
                         await waiter.wait(FunctionName=function_name)
                     except Exception as e:
                         raise StackCreationError(
-                            stack_name=self.get_stack_name(),
+                            stack_name=self.stack_name,
                             reason=f"Waiting for Lambda update failed: {e}",
                         ) from e
 
@@ -484,7 +474,7 @@ class StackManager:
                 error_msg = e.response["Error"]["Message"]
 
                 raise StackCreationError(
-                    stack_name=self.get_stack_name(),
+                    stack_name=self.stack_name,
                     reason=f"Lambda deployment failed ({error_code}): {error_msg}",
                 ) from e
 

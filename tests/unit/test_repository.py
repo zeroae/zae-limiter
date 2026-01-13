@@ -16,7 +16,7 @@ async def repo(mock_dynamodb):
     from tests.unit.conftest import _patch_aiobotocore_response
 
     with _patch_aiobotocore_response():
-        repo = Repository(table_name="test_repo", region="us-east-1")
+        repo = Repository(stack_name="test-repo", region="us-east-1")
         await repo.create_table()
         yield repo
         await repo.close()
@@ -201,7 +201,7 @@ class TestRepositoryTransactions:
         assert "Put" in put_item
         put_spec = put_item["Put"]
 
-        assert put_spec["TableName"] == "test_repo"
+        assert put_spec["TableName"] == "ZAEL-test-repo"
 
         # Verify keys
         assert "PK" in put_spec["Item"]

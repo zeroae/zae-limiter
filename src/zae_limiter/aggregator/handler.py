@@ -7,7 +7,7 @@ from typing import Any
 from .processor import StructuredLogger, process_stream_records
 
 # Configuration from environment
-TABLE_NAME = os.environ.get("TABLE_NAME", "rate_limits")
+TABLE_NAME = os.environ.get("TABLE_NAME", "ZAEL-rate-limits")
 SNAPSHOT_WINDOWS = os.environ.get("SNAPSHOT_WINDOWS", "hourly,daily").split(",")
 SNAPSHOT_TTL_DAYS = int(os.environ.get("SNAPSHOT_TTL_DAYS", "90"))
 
@@ -21,7 +21,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     Processes bucket changes and updates usage snapshots.
 
     Environment variables:
-        TABLE_NAME: DynamoDB table name (default: rate_limits)
+        TABLE_NAME: DynamoDB table name (default: ZAEL-rate-limits)
         SNAPSHOT_WINDOWS: Comma-separated windows (default: hourly,daily)
         SNAPSHOT_TTL_DAYS: TTL for snapshots in days (default: 90)
 

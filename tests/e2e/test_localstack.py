@@ -43,7 +43,7 @@ class TestE2ELocalStackCLIWorkflow:
         """Create Click CLI runner."""
         return CliRunner()
 
-    def test_full_cli_workflow(self, cli_runner, localstack_endpoint, unique_table_name):
+    def test_full_cli_workflow(self, cli_runner, localstack_endpoint, unique_name):
         """
         Complete E2E workflow using CLI commands.
 
@@ -57,7 +57,7 @@ class TestE2ELocalStackCLIWorkflow:
         Note: Uses SyncRateLimiter because CLI uses asyncio.run() internally,
         which conflicts with pytest-asyncio's event loop.
         """
-        stack_name = f"zae-limiter-{unique_table_name}"
+        stack_name = f"ZAEL-{unique_name}"
 
         try:
             # Step 1: Deploy stack via CLI
@@ -65,8 +65,8 @@ class TestE2ELocalStackCLIWorkflow:
                 cli,
                 [
                     "deploy",
-                    "--table-name",
-                    unique_table_name,
+                    "--name",
+                    unique_name,
                     "--endpoint-url",
                     localstack_endpoint,
                     "--region",
@@ -89,7 +89,7 @@ class TestE2ELocalStackCLIWorkflow:
                 cli,
                 [
                     "status",
-                    "--stack-name",
+                    "--name",
                     stack_name,
                     "--region",
                     "us-east-1",
@@ -102,7 +102,7 @@ class TestE2ELocalStackCLIWorkflow:
 
             # Step 3: Use SyncRateLimiter with deployed infrastructure
             limiter = SyncRateLimiter(
-                table_name=unique_table_name,
+                name=unique_name,
                 endpoint_url=localstack_endpoint,
                 region="us-east-1",
             )
@@ -127,7 +127,7 @@ class TestE2ELocalStackCLIWorkflow:
                 cli,
                 [
                     "delete",
-                    "--stack-name",
+                    "--name",
                     stack_name,
                     "--region",
                     "us-east-1",
@@ -144,7 +144,7 @@ class TestE2ELocalStackFullWorkflow:
     """E2E tests for full rate limiting workflow."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter(self, localstack_endpoint, unique_table_name_class, e2e_stack_options):
+    async def e2e_limiter(self, localstack_endpoint, unique_name_class, e2e_stack_options):
         """
         Create and manage the RateLimiter with CloudFormation stack for all tests in this class.
 
@@ -152,7 +152,7 @@ class TestE2ELocalStackFullWorkflow:
         deletes it after all tests in the class complete.
         """
         limiter = RateLimiter(
-            table_name=unique_table_name_class,
+            name=unique_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=e2e_stack_options,
@@ -367,7 +367,7 @@ class TestE2ELocalStackAggregatorWorkflow:
     """E2E tests for Lambda aggregator and usage snapshots."""
 
     @pytest.fixture
-    async def e2e_limiter_with_aggregator(self, localstack_endpoint, unique_table_name):
+    async def e2e_limiter_with_aggregator(self, localstack_endpoint, unique_name):
         """Create RateLimiter with aggregator enabled."""
         stack_options = StackOptions(
             enable_aggregator=True,
@@ -377,7 +377,7 @@ class TestE2ELocalStackAggregatorWorkflow:
         )
 
         limiter = RateLimiter(
-            table_name=unique_table_name,
+            name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=stack_options,
@@ -444,7 +444,7 @@ class TestE2ELocalStackErrorHandling:
     """E2E tests for error handling scenarios."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter_minimal(self, localstack_endpoint, unique_table_name_class):
+    async def e2e_limiter_minimal(self, localstack_endpoint, unique_name_class):
         """
         Create and manage the minimal RateLimiter for all tests in this class.
 
@@ -457,7 +457,7 @@ class TestE2ELocalStackErrorHandling:
         )
 
         limiter = RateLimiter(
-            table_name=unique_table_name_class,
+            name=unique_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=stack_options,
@@ -578,11 +578,11 @@ class TestE2ECloudFormationStackVariations:
 
     @pytest.mark.asyncio
     async def test_cloudformation_full_stack_deployment(
-        self, localstack_endpoint, full_stack_options, unique_table_name
+        self, localstack_endpoint, full_stack_options, unique_name
     ):
         """Test full CloudFormation stack creation (with aggregator and alarms)."""
         limiter = RateLimiter(
-            table_name=unique_table_name,
+            name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=full_stack_options,
@@ -600,7 +600,7 @@ class TestE2ECloudFormationStackVariations:
 
     @pytest.mark.asyncio
     async def test_cloudformation_aggregator_no_alarms(
-        self, localstack_endpoint, aggregator_stack_options, unique_table_name
+        self, localstack_endpoint, aggregator_stack_options, unique_name
     ):
         """Test CloudFormation stack with aggregator but without alarms.
 
@@ -608,7 +608,7 @@ class TestE2ECloudFormationStackVariations:
         The AggregatorDLQAlarmName output should not be created in this scenario.
         """
         limiter = RateLimiter(
-            table_name=unique_table_name,
+            name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=aggregator_stack_options,

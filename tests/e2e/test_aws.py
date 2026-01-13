@@ -75,11 +75,11 @@ class TestE2EAWSFullWorkflow:
     """E2E tests against real AWS."""
 
     @pytest.fixture
-    async def aws_limiter(self, unique_table_name):
+    async def aws_limiter(self, unique_name):
         """
         Create RateLimiter with full stack on real AWS.
 
-        Uses unique table name for isolation.
+        Uses unique name for isolation.
         """
         stack_options = StackOptions(
             enable_aggregator=True,
@@ -93,7 +93,7 @@ class TestE2EAWSFullWorkflow:
         )
 
         limiter = RateLimiter(
-            table_name=unique_table_name,
+            name=unique_name,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -150,14 +150,15 @@ class TestE2EAWSFullWorkflow:
         assert available["rpm"] < 100
 
     @pytest.mark.asyncio
-    async def test_role_has_permission_boundary(self, aws_limiter, unique_table_name):
+    async def test_role_has_permission_boundary(self, aws_limiter, unique_name):
         """Verify the Lambda role was created with permission boundary and custom name."""
         import boto3
 
         iam = boto3.client("iam", region_name="us-east-1")
 
-        # The role name format "PowerUserPB-{}" produces "PowerUserPB-{table_name}-aggregator-role"
-        expected_role_name = f"PowerUserPB-{unique_table_name}-aggregator-role"
+        # The role name format "PowerUserPB-{}" produces "PowerUserPB-ZAEL-{name}-aggregator-role"
+        # The {} is replaced with the full default role name: ZAEL-{name}-aggregator-role
+        expected_role_name = f"PowerUserPB-ZAEL-{unique_name}-aggregator-role"
 
         role = iam.get_role(RoleName=expected_role_name)
 
@@ -169,9 +170,7 @@ class TestE2EAWSFullWorkflow:
     @pytest.mark.asyncio
     @pytest.mark.slow
     @pytest.mark.monitoring
-    async def test_cloudwatch_alarm_states(
-        self, aws_limiter, aws_cloudwatch_client, unique_table_name
-    ):
+    async def test_cloudwatch_alarm_states(self, aws_limiter, aws_cloudwatch_client, unique_name):
         """
         Verify CloudWatch alarms are in expected states.
 
@@ -193,7 +192,7 @@ class TestE2EAWSFullWorkflow:
         await asyncio.sleep(60)
 
         # Check alarm states - alarm names are based on stack name pattern
-        stack_name = f"zae-limiter-{unique_table_name}"
+        stack_name = f"ZAEL-{unique_name}"
         alarm_name_prefix = stack_name
 
         response = aws_cloudwatch_client.describe_alarms(
@@ -215,7 +214,7 @@ class TestE2EAWSFullWorkflow:
     @pytest.mark.asyncio
     @pytest.mark.slow
     @pytest.mark.monitoring
-    async def test_dlq_is_empty(self, aws_limiter, aws_sqs_client, unique_table_name):
+    async def test_dlq_is_empty(self, aws_limiter, aws_sqs_client, unique_name):
         """
         Verify Dead Letter Queue has no messages after normal operation.
 
@@ -238,7 +237,7 @@ class TestE2EAWSFullWorkflow:
         await asyncio.sleep(30)
 
         # Get DLQ URL
-        dlq_name = f"{unique_table_name}-aggregator-dlq"
+        dlq_name = f"ZAEL-{unique_name}-aggregator-dlq"
         try:
             response = aws_sqs_client.get_queue_url(QueueName=dlq_name)
             dlq_url = response["QueueUrl"]
@@ -259,7 +258,7 @@ class TestE2EAWSFullWorkflow:
     @pytest.mark.asyncio
     @pytest.mark.slow
     @pytest.mark.monitoring
-    async def test_lambda_metrics(self, aws_limiter, aws_cloudwatch_client, unique_table_name):
+    async def test_lambda_metrics(self, aws_limiter, aws_cloudwatch_client, unique_name):
         """
         Query Lambda metrics to verify aggregator is working.
 
@@ -283,7 +282,7 @@ class TestE2EAWSFullWorkflow:
         # Wait for Lambda invocations and metrics
         await asyncio.sleep(120)  # CloudWatch metrics have delay
 
-        function_name = f"{unique_table_name}-aggregator"
+        function_name = f"ZAEL-{unique_name}-aggregator"
         end_time = datetime.now(UTC)
         start_time_epoch = time.time() - 300  # Last 5 minutes
         start_time = datetime.fromtimestamp(start_time_epoch, tz=UTC)
@@ -329,7 +328,7 @@ class TestE2EAWSUsageSnapshots:
     """Tests for usage snapshot verification on real AWS."""
 
     @pytest.fixture
-    async def aws_limiter_with_snapshots(self, unique_table_name):
+    async def aws_limiter_with_snapshots(self, unique_name):
         """Create RateLimiter configured for snapshot testing."""
         stack_options = StackOptions(
             enable_aggregator=True,
@@ -341,7 +340,7 @@ class TestE2EAWSUsageSnapshots:
         )
 
         limiter = RateLimiter(
-            table_name=unique_table_name,
+            name=unique_name,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -419,7 +418,7 @@ class TestE2EAWSRateLimiting:
     """Additional rate limiting tests for real AWS."""
 
     @pytest.fixture
-    async def aws_limiter_minimal(self, unique_table_name):
+    async def aws_limiter_minimal(self, unique_name):
         """Create RateLimiter with minimal stack for faster tests."""
         stack_options = StackOptions(
             enable_aggregator=False,
@@ -430,7 +429,7 @@ class TestE2EAWSRateLimiting:
         )
 
         limiter = RateLimiter(
-            table_name=unique_table_name,
+            name=unique_name,
             region="us-east-1",
             stack_options=stack_options,
         )
