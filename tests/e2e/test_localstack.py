@@ -196,10 +196,11 @@ class TestE2ELocalStackFullWorkflow:
         assert len(children) == 1
         assert children[0].id == "api-key-123"
 
-        # Set limits
+        # Use per_hour limits to prevent refill during test execution
+        # per_minute refills ~1.67 tokens/second, per_hour refills ~0.028 tokens/second
         limits = [
-            Limit.per_minute("rpm", 100),
-            Limit.per_minute("tpm", 10000),
+            Limit.per_hour("rph", 100),
+            Limit.per_hour("tph", 10000),
         ]
 
         # Consume from child with cascade
@@ -207,12 +208,12 @@ class TestE2ELocalStackFullWorkflow:
             entity_id="api-key-123",
             resource="gpt-4",
             limits=limits,
-            consume={"rpm": 1, "tpm": 500},
+            consume={"rph": 1, "tph": 500},
             cascade=True,
         ) as lease:
             # With cascade, consumes from both child and parent
-            assert lease.consumed["rpm"] == 2  # 1 from child + 1 from parent
-            assert lease.consumed["tpm"] == 1000  # 500 from each
+            assert lease.consumed["rph"] == 2  # 1 from child + 1 from parent
+            assert lease.consumed["tph"] == 1000  # 500 from each
 
         # Verify both entities have reduced capacity
         child_available = await e2e_limiter.available(
@@ -226,8 +227,9 @@ class TestE2ELocalStackFullWorkflow:
             limits=limits,
         )
 
-        assert child_available["rpm"] < 100
-        assert parent_available["rpm"] < 100
+        # After consuming 1 rph from each, both should have 99 available
+        assert child_available["rph"] == 99, f"Expected child rph=99, got {child_available['rph']}"
+        assert parent_available["rph"] == 99, f"Expected parent rph=99, got {parent_available['rph']}"
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_rate_limit_exceeded_workflow(self, e2e_limiter):
