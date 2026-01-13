@@ -411,10 +411,9 @@ with schema 1.0.0. Migration required.
 aws dynamodb create-backup \
   --table-name ZAEL-<name> \
   --backup-name "pre-migration-$(date +%Y%m%d)"
-
-# Run migration (future CLI command)
-zae-limiter migrate --name <name> --region <region> --target-version 2.0.0
 ```
+
+Then follow the migration procedures in the [Migration Guide](migrations.md#sample-migration-v200).
 
 ### Minimum Client Version Error
 
