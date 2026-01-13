@@ -16,12 +16,20 @@ flowchart TD
     CHECK1 --> DIAG{Error type?}
     DIAG -->|Permission denied| FIX1[Check IAM role]
     DIAG -->|Timeout| FIX2[Increase memory/timeout]
-    DIAG -->|DynamoDB error| LINK1([→ dynamodb.md])
+    DIAG -->|DynamoDB error| LINK1([→ DynamoDB])
     DIAG -->|Code error| FIX3[Check logs, deploy fix]
 
     CHECK2 --> FIX2
-    CHECK3 --> DLQ[DLQ Processing ↓]
+    CHECK3 --> DLQ[DLQ Processing]
     CHECK4 --> FIX4[Increase memory]
+
+    click CHECK1 "#error-rate-issues" "View error diagnostics"
+    click FIX1 "#error-rate-issues" "IAM troubleshooting"
+    click FIX2 "#high-lambda-duration" "Increase resources"
+    click LINK1 "dynamodb/" "DynamoDB operations"
+    click FIX3 "#lambda-redeployment" "Redeploy Lambda"
+    click DLQ "#messages-in-dead-letter-queue" "DLQ processing"
+    click FIX4 "#cold-start-issues" "Cold start fixes"
 ```
 
 ## Health Indicators
@@ -215,9 +223,15 @@ fields @timestamp, @message, @duration
 1. **Increase Lambda memory** (faster initialization)
 2. **Enable provisioned concurrency** for consistent latency:
    ```bash
+   # Publish a new version first (provisioned concurrency requires a version or alias)
+   VERSION=$(aws lambda publish-version \
+     --function-name ZAEL-<name>-aggregator \
+     --query 'Version' --output text)
+
+   # Configure provisioned concurrency on the published version
    aws lambda put-provisioned-concurrency-config \
      --function-name ZAEL-<name>-aggregator \
-     --qualifier $LATEST \
+     --qualifier $VERSION \
      --provisioned-concurrent-executions 2
    ```
 

@@ -14,14 +14,21 @@ flowchart TD
     Q1 -->|Planning upgrade| A4[Follow upgrade procedure]
 
     A1 --> CMD1["zae-limiter upgrade --name X"]
-    A2 --> CMD2[Follow migrations.md]
+    A2 --> CMD2[Follow migrations guide]
     A3 --> CMD3["pip install --upgrade zae-limiter"]
-    A4 --> PROC[Pre-upgrade checklist ↓]
+    A4 --> PROC[Pre-upgrade checklist]
 
     CMD1 --> VERIFY
     CMD2 --> VERIFY
     CMD3 --> VERIFY
     VERIFY([Verify: zae-limiter check])
+
+    click A1 "#versionmismatcherror" "Version mismatch details"
+    click A2 "#incompatibleschemaerror" "Schema error details"
+    click CMD1 "#upgrade-procedure" "Upgrade steps"
+    click CMD2 "../migrations/" "Migration guide"
+    click A4 "#upgrade-procedure" "Upgrade checklist"
+    click VERIFY "#verification" "Verify upgrade"
 ```
 
 ## Troubleshooting

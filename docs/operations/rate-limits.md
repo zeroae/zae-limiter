@@ -11,7 +11,7 @@ flowchart TD
     Q1 -->|Unexpected RateLimitExceeded| A1[Check bucket state]
     Q1 -->|Limits not enforcing| A2[Check entity exists]
     Q1 -->|Cascade not working| A3[Check parent entity]
-    Q1 -->|Need to adjust limits| A4[Runtime adjustment ↓]
+    Q1 -->|Need to adjust limits| A4[Runtime adjustment]
 
     A1 --> CHECK1[Query bucket in DynamoDB]
     A2 --> CHECK2[Query entity metadata]
@@ -24,6 +24,13 @@ flowchart TD
     CHECK2 --> FIX2{Entity exists?}
     FIX2 -->|No| CREATE[Create entity first]
     FIX2 -->|Yes| LIMITS[Check use_stored_limits]
+
+    click A1 "#unexpected-ratelimitexceeded" "Diagnose unexpected limits"
+    click A2 "#limits-not-enforcing" "Check entity setup"
+    click A3 "#cascade-not-working" "Check parent setup"
+    click A4 "#adjust-limits-at-runtime" "Adjust limits"
+    click WAIT "#reset-bucket-state" "Reset bucket"
+    click CHECK1 "#debug-bucket-state" "Query bucket state"
 ```
 
 ## Troubleshooting
@@ -167,8 +174,9 @@ from zae_limiter import RateLimiter, Limit
 limiter = RateLimiter(name="<name>", region="<region>")
 
 # Update limits for an entity
-await limiter.update_entity(
+await limiter.set_limits(
     entity_id="api-key-123",
+    resource="gpt-4",  # Resource these limits apply to
     limits=[
         Limit.per_minute("rpm", 1000),      # Requests per minute
         Limit.per_minute("tpm", 100_000),   # Tokens per minute

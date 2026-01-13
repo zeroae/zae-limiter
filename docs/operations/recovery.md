@@ -4,23 +4,35 @@ This guide covers backup, restore, and rollback procedures for zae-limiter deplo
 
 ## Decision Tree
 
-```markmap
-# Recovery Decision Tree
+```mermaid
+flowchart TD
+    START([What went wrong?]) --> Q1{Issue type?}
 
-## What went wrong?
-### Bad deployment
-- CloudFormation failed → [Stack Rollback](#stack-rollback)
-- Lambda broken → [Lambda Redeployment](#lambda-redeployment)
-- Config wrong → [Stack Update](#stack-redeployment)
-### Bad migration
-- Reversible → [Migration Rollback](#migration-rollback)
-- Non-reversible → [Restore from Backup](#dynamodb-backup-and-restore)
-### Data corruption
-- Recent (< 35 days) → [PITR Recovery](#point-in-time-recovery-pitr)
-- Older → [On-demand Backup Restore](#restore-from-backup)
-### Complete failure
-- Table exists → [Stack Redeployment](#stack-redeployment)
-- Table gone → [Restore + Redeploy](#full-recovery)
+    Q1 -->|Bad deployment| DEP{Deployment issue?}
+    Q1 -->|Bad migration| MIG{Reversible?}
+    Q1 -->|Data corruption| DATA{How recent?}
+    Q1 -->|Complete failure| FAIL{Table exists?}
+
+    DEP -->|CloudFormation failed| STACK_ROLL[Stack Rollback]
+    DEP -->|Lambda broken| LAMBDA_FIX[Lambda Redeployment]
+    DEP -->|Config wrong| STACK_UPDATE[Stack Redeployment]
+
+    MIG -->|Yes| MIG_ROLL[Migration Rollback]
+    MIG -->|No| BACKUP_RESTORE[Restore from Backup]
+
+    DATA -->|< 35 days| PITR[PITR Recovery]
+    DATA -->|Older| BACKUP_RESTORE
+
+    FAIL -->|Yes| STACK_UPDATE
+    FAIL -->|No| FULL[Full Recovery]
+
+    click STACK_ROLL "#stack-rollback" "CloudFormation auto-rollback"
+    click LAMBDA_FIX "#lambda-redeployment" "Redeploy Lambda code"
+    click STACK_UPDATE "#stack-redeployment" "Delete and recreate stack"
+    click MIG_ROLL "#migration-rollback" "Rollback reversible migration"
+    click BACKUP_RESTORE "#dynamodb-backup-and-restore" "Restore from on-demand backup"
+    click PITR "#point-in-time-recovery-pitr" "Point-in-time recovery"
+    click FULL "#full-recovery" "Complete recovery procedure"
 ```
 
 ## Emergency Rollback Decision Matrix

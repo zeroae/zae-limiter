@@ -21,7 +21,15 @@ flowchart TD
     A3 --> CHECK[Check CloudWatch metrics]
     CHECK --> FIX1
 
-    A4 --> LINK([→ performance.md])
+    A4 --> LINK([→ Performance Guide])
+
+    click A1 "#throttling" "Diagnose throttling"
+    click A2 "#throttling" "Diagnose throttling"
+    click A3 "#capacity-planning" "Check capacity"
+    click EMERGENCY "#emergency-on-demand" "Switch to on-demand"
+    click PLAN "#scaling-procedures" "Scale capacity"
+    click CHECK "#diagnostic-queries" "View metrics"
+    click LINK "../performance/" "Capacity planning guide"
 ```
 
 ## Troubleshooting

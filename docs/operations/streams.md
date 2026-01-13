@@ -14,12 +14,18 @@ flowchart TD
     Q1 -->|Planning optimization| A4[Tune configuration]
 
     A1 --> CHECK1{Lambda healthy?}
-    CHECK1 -->|No| LINK1([→ lambda.md])
+    CHECK1 -->|No| LINK1([→ Lambda])
     CHECK1 -->|Yes| SCALE[Increase concurrency]
 
     A2 --> SCALE
     A3 --> LINK1
     A4 --> TUNE[Adjust batch size / concurrency]
+
+    click A1 "#high-iterator-age" "Diagnose lag"
+    click LINK1 "lambda/" "Lambda troubleshooting"
+    click SCALE "#scaling-stream-processing" "Scale concurrency"
+    click A3 "lambda/#error-rate-issues" "Check Lambda errors"
+    click TUNE "#tuning-stream-processing" "Configuration tuning"
 ```
 
 ## Troubleshooting
