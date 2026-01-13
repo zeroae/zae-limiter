@@ -239,34 +239,18 @@ The Lambda function has minimal permissions:
 
 ## Monitoring
 
-### CloudWatch Metrics
-
-DynamoDB provides built-in metrics:
-
-- `ConsumedReadCapacityUnits`
-- `ConsumedWriteCapacityUnits`
-- `ThrottledRequests`
-- `SystemErrors`
-
-### CloudWatch Alarms
-
-The stack includes optional alarms:
+The stack includes comprehensive monitoring with CloudWatch alarms, structured logging, and a Dead Letter Queue for failed events.
 
 ```bash
+# Deploy with alarms and SNS notifications
 zae-limiter deploy \
     --name limiter \
     --enable-alarms \
     --alarm-sns-topic arn:aws:sns:us-east-1:123456789:alerts
 ```
 
-### Lambda Monitoring
-
-Monitor the aggregator function:
-
-- Invocation count
-- Error rate
-- Duration
-- Iterator age (stream lag)
+!!! tip "Monitoring Guide"
+    For detailed monitoring setup including CloudWatch Logs Insights queries, dashboard templates, and troubleshooting guides, see the [Monitoring and Observability Guide](../monitoring.md).
 
 ## Cost Estimation
 

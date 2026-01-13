@@ -96,6 +96,7 @@ nav:
       - LocalStack: infra/localstack.md
       - CloudFormation: infra/cloudformation.md
       - Migrations: migrations.md
+  - Monitoring: monitoring.md
   - Performance Tuning: performance.md
   - CLI Reference: cli.md
   - API Reference:
