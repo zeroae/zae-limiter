@@ -77,9 +77,7 @@ class CapacityCounter:
 
 
 @contextmanager
-def _counting_client(
-    counter: CapacityCounter, limiter: Any
-) -> Generator[None, None, None]:
+def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, None, None]:
     """Context manager that wraps DynamoDB client to count API calls.
 
     This wraps the DynamoDB client methods to count calls without

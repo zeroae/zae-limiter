@@ -67,8 +67,8 @@ def run_command(
 
 def wait_for_localstack(endpoint: str, timeout: int = 60) -> bool:
     """Wait for LocalStack to be ready."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     health_url = f"{endpoint}/_localstack/health"
     start_time = time.time()
@@ -120,11 +120,16 @@ def run_capacity_tests() -> bool:
     print("=" * 60)
 
     try:
-        run_command([
-            "uv", "run", "pytest",
-            "tests/benchmark/test_capacity.py",
-            "-v", "-n0",
-        ])
+        run_command(
+            [
+                "uv",
+                "run",
+                "pytest",
+                "tests/benchmark/test_capacity.py",
+                "-v",
+                "-n0",
+            ]
+        )
         return True
     except subprocess.CalledProcessError:
         print("Capacity tests failed!")
@@ -140,12 +145,17 @@ def run_latency_benchmarks(output_dir: Path) -> bool:
     output_file = output_dir / "latency-moto.json"
 
     try:
-        run_command([
-            "uv", "run", "pytest",
-            "tests/benchmark/test_latency.py",
-            "-v", "-n0",
-            f"--benchmark-json={output_file}",
-        ])
+        run_command(
+            [
+                "uv",
+                "run",
+                "pytest",
+                "tests/benchmark/test_latency.py",
+                "-v",
+                "-n0",
+                f"--benchmark-json={output_file}",
+            ]
+        )
         return True
     except subprocess.CalledProcessError:
         print("Latency benchmarks failed!")
@@ -159,11 +169,17 @@ def run_throughput_tests() -> bool:
     print("=" * 60)
 
     try:
-        run_command([
-            "uv", "run", "pytest",
-            "tests/benchmark/test_throughput.py",
-            "-v", "-n0", "-s",
-        ])
+        run_command(
+            [
+                "uv",
+                "run",
+                "pytest",
+                "tests/benchmark/test_throughput.py",
+                "-v",
+                "-n0",
+                "-s",
+            ]
+        )
         return True
     except subprocess.CalledProcessError:
         print("Throughput tests failed!")
@@ -188,9 +204,12 @@ def run_localstack_benchmarks(output_dir: Path) -> bool:
     try:
         run_command(
             [
-                "uv", "run", "pytest",
+                "uv",
+                "run",
+                "pytest",
                 "tests/benchmark/test_localstack.py",
-                "-v", "-n0",
+                "-v",
+                "-n0",
                 f"--benchmark-json={output_file}",
             ],
             env=localstack_env,
@@ -221,10 +240,14 @@ def run_aws_benchmarks(output_dir: Path, aws_profile: str | None = None) -> bool
     try:
         subprocess.run(
             [
-                "uv", "run", "pytest",
+                "uv",
+                "run",
+                "pytest",
                 "tests/benchmark/test_aws.py",
                 "--run-aws",
-                "-v", "-n0", "-s",
+                "-v",
+                "-n0",
+                "-s",
                 f"--benchmark-json={output_file}",
             ],
             env=env_copy,
@@ -250,12 +273,17 @@ def generate_report(output_dir: Path) -> bool:
     output_file = output_dir / "benchmark-results.md"
 
     try:
-        run_command([
-            "uv", "run", "python",
-            "scripts/generate_benchmark_report.py",
-            *[str(f) for f in json_files],
-            "--output", str(output_file),
-        ])
+        run_command(
+            [
+                "uv",
+                "run",
+                "python",
+                "scripts/generate_benchmark_report.py",
+                *[str(f) for f in json_files],
+                "--output",
+                str(output_file),
+            ]
+        )
         return True
     except subprocess.CalledProcessError:
         print("Report generation failed!")
