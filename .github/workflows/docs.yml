@@ -7,55 +7,18 @@ on:
       - 'v*'
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, closed, labeled]
 
 permissions:
   contents: write
   pages: write
   id-token: write
-  pull-requests: write
 
 concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    # Always run for push events and PR close events
-    # For other PR events, detect if docs changed or label applied
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action == 'closed') || github.event_name == 'pull_request'
-    outputs:
-      docs: ${{ steps.filter.outputs.docs }}
-      has_label: ${{ steps.check-label.outputs.has_label }}
-      should_build: ${{ github.event_name == 'push' || steps.filter.outputs.docs == 'true' || steps.check-label.outputs.has_label == 'true' }}
-      should_deploy_preview: ${{ steps.filter.outputs.docs == 'true' || steps.check-label.outputs.has_label == 'true' }}
-      should_cleanup: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v3
-        id: filter
-        if: github.event_name == 'pull_request' && github.event.action != 'closed'
-        with:
-          filters: |
-            docs:
-              - 'docs/**'
-              - 'mkdocs.yml'
-              - 'src/**/*.py'
-              - '.github/workflows/docs.yml'
-      - name: Check for docs-preview label
-        id: check-label
-        if: github.event_name == 'pull_request' && github.event.action != 'closed'
-        run: |
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'docs-preview') }}" == "true" ]]; then
-            echo "has_label=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_label=false" >> $GITHUB_OUTPUT
-          fi
-
   build:
-    needs: changes
-    if: needs.changes.outputs.should_build == 'true' && !(github.event_name == 'pull_request' && github.event.action == 'closed')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -73,82 +36,6 @@ jobs:
       - name: Build docs (PR check)
         if: github.event_name == 'pull_request'
         run: uv run mkdocs build --strict
-
-  deploy-preview:
-    needs: [changes, build]
-    if: github.event_name == 'pull_request' && github.event.action != 'closed' && needs.changes.outputs.should_deploy_preview == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - uses: astral-sh/setup-uv@v7
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --extra docs
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Deploy PR preview
-        run: uv run mike deploy --push pr-${{ github.event.number }}
-
-      - name: Comment PR with preview link
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prNumber = context.payload.pull_request.number;
-            const previewUrl = `https://zeroae.github.io/zae-limiter/pr-${prNumber}/`;
-            const body = `📚 **Docs Preview:** ${previewUrl}`;
-
-            // Check if comment already exists
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-            });
-
-            const existing = comments.data.find(c => c.body.includes('Docs Preview:'));
-            if (!existing) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: body,
-              });
-            }
-
-  cleanup-preview:
-    needs: changes
-    if: needs.changes.outputs.should_cleanup == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - uses: astral-sh/setup-uv@v7
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --extra docs
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Delete PR preview
-        # Idempotent: always succeeds even if preview doesn't exist
-        run: uv run mike delete --push pr-${{ github.event.number }} || true
 
   deploy:
     if: github.event_name == 'push'
