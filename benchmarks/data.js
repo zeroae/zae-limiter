@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768268286967,
+  "lastUpdate": 1768287706482,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -1111,6 +1111,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.030176964898677158",
             "extra": "mean: 54.173594400000034 msec\nrounds: 15"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "812766ad534fc066643e07b25dc2112c7136c769",
+          "message": "⚡ perf(test): optimize test execution with parallel execution and shared fixtures (#80) (#92)\n\n* ⚡ perf(test): optimize E2E test execution with shared stack fixtures\n\nReduce CloudFormation stack creations from 9 to 4 by sharing stacks\nacross tests within each test class:\n\n- Add shared_stack fixture (class-scoped) for TestE2ELocalStackFullWorkflow\n- Add shared_stack_minimal fixture (class-scoped) for TestE2ELocalStackErrorHandling\n- Each test gets a fresh RateLimiter instance to avoid event loop issues\n- Add unique_table_name_class fixture for class-level table name sharing\n- Update localstack_endpoint and e2e_stack_options to session scope\n\nResults:\n- Stack creations: 9 → 4 (55% reduction)\n- Test time: ~5min → ~3:15 (35% faster)\n\nCloses #80\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ⚡ perf(test): optimize integration test execution with shared stack fixtures\n\nApply same shared stack pattern to integration tests:\n\n- Add shared_stack fixture (class-scoped) for TestLocalStackIntegration\n- Add shared_stack_sync fixture (class-scoped) for TestSyncLocalStackIntegration\n- Update StackOptions fixtures to session scope for compatibility\n- Fix entity ID collision in inline CloudFormation tests\n\nResults for integration tests:\n- Stack creations: 8 → 4 (50% reduction)\n- Test time: ~2 minutes (was creating redundant stacks)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ⚡ perf(test): add pytest-xdist for parallel test execution\n\n- Add pytest-xdist>=3.5.0 to dev dependencies\n- Update integration tests to use unique table names for parallelization\n- Use --dist loadscope to group tests by class for shared fixtures\n\nPerformance improvements with -n auto --dist loadscope:\n- Unit tests: 56s → 10s (5.6x faster)\n- E2E tests: 3:15 → 1:15 (2.6x faster)\n- Integration tests: 2:03 → 1:36 (1.3x faster)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ⚙️ chore(test): make parallel test execution the default\n\nAdd -n auto --dist loadscope to pytest addopts configuration.\nTests now run in parallel by default, significantly reducing CI time.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🎨 style: fix line too long in integration test\n\n* 🐛 fix(ci): disable xdist for benchmark tests\n\n* 🔥 chore: remove benchmark.json from repository\n\n* 🙈 chore: add benchmark.json to gitignore\n\n* ♻️ refactor(test): simplify class-scoped fixtures with loop_scope\n\n- Use pytest_asyncio.fixture with loop_scope=\"class\" to share event loop\n- Merge two-fixture pattern into single fixture that yields limiter directly\n- Add `test` as valid commit scope in CLAUDE.md\n\nThis removes the \"hack\" where we yielded the table name from a class-scoped\nfixture and created a new limiter per test. With loop_scope=\"class\", we can\nnow share the limiter directly across all tests in a class.\n\nFixes review comments from PR #92.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ⚡ perf(test): make LocalStack fixtures parallelizable with unique table names\n\n- Change hardcoded table names to use unique_table_name fixture\n- Add stack cleanup in fixture teardown\n- Enables parallel test execution with pytest-xdist\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✨ feat(test): add slow/monitoring/snapshots markers for AWS E2E tests\n\nAllow skipping long-running tests (>30s sleeps) with -m \"not slow\".\nMore granular control with -m \"not monitoring\" or -m \"not snapshots\".\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): add loop_scope to async tests using class-scoped fixtures\n\nTests using class-scoped async fixtures must have matching loop_scope\nto prevent \"Future attached to different loop\" errors.\n\n- Moved standalone CFN deployment tests to separate class\n- Added loop_scope=\"class\" to all tests in classes with class-scoped fixtures\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ♻️ refactor(test): reorganize tests into unit/integration/e2e/benchmark directories\n\n- Split flat tests/ directory into subdirectories by test type:\n  - tests/unit/ - moto-mocked tests (fast)\n  - tests/integration/ - LocalStack repository tests\n  - tests/e2e/ - full workflow tests (LocalStack + AWS)\n  - tests/benchmark/ - performance benchmarks (pytest-benchmark)\n- Add importlib mode to pytest config for same-named files in different dirs\n- Add __init__.py to all test subdirectories for proper package imports\n- Split conftest.py into per-directory fixtures\n- Delete redundant test_integration_localstack.py (duplicated E2E tests)\n- Move CloudFormation stack tests to e2e/test_localstack.py\n- Document test architecture in CLAUDE.md\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✨ feat(ci): add E2E job and fix benchmark path for new test structure\n\n- Add e2e job to run LocalStack E2E tests (tests/e2e/test_localstack.py)\n- Fix benchmark path from tests/test_performance.py to tests/benchmark/\n- E2E job runs on Python 3.11 and 3.12 with LocalStack service\n- Upload E2E coverage and test results to Codecov with 'e2e' flag\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ♻️ refactor(test): move root-level tests to subdirectories\n\nMove all test files from tests/ root to appropriate subdirectories:\n- Pure unit tests → tests/unit/\n- Integration tests with @integration marker → tests/integration/\n- Split test_stack_manager.py and test_lambda_builder.py (unit vs integration)\n- Remove localstack_endpoint from root conftest (stays in integration/conftest)\n\nNo test files remain at root level - all tests are now organized by:\n- unit/: Fast moto-based tests\n- integration/: LocalStack-based tests\n- e2e/: Full workflow tests\n- benchmark/: Performance benchmarks\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): use unique table names for parallel test isolation\n\nUpdate integration tests to use unique_table_name fixture instead of\nhardcoded table names. This prevents race conditions when tests run\nin parallel with pytest-xdist.\n\nAffected tests:\n- test_repository.py: localstack_repo, test_create_table_or_stack,\n  test_create_stack_with_custom_parameters\n- test_stack_manager.py: test_stack_create_and_delete_minimal\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🎨 style: fix formatting in tests/unit/conftest.py\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ♻️ refactor(ci): rename test job to unit for consistency\n\nRename the \"test\" job to \"unit\" to match the tests/unit/ directory structure.\nAlso explicitly targets tests/unit/ and adds the \"unit\" flag for coverage.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): use unique table names for parallel test isolation\n\nChange test_hierarchical_rate_limiting_workflow to use per_hour limits\ninstead of per_minute to prevent timing-related flakiness. The per_minute\nlimits refill ~1.67 tokens/second which can cause the test to see 100\ntokens available instead of 99 if there's any delay between consumption\nand verification.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🎨 style: shorten assertion messages to fix line length\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T01:58:35-05:00",
+          "tree_id": "51a11d68c509ae65d97be5363af1ea587a345092",
+          "url": "https://github.com/zeroae/zae-limiter/commit/812766ad534fc066643e07b25dc2112c7136c769"
+        },
+        "date": 1768287706255,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.225801769716508,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011832575548474228",
+            "extra": "mean: 41.27830358333284 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.280161665367885,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005011253281689043",
+            "extra": "mean: 44.88297773684436 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 73.51959348762719,
+            "unit": "iter/sec",
+            "range": "stddev: 0.020890889720997213",
+            "extra": "mean: 13.601816231047207 msec\nrounds: 277"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 23.421288473339665,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07069347479978932",
+            "extra": "mean: 42.69619927777649 msec\nrounds: 216"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1078.0068202561165,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00018394055251777416",
+            "extra": "mean: 927.6379158365776 usec\nrounds: 903"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 52.400592638973315,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09105078166256433",
+            "extra": "mean: 19.083753630225985 msec\nrounds: 311"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 59.28339587260414,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05450156029781071",
+            "extra": "mean: 16.86812952059848 msec\nrounds: 267"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 34.24193499612388,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0831020848896965",
+            "extra": "mean: 29.203957081081956 msec\nrounds: 74"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 34.31778744593185,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03370895746144563",
+            "extra": "mean: 29.139407707315453 msec\nrounds: 82"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 6.09720866352639,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10876833557864925",
+            "extra": "mean: 164.009476333329 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 4.985062585457852,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1720830707461193",
+            "extra": "mean: 200.59928694117994 msec\nrounds: 34"
           }
         ]
       }
