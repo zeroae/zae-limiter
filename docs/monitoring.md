@@ -236,7 +236,7 @@ fields @timestamp
 ## X-Ray Tracing
 
 !!! info "Future Enhancement"
-    X-Ray tracing integration is planned for a future release. Track progress in [GitHub Issues](https://github.com/zeroae/zae-limiter/issues).
+    X-Ray tracing integration is planned for a future release. Track progress in [Issue #107](https://github.com/zeroae/zae-limiter/issues/107).
 
 Planned capabilities include:
 
