@@ -361,8 +361,8 @@ Costs vary by region. Using us-east-1 as reference:
 
 | Component | On-Demand Cost | Notes |
 |-----------|----------------|-------|
-| Write Request Units | $1.25 per million | Each WCU = one write |
-| Read Request Units | $0.25 per million | Each RCU = one read |
+| Write Request Units | $0.625 per million | Each WCU = one write |
+| Read Request Units | $0.125 per million | Each RCU = one read |
 | Storage | $0.25 per GB/month | Usually minimal |
 | Streams | $0.02 per 100K reads | Lambda polling |
 | Lambda | $0.20 per million + duration | Aggregator function |
@@ -373,26 +373,26 @@ Costs vary by region. Using us-east-1 as reference:
 
 ```
 DynamoDB:
-  Writes: 10K × 2 limits × 30 days = 600K WCUs = $0.75
-  Reads:  10K × 2 limits × 30 days = 600K RCUs = $0.15
+  Writes: 10K × 2 limits × 30 days = 600K WCUs = $0.38
+  Reads:  10K × 2 limits × 30 days = 600K RCUs = $0.08
   Streams: 600K events                         = $0.12
 Lambda: 600K invocations                       ≈ $0.12 + duration
 Storage: ~10 MB                                = negligible
 ─────────────────────────────────────────────────────────
-Total: ~$1.15/month
+Total: ~$0.70/month
 ```
 
 #### Medium Volume: 1M requests/day
 
 ```
 DynamoDB:
-  Writes: 1M × 2 × 30 = 60M WCUs               = $75.00
-  Reads:  1M × 2 × 30 = 60M RCUs               = $15.00
+  Writes: 1M × 2 × 30 = 60M WCUs               = $37.50
+  Reads:  1M × 2 × 30 = 60M RCUs               = $7.50
   Streams: 60M events                          = $12.00
 Lambda: 60M invocations                        ≈ $12.00 + duration
 ─────────────────────────────────────────────────────────
-Total (on-demand): ~$115/month
-Total (provisioned with auto-scaling): ~$70/month
+Total (on-demand): ~$70/month
+Total (provisioned with auto-scaling): ~$45/month
 ```
 
 ### Cost Reduction Strategies
