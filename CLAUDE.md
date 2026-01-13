@@ -440,17 +440,45 @@ flowchart TD
 
 ### Docs Structure
 
+Documentation is organized by **audience** with 4 top-level sections:
+
 ```
 docs/
 ├── index.md                 # Landing page
-├── monitoring.md            # Observability setup
-├── performance.md           # Capacity planning
+├── getting-started.md       # Installation, first deployment
+│
+├── guide/                   # User Guide (library users)
+│   ├── basic-usage.md       # Rate limiting patterns, error handling
+│   ├── hierarchical.md      # Parent/child entities, cascade mode
+│   ├── llm-integration.md   # Token estimation and reconciliation
+│   └── failure-modes.md     # Error handling strategies
+│
+├── infra/                   # Operator Guide (ops/platform teams)
+│   ├── deployment.md        # CLI deployment, auto-creation
+│   ├── production.md        # Security, multi-region, cost
+│   └── cloudformation.md    # Template customization
+├── operations/              # Troubleshooting runbooks
+├── monitoring.md            # Dashboards, alerts, Logs Insights
+├── performance.md           # Capacity planning, optimization
 ├── migrations.md            # Schema migrations
-├── api/                     # API reference
-├── guide/                   # User guides
-├── infra/                   # Infrastructure docs
-└── operations/              # Operational runbooks (troubleshooting + procedures)
+│
+├── cli.md                   # Reference: CLI commands
+├── api/                     # Reference: API documentation
+│
+└── contributing/            # Contributors (developers)
+    ├── index.md             # Quick start, links to CLAUDE.md
+    ├── development.md       # Environment setup, code quality
+    ├── localstack.md        # Local AWS development (developer-only)
+    ├── testing.md           # Test organization, pytest fixtures
+    └── architecture.md      # DynamoDB schema, token bucket
 ```
+
+**Key organization decisions:**
+- **LocalStack is developer-only** - lives in `contributing/`, not `infra/`
+- **User Guide** = how to use the library (rate limiting, hierarchies, LLM integration)
+- **Operator Guide** = how to run in production (deployment, monitoring, performance)
+- **Contributing** = how to develop the library (setup, testing, architecture)
+- **CLAUDE.md remains the authoritative dev reference** - Contributing docs are lightweight entry points
 
 ## Code Review Guidelines
 

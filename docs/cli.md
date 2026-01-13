@@ -30,12 +30,21 @@ zae-limiter deploy [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (creates ZAEL-{name} resources) | Required |
-| `--region` | AWS region | Required |
-| `--no-aggregator` | Skip Lambda aggregator | `false` |
-| `--log-retention-days` | CloudWatch log retention (days) | `14` |
-| `--pitr-recovery-days` | Point-in-time recovery (days, 0=disabled) | `0` |
+| `--name` | Resource identifier (creates ZAEL-{name} resources) | `limiter` |
+| `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+| `--snapshot-windows` | Comma-separated snapshot windows | `hourly,daily` |
+| `--retention-days` | Usage snapshot retention (days) | `90` |
+| `--enable-aggregator/--no-aggregator` | Deploy Lambda aggregator | `true` |
+| `--pitr-recovery-days` | Point-in-time recovery (1-35 days) | None (disabled) |
+| `--log-retention-days` | CloudWatch log retention (days) | `30` |
+| `--lambda-timeout` | Lambda timeout (1-900 seconds) | `60` |
+| `--lambda-memory` | Lambda memory (128-3008 MB) | `256` |
+| `--enable-alarms/--no-alarms` | Deploy CloudWatch alarms | `true` |
+| `--alarm-sns-topic` | SNS topic ARN for notifications | None |
+| `--permission-boundary` | IAM permission boundary | None |
+| `--role-name-format` | Lambda role name format | None |
+| `--wait/--no-wait` | Wait for stack creation | `true` |
 
 **Examples:**
 
@@ -151,16 +160,16 @@ zae-limiter cfn-template [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--format` | Output format (yaml, json) | `yaml` |
+| `--output`, `-o` | Output file path | stdout |
 
 **Examples:**
 
 ```bash
-# Export YAML template
+# Export template to stdout
 zae-limiter cfn-template > template.yaml
 
-# Export JSON template
-zae-limiter cfn-template --format json > template.json
+# Export template to file
+zae-limiter cfn-template --output template.yaml
 
 # View template
 zae-limiter cfn-template | less
@@ -180,8 +189,9 @@ zae-limiter lambda-export [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--output` | Output file path | Required (unless `--info`) |
+| `--output`, `-o` | Output file path | `lambda.zip` |
 | `--info` | Show package info without building | `false` |
+| `--force`, `-f` | Overwrite existing file | `false` |
 
 **Examples:**
 
@@ -207,23 +217,47 @@ Lambda Package Info:
 
 ### version
 
-Show the installed version.
+Show infrastructure version information for a deployed stack.
 
 ```bash
-zae-limiter version
+zae-limiter version [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint | None |
+
+**Example:**
+
+```bash
+zae-limiter version --name limiter --region us-east-1
 ```
 
 **Output:**
 
 ```
-zae-limiter 0.1.0
+zae-limiter Infrastructure Version
+====================================
+
+Client Version:     0.1.0
+Schema Version:     1.0.0
+
+Infra Schema:       1.0.0
+Lambda Version:     0.1.0
+Min Client Version: 0.0.0
+
+Status: COMPATIBLE
 ```
 
 ---
 
 ### check
 
-Check schema compatibility with a deployed table.
+Check infrastructure compatibility without modifying.
 
 ```bash
 zae-limiter check [OPTIONS]
@@ -233,8 +267,8 @@ zae-limiter check [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (ZAEL-{name}) | Required |
-| `--region` | AWS region | Required |
+| `--name` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
 
 **Example:**
@@ -246,9 +280,16 @@ zae-limiter check --name limiter --region us-east-1
 **Output:**
 
 ```
-Schema version: 1.0.0
-Library version: 1.0.0
-Status: Compatible
+Compatibility Check
+====================
+
+Client:      0.1.0
+Schema:      1.0.0
+Lambda:      0.1.0
+
+Result: COMPATIBLE
+
+Client and infrastructure are fully compatible.
 ```
 
 ---
@@ -265,19 +306,20 @@ zae-limiter upgrade [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (ZAEL-{name}) | Required |
-| `--region` | AWS region | Required |
+| `--name` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
-| `--dry-run` | Show changes without applying | `false` |
+| `--lambda-only` | Only update Lambda code | `false` |
+| `--force` | Force update even if version matches | `false` |
 
 **Example:**
 
 ```bash
-# Preview changes
-zae-limiter upgrade --name limiter --region us-east-1 --dry-run
-
-# Apply upgrade
+# Upgrade infrastructure
 zae-limiter upgrade --name limiter --region us-east-1
+
+# Force Lambda update only
+zae-limiter upgrade --name limiter --region us-east-1 --lambda-only --force
 ```
 
 ## Environment Variables
@@ -306,5 +348,5 @@ The CLI respects standard AWS environment variables:
 ## Next Steps
 
 - [Deployment](infra/deployment.md) - Deployment guide
-- [LocalStack](infra/localstack.md) - Local development
+- [LocalStack](contributing/localstack.md) - Local development
 - [API Reference](api/index.md) - Python API documentation

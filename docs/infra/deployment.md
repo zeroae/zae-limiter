@@ -32,12 +32,14 @@ zae-limiter deploy \
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (creates ZAEL-{name} resources) | Required |
-| `--region` | AWS region | Required |
-| `--no-aggregator` | Skip Lambda deployment | `false` |
-| `--log-retention-days` | CloudWatch log retention | `14` |
-| `--pitr-recovery-days` | Point-in-time recovery | `0` (disabled) |
+| `--name` | Resource identifier (creates ZAEL-{name} resources) | `limiter` |
+| `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom endpoint (LocalStack) | None |
+| `--enable-aggregator/--no-aggregator` | Deploy Lambda aggregator | `true` |
+| `--log-retention-days` | CloudWatch log retention | `30` |
+| `--pitr-recovery-days` | Point-in-time recovery (1-35 days) | None (disabled) |
+
+For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
 ### Check Stack Status
 
@@ -99,49 +101,14 @@ async def dev_session():
         await limiter.delete_stack()
 ```
 
-#### Integration Testing
+#### Production
 
-For test isolation, create/destroy stacks per test session:
+For production deployments, see the [Production Guide](production.md) covering:
 
-```python
-import pytest
-import uuid
-from zae_limiter import RateLimiter, StackOptions
-
-@pytest.fixture(scope="session")
-async def integration_limiter():
-    """Session-scoped fixture with automatic cleanup."""
-    limiter = RateLimiter(
-        name=f"test-{uuid.uuid4().hex[:8]}",  # Unique name
-        endpoint_url="http://localhost:4566",
-        region="us-east-1",
-        stack_options=StackOptions(enable_aggregator=False),
-    )
-
-    async with limiter:
-        yield limiter
-
-    await limiter.delete_stack()
-```
-
-#### Production Deployments
-
-For production, prefer CLI or CloudFormation-managed deployments:
-
-```bash
-# Deploy via CLI (with review)
-zae-limiter deploy --name prod --region us-east-1
-
-# Delete via CLI (requires confirmation)
-zae-limiter delete --name prod --region us-east-1
-```
-
-!!! note "Production Best Practice"
-    In production, avoid programmatic `delete_stack()` calls. Use:
-
-    - CloudFormation console for manual cleanup
-    - CLI with `--yes` flag for scripted cleanup (after review)
-    - Stack policies to prevent accidental deletion
+- Production checklist (PITR, alarms, SNS)
+- Security best practices
+- Multi-region considerations
+- Cost estimation
 
 ## CloudFormation Template
 
@@ -237,39 +204,9 @@ The Lambda function has minimal permissions:
 - dynamodb:Query
 ```
 
-## Monitoring
-
-The stack includes comprehensive monitoring with CloudWatch alarms, structured logging, and a Dead Letter Queue for failed events.
-
-```bash
-# Deploy with alarms and SNS notifications
-zae-limiter deploy \
-    --name limiter \
-    --enable-alarms \
-    --alarm-sns-topic arn:aws:sns:us-east-1:123456789:alerts
-```
-
-!!! tip "Monitoring Guide"
-    For detailed monitoring setup including CloudWatch Logs Insights queries, dashboard templates, and troubleshooting guides, see the [Monitoring and Observability Guide](../monitoring.md).
-
-## Cost Estimation
-
-| Component | Cost Driver |
-|-----------|-------------|
-| DynamoDB | Read/write capacity units |
-| Lambda | Invocations, duration |
-| CloudWatch | Log storage, metrics |
-
-For a typical workload (1M requests/day):
-
-- DynamoDB: ~$10-50/month
-- Lambda: ~$1-5/month
-- CloudWatch: ~$1-5/month
-
-!!! tip "Performance Tuning"
-    For detailed capacity planning, including RCU/WCU costs per operation and cost optimization strategies, see the [Performance Tuning Guide](../performance.md#1-dynamodb-capacity-planning).
-
 ## Next Steps
 
-- [LocalStack](localstack.md) - Local development setup
+- [Production](production.md) - Production checklist, security, cost estimation
 - [CloudFormation](cloudformation.md) - Template details
+- [Monitoring](../monitoring.md) - Dashboards, alerts, Logs Insights
+- [LocalStack](../contributing/localstack.md) - Local development setup

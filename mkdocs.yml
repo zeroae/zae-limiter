@@ -92,30 +92,30 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
   - User Guide:
+      - Getting Started: getting-started.md
       - Basic Usage: guide/basic-usage.md
       - Hierarchical Limits: guide/hierarchical.md
       - LLM Integration: guide/llm-integration.md
       - Failure Modes: guide/failure-modes.md
-  - Operations:
-      - Overview: operations/index.md
-      - Version Management: operations/version.md
-      - Lambda Aggregator: operations/lambda.md
-      - DynamoDB: operations/dynamodb.md
-      - Rate Limits: operations/rate-limits.md
-      - Stream Processing: operations/streams.md
-      - Recovery & Rollback: operations/recovery.md
-  - Infrastructure:
+  - Operator Guide:
       - Deployment: infra/deployment.md
-      - LocalStack: infra/localstack.md
+      - Production: infra/production.md
       - CloudFormation: infra/cloudformation.md
       - Migrations: migrations.md
-  - Monitoring: monitoring.md
-  - Performance Tuning: performance.md
-  - CLI Reference: cli.md
-  - API Reference:
-      - Overview: api/index.md
-      - RateLimiter: api/limiter.md
-      - Models: api/models.md
-      - Exceptions: api/exceptions.md
+      - Troubleshooting: operations/index.md
+      - Monitoring: monitoring.md
+      - Performance: performance.md
+  - Reference:
+      - CLI: cli.md
+      - API:
+          - Overview: api/index.md
+          - RateLimiter: api/limiter.md
+          - Models: api/models.md
+          - Exceptions: api/exceptions.md
+  - Contributing:
+      - Overview: contributing/index.md
+      - Development Setup: contributing/development.md
+      - LocalStack: contributing/localstack.md
+      - Testing: contributing/testing.md
+      - Architecture: contributing/architecture.md
