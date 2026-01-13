@@ -46,9 +46,7 @@ def _patch_aiobotocore_response():
 
     async def patched_convert(http_response, operation_model):
         # If content is not awaitable (moto's sync response), wrap it
-        if hasattr(http_response, "_content") and not isinstance(
-            http_response._content, Awaitable
-        ):
+        if hasattr(http_response, "_content") and not isinstance(http_response._content, Awaitable):
             # Create a future that returns the content
             fut: asyncio.Future[bytes] = asyncio.Future()
             fut.set_result(http_response.content)
