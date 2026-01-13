@@ -13,6 +13,7 @@ To run these tests locally:
 """
 
 import pytest
+import pytest_asyncio
 
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded, SyncRateLimiter
 
@@ -26,12 +27,12 @@ pytestmark = pytest.mark.integration
 class TestLocalStackIntegration:
     """Integration tests with full LocalStack deployment."""
 
-    @pytest.fixture(scope="class")
-    async def shared_stack(
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def localstack_limiter(
         self, localstack_endpoint, minimal_stack_options, unique_table_name_class
     ):
         """
-        Create and manage the CloudFormation stack for all tests in this class.
+        Create and manage the RateLimiter with CloudFormation stack for all tests in this class.
 
         This fixture creates the stack once when the first test runs and
         deletes it after all tests in the class complete.
@@ -44,29 +45,12 @@ class TestLocalStackIntegration:
         )
 
         async with limiter:
-            yield unique_table_name_class
+            yield limiter
 
         try:
             await limiter.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
-
-    @pytest.fixture
-    async def localstack_limiter(self, localstack_endpoint, shared_stack):
-        """
-        Create a fresh RateLimiter instance for each test.
-
-        Uses the shared stack (no stack_options) so no new stack is created.
-        Each test gets its own RateLimiter to avoid event loop issues.
-        """
-        limiter = RateLimiter(
-            table_name=shared_stack,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-        )
-
-        async with limiter:
-            yield limiter
 
     @pytest.mark.asyncio
     async def test_cloudformation_stack_deployment(

@@ -28,6 +28,7 @@ required for LocalStack to spawn Lambda functions as Docker containers.
 import asyncio
 
 import pytest
+import pytest_asyncio
 from click.testing import CliRunner
 
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded, StackOptions, SyncRateLimiter
@@ -144,10 +145,10 @@ class TestE2ELocalStackCLIWorkflow:
 class TestE2ELocalStackFullWorkflow:
     """E2E tests for full rate limiting workflow."""
 
-    @pytest.fixture(scope="class")
-    async def shared_stack(self, localstack_endpoint, unique_table_name_class, e2e_stack_options):
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def e2e_limiter(self, localstack_endpoint, unique_table_name_class, e2e_stack_options):
         """
-        Create and manage the CloudFormation stack for all tests in this class.
+        Create and manage the RateLimiter with CloudFormation stack for all tests in this class.
 
         This fixture creates the stack once when the first test runs and
         deletes it after all tests in the class complete.
@@ -159,33 +160,13 @@ class TestE2ELocalStackFullWorkflow:
             stack_options=e2e_stack_options,
         )
 
-        # Create the stack
         async with limiter:
-            yield unique_table_name_class
+            yield limiter
 
-        # Delete the stack after all tests complete
         try:
             await limiter.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
-
-    @pytest.fixture
-    async def e2e_limiter(self, localstack_endpoint, shared_stack):
-        """
-        Create a fresh RateLimiter instance for each test.
-
-        Uses the shared stack (no stack_options) so no new stack is created.
-        Each test gets its own RateLimiter to avoid event loop issues.
-        """
-        limiter = RateLimiter(
-            table_name=shared_stack,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            # No stack_options - reuse existing stack
-        )
-
-        async with limiter:
-            yield limiter
 
     @pytest.mark.asyncio
     async def test_hierarchical_rate_limiting_workflow(self, e2e_limiter):
@@ -462,10 +443,10 @@ class TestE2ELocalStackAggregatorWorkflow:
 class TestE2ELocalStackErrorHandling:
     """E2E tests for error handling scenarios."""
 
-    @pytest.fixture(scope="class")
-    async def shared_stack_minimal(self, localstack_endpoint, unique_table_name_class):
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def e2e_limiter_minimal(self, localstack_endpoint, unique_table_name_class):
         """
-        Create and manage the minimal CloudFormation stack for all tests in this class.
+        Create and manage the minimal RateLimiter for all tests in this class.
 
         This fixture creates the stack once when the first test runs and
         deletes it after all tests in the class complete.
@@ -482,33 +463,13 @@ class TestE2ELocalStackErrorHandling:
             stack_options=stack_options,
         )
 
-        # Create the stack
         async with limiter:
-            yield unique_table_name_class
+            yield limiter
 
-        # Delete the stack after all tests complete
         try:
             await limiter.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
-
-    @pytest.fixture
-    async def e2e_limiter_minimal(self, localstack_endpoint, shared_stack_minimal):
-        """
-        Create a fresh RateLimiter instance for each test.
-
-        Uses the shared stack (no stack_options) so no new stack is created.
-        Each test gets its own RateLimiter to avoid event loop issues.
-        """
-        limiter = RateLimiter(
-            table_name=shared_stack_minimal,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            # No stack_options - reuse existing stack
-        )
-
-        async with limiter:
-            yield limiter
 
     @pytest.mark.asyncio
     async def test_concurrent_lease_acquisition(self, e2e_limiter_minimal):
