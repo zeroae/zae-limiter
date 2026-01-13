@@ -45,7 +45,7 @@ Use the CLI to check compatibility without modifying anything:
 
 ```bash
 # Check current compatibility status
-zae-limiter check --table-name rate_limits --region us-east-1
+zae-limiter check --name limiter --region us-east-1
 ```
 
 Output:
@@ -69,7 +69,7 @@ Run 'zae-limiter upgrade' to update.
 
 ```bash
 # Show detailed version information
-zae-limiter version --table-name rate_limits --region us-east-1
+zae-limiter version --name limiter --region us-east-1
 ```
 
 Output:
@@ -98,7 +98,7 @@ For minor updates (Lambda code, no schema changes):
 
 ```bash
 # Upgrade Lambda to match client version
-zae-limiter upgrade --table-name rate_limits --region us-east-1
+zae-limiter upgrade --name limiter --region us-east-1
 ```
 
 For major version upgrades requiring schema migration, see [Sample Migration: v2.0.0](#sample-migration-v200).
@@ -409,12 +409,12 @@ Before running migrations in production:
 ```bash
 # Create on-demand backup before migration
 aws dynamodb create-backup \
-  --table-name rate_limits \
+  --table-name ZAEL-limiter \
   --backup-name "pre-migration-$(date +%Y%m%d)"
 
 # Verify PITR is enabled
 aws dynamodb describe-continuous-backups \
-  --table-name rate_limits
+  --table-name ZAEL-limiter
 ```
 
 ## Rollback Strategies
@@ -480,8 +480,8 @@ pip install zae-limiter==1.0.0
 ```bash
 # Restore from PITR
 aws dynamodb restore-table-to-point-in-time \
-  --source-table-name rate_limits \
-  --target-table-name rate_limits_restored \
+  --source-table-name ZAEL-limiter \
+  --target-table-name ZAEL-limiter-restored \
   --restore-date-time "2024-01-15T10:00:00Z"
 ```
 
@@ -491,7 +491,7 @@ from zae_limiter.migrations import get_migrations
 from zae_limiter.repository import Repository
 
 async def emergency_rollback():
-    repo = Repository("rate_limits", "us-east-1", None)
+    repo = Repository("ZAEL-limiter", "us-east-1", None)
 
     migrations = get_migrations()
     target_migration = next(m for m in migrations if m.version == "1.1.0")
@@ -682,17 +682,17 @@ Resources:
 ```bash
 # 1. Create backup
 aws dynamodb create-backup \
-  --table-name rate_limits \
+  --table-name ZAEL-limiter \
   --backup-name "pre-v2-migration-$(date +%Y%m%d)"
 
 # 2. Update CloudFormation stack (adds GSI3)
 aws cloudformation update-stack \
-  --stack-name zae-limiter-rate_limits \
+  --stack-name ZAEL-limiter \
   --template-body file://updated-template.yaml \
   --capabilities CAPABILITY_NAMED_IAM
 
 # 3. Wait for GSI to be active
-aws dynamodb wait table-exists --table-name rate_limits
+aws dynamodb wait table-exists --table-name ZAEL-limiter
 
 # 4. Install new client version
 pip install zae-limiter==2.0.0
@@ -704,7 +704,7 @@ from zae_limiter.migrations import apply_migrations
 from zae_limiter.repository import Repository
 
 async def run():
-    repo = Repository('rate_limits', 'us-east-1', None)
+    repo = Repository('ZAEL-limiter', 'us-east-1', None)
     applied = await apply_migrations(repo, '1.0.0', '2.0.0')
     print(f'Applied migrations: {applied}')
     await repo.close()
@@ -713,7 +713,7 @@ asyncio.run(run())
 "
 
 # 6. Verify migration
-zae-limiter version --table-name rate_limits --region us-east-1
+zae-limiter version --name limiter --region us-east-1
 ```
 
 ### Testing the Migration
@@ -834,11 +834,11 @@ from zae_limiter.version import (
 
 ```bash
 # Check compatibility
-zae-limiter check --table-name TABLE --region REGION
+zae-limiter check --name NAME --region REGION
 
 # Show version information
-zae-limiter version --table-name TABLE --region REGION
+zae-limiter version --name NAME --region REGION
 
 # Upgrade infrastructure
-zae-limiter upgrade --table-name TABLE --region REGION [--lambda-only] [--force]
+zae-limiter upgrade --name NAME --region REGION [--lambda-only] [--force]
 ```

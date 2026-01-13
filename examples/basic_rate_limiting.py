@@ -25,12 +25,13 @@ from zae_limiter import (
     Limit,
     RateLimiter,
     RateLimitExceeded,
+    StackOptions,
     SyncRateLimiter,
 )
 
 # Configuration for LocalStack
 ENDPOINT_URL = "http://localhost:4566"
-TABLE_NAME = "rate_limits_example"
+NAME = "example"  # Creates ZAEL-example resources
 
 
 async def async_main() -> None:
@@ -39,9 +40,9 @@ async def async_main() -> None:
 
     # Create rate limiter with LocalStack
     limiter = RateLimiter(
-        table_name=TABLE_NAME,
+        name=NAME,  # Creates ZAEL-example resources
         endpoint_url=ENDPOINT_URL,
-        create_stack=True,  # Auto-create infrastructure for local dev
+        stack_options=StackOptions(),  # Auto-create infrastructure for local dev
         skip_version_check=True,  # Skip version check for local dev
     )
 
@@ -85,9 +86,9 @@ def sync_main() -> None:
 
     # Create sync rate limiter
     limiter = SyncRateLimiter(
-        table_name=TABLE_NAME + "_sync",
+        name=NAME + "-sync",  # Creates ZAEL-example-sync resources
         endpoint_url=ENDPOINT_URL,
-        create_stack=True,
+        stack_options=StackOptions(),
         skip_version_check=True,
     )
 

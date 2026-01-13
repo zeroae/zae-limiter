@@ -38,7 +38,7 @@ uv pip install zae-limiter
 
 Using CLI (recommended):
 ```bash
-zae-limiter deploy --table-name rate_limits --region us-east-1
+zae-limiter deploy --name my-app --region us-east-1
 ```
 
 Or get template for manual deployment:
@@ -49,12 +49,12 @@ aws cloudformation deploy --template-file template.yaml --stack-name zae-limiter
 
 Or auto-create in code (development):
 ```python
-from zae_limiter import RateLimiter
+from zae_limiter import RateLimiter, StackOptions
 
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",  # Creates ZAEL-my-app resources
     region="us-east-1",
-    create_stack=True,  # auto-create CloudFormation stack
+    stack_options=StackOptions(),  # auto-create CloudFormation stack
 )
 ```
 
@@ -65,7 +65,7 @@ from zae_limiter import RateLimiter, Limit
 
 # Initialize the limiter (stack must already exist)
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",  # Connects to ZAEL-my-app resources
     region="us-east-1",
 )
 
@@ -91,13 +91,16 @@ async with limiter.acquire(
 
 ### Local Development
 
-For DynamoDB Local, auto-creation uses direct table creation (not CloudFormation):
+For LocalStack, use `stack_options` for auto-creation:
 
 ```python
+from zae_limiter import RateLimiter, StackOptions
+
 limiter = RateLimiter(
-    table_name="rate_limits",
-    endpoint_url="http://localhost:8000",
-    create_stack=True,  # Creates table directly (CloudFormation skipped)
+    name="my-app",  # Creates ZAEL-my-app resources
+    endpoint_url="http://localhost:4566",
+    region="us-east-1",
+    stack_options=StackOptions(),  # Creates full CloudFormation stack
 )
 ```
 
@@ -108,7 +111,7 @@ limiter = RateLimiter(
 ```python
 from zae_limiter import RateLimiter, Limit, RateLimitExceeded
 
-limiter = RateLimiter(table_name="rate_limits")
+limiter = RateLimiter(name="my-app")
 
 try:
     async with limiter.acquire(
@@ -228,7 +231,7 @@ if available["tpm"] < needed_tokens:
 ```python
 from zae_limiter import SyncRateLimiter, Limit
 
-limiter = SyncRateLimiter(table_name="rate_limits")
+limiter = SyncRateLimiter(name="my-app")
 
 with limiter.acquire(
     entity_id="key-abc",
@@ -247,13 +250,13 @@ from zae_limiter import RateLimiter, FailureMode
 
 # Fail closed (default): reject requests if DynamoDB unavailable
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",
     failure_mode=FailureMode.FAIL_CLOSED,
 )
 
 # Fail open: allow requests if DynamoDB unavailable
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",
     failure_mode=FailureMode.FAIL_OPEN,
 )
 
@@ -308,9 +311,8 @@ zae-limiter cfn-template > template.yaml
 # Deploy the DynamoDB table and Lambda aggregator
 aws cloudformation deploy \
     --template-file template.yaml \
-    --stack-name zae-limiter \
+    --stack-name ZAEL-my-app \
     --parameter-overrides \
-        TableName=rate_limits \
         SnapshotRetentionDays=90 \
     --capabilities CAPABILITY_NAMED_IAM
 ```
@@ -321,7 +323,7 @@ The `zae-limiter deploy` CLI command automatically handles Lambda deployment:
 
 ```bash
 # Deploy stack with Lambda aggregator (automatic)
-zae-limiter deploy --table-name rate_limits --region us-east-1
+zae-limiter deploy --name my-app --region us-east-1
 
 # The CLI automatically:
 # 1. Creates CloudFormation stack with DynamoDB table and Lambda function
@@ -332,7 +334,7 @@ zae-limiter deploy --table-name rate_limits --region us-east-1
 To deploy without the Lambda aggregator:
 
 ```bash
-zae-limiter deploy --table-name rate_limits --no-aggregator
+zae-limiter deploy --name my-app --no-aggregator
 ```
 
 ### Local Development with LocalStack
@@ -342,13 +344,14 @@ zae-limiter deploy --table-name rate_limits --no-aggregator
 docker compose up -d
 
 # Deploy with CLI
-zae-limiter deploy --table-name rate_limits --endpoint-url http://localhost:4566
+zae-limiter deploy --name my-app --endpoint-url http://localhost:4566 --region us-east-1
 
 # Or use in code
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="my-app",  # Creates ZAEL-my-app resources
     endpoint_url="http://localhost:4566",
-    create_stack=True,
+    region="us-east-1",
+    stack_options=StackOptions(),
 )
 
 # Stop LocalStack when done
@@ -367,11 +370,11 @@ Both `RateLimiter` and `SyncRateLimiter` provide a `delete_stack()` method for p
 
 ```python
 # Async cleanup
-limiter = RateLimiter(table_name="rate_limits", region="us-east-1")
-await limiter.delete_stack()  # Deletes zae-limiter-rate_limits stack
+limiter = RateLimiter(name="my-app", region="us-east-1")
+await limiter.delete_stack()  # Deletes ZAEL-my-app stack
 
 # Sync cleanup
-limiter = SyncRateLimiter(table_name="rate_limits", region="us-east-1")
+limiter = SyncRateLimiter(name="my-app", region="us-east-1")
 limiter.delete_stack()
 ```
 
@@ -394,7 +397,7 @@ from zae_limiter import RateLimiter, StackOptions
 async def integration_limiter():
     """RateLimiter with full stack for integration testing."""
     limiter = RateLimiter(
-        table_name="test_rate_limits",
+        name="test-rate-limits",  # Creates ZAEL-test-rate-limits resources
         endpoint_url="http://localhost:4566",  # LocalStack
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),

@@ -29,7 +29,7 @@ Before using zae-limiter, you need to deploy the DynamoDB table and optional Lam
 ### Option 1: CLI (Recommended)
 
 ```bash
-zae-limiter deploy --table-name rate_limits --region us-east-1
+zae-limiter deploy --name limiter --region us-east-1
 ```
 
 This creates a CloudFormation stack with:
@@ -54,12 +54,12 @@ aws cloudformation deploy \
 ### Option 3: Auto-Create in Code (Development)
 
 ```python
-from zae_limiter import RateLimiter
+from zae_limiter import RateLimiter, StackOptions
 
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Creates ZAEL-limiter resources
     region="us-east-1",
-    create_stack=True,  # Auto-creates CloudFormation stack
+    stack_options=StackOptions(),  # Auto-creates CloudFormation stack
 )
 ```
 
@@ -75,7 +75,7 @@ limiter = RateLimiter(
 from zae_limiter import RateLimiter, Limit, RateLimitExceeded
 
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Connects to ZAEL-limiter resources
     region="us-east-1",
 )
 
@@ -96,7 +96,7 @@ except RateLimitExceeded as e:
 ```python
 from zae_limiter import SyncRateLimiter, Limit
 
-limiter = SyncRateLimiter(table_name="rate_limits")
+limiter = SyncRateLimiter(name="limiter")
 
 with limiter.acquire(
     entity_id="user-123",

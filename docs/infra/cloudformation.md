@@ -43,7 +43,6 @@ zae-limiter cfn-template | less
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `TableName` | String | `rate_limits` | DynamoDB table name |
 | `SnapshotWindows` | String | `hourly,daily` | Comma-separated list of snapshot windows |
 | `SnapshotRetentionDays` | Number | `90` | Days to retain usage snapshots (1-3650) |
 | `LambdaMemorySize` | Number | `256` | Memory for aggregator Lambda (128-3008 MB) |
@@ -134,7 +133,7 @@ AggregatorFunction:
       Variables:
         TABLE_NAME: !Ref TableName
         SNAPSHOT_WINDOWS: !Ref SnapshotWindows
-        RETENTION_DAYS: !Ref SnapshotRetentionDays
+        SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
 ```
 
 ### Event Source Mapping
@@ -203,7 +202,7 @@ Resources:
     Type: AWS::SQS::Queue
     Condition: CreateDLQ
     Properties:
-      QueueName: !Sub "${TableName}-dlq"
+      QueueName: !Sub "${TableName}-aggregator-dlq"
       MessageRetentionPeriod: 1209600  # 14 days
 
   StreamEventMapping:
@@ -219,22 +218,26 @@ Resources:
 ### Add CloudWatch Alarms
 
 ```yaml
-ThrottleAlarm:
+ReadThrottleAlarm:
   Type: AWS::CloudWatch::Alarm
   Properties:
-    AlarmName: !Sub "${TableName}-throttle"
-    MetricName: ThrottledRequests
+    AlarmName: !Sub "${TableName}-read-throttle"
+    AlarmDescription: Alert when DynamoDB read requests are throttled
+    MetricName: ReadThrottleEvents
     Namespace: AWS/DynamoDB
+    Statistic: Sum
+    Period: 300  # 5 minutes
+    EvaluationPeriods: 2
+    Threshold: 1
+    ComparisonOperator: GreaterThanThreshold
     Dimensions:
       - Name: TableName
-        Value: !Ref Table
-    Statistic: Sum
-    Period: 60
-    EvaluationPeriods: 1
-    Threshold: 1
-    ComparisonOperator: GreaterThanOrEqualToThreshold
-    AlarmActions:
-      - !Ref AlertTopic
+        Value: !Ref RateLimitsTable
+    TreatMissingData: notBreaching
+    AlarmActions: !If
+      - HasSNSTopic
+      - [!Ref AlarmSNSTopicArn]
+      - !Ref AWS::NoValue
 ```
 
 ### Enable Encryption with CMK
@@ -273,9 +276,8 @@ aws cloudformation deploy \
 ```bash
 aws cloudformation deploy \
     --template-file template.yaml \
-    --stack-name zae-limiter-prod \
+    --stack-name ZAEL-prod \
     --parameter-overrides \
-        TableName=prod_rate_limits \
         PITRRecoveryPeriodDays=35 \
         SnapshotRetentionDays=365 \
         LogRetentionDays=90 \
@@ -288,9 +290,8 @@ aws cloudformation deploy \
 ```yaml
 # samconfig.toml
 [default.deploy.parameters]
-stack_name = "zae-limiter"
+stack_name = "ZAEL-limiter"
 capabilities = "CAPABILITY_NAMED_IAM"
-parameter_overrides = "TableName=rate_limits"
 ```
 
 ```bash
@@ -303,7 +304,6 @@ The template exports:
 
 | Output | Description |
 |--------|-------------|
-| `TableName` | DynamoDB table name |
 | `TableArn` | DynamoDB table ARN |
 | `StreamArn` | DynamoDB stream ARN |
 | `FunctionArn` | Lambda function ARN |

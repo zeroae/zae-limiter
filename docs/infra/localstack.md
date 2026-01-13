@@ -50,7 +50,7 @@ LocalStack provides a local AWS environment for development and testing. This gu
 
 ```bash
 zae-limiter deploy \
-    --table-name rate_limits \
+    --name limiter \
     --endpoint-url http://localhost:4566 \
     --region us-east-1
 ```
@@ -61,7 +61,7 @@ zae-limiter deploy \
 from zae_limiter import RateLimiter, Limit
 
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Creates ZAEL-limiter resources
     endpoint_url="http://localhost:4566",
     region="us-east-1",
 )
@@ -80,11 +80,13 @@ async with limiter.acquire(
 For quick iteration, use auto-creation:
 
 ```python
+from zae_limiter import RateLimiter, StackOptions
+
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Creates ZAEL-limiter resources
     endpoint_url="http://localhost:4566",
     region="us-east-1",
-    create_stack=True,  # Creates CloudFormation stack
+    stack_options=StackOptions(),  # Creates CloudFormation stack
 )
 ```
 
@@ -104,7 +106,7 @@ AWS_DEFAULT_REGION=us-east-1
 import os
 
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Connects to ZAEL-limiter
     endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
     region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
 )
@@ -137,11 +139,11 @@ async def limiter(localstack_endpoint):
     2. Yields the limiter for test use
     3. Deletes the stack in teardown
     """
-    # Unique table name prevents test interference
-    table_name = f"test_{uuid.uuid4().hex[:8]}"
+    # Unique name prevents test interference
+    name = f"test-{uuid.uuid4().hex[:8]}"
 
     limiter = RateLimiter(
-        table_name=table_name,
+        name=name,  # Creates ZAEL-test-{uuid} resources
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
@@ -177,7 +179,7 @@ async def shared_limiter(localstack_endpoint):
     Trade-off: Tests share state, less isolation.
     """
     limiter = RateLimiter(
-        table_name="integration_test_shared",
+        name="integration-test-shared",  # Creates ZAEL-integration-test-shared
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
@@ -198,10 +200,10 @@ def sync_limiter(localstack_endpoint):
     from zae_limiter import SyncRateLimiter, StackOptions
     import uuid
 
-    table_name = f"test_sync_{uuid.uuid4().hex[:8]}"
+    name = f"test-sync-{uuid.uuid4().hex[:8]}"
 
     limiter = SyncRateLimiter(
-        table_name=table_name,
+        name=name,  # Creates ZAEL-test-sync-{uuid} resources
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
@@ -249,7 +251,7 @@ aws --endpoint-url=http://localhost:4566 cloudformation list-stacks
 
 # Describe stack
 aws --endpoint-url=http://localhost:4566 cloudformation describe-stacks \
-    --stack-name zae-limiter-rate_limits
+    --stack-name ZAEL-limiter
 ```
 
 ### Inspect DynamoDB
@@ -260,7 +262,7 @@ aws --endpoint-url=http://localhost:4566 dynamodb list-tables
 
 # Scan table
 aws --endpoint-url=http://localhost:4566 dynamodb scan \
-    --table-name rate_limits
+    --table-name ZAEL-limiter
 ```
 
 ### View Lambda Logs

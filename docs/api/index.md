@@ -22,13 +22,13 @@ from zae_limiter import RateLimiter, SyncRateLimiter
 
 # Async
 limiter = RateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Creates ZAEL-limiter resources
     region="us-east-1",
 )
 
 # Sync
 limiter = SyncRateLimiter(
-    table_name="rate_limits",
+    name="limiter",  # Creates ZAEL-limiter resources
     region="us-east-1",
 )
 ```
@@ -56,7 +56,7 @@ Limit.custom("requests", capacity=50, refill_period_seconds=30)
 ```python
 from zae_limiter import RateLimiter, Limit, RateLimitExceeded
 
-limiter = RateLimiter(table_name="rate_limits")
+limiter = RateLimiter(name="limiter")
 
 try:
     async with limiter.acquire(

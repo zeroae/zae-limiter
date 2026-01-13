@@ -10,12 +10,12 @@ from zae_limiter import EntityExistsError, Limit, RateLimiter
 async def seed_data() -> None:
     """Create demo entities and limits."""
     endpoint_url = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566")
-    table_name = os.environ.get("TABLE_NAME", "rate_limits")
+    name = os.environ.get("NAME", "demo")
 
-    print(f"Connecting to {endpoint_url}, table: {table_name}")
+    print(f"Connecting to {endpoint_url}, name: {name} (table: ZAEL-{name})")
 
     limiter = RateLimiter(
-        table_name=table_name,
+        name=name,  # Creates ZAEL-demo resources
         endpoint_url=endpoint_url,
         skip_version_check=True,
     )

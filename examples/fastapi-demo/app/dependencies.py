@@ -13,7 +13,7 @@ async def get_limiter() -> RateLimiter:
     global _limiter
     if _limiter is None:
         _limiter = RateLimiter(
-            table_name=settings.table_name,
+            name=settings.name,  # Creates ZAEL-demo resources
             endpoint_url=settings.aws_endpoint_url,
             skip_version_check=True,
         )
