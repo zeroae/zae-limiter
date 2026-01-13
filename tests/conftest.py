@@ -113,7 +113,7 @@ def sync_limiter(mock_dynamodb):
 # LocalStack fixtures for integration testing
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def localstack_endpoint():
     """LocalStack endpoint URL from environment."""
     endpoint = os.getenv("AWS_ENDPOINT_URL")
@@ -217,7 +217,22 @@ def unique_table_name():
     return f"e2e-test-{timestamp}-{unique_id}"
 
 
-@pytest.fixture
+@pytest.fixture(scope="class")
+def unique_table_name_class():
+    """Generate unique table name for class-level test isolation.
+
+    Uses hyphens instead of underscores because CloudFormation stack names
+    must match pattern [a-zA-Z][-a-zA-Z0-9]*.
+
+    This fixture is class-scoped to allow sharing a single stack across
+    all tests within a test class.
+    """
+    timestamp = int(time.time())
+    unique_id = uuid.uuid4().hex[:8]
+    return f"e2e-test-{timestamp}-{unique_id}"
+
+
+@pytest.fixture(scope="session")
 def e2e_stack_options():
     """Full stack options for E2E tests."""
     return StackOptions(
