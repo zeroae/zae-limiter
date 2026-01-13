@@ -99,4 +99,8 @@ Thumbs.db
 
 # Claude Code
 .claude/settings.local.json
+
+# Benchmark outputs
 benchmark.json
+benchmark-results.md
+latency-*.json

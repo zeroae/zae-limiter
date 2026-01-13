@@ -46,6 +46,9 @@ async with limiter.acquire(
     await call_api()
 ```
 
+!!! note "Performance Impact"
+    Cascade mode adds overhead: +1 GetEntity + parent bucket operations. Only enable when hierarchical enforcement is needed. See [Batch Operation Patterns](../performance.md#cascade-optimization) for optimization strategies.
+
 **What happens:**
 
 1. Check if `key-abc` has capacity (10k tpm)

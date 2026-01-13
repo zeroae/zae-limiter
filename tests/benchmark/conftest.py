@@ -1,13 +1,22 @@
 """Benchmark test fixtures.
 
 Reuses fixtures from unit and integration for consistency.
+Adds specialized fixtures for capacity counting and pre-warmed entities.
 """
+
+from collections.abc import Generator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
 
 from tests.integration.conftest import (
     localstack_endpoint,
     minimal_stack_options,
     sync_localstack_limiter,
     unique_name,
+    unique_name_class,
 )
 from tests.unit.conftest import (
     _patch_aiobotocore_response,
@@ -15,6 +24,7 @@ from tests.unit.conftest import (
     mock_dynamodb,
     sync_limiter,
 )
+from zae_limiter import Limit
 
 __all__ = [
     "_patch_aiobotocore_response",
@@ -25,4 +35,173 @@ __all__ = [
     "minimal_stack_options",
     "sync_localstack_limiter",
     "unique_name",
+    "unique_name_class",
+    "capacity_counter",
+    "benchmark_entities",
 ]
+
+
+@dataclass
+class CapacityCounter:
+    """Tracks DynamoDB API calls for RCU/WCU validation.
+
+    Attributes:
+        get_item: Number of GetItem calls (1 RCU each)
+        query: Number of Query calls (RCUs depend on data returned)
+        put_item: Number of PutItem calls (1 WCU each)
+        transact_write_items: List of item counts per TransactWriteItems call
+        batch_write_item: List of item counts per BatchWriteItem call
+    """
+
+    get_item: int = 0
+    query: int = 0
+    put_item: int = 0
+    transact_write_items: list[int] = field(default_factory=list)
+    batch_write_item: list[int] = field(default_factory=list)
+
+    @property
+    def total_rcus(self) -> int:
+        """Estimate total RCUs consumed (simplified: 1 RCU per GetItem/Query)."""
+        return self.get_item + self.query
+
+    @property
+    def total_wcus(self) -> int:
+        """Estimate total WCUs consumed."""
+        return self.put_item + sum(self.transact_write_items) + sum(self.batch_write_item)
+
+    def reset(self) -> None:
+        """Reset all counters to zero."""
+        self.get_item = 0
+        self.query = 0
+        self.put_item = 0
+        self.transact_write_items.clear()
+        self.batch_write_item.clear()
+
+
+@contextmanager
+def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, None, None]:
+    """Context manager that wraps DynamoDB client to count API calls.
+
+    This wraps the DynamoDB client methods to count calls without
+    interfering with the actual operations.
+
+    Args:
+        counter: The CapacityCounter to update
+        limiter: The SyncRateLimiter whose repository's client to wrap
+    """
+    # Get the repository's already-cached client
+    # For SyncRateLimiter, we need to access the inner async limiter's repository
+    if hasattr(limiter, "_limiter"):
+        # SyncRateLimiter
+        repo = limiter._limiter._repository
+    else:
+        # RateLimiter
+        repo = limiter._repository
+
+    client = repo._client
+    if client is None:
+        # Client not yet created, nothing to wrap
+        yield
+        return
+
+    # Store original methods
+    original_get_item = client.get_item
+    original_query = client.query
+    original_put_item = client.put_item
+    original_transact = client.transact_write_items
+    original_batch = client.batch_write_item
+
+    # Create counting wrappers
+    async def counting_get_item(*args: Any, **kwargs: Any) -> Any:
+        counter.get_item += 1
+        return await original_get_item(*args, **kwargs)
+
+    async def counting_query(*args: Any, **kwargs: Any) -> Any:
+        counter.query += 1
+        return await original_query(*args, **kwargs)
+
+    async def counting_put_item(*args: Any, **kwargs: Any) -> Any:
+        counter.put_item += 1
+        return await original_put_item(*args, **kwargs)
+
+    async def counting_transact(*args: Any, **kwargs: Any) -> Any:
+        items = kwargs.get("TransactItems", [])
+        counter.transact_write_items.append(len(items))
+        return await original_transact(*args, **kwargs)
+
+    async def counting_batch(*args: Any, **kwargs: Any) -> Any:
+        request_items = kwargs.get("RequestItems", {})
+        total_items = sum(len(items) for items in request_items.values())
+        counter.batch_write_item.append(total_items)
+        return await original_batch(*args, **kwargs)
+
+    # Apply wrappers
+    client.get_item = counting_get_item
+    client.query = counting_query
+    client.put_item = counting_put_item
+    client.transact_write_items = counting_transact
+    client.batch_write_item = counting_batch
+
+    try:
+        yield
+    finally:
+        # Restore original methods
+        client.get_item = original_get_item
+        client.query = original_query
+        client.put_item = original_put_item
+        client.transact_write_items = original_transact
+        client.batch_write_item = original_batch
+
+
+@pytest.fixture
+def capacity_counter(sync_limiter: Any) -> Generator[CapacityCounter, None, None]:
+    """Fixture to count DynamoDB API calls for capacity validation.
+
+    Usage:
+        def test_example(self, sync_limiter, capacity_counter):
+            with capacity_counter.counting():
+                # do operations
+                pass
+            assert capacity_counter.get_item == 1
+
+    Note: This fixture only works with moto-based tests, not LocalStack.
+    The counter tracks calls at the aioboto3 client level.
+
+    The sync_limiter fixture must be used before this fixture to ensure
+    the DynamoDB client is created and cached.
+    """
+    counter = CapacityCounter()
+
+    # Attach the counting context manager as a method
+    # The limiter is captured in the closure
+    counter.counting = lambda: _counting_client(counter, sync_limiter)  # type: ignore[attr-defined]
+
+    yield counter
+
+
+@pytest.fixture
+def benchmark_entities(sync_limiter: Any) -> list[str]:
+    """Pre-create entities with pre-warmed buckets for throughput tests.
+
+    Creates 100 entities, each with a pre-existing bucket to avoid
+    cold-start overhead in benchmark measurements.
+
+    Returns:
+        List of entity IDs created.
+    """
+    entity_ids = [f"bench-entity-{i:03d}" for i in range(100)]
+    limits = [Limit.per_minute("rpm", 1_000_000)]
+
+    for entity_id in entity_ids:
+        # Create entity
+        sync_limiter.create_entity(entity_id, name=f"Benchmark Entity {entity_id}")
+        # Pre-warm bucket by doing one acquire
+        with sync_limiter.acquire(
+            entity_id=entity_id,
+            resource="benchmark",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+    return entity_ids

@@ -286,6 +286,9 @@ For a typical workload (1M requests/day):
 - Lambda: ~$1-5/month
 - CloudWatch: ~$1-5/month
 
+!!! tip "Performance Tuning"
+    For detailed capacity planning, including RCU/WCU costs per operation and cost optimization strategies, see the [Performance Tuning Guide](../performance.md#1-dynamodb-capacity-planning).
+
 ## Next Steps
 
 - [LocalStack](localstack.md) - Local development setup
