@@ -168,7 +168,7 @@ class TestE2ELocalStackFullWorkflow:
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_hierarchical_rate_limiting_workflow(self, e2e_limiter):
         """
         Test hierarchical rate limiting with parent-child entities.
@@ -229,7 +229,7 @@ class TestE2ELocalStackFullWorkflow:
         assert child_available["rpm"] < 100
         assert parent_available["rpm"] < 100
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_rate_limit_exceeded_workflow(self, e2e_limiter):
         """
         Test rate limit exceeded scenario.
@@ -275,7 +275,7 @@ class TestE2ELocalStackFullWorkflow:
         assert "limits" in error_dict
         assert "retry_after_seconds" in error_dict
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_stored_limits_workflow(self, e2e_limiter):
         """
         Test stored limits (premium vs default tiers).
@@ -321,7 +321,7 @@ class TestE2ELocalStackFullWorkflow:
         )
         assert premium_available["rpm"] > 900  # High limit
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_lease_adjustment_workflow(self, e2e_limiter):
         """
         Test lease adjustment for post-hoc token counting (LLM tokens).
@@ -471,7 +471,7 @@ class TestE2ELocalStackErrorHandling:
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_concurrent_lease_acquisition(self, e2e_limiter_minimal):
         """
         Test concurrent lease acquisitions don't cause conflicts.
@@ -511,7 +511,7 @@ class TestE2ELocalStackErrorHandling:
         # The exact amount varies based on timing and retry behavior.
         assert available["rph"] < 1000, "Some tokens should have been consumed"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_lease_rollback_on_exception(self, e2e_limiter_minimal):
         """Test that lease is rolled back when exception occurs."""
         await e2e_limiter_minimal.create_entity("rollback-user")
@@ -538,7 +538,7 @@ class TestE2ELocalStackErrorHandling:
         )
         assert available["rpm"] == 100  # Full capacity restored
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_negative_bucket_handling(self, e2e_limiter_minimal):
         """
         Test that buckets can go negative for post-hoc reconciliation.

@@ -24,33 +24,12 @@ pytestmark = pytest.mark.integration
 # - minimal_stack_options, aggregator_stack_options, full_stack_options
 
 
-class TestLocalStackIntegration:
-    """Integration tests with full LocalStack deployment."""
+class TestCloudFormationStackDeployment:
+    """Tests for CloudFormation stack deployment variations.
 
-    @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def localstack_limiter(
-        self, localstack_endpoint, minimal_stack_options, unique_table_name_class
-    ):
-        """
-        Create and manage the RateLimiter with CloudFormation stack for all tests in this class.
-
-        This fixture creates the stack once when the first test runs and
-        deletes it after all tests in the class complete.
-        """
-        limiter = RateLimiter(
-            table_name=unique_table_name_class,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=minimal_stack_options,
-        )
-
-        async with limiter:
-            yield limiter
-
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+    These tests create their own stacks with different configurations
+    and run independently (no shared state).
+    """
 
     @pytest.mark.asyncio
     async def test_cloudformation_stack_deployment(
@@ -94,7 +73,40 @@ class TestLocalStackIntegration:
             assert entity.id == "cfn-no-alarms-entity"
             assert entity.name == "CFN No Alarms Entity"
 
-    @pytest.mark.asyncio
+
+class TestLocalStackIntegration:
+    """Integration tests with full LocalStack deployment.
+
+    All tests in this class share a single RateLimiter instance
+    with a class-scoped event loop for efficiency.
+    """
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def localstack_limiter(
+        self, localstack_endpoint, minimal_stack_options, unique_table_name_class
+    ):
+        """
+        Create and manage the RateLimiter with CloudFormation stack for all tests in this class.
+
+        This fixture creates the stack once when the first test runs and
+        deletes it after all tests in the class complete.
+        """
+        limiter = RateLimiter(
+            table_name=unique_table_name_class,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+            stack_options=minimal_stack_options,
+        )
+
+        async with limiter:
+            yield limiter
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_rate_limiting_operations(self, localstack_limiter):
         """Test basic rate limiting against real DynamoDB in LocalStack."""
         limits = [
@@ -122,7 +134,7 @@ class TestLocalStackIntegration:
         assert "tpm" in available
         assert available["rpm"] <= 2  # Used 3 out of 5
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_hierarchical_limits(self, localstack_limiter):
         """Test parent-child entity relationships with real DynamoDB."""
         # Create parent entity
@@ -173,7 +185,7 @@ class TestLocalStackIntegration:
         assert child_available["rpm"] < 100  # Some consumed
         assert parent_available["rpm"] < 100  # Cascade consumed
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_rate_limit_exceeded(self, localstack_limiter):
         """Test that rate limit violations are properly detected."""
         limits = [Limit.per_minute("rpm", 2)]
@@ -203,7 +215,7 @@ class TestLocalStackIntegration:
         assert exc_info.value.retry_after_seconds > 0
         assert "rpm" in [v.limit_name for v in exc_info.value.violations]
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_stored_limits(self, localstack_limiter):
         """Test setting and using stored limits."""
         # Set stored limits for an entity
