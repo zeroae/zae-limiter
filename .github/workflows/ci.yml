@@ -153,7 +153,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
       - name: Run benchmarks
-        run: uv run pytest tests/test_performance.py --benchmark-json=benchmark.json
+        run: uv run pytest tests/test_performance.py --benchmark-json=benchmark.json -n 0
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
