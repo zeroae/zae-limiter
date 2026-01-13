@@ -1,0 +1,3079 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Rate limiting library backed by DynamoDB using the token bucket algorithm">
+      
+      
+        <meta name="author" content="ZeroAE">
+      
+      
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/pr-112/migrations/">
+      
+      
+        <link rel="prev" href="../infra/cloudformation/">
+      
+      
+        <link rel="next" href="../monitoring/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Migrations - zae-limiter</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#migrations" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="zae-limiter" class="md-header__button md-logo" aria-label="zae-limiter" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            zae-limiter
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Migrations
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeroae/zae-limiter" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/zae-limiter
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="zae-limiter" class="md-nav__button md-logo" aria-label="zae-limiter" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    zae-limiter
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeroae/zae-limiter" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/zae-limiter
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/basic-usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Basic Usage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/hierarchical/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchical Limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/llm-integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLM Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/failure-modes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Failure Modes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/version/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Version Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/lambda/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lambda Aggregator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/dynamodb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DynamoDB
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/rate-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rate Limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/streams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stream Processing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recovery & Rollback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Infrastructure
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../infra/deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../infra/localstack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LocalStack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../infra/cloudformation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CloudFormation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-migrations-are-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When Migrations Are Needed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#version-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Version Compatibility
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Version Compatibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#compatibility-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compatibility Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#checking-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checking Compatibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#viewing-version-information" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Viewing Version Information
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upgrading-infrastructure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrading Infrastructure
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schema-modification-approaches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema Modification Approaches
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Schema Modification Approaches">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#non-breaking-changes-preferred" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-Breaking Changes (Preferred)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking-changes-major-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Breaking Changes (Major Version)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dynamodb-specific-considerations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DynamoDB-Specific Considerations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-a-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating a Migration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Creating a Migration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#migration-file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration File Structure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migration-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration Protocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#registering-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registering Migrations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#updating-schema-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Updating Schema Version
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validating-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validating Migrations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validating Migrations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#unit-testing-with-moto" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unit Testing with Moto
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#integration-testing-with-localstack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration Testing with LocalStack
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#production-validation-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Production Validation Checklist
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rollback-strategies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rollback Strategies
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rollback Strategies">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reversible-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reversible Migrations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#forward-only-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forward-Only Migrations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#emergency-rollback-procedures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Emergency Rollback Procedures
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sample-migration-v200" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Migration: v2.0.0
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Sample Migration: v2.0.0">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scenario" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scenario
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migration-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloudformation-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CloudFormation Update
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-the-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running the Migration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testing-the-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing the Migration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#version-record-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Version Record Structure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-patterns-v100" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Patterns (v1.0.0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migration-api-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration API Reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cli-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Commands
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/limiter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    RateLimiter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/exceptions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Exceptions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-migrations-are-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When Migrations Are Needed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#version-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Version Compatibility
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Version Compatibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#compatibility-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compatibility Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#checking-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checking Compatibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#viewing-version-information" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Viewing Version Information
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upgrading-infrastructure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrading Infrastructure
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schema-modification-approaches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema Modification Approaches
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Schema Modification Approaches">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#non-breaking-changes-preferred" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-Breaking Changes (Preferred)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking-changes-major-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Breaking Changes (Major Version)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dynamodb-specific-considerations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DynamoDB-Specific Considerations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-a-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating a Migration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Creating a Migration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#migration-file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration File Structure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migration-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration Protocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#registering-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registering Migrations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#updating-schema-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Updating Schema Version
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validating-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validating Migrations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validating Migrations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#unit-testing-with-moto" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unit Testing with Moto
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#integration-testing-with-localstack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration Testing with LocalStack
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#production-validation-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Production Validation Checklist
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rollback-strategies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rollback Strategies
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rollback Strategies">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reversible-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reversible Migrations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#forward-only-migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forward-Only Migrations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#emergency-rollback-procedures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Emergency Rollback Procedures
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sample-migration-v200" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Migration: v2.0.0
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Sample Migration: v2.0.0">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scenario" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scenario
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migration-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration Implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloudformation-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CloudFormation Update
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-the-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running the Migration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testing-the-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing the Migration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#version-record-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Version Record Structure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-patterns-v100" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Patterns (v1.0.0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migration-api-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration API Reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cli-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Commands
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/migrations.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="migrations">Migrations<a class="headerlink" href="#migrations" title="Permanent link">&para;</a></h1>
+<p>This guide covers managing schema migrations for zae-limiter infrastructure.</p>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>Schema migrations handle changes to the DynamoDB table structure when upgrading between major versions of zae-limiter. The migration framework provides:</p>
+<ul>
+<li><strong>Version tracking</strong> - Infrastructure version stored in DynamoDB</li>
+<li><strong>Compatibility checking</strong> - Automatic client/infrastructure compatibility validation</li>
+<li><strong>Migration registry</strong> - Ordered list of migrations between versions</li>
+<li><strong>Rollback support</strong> - Optional rollback functions for reversible changes</li>
+</ul>
+<h3 id="when-migrations-are-needed">When Migrations Are Needed<a class="headerlink" href="#when-migrations-are-needed" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Change Type</th>
+<th>Migration Required?</th>
+<th>Version Bump</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Add optional attribute</td>
+<td>No</td>
+<td>Patch (x.x.1)</td>
+</tr>
+<tr>
+<td>Add new index (GSI)</td>
+<td>Yes</td>
+<td>Minor (x.1.0)</td>
+</tr>
+<tr>
+<td>Change key structure</td>
+<td>Yes</td>
+<td>Major (1.0.0)</td>
+</tr>
+<tr>
+<td>Remove attribute</td>
+<td>Yes</td>
+<td>Major (1.0.0)</td>
+</tr>
+<tr>
+<td>Change attribute type</td>
+<td>Yes</td>
+<td>Major (1.0.0)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="version-compatibility">Version Compatibility<a class="headerlink" href="#version-compatibility" title="Permanent link">&para;</a></h2>
+<p>zae-limiter uses semantic versioning with specific compatibility rules.</p>
+<h3 id="compatibility-rules">Compatibility Rules<a class="headerlink" href="#compatibility-rules" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Client 1.x.x + Schema 1.x.x = Compatible
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>Client 2.x.x + Schema 1.x.x = Incompatible (migration required)
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>Client 1.2.0 + Min Client 1.3.0 = Incompatible (upgrade client)
+</span></code></pre></div>
+<p><strong>Major version mismatch</strong>: Always incompatible. Schema migration required before the client can operate.</p>
+<p><strong>Minor/patch version mismatch</strong>: Compatible. Client and infrastructure can operate together.</p>
+<p><strong>Minimum client version</strong>: Infrastructure can require a minimum client version. Older clients are rejected.</p>
+<h3 id="checking-compatibility">Checking Compatibility<a class="headerlink" href="#checking-compatibility" title="Permanent link">&para;</a></h3>
+<p>Use the CLI to check compatibility without modifying anything:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Check current compatibility status</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span></code></pre></div>
+<p>Output:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Compatibility Check
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>====================
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>Client:      1.2.0
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>Schema:      1.0.0
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>Lambda:      1.1.0
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>Result: COMPATIBLE (update available)
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>Lambda update available: 1.1.0 -&gt; 1.2.0
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>Run &#39;zae-limiter upgrade&#39; to update.
+</span></code></pre></div>
+<h3 id="viewing-version-information">Viewing Version Information<a class="headerlink" href="#viewing-version-information" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Show detailed version information</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span></code></pre></div>
+<p>Output:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>zae-limiter Infrastructure Version
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>====================================
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>Client Version:     1.2.0
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>Schema Version:     1.0.0
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>Infra Schema:       1.0.0
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>Lambda Version:     1.1.0
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>Min Client Version: 0.0.0
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>Status: COMPATIBLE (Lambda update available)
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>  Lambda update available: 1.1.0 -&gt; 1.2.0
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>Run &#39;zae-limiter upgrade&#39; to update Lambda.
+</span></code></pre></div>
+<h3 id="upgrading-infrastructure">Upgrading Infrastructure<a class="headerlink" href="#upgrading-infrastructure" title="Permanent link">&para;</a></h3>
+<p>For minor updates (Lambda code, no schema changes):</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Upgrade Lambda to match client version</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span></code></pre></div>
+<p>For major version upgrades requiring schema migration, see <a href="#sample-migration-v200">Sample Migration: v2.0.0</a>.</p>
+<h2 id="schema-modification-approaches">Schema Modification Approaches<a class="headerlink" href="#schema-modification-approaches" title="Permanent link">&para;</a></h2>
+<p>When modifying the DynamoDB schema, prefer solutions that preserve backward compatibility.</p>
+<h3 id="non-breaking-changes-preferred">Non-Breaking Changes (Preferred)<a class="headerlink" href="#non-breaking-changes-preferred" title="Permanent link">&para;</a></h3>
+<p>These changes don't require migrations:</p>
+<p><strong>Adding optional attributes:</strong>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Old code works - attribute simply missing</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">item</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#123&quot;</span><span class="p">,</span> <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;test&quot;</span><span class="p">}</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># New code adds optional attribute</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">item</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#123&quot;</span><span class="p">,</span> <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;test&quot;</span><span class="p">,</span> <span class="s2">&quot;tags&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;prod&quot;</span><span class="p">]}</span>
+</span></code></pre></div></p>
+<p><strong>Using <code>if_not_exists()</code> for new nested structures:</strong>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Initialize nested map only if missing</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">update_expression</span> <span class="o">=</span> <span class="s2">&quot;SET #data.#metrics = if_not_exists(#data.#metrics, :empty_map)&quot;</span>
+</span></code></pre></div></p>
+<p><strong>Adding conditional logic for missing attributes:</strong>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Handle missing attribute gracefully</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">metrics</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;data&quot;</span><span class="p">,</span> <span class="p">{})</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;metrics&quot;</span><span class="p">,</span> <span class="p">{})</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">request_count</span> <span class="o">=</span> <span class="n">metrics</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;requests&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+</span></code></pre></div></p>
+<h3 id="breaking-changes-major-version">Breaking Changes (Major Version)<a class="headerlink" href="#breaking-changes-major-version" title="Permanent link">&para;</a></h3>
+<p>These changes require migrations and major version bumps:</p>
+<ul>
+<li>Changing partition or sort key structure</li>
+<li>Removing required attributes</li>
+<li>Changing attribute data types</li>
+<li>Renaming attributes</li>
+<li>Restructuring nested data</li>
+</ul>
+<h3 id="dynamodb-specific-considerations">DynamoDB-Specific Considerations<a class="headerlink" href="#dynamodb-specific-considerations" title="Permanent link">&para;</a></h3>
+<p><strong>GSI Changes:</strong></p>
+<ul>
+<li>Adding a GSI: Can be done without migration (CloudFormation update)</li>
+<li>Removing a GSI: Requires ensuring no code depends on it</li>
+<li>Changing GSI keys: Requires data migration</li>
+</ul>
+<p><strong>Key Pattern Changes:</strong></p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># v1.0.0 pattern</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">PK</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;ENTITY#</span><span class="si">{</span><span class="n">entity_id</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">SK</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;#BUCKET#</span><span class="si">{</span><span class="n">resource</span><span class="si">}</span><span class="s2">#</span><span class="si">{</span><span class="n">limit_name</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="c1"># v2.0.0 pattern (breaking change!)</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="n">PK</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;ENT#</span><span class="si">{</span><span class="n">entity_id</span><span class="si">}</span><span class="s2">&quot;</span>  <span class="c1"># Changed prefix</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="n">SK</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;BKT#</span><span class="si">{</span><span class="n">resource</span><span class="si">}</span><span class="s2">#</span><span class="si">{</span><span class="n">limit_name</span><span class="si">}</span><span class="s2">&quot;</span>  <span class="c1"># Changed prefix</span>
+</span></code></pre></div>
+<p>Key pattern changes require migrating all existing data.</p>
+<h2 id="creating-a-migration">Creating a Migration<a class="headerlink" href="#creating-a-migration" title="Permanent link">&para;</a></h2>
+<h3 id="migration-file-structure">Migration File Structure<a class="headerlink" href="#migration-file-structure" title="Permanent link">&para;</a></h3>
+<p>Create a new file in <code>src/zae_limiter/migrations/</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># src/zae_limiter/migrations/v1_1_0.py</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="sd">Migration: v1.1.0 (Add metrics tracking)</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="sd">This migration adds a metrics attribute to entity metadata</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="sd">for tracking request statistics.</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="sd">Changes:</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="sd">- Add &#39;metrics&#39; map to entity #META records</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="sd">- Initialize with empty counters</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>
+</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span>
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">Migration</span><span class="p">,</span> <span class="n">register_migration</span>
+</span><span id="__span-10-18"><a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a>
+</span><span id="__span-10-19"><a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a><span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
+</span><span id="__span-10-20"><a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">..repository</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span>
+</span><span id="__span-10-21"><a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a>
+</span><span id="__span-10-22"><a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a>
+</span><span id="__span-10-23"><a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">migrate_v1_1_0</span><span class="p">(</span><span class="n">repository</span><span class="p">:</span> <span class="n">Repository</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-10-24"><a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-10-25"><a id="__codelineno-10-25" name="__codelineno-10-25" href="#__codelineno-10-25"></a><span class="sd">    Add metrics attribute to all entity metadata records.</span>
+</span><span id="__span-10-26"><a id="__codelineno-10-26" name="__codelineno-10-26" href="#__codelineno-10-26"></a>
+</span><span id="__span-10-27"><a id="__codelineno-10-27" name="__codelineno-10-27" href="#__codelineno-10-27"></a><span class="sd">    This is a forward-only migration that initializes the</span>
+</span><span id="__span-10-28"><a id="__codelineno-10-28" name="__codelineno-10-28" href="#__codelineno-10-28"></a><span class="sd">    metrics structure for existing entities.</span>
+</span><span id="__span-10-29"><a id="__codelineno-10-29" name="__codelineno-10-29" href="#__codelineno-10-29"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-10-30"><a id="__codelineno-10-30" name="__codelineno-10-30" href="#__codelineno-10-30"></a>    <span class="c1"># Query all entity metadata records</span>
+</span><span id="__span-10-31"><a id="__codelineno-10-31" name="__codelineno-10-31" href="#__codelineno-10-31"></a>    <span class="c1"># Update each to add metrics if missing</span>
+</span><span id="__span-10-32"><a id="__codelineno-10-32" name="__codelineno-10-32" href="#__codelineno-10-32"></a>    <span class="c1"># Use conditional updates to be idempotent</span>
+</span><span id="__span-10-33"><a id="__codelineno-10-33" name="__codelineno-10-33" href="#__codelineno-10-33"></a>    <span class="k">pass</span>
+</span><span id="__span-10-34"><a id="__codelineno-10-34" name="__codelineno-10-34" href="#__codelineno-10-34"></a>
+</span><span id="__span-10-35"><a id="__codelineno-10-35" name="__codelineno-10-35" href="#__codelineno-10-35"></a>
+</span><span id="__span-10-36"><a id="__codelineno-10-36" name="__codelineno-10-36" href="#__codelineno-10-36"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">rollback_v1_1_0</span><span class="p">(</span><span class="n">repository</span><span class="p">:</span> <span class="n">Repository</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-10-37"><a id="__codelineno-10-37" name="__codelineno-10-37" href="#__codelineno-10-37"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-10-38"><a id="__codelineno-10-38" name="__codelineno-10-38" href="#__codelineno-10-38"></a><span class="sd">    Remove metrics attribute from entity metadata.</span>
+</span><span id="__span-10-39"><a id="__codelineno-10-39" name="__codelineno-10-39" href="#__codelineno-10-39"></a>
+</span><span id="__span-10-40"><a id="__codelineno-10-40" name="__codelineno-10-40" href="#__codelineno-10-40"></a><span class="sd">    Note: This loses all collected metrics data.</span>
+</span><span id="__span-10-41"><a id="__codelineno-10-41" name="__codelineno-10-41" href="#__codelineno-10-41"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-10-42"><a id="__codelineno-10-42" name="__codelineno-10-42" href="#__codelineno-10-42"></a>    <span class="c1"># Remove metrics attribute from all entities</span>
+</span><span id="__span-10-43"><a id="__codelineno-10-43" name="__codelineno-10-43" href="#__codelineno-10-43"></a>    <span class="k">pass</span>
+</span><span id="__span-10-44"><a id="__codelineno-10-44" name="__codelineno-10-44" href="#__codelineno-10-44"></a>
+</span><span id="__span-10-45"><a id="__codelineno-10-45" name="__codelineno-10-45" href="#__codelineno-10-45"></a>
+</span><span id="__span-10-46"><a id="__codelineno-10-46" name="__codelineno-10-46" href="#__codelineno-10-46"></a><span class="c1"># Register the migration</span>
+</span><span id="__span-10-47"><a id="__codelineno-10-47" name="__codelineno-10-47" href="#__codelineno-10-47"></a><span class="n">register_migration</span><span class="p">(</span>
+</span><span id="__span-10-48"><a id="__codelineno-10-48" name="__codelineno-10-48" href="#__codelineno-10-48"></a>    <span class="n">Migration</span><span class="p">(</span>
+</span><span id="__span-10-49"><a id="__codelineno-10-49" name="__codelineno-10-49" href="#__codelineno-10-49"></a>        <span class="n">version</span><span class="o">=</span><span class="s2">&quot;1.1.0&quot;</span><span class="p">,</span>
+</span><span id="__span-10-50"><a id="__codelineno-10-50" name="__codelineno-10-50" href="#__codelineno-10-50"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Add metrics tracking to entities&quot;</span><span class="p">,</span>
+</span><span id="__span-10-51"><a id="__codelineno-10-51" name="__codelineno-10-51" href="#__codelineno-10-51"></a>        <span class="n">reversible</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-10-52"><a id="__codelineno-10-52" name="__codelineno-10-52" href="#__codelineno-10-52"></a>        <span class="n">migrate</span><span class="o">=</span><span class="n">migrate_v1_1_0</span><span class="p">,</span>
+</span><span id="__span-10-53"><a id="__codelineno-10-53" name="__codelineno-10-53" href="#__codelineno-10-53"></a>        <span class="n">rollback</span><span class="o">=</span><span class="n">rollback_v1_1_0</span><span class="p">,</span>
+</span><span id="__span-10-54"><a id="__codelineno-10-54" name="__codelineno-10-54" href="#__codelineno-10-54"></a>    <span class="p">)</span>
+</span><span id="__span-10-55"><a id="__codelineno-10-55" name="__codelineno-10-55" href="#__codelineno-10-55"></a><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="migration-protocol">Migration Protocol<a class="headerlink" href="#migration-protocol" title="Permanent link">&para;</a></h3>
+<p>Migration functions must follow this protocol:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">repository</span><span class="p">:</span> <span class="n">Repository</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Execute the migration.&quot;&quot;&quot;</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>    <span class="o">...</span>
+</span></code></pre></div>
+<p>Key requirements:</p>
+<ol>
+<li><strong>Async</strong>: All migrations are async functions</li>
+<li><strong>Repository parameter</strong>: Receives a configured Repository instance</li>
+<li><strong>Idempotent</strong>: Safe to run multiple times (use conditional updates)</li>
+<li><strong>Atomic where possible</strong>: Use transactions for related changes</li>
+</ol>
+<h3 id="registering-migrations">Registering Migrations<a class="headerlink" href="#registering-migrations" title="Permanent link">&para;</a></h3>
+<p>Migrations are auto-registered when imported. Ensure your migration module is imported in <code>migrations/__init__.py</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># src/zae_limiter/migrations/__init__.py</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="c1"># ... existing code ...</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="c1"># Import built-in migrations to register them</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">v1_0_0</span> <span class="k">as</span> <span class="n">_v1_0_0</span>  <span class="c1"># noqa: F401, E402</span>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">v1_1_0</span> <span class="k">as</span> <span class="n">_v1_1_0</span>  <span class="c1"># noqa: F401, E402  # Add new migration</span>
+</span></code></pre></div>
+<h3 id="updating-schema-version">Updating Schema Version<a class="headerlink" href="#updating-schema-version" title="Permanent link">&para;</a></h3>
+<p>After adding a migration, update the current schema version:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># src/zae_limiter/version.py</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="c1"># Current schema version - increment when schema changes</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="n">CURRENT_SCHEMA_VERSION</span> <span class="o">=</span> <span class="s2">&quot;1.1.0&quot;</span>  <span class="c1"># Updated from &quot;1.0.0&quot;</span>
+</span></code></pre></div>
+<h2 id="validating-migrations">Validating Migrations<a class="headerlink" href="#validating-migrations" title="Permanent link">&para;</a></h2>
+<h3 id="unit-testing-with-moto">Unit Testing with Moto<a class="headerlink" href="#unit-testing-with-moto" title="Permanent link">&para;</a></h3>
+<p>Test migrations using moto for fast, isolated tests:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># tests/test_migrations.py</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">moto</span><span class="w"> </span><span class="kn">import</span> <span class="n">mock_aws</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.migrations</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_migrations_between</span><span class="p">,</span> <span class="n">apply_migrations</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.repository</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>
+</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>
+</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span>
+</span><span id="__span-14-10"><a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="k">def</span><span class="w"> </span><span class="nf">mock_dynamodb</span><span class="p">():</span>
+</span><span id="__span-14-11"><a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>    <span class="k">with</span> <span class="n">mock_aws</span><span class="p">():</span>
+</span><span id="__span-14-12"><a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>        <span class="c1"># Create table and seed test data</span>
+</span><span id="__span-14-13"><a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a>        <span class="k">yield</span>
+</span><span id="__span-14-14"><a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a>
+</span><span id="__span-14-15"><a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a>
+</span><span id="__span-14-16"><a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+</span><span id="__span-14-17"><a id="__codelineno-14-17" name="__codelineno-14-17" href="#__codelineno-14-17"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_migration_v1_1_0</span><span class="p">(</span><span class="n">mock_dynamodb</span><span class="p">):</span>
+</span><span id="__span-14-18"><a id="__codelineno-14-18" name="__codelineno-14-18" href="#__codelineno-14-18"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Test v1.1.0 migration adds metrics to entities.&quot;&quot;&quot;</span>
+</span><span id="__span-14-19"><a id="__codelineno-14-19" name="__codelineno-14-19" href="#__codelineno-14-19"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span><span class="s2">&quot;test_table&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-14-20"><a id="__codelineno-14-20" name="__codelineno-14-20" href="#__codelineno-14-20"></a>
+</span><span id="__span-14-21"><a id="__codelineno-14-21" name="__codelineno-14-21" href="#__codelineno-14-21"></a>    <span class="c1"># Create test entity without metrics</span>
+</span><span id="__span-14-22"><a id="__codelineno-14-22" name="__codelineno-14-22" href="#__codelineno-14-22"></a>    <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;test-1&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Test Entity&quot;</span><span class="p">)</span>
+</span><span id="__span-14-23"><a id="__codelineno-14-23" name="__codelineno-14-23" href="#__codelineno-14-23"></a>
+</span><span id="__span-14-24"><a id="__codelineno-14-24" name="__codelineno-14-24" href="#__codelineno-14-24"></a>    <span class="c1"># Apply migration</span>
+</span><span id="__span-14-25"><a id="__codelineno-14-25" name="__codelineno-14-25" href="#__codelineno-14-25"></a>    <span class="n">applied</span> <span class="o">=</span> <span class="k">await</span> <span class="n">apply_migrations</span><span class="p">(</span><span class="n">repo</span><span class="p">,</span> <span class="s2">&quot;1.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;1.1.0&quot;</span><span class="p">)</span>
+</span><span id="__span-14-26"><a id="__codelineno-14-26" name="__codelineno-14-26" href="#__codelineno-14-26"></a>
+</span><span id="__span-14-27"><a id="__codelineno-14-27" name="__codelineno-14-27" href="#__codelineno-14-27"></a>    <span class="k">assert</span> <span class="n">applied</span> <span class="o">==</span> <span class="p">[</span><span class="s2">&quot;1.1.0&quot;</span><span class="p">]</span>
+</span><span id="__span-14-28"><a id="__codelineno-14-28" name="__codelineno-14-28" href="#__codelineno-14-28"></a>
+</span><span id="__span-14-29"><a id="__codelineno-14-29" name="__codelineno-14-29" href="#__codelineno-14-29"></a>    <span class="c1"># Verify metrics added - use raw DynamoDB query since Entity</span>
+</span><span id="__span-14-30"><a id="__codelineno-14-30" name="__codelineno-14-30" href="#__codelineno-14-30"></a>    <span class="c1"># dataclass won&#39;t have the new &#39;metrics&#39; field until code is updated</span>
+</span><span id="__span-14-31"><a id="__codelineno-14-31" name="__codelineno-14-31" href="#__codelineno-14-31"></a>    <span class="n">client</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">_get_client</span><span class="p">()</span>
+</span><span id="__span-14-32"><a id="__codelineno-14-32" name="__codelineno-14-32" href="#__codelineno-14-32"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span>
+</span><span id="__span-14-33"><a id="__codelineno-14-33" name="__codelineno-14-33" href="#__codelineno-14-33"></a>        <span class="n">TableName</span><span class="o">=</span><span class="n">repo</span><span class="o">.</span><span class="n">table_name</span><span class="p">,</span>
+</span><span id="__span-14-34"><a id="__codelineno-14-34" name="__codelineno-14-34" href="#__codelineno-14-34"></a>        <span class="n">Key</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#test-1&quot;</span><span class="p">},</span> <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">}},</span>
+</span><span id="__span-14-35"><a id="__codelineno-14-35" name="__codelineno-14-35" href="#__codelineno-14-35"></a>    <span class="p">)</span>
+</span><span id="__span-14-36"><a id="__codelineno-14-36" name="__codelineno-14-36" href="#__codelineno-14-36"></a>    <span class="n">item</span> <span class="o">=</span> <span class="n">response</span><span class="p">[</span><span class="s2">&quot;Item&quot;</span><span class="p">]</span>
+</span><span id="__span-14-37"><a id="__codelineno-14-37" name="__codelineno-14-37" href="#__codelineno-14-37"></a>    <span class="k">assert</span> <span class="s2">&quot;metrics&quot;</span> <span class="ow">in</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;data&quot;</span><span class="p">][</span><span class="s2">&quot;M&quot;</span><span class="p">]</span>
+</span><span id="__span-14-38"><a id="__codelineno-14-38" name="__codelineno-14-38" href="#__codelineno-14-38"></a>    <span class="k">assert</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;data&quot;</span><span class="p">][</span><span class="s2">&quot;M&quot;</span><span class="p">][</span><span class="s2">&quot;metrics&quot;</span><span class="p">][</span><span class="s2">&quot;M&quot;</span><span class="p">][</span><span class="s2">&quot;requests&quot;</span><span class="p">][</span><span class="s2">&quot;N&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;0&quot;</span>
+</span><span id="__span-14-39"><a id="__codelineno-14-39" name="__codelineno-14-39" href="#__codelineno-14-39"></a>
+</span><span id="__span-14-40"><a id="__codelineno-14-40" name="__codelineno-14-40" href="#__codelineno-14-40"></a>
+</span><span id="__span-14-41"><a id="__codelineno-14-41" name="__codelineno-14-41" href="#__codelineno-14-41"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+</span><span id="__span-14-42"><a id="__codelineno-14-42" name="__codelineno-14-42" href="#__codelineno-14-42"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_migration_idempotent</span><span class="p">(</span><span class="n">mock_dynamodb</span><span class="p">):</span>
+</span><span id="__span-14-43"><a id="__codelineno-14-43" name="__codelineno-14-43" href="#__codelineno-14-43"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Test migration can be safely run multiple times.&quot;&quot;&quot;</span>
+</span><span id="__span-14-44"><a id="__codelineno-14-44" name="__codelineno-14-44" href="#__codelineno-14-44"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span><span class="s2">&quot;test_table&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-14-45"><a id="__codelineno-14-45" name="__codelineno-14-45" href="#__codelineno-14-45"></a>
+</span><span id="__span-14-46"><a id="__codelineno-14-46" name="__codelineno-14-46" href="#__codelineno-14-46"></a>    <span class="c1"># Create test entity</span>
+</span><span id="__span-14-47"><a id="__codelineno-14-47" name="__codelineno-14-47" href="#__codelineno-14-47"></a>    <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;test-1&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Test Entity&quot;</span><span class="p">)</span>
+</span><span id="__span-14-48"><a id="__codelineno-14-48" name="__codelineno-14-48" href="#__codelineno-14-48"></a>
+</span><span id="__span-14-49"><a id="__codelineno-14-49" name="__codelineno-14-49" href="#__codelineno-14-49"></a>    <span class="c1"># Run migration twice</span>
+</span><span id="__span-14-50"><a id="__codelineno-14-50" name="__codelineno-14-50" href="#__codelineno-14-50"></a>    <span class="k">await</span> <span class="n">apply_migrations</span><span class="p">(</span><span class="n">repo</span><span class="p">,</span> <span class="s2">&quot;1.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;1.1.0&quot;</span><span class="p">)</span>
+</span><span id="__span-14-51"><a id="__codelineno-14-51" name="__codelineno-14-51" href="#__codelineno-14-51"></a>    <span class="k">await</span> <span class="n">apply_migrations</span><span class="p">(</span><span class="n">repo</span><span class="p">,</span> <span class="s2">&quot;1.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;1.1.0&quot;</span><span class="p">)</span>  <span class="c1"># Should not fail</span>
+</span><span id="__span-14-52"><a id="__codelineno-14-52" name="__codelineno-14-52" href="#__codelineno-14-52"></a>
+</span><span id="__span-14-53"><a id="__codelineno-14-53" name="__codelineno-14-53" href="#__codelineno-14-53"></a>    <span class="c1"># Verify single application via raw DynamoDB query</span>
+</span><span id="__span-14-54"><a id="__codelineno-14-54" name="__codelineno-14-54" href="#__codelineno-14-54"></a>    <span class="n">client</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">_get_client</span><span class="p">()</span>
+</span><span id="__span-14-55"><a id="__codelineno-14-55" name="__codelineno-14-55" href="#__codelineno-14-55"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span>
+</span><span id="__span-14-56"><a id="__codelineno-14-56" name="__codelineno-14-56" href="#__codelineno-14-56"></a>        <span class="n">TableName</span><span class="o">=</span><span class="n">repo</span><span class="o">.</span><span class="n">table_name</span><span class="p">,</span>
+</span><span id="__span-14-57"><a id="__codelineno-14-57" name="__codelineno-14-57" href="#__codelineno-14-57"></a>        <span class="n">Key</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#test-1&quot;</span><span class="p">},</span> <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">}},</span>
+</span><span id="__span-14-58"><a id="__codelineno-14-58" name="__codelineno-14-58" href="#__codelineno-14-58"></a>    <span class="p">)</span>
+</span><span id="__span-14-59"><a id="__codelineno-14-59" name="__codelineno-14-59" href="#__codelineno-14-59"></a>    <span class="n">item</span> <span class="o">=</span> <span class="n">response</span><span class="p">[</span><span class="s2">&quot;Item&quot;</span><span class="p">]</span>
+</span><span id="__span-14-60"><a id="__codelineno-14-60" name="__codelineno-14-60" href="#__codelineno-14-60"></a>    <span class="k">assert</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;data&quot;</span><span class="p">][</span><span class="s2">&quot;M&quot;</span><span class="p">][</span><span class="s2">&quot;metrics&quot;</span><span class="p">][</span><span class="s2">&quot;M&quot;</span><span class="p">][</span><span class="s2">&quot;requests&quot;</span><span class="p">][</span><span class="s2">&quot;N&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;0&quot;</span>
+</span></code></pre></div>
+<h3 id="integration-testing-with-localstack">Integration Testing with LocalStack<a class="headerlink" href="#integration-testing-with-localstack" title="Permanent link">&para;</a></h3>
+<p>Test migrations against real AWS-compatible infrastructure:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># tests/test_migrations_integration.py</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="c1"># Skip if LocalStack not available</span>
+</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="n">pytestmark</span> <span class="o">=</span> <span class="n">pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">skipif</span><span class="p">(</span>
+</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>    <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;AWS_ENDPOINT_URL&quot;</span><span class="p">),</span>
+</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>    <span class="n">reason</span><span class="o">=</span><span class="s2">&quot;LocalStack not available&quot;</span>
+</span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="p">)</span>
+</span><span id="__span-15-10"><a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a>
+</span><span id="__span-15-11"><a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>
+</span><span id="__span-15-12"><a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">integration</span>
+</span><span id="__span-15-13"><a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+</span><span id="__span-15-14"><a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_migration_with_localstack</span><span class="p">():</span>
+</span><span id="__span-15-15"><a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Test migration against LocalStack.&quot;&quot;&quot;</span>
+</span><span id="__span-15-16"><a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a>    <span class="n">endpoint_url</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;AWS_ENDPOINT_URL&quot;</span><span class="p">]</span>
+</span><span id="__span-15-17"><a id="__codelineno-15-17" name="__codelineno-15-17" href="#__codelineno-15-17"></a>
+</span><span id="__span-15-18"><a id="__codelineno-15-18" name="__codelineno-15-18" href="#__codelineno-15-18"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span>
+</span><span id="__span-15-19"><a id="__codelineno-15-19" name="__codelineno-15-19" href="#__codelineno-15-19"></a>        <span class="s2">&quot;test_migrations&quot;</span><span class="p">,</span>
+</span><span id="__span-15-20"><a id="__codelineno-15-20" name="__codelineno-15-20" href="#__codelineno-15-20"></a>        <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
+</span><span id="__span-15-21"><a id="__codelineno-15-21" name="__codelineno-15-21" href="#__codelineno-15-21"></a>        <span class="n">endpoint_url</span><span class="p">,</span>
+</span><span id="__span-15-22"><a id="__codelineno-15-22" name="__codelineno-15-22" href="#__codelineno-15-22"></a>    <span class="p">)</span>
+</span><span id="__span-15-23"><a id="__codelineno-15-23" name="__codelineno-15-23" href="#__codelineno-15-23"></a>
+</span><span id="__span-15-24"><a id="__codelineno-15-24" name="__codelineno-15-24" href="#__codelineno-15-24"></a>    <span class="c1"># Deploy infrastructure</span>
+</span><span id="__span-15-25"><a id="__codelineno-15-25" name="__codelineno-15-25" href="#__codelineno-15-25"></a>    <span class="c1"># ... create table with CloudFormation ...</span>
+</span><span id="__span-15-26"><a id="__codelineno-15-26" name="__codelineno-15-26" href="#__codelineno-15-26"></a>
+</span><span id="__span-15-27"><a id="__codelineno-15-27" name="__codelineno-15-27" href="#__codelineno-15-27"></a>    <span class="c1"># Seed test data</span>
+</span><span id="__span-15-28"><a id="__codelineno-15-28" name="__codelineno-15-28" href="#__codelineno-15-28"></a>    <span class="c1"># ... create entities ...</span>
+</span><span id="__span-15-29"><a id="__codelineno-15-29" name="__codelineno-15-29" href="#__codelineno-15-29"></a>
+</span><span id="__span-15-30"><a id="__codelineno-15-30" name="__codelineno-15-30" href="#__codelineno-15-30"></a>    <span class="c1"># Apply migration</span>
+</span><span id="__span-15-31"><a id="__codelineno-15-31" name="__codelineno-15-31" href="#__codelineno-15-31"></a>    <span class="n">applied</span> <span class="o">=</span> <span class="k">await</span> <span class="n">apply_migrations</span><span class="p">(</span><span class="n">repo</span><span class="p">,</span> <span class="s2">&quot;1.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;1.1.0&quot;</span><span class="p">)</span>
+</span><span id="__span-15-32"><a id="__codelineno-15-32" name="__codelineno-15-32" href="#__codelineno-15-32"></a>
+</span><span id="__span-15-33"><a id="__codelineno-15-33" name="__codelineno-15-33" href="#__codelineno-15-33"></a>    <span class="c1"># Verify changes persisted</span>
+</span><span id="__span-15-34"><a id="__codelineno-15-34" name="__codelineno-15-34" href="#__codelineno-15-34"></a>    <span class="c1"># ... assertions ...</span>
+</span></code></pre></div>
+<p>Run integration tests:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># Start LocalStack (from project root)</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="c1"># Set environment variables and run integration tests</span>
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_ENDPOINT_URL</span><span class="o">=</span>http://localhost:4566
+</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_ACCESS_KEY_ID</span><span class="o">=</span><span class="nb">test</span>
+</span><span id="__span-16-7"><a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_SECRET_ACCESS_KEY</span><span class="o">=</span><span class="nb">test</span>
+</span><span id="__span-16-8"><a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_DEFAULT_REGION</span><span class="o">=</span>us-east-1
+</span><span id="__span-16-9"><a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>pytest<span class="w"> </span>-m<span class="w"> </span>integration<span class="w"> </span>-v
+</span></code></pre></div>
+<h3 id="production-validation-checklist">Production Validation Checklist<a class="headerlink" href="#production-validation-checklist" title="Permanent link">&para;</a></h3>
+<p>Before running migrations in production:</p>
+<ul>
+<li>[ ] <strong>Backup</strong>: Enable Point-in-Time Recovery (PITR) or create on-demand backup</li>
+<li>[ ] <strong>Test</strong>: Run migration against production data copy</li>
+<li>[ ] <strong>Monitor</strong>: Set up CloudWatch alarms for errors</li>
+<li>[ ] <strong>Rollback plan</strong>: Document rollback procedure</li>
+<li>[ ] <strong>Maintenance window</strong>: Schedule during low-traffic period</li>
+<li>[ ] <strong>Communication</strong>: Notify stakeholders of potential downtime</li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># Create on-demand backup before migration</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>create-backup<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-limiter<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="w">  </span>--backup-name<span class="w"> </span><span class="s2">&quot;pre-migration-</span><span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="c1"># Verify PITR is enabled</span>
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-continuous-backups<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-limiter
+</span></code></pre></div>
+<h2 id="rollback-strategies">Rollback Strategies<a class="headerlink" href="#rollback-strategies" title="Permanent link">&para;</a></h2>
+<h3 id="reversible-migrations">Reversible Migrations<a class="headerlink" href="#reversible-migrations" title="Permanent link">&para;</a></h3>
+<p>For migrations that can be safely undone:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="n">register_migration</span><span class="p">(</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>    <span class="n">Migration</span><span class="p">(</span>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>        <span class="n">version</span><span class="o">=</span><span class="s2">&quot;1.1.0&quot;</span><span class="p">,</span>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Add metrics tracking&quot;</span><span class="p">,</span>
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>        <span class="n">reversible</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Can be rolled back</span>
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>        <span class="n">migrate</span><span class="o">=</span><span class="n">migrate_v1_1_0</span><span class="p">,</span>
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>        <span class="n">rollback</span><span class="o">=</span><span class="n">rollback_v1_1_0</span><span class="p">,</span>  <span class="c1"># Rollback function</span>
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>    <span class="p">)</span>
+</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>Rollback removes or reverts the changes:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">rollback_v1_1_0</span><span class="p">(</span><span class="n">repository</span><span class="p">:</span> <span class="n">Repository</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Remove metrics attribute from all entities.&quot;&quot;&quot;</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>    <span class="c1"># Implementation to remove metrics attribute</span>
+</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>    <span class="k">pass</span>
+</span></code></pre></div>
+<h3 id="forward-only-migrations">Forward-Only Migrations<a class="headerlink" href="#forward-only-migrations" title="Permanent link">&para;</a></h3>
+<p>Some migrations cannot be reversed:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">register_migration</span><span class="p">(</span>
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>    <span class="n">Migration</span><span class="p">(</span>
+</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>        <span class="n">version</span><span class="o">=</span><span class="s2">&quot;2.0.0&quot;</span><span class="p">,</span>
+</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Restructure key patterns&quot;</span><span class="p">,</span>
+</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>        <span class="n">reversible</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>  <span class="c1"># Cannot be rolled back</span>
+</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>        <span class="n">migrate</span><span class="o">=</span><span class="n">migrate_v2_0_0</span><span class="p">,</span>
+</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>        <span class="n">rollback</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>  <span class="c1"># No rollback function</span>
+</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>    <span class="p">)</span>
+</span><span id="__span-20-9"><a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>Forward-only migrations typically involve:</p>
+<ul>
+<li>Data transformation with information loss</li>
+<li>Key structure changes</li>
+<li>Removing deprecated attributes</li>
+</ul>
+<h3 id="emergency-rollback-procedures">Emergency Rollback Procedures<a class="headerlink" href="#emergency-rollback-procedures" title="Permanent link">&para;</a></h3>
+<p>If a migration fails or causes issues:</p>
+<p><strong>1. Stop the bleeding:</strong>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="c1"># Revert to previous client version</span>
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>pip<span class="w"> </span>install<span class="w"> </span>zae-limiter<span class="o">==</span><span class="m">1</span>.0.0
+</span></code></pre></div></p>
+<p><strong>2. Restore from backup (if needed):</strong>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="c1"># Restore from PITR</span>
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>restore-table-to-point-in-time<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">  </span>--source-table-name<span class="w"> </span>ZAEL-limiter<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="w">  </span>--target-table-name<span class="w"> </span>ZAEL-limiter-restored<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="w">  </span>--restore-date-time<span class="w"> </span><span class="s2">&quot;2024-01-15T10:00:00Z&quot;</span>
+</span></code></pre></div></p>
+<p><strong>3. Run rollback (if reversible):</strong>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.migrations</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_migrations</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.repository</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">emergency_rollback</span><span class="p">():</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span><span class="s2">&quot;ZAEL-limiter&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a>
+</span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a>    <span class="n">migrations</span> <span class="o">=</span> <span class="n">get_migrations</span><span class="p">()</span>
+</span><span id="__span-23-8"><a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a>    <span class="n">target_migration</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span><span class="n">m</span> <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">migrations</span> <span class="k">if</span> <span class="n">m</span><span class="o">.</span><span class="n">version</span> <span class="o">==</span> <span class="s2">&quot;1.1.0&quot;</span><span class="p">)</span>
+</span><span id="__span-23-9"><a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a>
+</span><span id="__span-23-10"><a id="__codelineno-23-10" name="__codelineno-23-10" href="#__codelineno-23-10"></a>    <span class="k">if</span> <span class="n">target_migration</span><span class="o">.</span><span class="n">reversible</span> <span class="ow">and</span> <span class="n">target_migration</span><span class="o">.</span><span class="n">rollback</span><span class="p">:</span>
+</span><span id="__span-23-11"><a id="__codelineno-23-11" name="__codelineno-23-11" href="#__codelineno-23-11"></a>        <span class="k">await</span> <span class="n">target_migration</span><span class="o">.</span><span class="n">rollback</span><span class="p">(</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-23-12"><a id="__codelineno-23-12" name="__codelineno-23-12" href="#__codelineno-23-12"></a>        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Rollback complete&quot;</span><span class="p">)</span>
+</span><span id="__span-23-13"><a id="__codelineno-23-13" name="__codelineno-23-13" href="#__codelineno-23-13"></a>    <span class="k">else</span><span class="p">:</span>
+</span><span id="__span-23-14"><a id="__codelineno-23-14" name="__codelineno-23-14" href="#__codelineno-23-14"></a>        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Migration is not reversible - restore from backup&quot;</span><span class="p">)</span>
+</span></code></pre></div></p>
+<p><strong>4. Update version record:</strong>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">set_version_record</span><span class="p">(</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>    <span class="n">schema_version</span><span class="o">=</span><span class="s2">&quot;1.0.0&quot;</span><span class="p">,</span>  <span class="c1"># Reverted version</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>    <span class="n">lambda_version</span><span class="o">=</span><span class="s2">&quot;1.0.0&quot;</span><span class="p">,</span>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a>    <span class="n">updated_by</span><span class="o">=</span><span class="s2">&quot;emergency_rollback&quot;</span><span class="p">,</span>
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="p">)</span>
+</span></code></pre></div></p>
+<h2 id="sample-migration-v200">Sample Migration: v2.0.0<a class="headerlink" href="#sample-migration-v200" title="Permanent link">&para;</a></h2>
+<p>This example demonstrates a complete migration scenario for a hypothetical v2.0.0 release that adds a new Global Secondary Index for querying entities by creation date.</p>
+<h3 id="scenario">Scenario<a class="headerlink" href="#scenario" title="Permanent link">&para;</a></h3>
+<p><strong>Goal</strong>: Add ability to query entities by creation timestamp for audit purposes.</p>
+<p><strong>Changes</strong>:
+1. Add <code>created_at</code> attribute to entity metadata
+2. Add GSI3 for querying by creation date
+3. Backfill <code>created_at</code> for existing entities</p>
+<h3 id="migration-implementation">Migration Implementation<a class="headerlink" href="#migration-implementation" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="c1"># src/zae_limiter/migrations/v2_0_0.py</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a><span class="sd">Migration: v2.0.0 (Add creation timestamp tracking)</span>
+</span><span id="__span-25-4"><a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a>
+</span><span id="__span-25-5"><a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a><span class="sd">This migration adds a created_at timestamp to all entities and</span>
+</span><span id="__span-25-6"><a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a><span class="sd">creates a new GSI for querying entities by creation date.</span>
+</span><span id="__span-25-7"><a id="__codelineno-25-7" name="__codelineno-25-7" href="#__codelineno-25-7"></a>
+</span><span id="__span-25-8"><a id="__codelineno-25-8" name="__codelineno-25-8" href="#__codelineno-25-8"></a><span class="sd">Schema changes:</span>
+</span><span id="__span-25-9"><a id="__codelineno-25-9" name="__codelineno-25-9" href="#__codelineno-25-9"></a><span class="sd">- Add &#39;created_at&#39; attribute to entity #META records</span>
+</span><span id="__span-25-10"><a id="__codelineno-25-10" name="__codelineno-25-10" href="#__codelineno-25-10"></a><span class="sd">- Add GSI3: GSI3PK=CREATED#{YYYY-MM}, GSI3SK=ENTITY#{id}</span>
+</span><span id="__span-25-11"><a id="__codelineno-25-11" name="__codelineno-25-11" href="#__codelineno-25-11"></a>
+</span><span id="__span-25-12"><a id="__codelineno-25-12" name="__codelineno-25-12" href="#__codelineno-25-12"></a><span class="sd">Breaking changes:</span>
+</span><span id="__span-25-13"><a id="__codelineno-25-13" name="__codelineno-25-13" href="#__codelineno-25-13"></a><span class="sd">- Requires CloudFormation stack update for GSI3</span>
+</span><span id="__span-25-14"><a id="__codelineno-25-14" name="__codelineno-25-14" href="#__codelineno-25-14"></a><span class="sd">- All queries using GSI3 require v2.0.0+ client</span>
+</span><span id="__span-25-15"><a id="__codelineno-25-15" name="__codelineno-25-15" href="#__codelineno-25-15"></a>
+</span><span id="__span-25-16"><a id="__codelineno-25-16" name="__codelineno-25-16" href="#__codelineno-25-16"></a><span class="sd">Rollback:</span>
+</span><span id="__span-25-17"><a id="__codelineno-25-17" name="__codelineno-25-17" href="#__codelineno-25-17"></a><span class="sd">- This migration is NOT reversible (GSI removal loses query capability)</span>
+</span><span id="__span-25-18"><a id="__codelineno-25-18" name="__codelineno-25-18" href="#__codelineno-25-18"></a><span class="sd">- Restore from backup if rollback needed</span>
+</span><span id="__span-25-19"><a id="__codelineno-25-19" name="__codelineno-25-19" href="#__codelineno-25-19"></a><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-25-20"><a id="__codelineno-25-20" name="__codelineno-25-20" href="#__codelineno-25-20"></a>
+</span><span id="__span-25-21"><a id="__codelineno-25-21" name="__codelineno-25-21" href="#__codelineno-25-21"></a><span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+</span><span id="__span-25-22"><a id="__codelineno-25-22" name="__codelineno-25-22" href="#__codelineno-25-22"></a>
+</span><span id="__span-25-23"><a id="__codelineno-25-23" name="__codelineno-25-23" href="#__codelineno-25-23"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+</span><span id="__span-25-24"><a id="__codelineno-25-24" name="__codelineno-25-24" href="#__codelineno-25-24"></a><span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span><span class="p">,</span> <span class="n">timezone</span>
+</span><span id="__span-25-25"><a id="__codelineno-25-25" name="__codelineno-25-25" href="#__codelineno-25-25"></a><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span>
+</span><span id="__span-25-26"><a id="__codelineno-25-26" name="__codelineno-25-26" href="#__codelineno-25-26"></a>
+</span><span id="__span-25-27"><a id="__codelineno-25-27" name="__codelineno-25-27" href="#__codelineno-25-27"></a><span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">Migration</span><span class="p">,</span> <span class="n">register_migration</span>
+</span><span id="__span-25-28"><a id="__codelineno-25-28" name="__codelineno-25-28" href="#__codelineno-25-28"></a>
+</span><span id="__span-25-29"><a id="__codelineno-25-29" name="__codelineno-25-29" href="#__codelineno-25-29"></a><span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
+</span><span id="__span-25-30"><a id="__codelineno-25-30" name="__codelineno-25-30" href="#__codelineno-25-30"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">..repository</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span>
+</span><span id="__span-25-31"><a id="__codelineno-25-31" name="__codelineno-25-31" href="#__codelineno-25-31"></a>
+</span><span id="__span-25-32"><a id="__codelineno-25-32" name="__codelineno-25-32" href="#__codelineno-25-32"></a>
+</span><span id="__span-25-33"><a id="__codelineno-25-33" name="__codelineno-25-33" href="#__codelineno-25-33"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">migrate_v2_0_0</span><span class="p">(</span><span class="n">repository</span><span class="p">:</span> <span class="n">Repository</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-25-34"><a id="__codelineno-25-34" name="__codelineno-25-34" href="#__codelineno-25-34"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-25-35"><a id="__codelineno-25-35" name="__codelineno-25-35" href="#__codelineno-25-35"></a><span class="sd">    Add created_at timestamp to all existing entities.</span>
+</span><span id="__span-25-36"><a id="__codelineno-25-36" name="__codelineno-25-36" href="#__codelineno-25-36"></a>
+</span><span id="__span-25-37"><a id="__codelineno-25-37" name="__codelineno-25-37" href="#__codelineno-25-37"></a><span class="sd">    Note: GSI3 must be added via CloudFormation update before</span>
+</span><span id="__span-25-38"><a id="__codelineno-25-38" name="__codelineno-25-38" href="#__codelineno-25-38"></a><span class="sd">    running this migration. The migration only backfills data.</span>
+</span><span id="__span-25-39"><a id="__codelineno-25-39" name="__codelineno-25-39" href="#__codelineno-25-39"></a>
+</span><span id="__span-25-40"><a id="__codelineno-25-40" name="__codelineno-25-40" href="#__codelineno-25-40"></a><span class="sd">    Steps:</span>
+</span><span id="__span-25-41"><a id="__codelineno-25-41" name="__codelineno-25-41" href="#__codelineno-25-41"></a><span class="sd">    1. Scan all entity metadata records</span>
+</span><span id="__span-25-42"><a id="__codelineno-25-42" name="__codelineno-25-42" href="#__codelineno-25-42"></a><span class="sd">    2. Add created_at if missing (set to migration timestamp)</span>
+</span><span id="__span-25-43"><a id="__codelineno-25-43" name="__codelineno-25-43" href="#__codelineno-25-43"></a><span class="sd">    3. Add GSI3 keys for index population</span>
+</span><span id="__span-25-44"><a id="__codelineno-25-44" name="__codelineno-25-44" href="#__codelineno-25-44"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-25-45"><a id="__codelineno-25-45" name="__codelineno-25-45" href="#__codelineno-25-45"></a>    <span class="n">migration_time</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">(</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span><span class="o">.</span><span class="n">isoformat</span><span class="p">()</span>
+</span><span id="__span-25-46"><a id="__codelineno-25-46" name="__codelineno-25-46" href="#__codelineno-25-46"></a>    <span class="n">migration_month</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">(</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span><span class="o">.</span><span class="n">strftime</span><span class="p">(</span><span class="s2">&quot;%Y-%m&quot;</span><span class="p">)</span>
+</span><span id="__span-25-47"><a id="__codelineno-25-47" name="__codelineno-25-47" href="#__codelineno-25-47"></a>
+</span><span id="__span-25-48"><a id="__codelineno-25-48" name="__codelineno-25-48" href="#__codelineno-25-48"></a>    <span class="c1"># Get DynamoDB client</span>
+</span><span id="__span-25-49"><a id="__codelineno-25-49" name="__codelineno-25-49" href="#__codelineno-25-49"></a>    <span class="n">client</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repository</span><span class="o">.</span><span class="n">_get_client</span><span class="p">()</span>
+</span><span id="__span-25-50"><a id="__codelineno-25-50" name="__codelineno-25-50" href="#__codelineno-25-50"></a>
+</span><span id="__span-25-51"><a id="__codelineno-25-51" name="__codelineno-25-51" href="#__codelineno-25-51"></a>    <span class="c1"># Scan for all entity metadata records</span>
+</span><span id="__span-25-52"><a id="__codelineno-25-52" name="__codelineno-25-52" href="#__codelineno-25-52"></a>    <span class="n">paginator</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">get_paginator</span><span class="p">(</span><span class="s1">&#39;scan&#39;</span><span class="p">)</span>
+</span><span id="__span-25-53"><a id="__codelineno-25-53" name="__codelineno-25-53" href="#__codelineno-25-53"></a>
+</span><span id="__span-25-54"><a id="__codelineno-25-54" name="__codelineno-25-54" href="#__codelineno-25-54"></a>    <span class="k">async</span> <span class="k">for</span> <span class="n">page</span> <span class="ow">in</span> <span class="n">paginator</span><span class="o">.</span><span class="n">paginate</span><span class="p">(</span>
+</span><span id="__span-25-55"><a id="__codelineno-25-55" name="__codelineno-25-55" href="#__codelineno-25-55"></a>        <span class="n">TableName</span><span class="o">=</span><span class="n">repository</span><span class="o">.</span><span class="n">table_name</span><span class="p">,</span>
+</span><span id="__span-25-56"><a id="__codelineno-25-56" name="__codelineno-25-56" href="#__codelineno-25-56"></a>        <span class="n">FilterExpression</span><span class="o">=</span><span class="s2">&quot;begins_with(SK, :meta)&quot;</span><span class="p">,</span>
+</span><span id="__span-25-57"><a id="__codelineno-25-57" name="__codelineno-25-57" href="#__codelineno-25-57"></a>        <span class="n">ExpressionAttributeValues</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;:meta&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">}},</span>
+</span><span id="__span-25-58"><a id="__codelineno-25-58" name="__codelineno-25-58" href="#__codelineno-25-58"></a>    <span class="p">):</span>
+</span><span id="__span-25-59"><a id="__codelineno-25-59" name="__codelineno-25-59" href="#__codelineno-25-59"></a>        <span class="n">items</span> <span class="o">=</span> <span class="n">page</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;Items&quot;</span><span class="p">,</span> <span class="p">[])</span>
+</span><span id="__span-25-60"><a id="__codelineno-25-60" name="__codelineno-25-60" href="#__codelineno-25-60"></a>
+</span><span id="__span-25-61"><a id="__codelineno-25-61" name="__codelineno-25-61" href="#__codelineno-25-61"></a>        <span class="c1"># Process in batches of 25 (DynamoDB limit)</span>
+</span><span id="__span-25-62"><a id="__codelineno-25-62" name="__codelineno-25-62" href="#__codelineno-25-62"></a>        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">items</span><span class="p">),</span> <span class="mi">25</span><span class="p">):</span>
+</span><span id="__span-25-63"><a id="__codelineno-25-63" name="__codelineno-25-63" href="#__codelineno-25-63"></a>            <span class="n">batch</span> <span class="o">=</span> <span class="n">items</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span> <span class="o">+</span> <span class="mi">25</span><span class="p">]</span>
+</span><span id="__span-25-64"><a id="__codelineno-25-64" name="__codelineno-25-64" href="#__codelineno-25-64"></a>
+</span><span id="__span-25-65"><a id="__codelineno-25-65" name="__codelineno-25-65" href="#__codelineno-25-65"></a>            <span class="c1"># Build batch update</span>
+</span><span id="__span-25-66"><a id="__codelineno-25-66" name="__codelineno-25-66" href="#__codelineno-25-66"></a>            <span class="n">update_requests</span> <span class="o">=</span> <span class="p">[]</span>
+</span><span id="__span-25-67"><a id="__codelineno-25-67" name="__codelineno-25-67" href="#__codelineno-25-67"></a>            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">batch</span><span class="p">:</span>
+</span><span id="__span-25-68"><a id="__codelineno-25-68" name="__codelineno-25-68" href="#__codelineno-25-68"></a>                <span class="n">pk</span> <span class="o">=</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;PK&quot;</span><span class="p">][</span><span class="s2">&quot;S&quot;</span><span class="p">]</span>
+</span><span id="__span-25-69"><a id="__codelineno-25-69" name="__codelineno-25-69" href="#__codelineno-25-69"></a>                <span class="n">sk</span> <span class="o">=</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;SK&quot;</span><span class="p">][</span><span class="s2">&quot;S&quot;</span><span class="p">]</span>
+</span><span id="__span-25-70"><a id="__codelineno-25-70" name="__codelineno-25-70" href="#__codelineno-25-70"></a>
+</span><span id="__span-25-71"><a id="__codelineno-25-71" name="__codelineno-25-71" href="#__codelineno-25-71"></a>                <span class="c1"># Use conditional update - only if created_at missing</span>
+</span><span id="__span-25-72"><a id="__codelineno-25-72" name="__codelineno-25-72" href="#__codelineno-25-72"></a>                <span class="n">update_requests</span><span class="o">.</span><span class="n">append</span><span class="p">({</span>
+</span><span id="__span-25-73"><a id="__codelineno-25-73" name="__codelineno-25-73" href="#__codelineno-25-73"></a>                    <span class="s2">&quot;Update&quot;</span><span class="p">:</span> <span class="p">{</span>
+</span><span id="__span-25-74"><a id="__codelineno-25-74" name="__codelineno-25-74" href="#__codelineno-25-74"></a>                        <span class="s2">&quot;TableName&quot;</span><span class="p">:</span> <span class="n">repository</span><span class="o">.</span><span class="n">table_name</span><span class="p">,</span>
+</span><span id="__span-25-75"><a id="__codelineno-25-75" name="__codelineno-25-75" href="#__codelineno-25-75"></a>                        <span class="s2">&quot;Key&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="n">pk</span><span class="p">},</span> <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="n">sk</span><span class="p">}},</span>
+</span><span id="__span-25-76"><a id="__codelineno-25-76" name="__codelineno-25-76" href="#__codelineno-25-76"></a>                        <span class="s2">&quot;UpdateExpression&quot;</span><span class="p">:</span> <span class="p">(</span>
+</span><span id="__span-25-77"><a id="__codelineno-25-77" name="__codelineno-25-77" href="#__codelineno-25-77"></a>                            <span class="s2">&quot;SET #created = if_not_exists(#created, :ts), &quot;</span>
+</span><span id="__span-25-78"><a id="__codelineno-25-78" name="__codelineno-25-78" href="#__codelineno-25-78"></a>                            <span class="s2">&quot;GSI3PK = if_not_exists(GSI3PK, :gsi3pk), &quot;</span>
+</span><span id="__span-25-79"><a id="__codelineno-25-79" name="__codelineno-25-79" href="#__codelineno-25-79"></a>                            <span class="s2">&quot;GSI3SK = if_not_exists(GSI3SK, :gsi3sk)&quot;</span>
+</span><span id="__span-25-80"><a id="__codelineno-25-80" name="__codelineno-25-80" href="#__codelineno-25-80"></a>                        <span class="p">),</span>
+</span><span id="__span-25-81"><a id="__codelineno-25-81" name="__codelineno-25-81" href="#__codelineno-25-81"></a>                        <span class="s2">&quot;ExpressionAttributeNames&quot;</span><span class="p">:</span> <span class="p">{</span>
+</span><span id="__span-25-82"><a id="__codelineno-25-82" name="__codelineno-25-82" href="#__codelineno-25-82"></a>                            <span class="s2">&quot;#created&quot;</span><span class="p">:</span> <span class="s2">&quot;created_at&quot;</span><span class="p">,</span>
+</span><span id="__span-25-83"><a id="__codelineno-25-83" name="__codelineno-25-83" href="#__codelineno-25-83"></a>                        <span class="p">},</span>
+</span><span id="__span-25-84"><a id="__codelineno-25-84" name="__codelineno-25-84" href="#__codelineno-25-84"></a>                        <span class="s2">&quot;ExpressionAttributeValues&quot;</span><span class="p">:</span> <span class="p">{</span>
+</span><span id="__span-25-85"><a id="__codelineno-25-85" name="__codelineno-25-85" href="#__codelineno-25-85"></a>                            <span class="s2">&quot;:ts&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="n">migration_time</span><span class="p">},</span>
+</span><span id="__span-25-86"><a id="__codelineno-25-86" name="__codelineno-25-86" href="#__codelineno-25-86"></a>                            <span class="s2">&quot;:gsi3pk&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;CREATED#</span><span class="si">{</span><span class="n">migration_month</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">},</span>
+</span><span id="__span-25-87"><a id="__codelineno-25-87" name="__codelineno-25-87" href="#__codelineno-25-87"></a>                            <span class="s2">&quot;:gsi3sk&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="n">pk</span><span class="p">},</span>
+</span><span id="__span-25-88"><a id="__codelineno-25-88" name="__codelineno-25-88" href="#__codelineno-25-88"></a>                        <span class="p">},</span>
+</span><span id="__span-25-89"><a id="__codelineno-25-89" name="__codelineno-25-89" href="#__codelineno-25-89"></a>                    <span class="p">}</span>
+</span><span id="__span-25-90"><a id="__codelineno-25-90" name="__codelineno-25-90" href="#__codelineno-25-90"></a>                <span class="p">})</span>
+</span><span id="__span-25-91"><a id="__codelineno-25-91" name="__codelineno-25-91" href="#__codelineno-25-91"></a>
+</span><span id="__span-25-92"><a id="__codelineno-25-92" name="__codelineno-25-92" href="#__codelineno-25-92"></a>            <span class="c1"># Execute batch (transactions limited to 100 items)</span>
+</span><span id="__span-25-93"><a id="__codelineno-25-93" name="__codelineno-25-93" href="#__codelineno-25-93"></a>            <span class="k">if</span> <span class="n">update_requests</span><span class="p">:</span>
+</span><span id="__span-25-94"><a id="__codelineno-25-94" name="__codelineno-25-94" href="#__codelineno-25-94"></a>                <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">transact_write_items</span><span class="p">(</span>
+</span><span id="__span-25-95"><a id="__codelineno-25-95" name="__codelineno-25-95" href="#__codelineno-25-95"></a>                    <span class="n">TransactItems</span><span class="o">=</span><span class="n">update_requests</span>
+</span><span id="__span-25-96"><a id="__codelineno-25-96" name="__codelineno-25-96" href="#__codelineno-25-96"></a>                <span class="p">)</span>
+</span><span id="__span-25-97"><a id="__codelineno-25-97" name="__codelineno-25-97" href="#__codelineno-25-97"></a>
+</span><span id="__span-25-98"><a id="__codelineno-25-98" name="__codelineno-25-98" href="#__codelineno-25-98"></a>        <span class="c1"># Rate limiting to avoid throttling</span>
+</span><span id="__span-25-99"><a id="__codelineno-25-99" name="__codelineno-25-99" href="#__codelineno-25-99"></a>        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.1</span><span class="p">)</span>
+</span><span id="__span-25-100"><a id="__codelineno-25-100" name="__codelineno-25-100" href="#__codelineno-25-100"></a>
+</span><span id="__span-25-101"><a id="__codelineno-25-101" name="__codelineno-25-101" href="#__codelineno-25-101"></a>    <span class="c1"># Update version record</span>
+</span><span id="__span-25-102"><a id="__codelineno-25-102" name="__codelineno-25-102" href="#__codelineno-25-102"></a>    <span class="k">await</span> <span class="n">repository</span><span class="o">.</span><span class="n">set_version_record</span><span class="p">(</span>
+</span><span id="__span-25-103"><a id="__codelineno-25-103" name="__codelineno-25-103" href="#__codelineno-25-103"></a>        <span class="n">schema_version</span><span class="o">=</span><span class="s2">&quot;2.0.0&quot;</span><span class="p">,</span>
+</span><span id="__span-25-104"><a id="__codelineno-25-104" name="__codelineno-25-104" href="#__codelineno-25-104"></a>        <span class="n">client_min_version</span><span class="o">=</span><span class="s2">&quot;2.0.0&quot;</span><span class="p">,</span>  <span class="c1"># Require v2.0.0+ clients</span>
+</span><span id="__span-25-105"><a id="__codelineno-25-105" name="__codelineno-25-105" href="#__codelineno-25-105"></a>        <span class="n">updated_by</span><span class="o">=</span><span class="s2">&quot;migration:v2.0.0&quot;</span><span class="p">,</span>
+</span><span id="__span-25-106"><a id="__codelineno-25-106" name="__codelineno-25-106" href="#__codelineno-25-106"></a>    <span class="p">)</span>
+</span><span id="__span-25-107"><a id="__codelineno-25-107" name="__codelineno-25-107" href="#__codelineno-25-107"></a>
+</span><span id="__span-25-108"><a id="__codelineno-25-108" name="__codelineno-25-108" href="#__codelineno-25-108"></a>
+</span><span id="__span-25-109"><a id="__codelineno-25-109" name="__codelineno-25-109" href="#__codelineno-25-109"></a><span class="c1"># Register the migration</span>
+</span><span id="__span-25-110"><a id="__codelineno-25-110" name="__codelineno-25-110" href="#__codelineno-25-110"></a><span class="n">register_migration</span><span class="p">(</span>
+</span><span id="__span-25-111"><a id="__codelineno-25-111" name="__codelineno-25-111" href="#__codelineno-25-111"></a>    <span class="n">Migration</span><span class="p">(</span>
+</span><span id="__span-25-112"><a id="__codelineno-25-112" name="__codelineno-25-112" href="#__codelineno-25-112"></a>        <span class="n">version</span><span class="o">=</span><span class="s2">&quot;2.0.0&quot;</span><span class="p">,</span>
+</span><span id="__span-25-113"><a id="__codelineno-25-113" name="__codelineno-25-113" href="#__codelineno-25-113"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Add creation timestamp tracking with GSI3&quot;</span><span class="p">,</span>
+</span><span id="__span-25-114"><a id="__codelineno-25-114" name="__codelineno-25-114" href="#__codelineno-25-114"></a>        <span class="n">reversible</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>  <span class="c1"># GSI changes are not easily reversible</span>
+</span><span id="__span-25-115"><a id="__codelineno-25-115" name="__codelineno-25-115" href="#__codelineno-25-115"></a>        <span class="n">migrate</span><span class="o">=</span><span class="n">migrate_v2_0_0</span><span class="p">,</span>
+</span><span id="__span-25-116"><a id="__codelineno-25-116" name="__codelineno-25-116" href="#__codelineno-25-116"></a>        <span class="n">rollback</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-25-117"><a id="__codelineno-25-117" name="__codelineno-25-117" href="#__codelineno-25-117"></a>    <span class="p">)</span>
+</span><span id="__span-25-118"><a id="__codelineno-25-118" name="__codelineno-25-118" href="#__codelineno-25-118"></a><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="cloudformation-update">CloudFormation Update<a class="headerlink" href="#cloudformation-update" title="Permanent link">&para;</a></h3>
+<p>The GSI must be added before running the migration:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="c1"># Addition to cfn_template.yaml</span>
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="nt">Resources</span><span class="p">:</span>
+</span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">  </span><span class="nt">RateLimitsTable</span><span class="p">:</span>
+</span><span id="__span-26-4"><a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="w">    </span><span class="nt">Type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AWS::DynamoDB::Table</span>
+</span><span id="__span-26-5"><a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a><span class="w">    </span><span class="nt">Properties</span><span class="p">:</span>
+</span><span id="__span-26-6"><a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a><span class="w">      </span><span class="c1"># ... existing properties ...</span>
+</span><span id="__span-26-7"><a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a><span class="w">      </span><span class="nt">GlobalSecondaryIndexes</span><span class="p">:</span>
+</span><span id="__span-26-8"><a id="__codelineno-26-8" name="__codelineno-26-8" href="#__codelineno-26-8"></a><span class="w">        </span><span class="c1"># ... existing GSIs ...</span>
+</span><span id="__span-26-9"><a id="__codelineno-26-9" name="__codelineno-26-9" href="#__codelineno-26-9"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">IndexName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI3</span>
+</span><span id="__span-26-10"><a id="__codelineno-26-10" name="__codelineno-26-10" href="#__codelineno-26-10"></a><span class="w">          </span><span class="nt">KeySchema</span><span class="p">:</span>
+</span><span id="__span-26-11"><a id="__codelineno-26-11" name="__codelineno-26-11" href="#__codelineno-26-11"></a><span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">AttributeName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI3PK</span>
+</span><span id="__span-26-12"><a id="__codelineno-26-12" name="__codelineno-26-12" href="#__codelineno-26-12"></a><span class="w">              </span><span class="nt">KeyType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HASH</span>
+</span><span id="__span-26-13"><a id="__codelineno-26-13" name="__codelineno-26-13" href="#__codelineno-26-13"></a><span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">AttributeName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI3SK</span>
+</span><span id="__span-26-14"><a id="__codelineno-26-14" name="__codelineno-26-14" href="#__codelineno-26-14"></a><span class="w">              </span><span class="nt">KeyType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RANGE</span>
+</span><span id="__span-26-15"><a id="__codelineno-26-15" name="__codelineno-26-15" href="#__codelineno-26-15"></a><span class="w">          </span><span class="nt">Projection</span><span class="p">:</span>
+</span><span id="__span-26-16"><a id="__codelineno-26-16" name="__codelineno-26-16" href="#__codelineno-26-16"></a><span class="w">            </span><span class="nt">ProjectionType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ALL</span>
+</span><span id="__span-26-17"><a id="__codelineno-26-17" name="__codelineno-26-17" href="#__codelineno-26-17"></a><span class="w">      </span><span class="nt">AttributeDefinitions</span><span class="p">:</span>
+</span><span id="__span-26-18"><a id="__codelineno-26-18" name="__codelineno-26-18" href="#__codelineno-26-18"></a><span class="w">        </span><span class="c1"># ... existing attributes ...</span>
+</span><span id="__span-26-19"><a id="__codelineno-26-19" name="__codelineno-26-19" href="#__codelineno-26-19"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">AttributeName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI3PK</span>
+</span><span id="__span-26-20"><a id="__codelineno-26-20" name="__codelineno-26-20" href="#__codelineno-26-20"></a><span class="w">          </span><span class="nt">AttributeType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">S</span>
+</span><span id="__span-26-21"><a id="__codelineno-26-21" name="__codelineno-26-21" href="#__codelineno-26-21"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">AttributeName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI3SK</span>
+</span><span id="__span-26-22"><a id="__codelineno-26-22" name="__codelineno-26-22" href="#__codelineno-26-22"></a><span class="w">          </span><span class="nt">AttributeType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">S</span>
+</span></code></pre></div>
+<h3 id="running-the-migration">Running the Migration<a class="headerlink" href="#running-the-migration" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="c1"># 1. Create backup</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>create-backup<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-limiter<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="w">  </span>--backup-name<span class="w"> </span><span class="s2">&quot;pre-v2-migration-</span><span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="c1"># 2. Update CloudFormation stack (adds GSI3)</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a>aws<span class="w"> </span>cloudformation<span class="w"> </span>update-stack<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a><span class="w">  </span>--stack-name<span class="w"> </span>ZAEL-limiter<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="w">  </span>--template-body<span class="w"> </span>file://updated-template.yaml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a><span class="w">  </span>--capabilities<span class="w"> </span>CAPABILITY_NAMED_IAM
+</span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11" href="#__codelineno-27-11"></a>
+</span><span id="__span-27-12"><a id="__codelineno-27-12" name="__codelineno-27-12" href="#__codelineno-27-12"></a><span class="c1"># 3. Wait for GSI to be active</span>
+</span><span id="__span-27-13"><a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span><span class="nb">wait</span><span class="w"> </span>table-exists<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-limiter
+</span><span id="__span-27-14"><a id="__codelineno-27-14" name="__codelineno-27-14" href="#__codelineno-27-14"></a>
+</span><span id="__span-27-15"><a id="__codelineno-27-15" name="__codelineno-27-15" href="#__codelineno-27-15"></a><span class="c1"># 4. Install new client version</span>
+</span><span id="__span-27-16"><a id="__codelineno-27-16" name="__codelineno-27-16" href="#__codelineno-27-16"></a>pip<span class="w"> </span>install<span class="w"> </span>zae-limiter<span class="o">==</span><span class="m">2</span>.0.0
+</span><span id="__span-27-17"><a id="__codelineno-27-17" name="__codelineno-27-17" href="#__codelineno-27-17"></a>
+</span><span id="__span-27-18"><a id="__codelineno-27-18" name="__codelineno-27-18" href="#__codelineno-27-18"></a><span class="c1"># 5. Run migration (via upgrade command or programmatically)</span>
+</span><span id="__span-27-19"><a id="__codelineno-27-19" name="__codelineno-27-19" href="#__codelineno-27-19"></a>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+</span><span id="__span-27-20"><a id="__codelineno-27-20" name="__codelineno-27-20" href="#__codelineno-27-20"></a><span class="s2">import asyncio</span>
+</span><span id="__span-27-21"><a id="__codelineno-27-21" name="__codelineno-27-21" href="#__codelineno-27-21"></a><span class="s2">from zae_limiter.migrations import apply_migrations</span>
+</span><span id="__span-27-22"><a id="__codelineno-27-22" name="__codelineno-27-22" href="#__codelineno-27-22"></a><span class="s2">from zae_limiter.repository import Repository</span>
+</span><span id="__span-27-23"><a id="__codelineno-27-23" name="__codelineno-27-23" href="#__codelineno-27-23"></a>
+</span><span id="__span-27-24"><a id="__codelineno-27-24" name="__codelineno-27-24" href="#__codelineno-27-24"></a><span class="s2">async def run():</span>
+</span><span id="__span-27-25"><a id="__codelineno-27-25" name="__codelineno-27-25" href="#__codelineno-27-25"></a><span class="s2">    repo = Repository(&#39;ZAEL-limiter&#39;, &#39;us-east-1&#39;, None)</span>
+</span><span id="__span-27-26"><a id="__codelineno-27-26" name="__codelineno-27-26" href="#__codelineno-27-26"></a><span class="s2">    applied = await apply_migrations(repo, &#39;1.0.0&#39;, &#39;2.0.0&#39;)</span>
+</span><span id="__span-27-27"><a id="__codelineno-27-27" name="__codelineno-27-27" href="#__codelineno-27-27"></a><span class="s2">    print(f&#39;Applied migrations: {applied}&#39;)</span>
+</span><span id="__span-27-28"><a id="__codelineno-27-28" name="__codelineno-27-28" href="#__codelineno-27-28"></a><span class="s2">    await repo.close()</span>
+</span><span id="__span-27-29"><a id="__codelineno-27-29" name="__codelineno-27-29" href="#__codelineno-27-29"></a>
+</span><span id="__span-27-30"><a id="__codelineno-27-30" name="__codelineno-27-30" href="#__codelineno-27-30"></a><span class="s2">asyncio.run(run())</span>
+</span><span id="__span-27-31"><a id="__codelineno-27-31" name="__codelineno-27-31" href="#__codelineno-27-31"></a><span class="s2">&quot;</span>
+</span><span id="__span-27-32"><a id="__codelineno-27-32" name="__codelineno-27-32" href="#__codelineno-27-32"></a>
+</span><span id="__span-27-33"><a id="__codelineno-27-33" name="__codelineno-27-33" href="#__codelineno-27-33"></a><span class="c1"># 6. Verify migration</span>
+</span><span id="__span-27-34"><a id="__codelineno-27-34" name="__codelineno-27-34" href="#__codelineno-27-34"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span></code></pre></div>
+<h3 id="testing-the-migration">Testing the Migration<a class="headerlink" href="#testing-the-migration" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_v2_migration_adds_created_at</span><span class="p">(</span><span class="n">mock_dynamodb</span><span class="p">):</span>
+</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Test v2.0.0 migration adds created_at to entities.&quot;&quot;&quot;</span>
+</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span><span class="s2">&quot;test_table&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>
+</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a>    <span class="c1"># Create entities without created_at (v1 schema)</span>
+</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a>    <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;entity-1&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Test 1&quot;</span><span class="p">)</span>
+</span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a>    <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;entity-2&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Test 2&quot;</span><span class="p">)</span>
+</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a>
+</span><span id="__span-28-10"><a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a>    <span class="c1"># Verify no created_at before migration</span>
+</span><span id="__span-28-11"><a id="__codelineno-28-11" name="__codelineno-28-11" href="#__codelineno-28-11"></a>    <span class="n">entity</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">get_entity</span><span class="p">(</span><span class="s2">&quot;entity-1&quot;</span><span class="p">)</span>
+</span><span id="__span-28-12"><a id="__codelineno-28-12" name="__codelineno-28-12" href="#__codelineno-28-12"></a>    <span class="k">assert</span> <span class="n">entity</span><span class="o">.</span><span class="n">created_at</span> <span class="ow">is</span> <span class="kc">None</span>
+</span><span id="__span-28-13"><a id="__codelineno-28-13" name="__codelineno-28-13" href="#__codelineno-28-13"></a>
+</span><span id="__span-28-14"><a id="__codelineno-28-14" name="__codelineno-28-14" href="#__codelineno-28-14"></a>    <span class="c1"># Apply migration</span>
+</span><span id="__span-28-15"><a id="__codelineno-28-15" name="__codelineno-28-15" href="#__codelineno-28-15"></a>    <span class="n">applied</span> <span class="o">=</span> <span class="k">await</span> <span class="n">apply_migrations</span><span class="p">(</span><span class="n">repo</span><span class="p">,</span> <span class="s2">&quot;1.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;2.0.0&quot;</span><span class="p">)</span>
+</span><span id="__span-28-16"><a id="__codelineno-28-16" name="__codelineno-28-16" href="#__codelineno-28-16"></a>    <span class="k">assert</span> <span class="n">applied</span> <span class="o">==</span> <span class="p">[</span><span class="s2">&quot;2.0.0&quot;</span><span class="p">]</span>
+</span><span id="__span-28-17"><a id="__codelineno-28-17" name="__codelineno-28-17" href="#__codelineno-28-17"></a>
+</span><span id="__span-28-18"><a id="__codelineno-28-18" name="__codelineno-28-18" href="#__codelineno-28-18"></a>    <span class="c1"># Verify created_at added - check raw DynamoDB for GSI3 keys</span>
+</span><span id="__span-28-19"><a id="__codelineno-28-19" name="__codelineno-28-19" href="#__codelineno-28-19"></a>    <span class="c1"># (Entity dataclass has created_at, but GSI3PK/GSI3SK are schema-level)</span>
+</span><span id="__span-28-20"><a id="__codelineno-28-20" name="__codelineno-28-20" href="#__codelineno-28-20"></a>    <span class="n">client</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">_get_client</span><span class="p">()</span>
+</span><span id="__span-28-21"><a id="__codelineno-28-21" name="__codelineno-28-21" href="#__codelineno-28-21"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span>
+</span><span id="__span-28-22"><a id="__codelineno-28-22" name="__codelineno-28-22" href="#__codelineno-28-22"></a>        <span class="n">TableName</span><span class="o">=</span><span class="n">repo</span><span class="o">.</span><span class="n">table_name</span><span class="p">,</span>
+</span><span id="__span-28-23"><a id="__codelineno-28-23" name="__codelineno-28-23" href="#__codelineno-28-23"></a>        <span class="n">Key</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#entity-1&quot;</span><span class="p">},</span> <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">}},</span>
+</span><span id="__span-28-24"><a id="__codelineno-28-24" name="__codelineno-28-24" href="#__codelineno-28-24"></a>    <span class="p">)</span>
+</span><span id="__span-28-25"><a id="__codelineno-28-25" name="__codelineno-28-25" href="#__codelineno-28-25"></a>    <span class="n">item</span> <span class="o">=</span> <span class="n">response</span><span class="p">[</span><span class="s2">&quot;Item&quot;</span><span class="p">]</span>
+</span><span id="__span-28-26"><a id="__codelineno-28-26" name="__codelineno-28-26" href="#__codelineno-28-26"></a>    <span class="k">assert</span> <span class="s2">&quot;created_at&quot;</span> <span class="ow">in</span> <span class="n">item</span>
+</span><span id="__span-28-27"><a id="__codelineno-28-27" name="__codelineno-28-27" href="#__codelineno-28-27"></a>    <span class="k">assert</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;created_at&quot;</span><span class="p">][</span><span class="s2">&quot;S&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;20&quot;</span><span class="p">)</span>  <span class="c1"># Valid ISO timestamp</span>
+</span><span id="__span-28-28"><a id="__codelineno-28-28" name="__codelineno-28-28" href="#__codelineno-28-28"></a>    <span class="k">assert</span> <span class="s2">&quot;GSI3PK&quot;</span> <span class="ow">in</span> <span class="n">item</span>  <span class="c1"># GSI key was added</span>
+</span><span id="__span-28-29"><a id="__codelineno-28-29" name="__codelineno-28-29" href="#__codelineno-28-29"></a>    <span class="k">assert</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;GSI3PK&quot;</span><span class="p">][</span><span class="s2">&quot;S&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;CREATED#&quot;</span><span class="p">)</span>
+</span><span id="__span-28-30"><a id="__codelineno-28-30" name="__codelineno-28-30" href="#__codelineno-28-30"></a>
+</span><span id="__span-28-31"><a id="__codelineno-28-31" name="__codelineno-28-31" href="#__codelineno-28-31"></a>
+</span><span id="__span-28-32"><a id="__codelineno-28-32" name="__codelineno-28-32" href="#__codelineno-28-32"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">asyncio</span>
+</span><span id="__span-28-33"><a id="__codelineno-28-33" name="__codelineno-28-33" href="#__codelineno-28-33"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">test_v2_migration_idempotent</span><span class="p">(</span><span class="n">mock_dynamodb</span><span class="p">):</span>
+</span><span id="__span-28-34"><a id="__codelineno-28-34" name="__codelineno-28-34" href="#__codelineno-28-34"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Test v2.0.0 migration is idempotent.&quot;&quot;&quot;</span>
+</span><span id="__span-28-35"><a id="__codelineno-28-35" name="__codelineno-28-35" href="#__codelineno-28-35"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span><span class="s2">&quot;test_table&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span><span id="__span-28-36"><a id="__codelineno-28-36" name="__codelineno-28-36" href="#__codelineno-28-36"></a>
+</span><span id="__span-28-37"><a id="__codelineno-28-37" name="__codelineno-28-37" href="#__codelineno-28-37"></a>    <span class="c1"># Create entity with created_at already set</span>
+</span><span id="__span-28-38"><a id="__codelineno-28-38" name="__codelineno-28-38" href="#__codelineno-28-38"></a>    <span class="c1"># (simulating an entity created after v2.0.0 code deployed)</span>
+</span><span id="__span-28-39"><a id="__codelineno-28-39" name="__codelineno-28-39" href="#__codelineno-28-39"></a>    <span class="n">original_time</span> <span class="o">=</span> <span class="s2">&quot;2024-01-01T00:00:00Z&quot;</span>
+</span><span id="__span-28-40"><a id="__codelineno-28-40" name="__codelineno-28-40" href="#__codelineno-28-40"></a>    <span class="n">client</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">_get_client</span><span class="p">()</span>
+</span><span id="__span-28-41"><a id="__codelineno-28-41" name="__codelineno-28-41" href="#__codelineno-28-41"></a>    <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">put_item</span><span class="p">(</span>
+</span><span id="__span-28-42"><a id="__codelineno-28-42" name="__codelineno-28-42" href="#__codelineno-28-42"></a>        <span class="n">TableName</span><span class="o">=</span><span class="n">repo</span><span class="o">.</span><span class="n">table_name</span><span class="p">,</span>
+</span><span id="__span-28-43"><a id="__codelineno-28-43" name="__codelineno-28-43" href="#__codelineno-28-43"></a>        <span class="n">Item</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-28-44"><a id="__codelineno-28-44" name="__codelineno-28-44" href="#__codelineno-28-44"></a>            <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#entity-1&quot;</span><span class="p">},</span>
+</span><span id="__span-28-45"><a id="__codelineno-28-45" name="__codelineno-28-45" href="#__codelineno-28-45"></a>            <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">},</span>
+</span><span id="__span-28-46"><a id="__codelineno-28-46" name="__codelineno-28-46" href="#__codelineno-28-46"></a>            <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;M&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;Test&quot;</span><span class="p">}}},</span>
+</span><span id="__span-28-47"><a id="__codelineno-28-47" name="__codelineno-28-47" href="#__codelineno-28-47"></a>            <span class="s2">&quot;created_at&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="n">original_time</span><span class="p">},</span>
+</span><span id="__span-28-48"><a id="__codelineno-28-48" name="__codelineno-28-48" href="#__codelineno-28-48"></a>            <span class="s2">&quot;GSI3PK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;CREATED#2024-01&quot;</span><span class="p">},</span>
+</span><span id="__span-28-49"><a id="__codelineno-28-49" name="__codelineno-28-49" href="#__codelineno-28-49"></a>            <span class="s2">&quot;GSI3SK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#entity-1&quot;</span><span class="p">},</span>
+</span><span id="__span-28-50"><a id="__codelineno-28-50" name="__codelineno-28-50" href="#__codelineno-28-50"></a>        <span class="p">},</span>
+</span><span id="__span-28-51"><a id="__codelineno-28-51" name="__codelineno-28-51" href="#__codelineno-28-51"></a>    <span class="p">)</span>
+</span><span id="__span-28-52"><a id="__codelineno-28-52" name="__codelineno-28-52" href="#__codelineno-28-52"></a>
+</span><span id="__span-28-53"><a id="__codelineno-28-53" name="__codelineno-28-53" href="#__codelineno-28-53"></a>    <span class="c1"># Apply migration - should not overwrite existing values</span>
+</span><span id="__span-28-54"><a id="__codelineno-28-54" name="__codelineno-28-54" href="#__codelineno-28-54"></a>    <span class="k">await</span> <span class="n">apply_migrations</span><span class="p">(</span><span class="n">repo</span><span class="p">,</span> <span class="s2">&quot;1.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;2.0.0&quot;</span><span class="p">)</span>
+</span><span id="__span-28-55"><a id="__codelineno-28-55" name="__codelineno-28-55" href="#__codelineno-28-55"></a>
+</span><span id="__span-28-56"><a id="__codelineno-28-56" name="__codelineno-28-56" href="#__codelineno-28-56"></a>    <span class="c1"># Verify original created_at preserved (if_not_exists)</span>
+</span><span id="__span-28-57"><a id="__codelineno-28-57" name="__codelineno-28-57" href="#__codelineno-28-57"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">get_item</span><span class="p">(</span>
+</span><span id="__span-28-58"><a id="__codelineno-28-58" name="__codelineno-28-58" href="#__codelineno-28-58"></a>        <span class="n">TableName</span><span class="o">=</span><span class="n">repo</span><span class="o">.</span><span class="n">table_name</span><span class="p">,</span>
+</span><span id="__span-28-59"><a id="__codelineno-28-59" name="__codelineno-28-59" href="#__codelineno-28-59"></a>        <span class="n">Key</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#entity-1&quot;</span><span class="p">},</span> <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;S&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">}},</span>
+</span><span id="__span-28-60"><a id="__codelineno-28-60" name="__codelineno-28-60" href="#__codelineno-28-60"></a>    <span class="p">)</span>
+</span><span id="__span-28-61"><a id="__codelineno-28-61" name="__codelineno-28-61" href="#__codelineno-28-61"></a>    <span class="n">item</span> <span class="o">=</span> <span class="n">response</span><span class="p">[</span><span class="s2">&quot;Item&quot;</span><span class="p">]</span>
+</span><span id="__span-28-62"><a id="__codelineno-28-62" name="__codelineno-28-62" href="#__codelineno-28-62"></a>    <span class="k">assert</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;created_at&quot;</span><span class="p">][</span><span class="s2">&quot;S&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="n">original_time</span>
+</span></code></pre></div>
+<h2 id="reference">Reference<a class="headerlink" href="#reference" title="Permanent link">&para;</a></h2>
+<h3 id="version-record-structure">Version Record Structure<a class="headerlink" href="#version-record-structure" title="Permanent link">&para;</a></h3>
+<p>The version record is stored in DynamoDB:</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PK</td>
+<td><code>SYSTEM#</code></td>
+<td>Partition key</td>
+</tr>
+<tr>
+<td>SK</td>
+<td><code>#VERSION</code></td>
+<td>Sort key</td>
+</tr>
+<tr>
+<td>schema_version</td>
+<td><code>"1.0.0"</code></td>
+<td>Current schema version</td>
+</tr>
+<tr>
+<td>lambda_version</td>
+<td><code>"1.2.0"</code></td>
+<td>Deployed Lambda version</td>
+</tr>
+<tr>
+<td>client_min_version</td>
+<td><code>"1.0.0"</code></td>
+<td>Minimum client version</td>
+</tr>
+<tr>
+<td>updated_at</td>
+<td>ISO timestamp</td>
+<td>Last update time</td>
+</tr>
+<tr>
+<td>updated_by</td>
+<td><code>"cli:1.2.0"</code></td>
+<td>What performed the update</td>
+</tr>
+</tbody>
+</table>
+<h3 id="key-patterns-v100">Key Patterns (v1.0.0)<a class="headerlink" href="#key-patterns-v100" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Entity metadata</td>
+<td><code>PK=ENTITY#123, SK=#META</code></td>
+<td>Entity configuration</td>
+</tr>
+<tr>
+<td>Bucket state</td>
+<td><code>PK=ENTITY#123, SK=#BUCKET#gpt-4#rpm</code></td>
+<td>Token bucket state</td>
+</tr>
+<tr>
+<td>Limit config</td>
+<td><code>PK=ENTITY#123, SK=#LIMIT#gpt-4#rpm</code></td>
+<td>Stored limit config</td>
+</tr>
+<tr>
+<td>Usage snapshot</td>
+<td><code>PK=ENTITY#123, SK=#USAGE#gpt-4#2024-01-15</code></td>
+<td>Usage data</td>
+</tr>
+<tr>
+<td>Version</td>
+<td><code>PK=SYSTEM#, SK=#VERSION</code></td>
+<td>Infrastructure version</td>
+</tr>
+</tbody>
+</table>
+<h3 id="migration-api-reference">Migration API Reference<a class="headerlink" href="#migration-api-reference" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.migrations</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>    <span class="n">Migration</span><span class="p">,</span>           <span class="c1"># Migration dataclass</span>
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>    <span class="n">register_migration</span><span class="p">,</span>  <span class="c1"># Register a migration</span>
+</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>    <span class="n">get_migrations</span><span class="p">,</span>      <span class="c1"># Get all registered migrations</span>
+</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>    <span class="n">get_migrations_between</span><span class="p">,</span>  <span class="c1"># Get migrations between versions</span>
+</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>    <span class="n">apply_migrations</span><span class="p">,</span>    <span class="c1"># Apply migrations</span>
+</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="p">)</span>
+</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>
+</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.version</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a>    <span class="n">CURRENT_SCHEMA_VERSION</span><span class="p">,</span>  <span class="c1"># Current schema version constant</span>
+</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a>    <span class="n">parse_version</span><span class="p">,</span>           <span class="c1"># Parse version string</span>
+</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a>    <span class="n">check_compatibility</span><span class="p">,</span>     <span class="c1"># Check client/infra compatibility</span>
+</span><span id="__span-29-13"><a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>    <span class="n">get_schema_version</span><span class="p">,</span>      <span class="c1"># Get current schema version</span>
+</span><span id="__span-29-14"><a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>    <span class="n">InfrastructureVersion</span><span class="p">,</span>   <span class="c1"># Version info dataclass</span>
+</span><span id="__span-29-15"><a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a>    <span class="n">CompatibilityResult</span><span class="p">,</span>     <span class="c1"># Compatibility check result</span>
+</span><span id="__span-29-16"><a id="__codelineno-29-16" name="__codelineno-29-16" href="#__codelineno-29-16"></a><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="cli-commands">CLI Commands<a class="headerlink" href="#cli-commands" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="c1"># Check compatibility</span>
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--name<span class="w"> </span>NAME<span class="w"> </span>--region<span class="w"> </span>REGION
+</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>
+</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="c1"># Show version information</span>
+</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>NAME<span class="w"> </span>--region<span class="w"> </span>REGION
+</span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>
+</span><span id="__span-30-7"><a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="c1"># Upgrade infrastructure</span>
+</span><span id="__span-30-8"><a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>NAME<span class="w"> </span>--region<span class="w"> </span>REGION<span class="w"> </span><span class="o">[</span>--lambda-only<span class="o">]</span><span class="w"> </span><span class="o">[</span>--force<span class="o">]</span>
+</span></code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../infra/cloudformation/" class="md-footer__link md-footer__link--prev" aria-label="Previous: CloudFormation">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                CloudFormation
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../monitoring/" class="md-footer__link md-footer__link--next" aria-label="Next: Monitoring">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Monitoring
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeroae/zae-limiter" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/zae-limiter/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
