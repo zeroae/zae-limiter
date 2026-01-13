@@ -147,10 +147,10 @@ def full_stack_options():
 
 
 @pytest.fixture
-async def localstack_limiter(localstack_endpoint, minimal_stack_options):
+async def localstack_limiter(localstack_endpoint, minimal_stack_options, unique_table_name):
     """RateLimiter with minimal stack for core rate limiting tests."""
     limiter = RateLimiter(
-        table_name="integration_test_rate_limits",
+        table_name=unique_table_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=minimal_stack_options,
@@ -159,12 +159,19 @@ async def localstack_limiter(localstack_endpoint, minimal_stack_options):
     async with limiter:
         yield limiter
 
+    try:
+        await limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Stack cleanup failed: {e}")
+
 
 @pytest.fixture
-async def localstack_limiter_with_aggregator(localstack_endpoint, aggregator_stack_options):
+async def localstack_limiter_with_aggregator(
+    localstack_endpoint, aggregator_stack_options, unique_table_name
+):
     """RateLimiter with Lambda aggregator for stream testing."""
     limiter = RateLimiter(
-        table_name="integration_test_with_aggregator",
+        table_name=unique_table_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=aggregator_stack_options,
@@ -173,12 +180,17 @@ async def localstack_limiter_with_aggregator(localstack_endpoint, aggregator_sta
     async with limiter:
         yield limiter
 
+    try:
+        await limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Stack cleanup failed: {e}")
+
 
 @pytest.fixture
-async def localstack_limiter_full(localstack_endpoint, full_stack_options):
+async def localstack_limiter_full(localstack_endpoint, full_stack_options, unique_table_name):
     """RateLimiter with full stack including alarms."""
     limiter = RateLimiter(
-        table_name="integration_test_full",
+        table_name=unique_table_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=full_stack_options,
@@ -187,12 +199,17 @@ async def localstack_limiter_full(localstack_endpoint, full_stack_options):
     async with limiter:
         yield limiter
 
+    try:
+        await limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Stack cleanup failed: {e}")
+
 
 @pytest.fixture
-def sync_localstack_limiter(localstack_endpoint, minimal_stack_options):
+def sync_localstack_limiter(localstack_endpoint, minimal_stack_options, unique_table_name):
     """SyncRateLimiter with minimal stack for sync integration tests."""
     limiter = SyncRateLimiter(
-        table_name="integration_test_rate_limits_sync",
+        table_name=unique_table_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=minimal_stack_options,
@@ -200,6 +217,11 @@ def sync_localstack_limiter(localstack_endpoint, minimal_stack_options):
 
     with limiter:
         yield limiter
+
+    try:
+        limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Stack cleanup failed: {e}")
 
 
 # E2E test fixtures
