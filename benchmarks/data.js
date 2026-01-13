@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768293036096,
+  "lastUpdate": 1768295896746,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -1313,6 +1313,107 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.16567534540496626",
             "extra": "mean: 178.21521917856944 msec\nrounds: 28"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c22f355d63f63cc4b253f1eb2eeb7b8d9f486194",
+          "message": "feat(infra): add docker-compose.yml for LocalStack development (#94)\n\n* ✨ feat(infra): add docker-compose.yml for LocalStack development\n\nAdd docker-compose.yml at project root as the preferred method for\nstarting LocalStack. Update documentation to reflect this change:\n\n- CLAUDE.md: Update Local Development and Running Tests sections\n- README.md: Update Local Development with LocalStack section\n- docs/infra/localstack.md: Reorder tabs to show Docker Compose first\n\n* 📝 docs: replace docker run with docker compose in examples and tests\n\nUpdate all remaining LocalStack setup instructions to use the new\ndocker-compose.yml instead of docker run commands:\n\n- docs/migrations.md\n- examples/basic_rate_limiting.py\n- examples/hierarchical_limits.py\n- examples/llm_token_reconciliation.py\n- tests/e2e/test_localstack.py\n- tests/integration/test_repository.py\n\n* 📝 docs: add AWS credentials to LocalStack test instructions\n\nLocalStack requires AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and\nAWS_DEFAULT_REGION environment variables to be set. Update all test\ndocumentation to include these:\n\n- docker-compose.yml header comments\n- CLAUDE.md Running Tests section\n- tests/e2e/test_localstack.py docstring\n- tests/integration/test_repository.py docstring\n- tests/benchmark/test_localstack.py docstring\n- docs/migrations.md integration test section\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T04:15:04-05:00",
+          "tree_id": "af29c33e20bf205fc851abf0dbb02026c24e1b5a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c22f355d63f63cc4b253f1eb2eeb7b8d9f486194"
+        },
+        "date": 1768295896440,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.42220870181788,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009235932649109433",
+            "extra": "mean: 40.946337499997064 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.532068004945142,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0056646978566288145",
+            "extra": "mean: 46.44235750000121 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 72.94136127644289,
+            "unit": "iter/sec",
+            "range": "stddev: 0.020332056350609345",
+            "extra": "mean: 13.70964268421132 msec\nrounds: 285"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 23.471978742822543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06696016962483169",
+            "extra": "mean: 42.60399223076956 msec\nrounds: 221"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1093.482280388744,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00002768408024654435",
+            "extra": "mean: 914.5095608174739 usec\nrounds: 929"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 52.61489375513802,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08869118332362076",
+            "extra": "mean: 19.00602526451641 msec\nrounds: 310"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 69.23433050442829,
+            "unit": "iter/sec",
+            "range": "stddev: 0.025623472426484484",
+            "extra": "mean: 14.443701451493624 msec\nrounds: 268"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 26.790431226097315,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06849284862479947",
+            "extra": "mean: 37.32676012418463 msec\nrounds: 153"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 27.44649960990866,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09940402339062228",
+            "extra": "mean: 36.43451858024849 msec\nrounds: 81"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 5.391030928582271,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12000136081676797",
+            "extra": "mean: 185.49327823333024 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 5.363959910920156,
+            "unit": "iter/sec",
+            "range": "stddev: 0.17647758826558285",
+            "extra": "mean: 186.4294320999979 msec\nrounds: 30"
           }
         ]
       }
