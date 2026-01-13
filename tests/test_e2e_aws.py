@@ -33,6 +33,16 @@ from zae_limiter import Limit, RateLimiter, StackOptions
 
 pytestmark = [pytest.mark.aws, pytest.mark.e2e]
 
+# Additional markers for test filtering:
+# - slow: Tests with significant wait times (>30s sleeps)
+# - monitoring: Tests that verify CloudWatch alarms, metrics, DLQ
+# - snapshots: Tests that verify usage snapshot creation
+#
+# Usage:
+#   pytest tests/test_e2e_aws.py --run-aws -v                    # Run all
+#   pytest tests/test_e2e_aws.py --run-aws -v -m "not slow"      # Skip slow tests
+#   pytest tests/test_e2e_aws.py --run-aws -v -m "not monitoring"  # Skip monitoring tests
+
 
 # AWS-specific fixtures that don't depend on localstack_endpoint
 
@@ -157,6 +167,8 @@ class TestE2EAWSFullWorkflow:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
+    @pytest.mark.monitoring
     async def test_cloudwatch_alarm_states(
         self, aws_limiter, aws_cloudwatch_client, unique_table_name
     ):
@@ -201,6 +213,8 @@ class TestE2EAWSFullWorkflow:
                 )
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
+    @pytest.mark.monitoring
     async def test_dlq_is_empty(self, aws_limiter, aws_sqs_client, unique_table_name):
         """
         Verify Dead Letter Queue has no messages after normal operation.
@@ -243,6 +257,8 @@ class TestE2EAWSFullWorkflow:
             pass
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
+    @pytest.mark.monitoring
     async def test_lambda_metrics(self, aws_limiter, aws_cloudwatch_client, unique_table_name):
         """
         Query Lambda metrics to verify aggregator is working.
@@ -340,6 +356,8 @@ class TestE2EAWSUsageSnapshots:
             print(f"Warning: Stack cleanup failed: {e}")
 
     @pytest.mark.asyncio
+    @pytest.mark.slow
+    @pytest.mark.snapshots
     @pytest.mark.xfail(reason="Flaky: Lambda may not create snapshots within 120s wait. See #84")
     async def test_usage_snapshots_created(self, aws_limiter_with_snapshots):
         """

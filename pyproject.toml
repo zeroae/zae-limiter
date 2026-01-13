@@ -79,6 +79,9 @@ markers = [
     "benchmark: marks tests as performance benchmarks",
     "aws: marks tests as real AWS tests (require --run-aws flag)",
     "e2e: marks tests as end-to-end tests (full stack lifecycle)",
+    "slow: marks tests with significant wait times (>30s sleeps)",
+    "monitoring: marks tests that verify CloudWatch alarms, metrics, DLQ",
+    "snapshots: marks tests that verify usage snapshot creation",
 ]
 
 [tool.ruff]
