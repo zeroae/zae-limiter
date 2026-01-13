@@ -9,24 +9,26 @@
 
 A rate limiting library backed by DynamoDB using the token bucket algorithm.
 
-## Quick Start
+## Installation
 
 ```bash
 pip install zae-limiter
 ```
 
-**Self-deploying. Bursts. Hierarchies. Production-ready.**
+## Usage
 
 ```python
 from zae_limiter import RateLimiter, SyncRateLimiter, Limit, StackOptions
 
-# Auto-creates DynamoDB table + Lambda aggregator via CloudFormation
+# async-aws-backed-production-ready-rate-limiter
 limiter = RateLimiter(
     name="my-app",
     region="us-east-1",
+    # Idempotent creation of infrastructure via CloudFormation
     stack_options=StackOptions(),
 )
-# Async-first with sync wrapper, both share the same infrastructure
+
+# Sync wrapper shares the same infrastructure and API.
 sync_limiter = SyncRateLimiter(name="my-app", region="us-east-1")
 
 # Define default limits (can be overridden per-entity)
@@ -35,11 +37,6 @@ default_limits = [
     # Token bucket with burst capacity
     Limit.per_minute("tpm", 10_000, burst=50_000),
 ]
-
-# Hierarchical entities: create project with stored limits, then API key under it
-await limiter.create_entity(entity_id="proj-1", name="Production")
-await limiter.set_limits("proj-1", [Limit.per_minute("tpm", 100_000)])  # Project-level
-await limiter.create_entity(entity_id="api-key-456", parent_id="proj-1")
 
 async with limiter.acquire(
     entity_id="api-key-123",
@@ -50,9 +47,12 @@ async with limiter.acquire(
     response = await call_llm()
     # Reconcile actual usage (can go negative for post-hoc adjustment)
     await lease.adjust(tpm=response.usage.total_tokens - 500)
+    # On success: committed | On exception: rolled back automatically
 
-# On success: committed | On exception: rolled back automatically
-
+# Hierarchical entities: create project with stored limits, then API key under it
+await limiter.create_entity(entity_id="proj-1", name="Production")
+await limiter.set_limits("proj-1", [Limit.per_minute("tpm", 100_000)])  # Project-level
+await limiter.create_entity(entity_id="api-key-456", parent_id="proj-1")
 
 # cascade=True enforces both key AND project limits
 with sync_limiter.acquire(
