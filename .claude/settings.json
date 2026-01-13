@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "mcp__plugin_github_github__pull_request_read"
+    ]
+  }
+}

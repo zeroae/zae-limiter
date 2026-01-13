@@ -104,7 +104,9 @@ class TestLocalStackIntegration:
 
         async with limiter:
             # Verify stack was created by checking if we can perform operations
-            entity = await limiter.create_entity("cfn-no-alarms-entity", name="CFN No Alarms Entity")
+            entity = await limiter.create_entity(
+                "cfn-no-alarms-entity", name="CFN No Alarms Entity"
+            )
             assert entity.id == "cfn-no-alarms-entity"
             assert entity.name == "CFN No Alarms Entity"
 
