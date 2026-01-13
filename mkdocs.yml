@@ -34,6 +34,9 @@ theme:
   icon:
     repo: fontawesome/brands/github
 
+extra_javascript:
+  - https://unpkg.com/mermaid@10/dist/mermaid.min.js
+
 plugins:
   - search
   - mkdocstrings:
@@ -74,7 +77,11 @@ markdown_extensions:
       pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_div_format
   - pymdownx.tabbed:
       alternate_style: true
   - tables
@@ -91,13 +98,20 @@ nav:
       - Hierarchical Limits: guide/hierarchical.md
       - LLM Integration: guide/llm-integration.md
       - Failure Modes: guide/failure-modes.md
+  - Operations:
+      - Overview: operations/index.md
+      - Version Management: operations/version.md
+      - Lambda Aggregator: operations/lambda.md
+      - DynamoDB: operations/dynamodb.md
+      - Rate Limits: operations/rate-limits.md
+      - Stream Processing: operations/streams.md
+      - Recovery & Rollback: operations/recovery.md
   - Infrastructure:
       - Deployment: infra/deployment.md
       - LocalStack: infra/localstack.md
       - CloudFormation: infra/cloudformation.md
       - Migrations: migrations.md
   - Monitoring: monitoring.md
-  - Troubleshooting: troubleshooting.md
   - Performance Tuning: performance.md
   - CLI Reference: cli.md
   - API Reference:

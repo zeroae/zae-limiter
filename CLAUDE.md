@@ -419,26 +419,12 @@ The project uses **MkDocs Material** for documentation. Configuration is in `mkd
 
 ### Diagrams
 
-Use diagrams-as-code for all visual documentation. The project supports two diagram types:
+Use **Mermaid** for all diagrams. MkDocs Material has built-in Mermaid support.
 
-**Markmap** (interactive mind maps) - Use for:
-- Navigation and overview pages
-- Hierarchical decision trees
-- Complex topic exploration
-
-```markmap
-# Topic
-## Branch 1
-- Leaf 1
-- Leaf 2
-## Branch 2
-- Leaf 3
-```
-
-**Mermaid** (flowcharts) - Use for:
-- Linear decision flows
+**Use cases:**
+- Decision trees and flowcharts
+- Navigation overviews
 - Step-by-step procedures
-- Simple yes/no decision trees
 
 ```mermaid
 flowchart TD
@@ -448,10 +434,9 @@ flowchart TD
 ```
 
 **Guidelines:**
-- Prefer Markmap for index/overview pages (collapsible, interactive)
-- Prefer Mermaid for inline decision trees within component docs
 - Never use external image files for diagrams that can be expressed as code
 - Keep diagrams focused - split complex diagrams into multiple smaller ones
+- Use `click` directives to make nodes clickable links
 
 ### Docs Structure
 

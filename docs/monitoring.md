@@ -465,7 +465,7 @@ limiter = RateLimiter(
 
 ## Next Steps
 
-- [Troubleshooting Guide](troubleshooting.md) - Diagnose and resolve operational issues
+- [Operations Guide](operations/index.md) - Troubleshooting and operational procedures
 - [Performance Tuning](performance.md) - Capacity planning and optimization
 - [Deployment Guide](infra/deployment.md) - Infrastructure setup
 - [CloudFormation Reference](infra/cloudformation.md) - Template customization
