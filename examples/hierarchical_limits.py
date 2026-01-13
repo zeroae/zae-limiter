@@ -15,9 +15,8 @@ Key patterns:
 - Querying entity relationships
 
 Setup:
-    docker run -p 4566:4566 \
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam \
-      localstack/localstack
+    # Start LocalStack (from project root)
+    docker compose up -d
     uv run python examples/hierarchical_limits.py
 """
 

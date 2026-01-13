@@ -9,20 +9,14 @@ These tests run the complete zae-limiter lifecycle against LocalStack:
 6. Clean up by deleting the stack
 
 To run these tests locally:
-    docker run -p 4566:4566 \
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
-      localstack/localstack
+    # Start LocalStack (from project root)
+    docker compose up -d
 
-    AWS_ENDPOINT_URL=http://localhost:4566 \
-    AWS_ACCESS_KEY_ID=test \
-    AWS_SECRET_ACCESS_KEY=test \
-    AWS_DEFAULT_REGION=us-east-1 \
-    pytest tests/e2e/test_localstack.py -v
+    # Run tests
+    AWS_ENDPOINT_URL=http://localhost:4566 pytest tests/e2e/test_localstack.py -v
 
-Note: The Docker socket mount (-v /var/run/docker.sock:/var/run/docker.sock) is
-required for LocalStack to spawn Lambda functions as Docker containers.
+Note: The docker-compose.yml includes the Docker socket mount required for
+LocalStack to spawn Lambda functions as Docker containers.
 """
 
 import asyncio

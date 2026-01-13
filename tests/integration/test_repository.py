@@ -4,12 +4,11 @@ These tests run against a real LocalStack instance with full AWS service emulati
 including CloudFormation, DynamoDB, DynamoDB Streams, and Lambda.
 
 To run these tests locally:
-    docker run -p 4566:4566 \\
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \\
-      -v /var/run/docker.sock:/var/run/docker.sock \\
-      localstack/localstack
+    # Start LocalStack (from project root)
+    docker compose up -d
 
-    AWS_ENDPOINT_URL=http://localhost:4566 pytest tests/test_repository_localstack.py -v
+    # Run tests
+    AWS_ENDPOINT_URL=http://localhost:4566 pytest tests/integration/test_repository.py -v
 """
 
 import time
