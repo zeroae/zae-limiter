@@ -27,7 +27,9 @@ class TestLocalStackIntegration:
     """Integration tests with full LocalStack deployment."""
 
     @pytest.fixture(scope="class")
-    async def shared_stack(self, localstack_endpoint, minimal_stack_options):
+    async def shared_stack(
+        self, localstack_endpoint, minimal_stack_options, unique_table_name_class
+    ):
         """
         Create and manage the CloudFormation stack for all tests in this class.
 
@@ -35,14 +37,14 @@ class TestLocalStackIntegration:
         deletes it after all tests in the class complete.
         """
         limiter = RateLimiter(
-            table_name="integration_test_rate_limits",
+            table_name=unique_table_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=minimal_stack_options,
         )
 
         async with limiter:
-            yield "integration_test_rate_limits"
+            yield unique_table_name_class
 
         try:
             await limiter.delete_stack()
@@ -67,10 +69,12 @@ class TestLocalStackIntegration:
             yield limiter
 
     @pytest.mark.asyncio
-    async def test_cloudformation_stack_deployment(self, localstack_endpoint, full_stack_options):
+    async def test_cloudformation_stack_deployment(
+        self, localstack_endpoint, full_stack_options, unique_table_name
+    ):
         """Test full CloudFormation stack creation in LocalStack (with aggregator and alarms)."""
         limiter = RateLimiter(
-            table_name="test_cloudformation_deployment",
+            table_name=unique_table_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=full_stack_options,
@@ -84,7 +88,7 @@ class TestLocalStackIntegration:
 
     @pytest.mark.asyncio
     async def test_cloudformation_stack_deployment_no_alarms(
-        self, localstack_endpoint, aggregator_stack_options
+        self, localstack_endpoint, aggregator_stack_options, unique_table_name
     ):
         """Test CloudFormation stack creation with aggregator but without alarms.
 
@@ -92,7 +96,7 @@ class TestLocalStackIntegration:
         The AggregatorDLQAlarmName output should not be created in this scenario.
         """
         limiter = RateLimiter(
-            table_name="test_cloudformation_no_alarms",
+            table_name=unique_table_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=aggregator_stack_options,
@@ -252,7 +256,9 @@ class TestSyncLocalStackIntegration:
     """Integration tests for sync API with LocalStack."""
 
     @pytest.fixture(scope="class")
-    def shared_stack_sync(self, localstack_endpoint, minimal_stack_options):
+    def shared_stack_sync(
+        self, localstack_endpoint, minimal_stack_options, unique_table_name_class
+    ):
         """
         Create and manage the CloudFormation stack for all sync tests in this class.
 
@@ -260,14 +266,14 @@ class TestSyncLocalStackIntegration:
         deletes it after all tests in the class complete.
         """
         limiter = SyncRateLimiter(
-            table_name="integration_test_rate_limits_sync",
+            table_name=unique_table_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=minimal_stack_options,
         )
 
         with limiter:
-            yield "integration_test_rate_limits_sync"
+            yield unique_table_name_class
 
         try:
             limiter.delete_stack()
