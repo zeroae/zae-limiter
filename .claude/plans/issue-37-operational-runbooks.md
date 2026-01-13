@@ -5,43 +5,43 @@
 **Estimated Effort**: 4-5 hours
 **Dependencies**: #45 (benchmarks), #46 (E2E tests) - tracked in #68
 
+---
+
 ## Overview
 
-Create a consolidated operations guide that combines troubleshooting (reactive) and runbooks (proactive) into a component-centric structure. This replaces the current `docs/troubleshooting.md` with a more comprehensive `docs/operations/` directory.
+Create a consolidated operations guide that combines:
+- **Troubleshooting** (reactive): "X is broken, diagnose and fix it"
+- **Runbooks** (proactive): "Perform planned procedure X"
+
+This replaces `docs/troubleshooting.md` with a component-centric `docs/operations/` directory.
 
 ## Key Decisions
 
-1. **Consolidate troubleshooting + runbooks** - Operators shouldn't jump between files for the same component
-2. **Split by component** - Each component gets its own file for manageable size
-3. **Interactive navigation** - Use Markmap for collapsible/expandable decision trees
-4. **Mermaid for flowcharts** - Use within component files for specific decision flows
+1. **Consolidate by component** - Operators work on one component at a time, not one doc type
+2. **Interactive index** - Markmap for collapsible navigation tree
+3. **Component decision trees** - Mermaid flowcharts within each file
+4. **Migration path** - Reorganize existing troubleshooting.md content, then delete it
 
 ---
 
-## File Structure
+## Target Structure
 
 ```
 docs/operations/
-├── index.md              # Markmap interactive overview, quick reference
+├── index.md              # Markmap navigation, quick reference table
 ├── version.md            # Version management & upgrades
 ├── lambda.md             # Lambda aggregator operations
 ├── dynamodb.md           # DynamoDB capacity & throttling
-├── rate-limits.md        # Rate limit configuration
-├── streams.md            # Stream processing & lag
-└── recovery.md           # Backup, restore, rollback
+├── rate-limits.md        # Rate limit configuration & enforcement
+├── streams.md            # Stream processing & iterator age
+└── recovery.md           # Backup, restore, rollback procedures
 ```
-
-**Migration**: Content from `docs/troubleshooting.md` will be reorganized into these files, then the original file deleted.
 
 ---
 
-## Implementation Plan
+## Phase 1: Index Page (`index.md`)
 
-### Phase 1: Setup and Index Page
-
-**Task 1.1**: Create `docs/operations/` directory structure
-
-**Task 1.2**: Create `docs/operations/index.md` with Markmap decision tree
+### 1.1 Markmap Navigation Tree
 
 ```markmap
 # Operations Guide
@@ -53,18 +53,21 @@ docs/operations/
 - DLQ messages → [lambda.md]
 ### DynamoDB
 - Read/write throttling → [dynamodb.md]
-- Capacity planning → [dynamodb.md]
+- Capacity alarms → [dynamodb.md]
 ### Streams
 - Iterator age alarm → [streams.md]
 - Processing lag → [streams.md]
 ### Version
-- Compatibility errors → [version.md]
-- Migration required → [version.md]
+- VersionMismatchError → [version.md]
+- IncompatibleSchemaError → [version.md]
+### Rate Limits
+- Unexpected RateLimitExceeded → [rate-limits.md]
+- Limits not enforcing → [rate-limits.md]
 
 ## Planned Operations
 ### Upgrades
-- Version upgrade → [version.md]
-- Lambda update → [lambda.md]
+- Version upgrade procedure → [version.md]
+- Lambda code update → [lambda.md]
 ### Scaling
 - Adjust rate limits → [rate-limits.md]
 - DynamoDB capacity → [dynamodb.md]
@@ -74,213 +77,393 @@ docs/operations/
 - PITR recovery → [recovery.md]
 ```
 
-**Task 1.3**: Add quick reference table linking to each section
+### 1.2 Quick Reference Table
+
+| Symptom | Go To |
+|---------|-------|
+| `RateLimitExceeded` unexpected | [rate-limits.md] |
+| `ProvisionedThroughputExceededException` | [dynamodb.md] |
+| DLQ messages accumulating | [lambda.md] |
+| `VersionMismatchError` | [version.md] |
+| High `IteratorAge` | [streams.md] |
+| Need to rollback | [recovery.md] |
 
 ---
 
-### Phase 2: Version Management (version.md)
+## Phase 2: Version Management (`version.md`)
 
-**Source**: `troubleshooting.md` §4 (Version Compatibility Errors) + NEW runbook content
+**Source**: `troubleshooting.md` §4 + NEW upgrade runbook
 
-**Task 2.1**: Mermaid decision tree for version issues
+### Content Structure
+
+```markdown
+# Version Management
+
+## Decision Tree
+[Mermaid flowchart]
+
+## Troubleshooting
+### VersionMismatchError
+### IncompatibleSchemaError
+### Minimum Client Version Error
+
+## Procedures
+### Pre-upgrade Checklist
+### Upgrade Execution
+### Post-upgrade Verification
+### Rollback (link to recovery.md)
+```
+
+### Mermaid Decision Tree
+
 ```mermaid
 flowchart TD
     START([Version Issue]) --> Q1{What's happening?}
-    Q1 -->|VersionMismatchError| A1[Run upgrade command]
-    Q1 -->|IncompatibleSchemaError| A2[Follow migration guide]
-    Q1 -->|Planning upgrade| A3[Pre-upgrade checklist]
+
+    Q1 -->|VersionMismatchError| A1[Lambda needs update]
+    Q1 -->|IncompatibleSchemaError| A2[Schema migration required]
+    Q1 -->|Minimum client error| A3[Upgrade pip package]
+    Q1 -->|Planning upgrade| A4[Follow upgrade procedure]
+
+    A1 --> CMD1["zae-limiter upgrade --name X"]
+    A2 --> CMD2[Follow migrations.md]
+    A3 --> CMD3["pip install --upgrade zae-limiter"]
+    A4 --> PROC[Pre-upgrade checklist ↓]
+
+    CMD1 --> VERIFY
+    CMD2 --> VERIFY
+    CMD3 --> VERIFY
+    VERIFY([Verify: zae-limiter check])
 ```
 
-**Task 2.2**: Troubleshooting section (from existing troubleshooting.md)
-- VersionMismatchError resolution
-- IncompatibleSchemaError resolution
-- Minimum client version errors
+### NEW: Upgrade Procedure Runbook
 
-**Task 2.3**: Upgrade procedure runbook (NEW)
-- Pre-upgrade checklist
-- Step-by-step upgrade execution
-- Post-upgrade verification
-- Rollback if failed (link to recovery.md)
+1. **Pre-upgrade checklist**
+   - [ ] Check current version: `zae-limiter version --name X`
+   - [ ] Check compatibility: `zae-limiter check --name X`
+   - [ ] Review release notes
+   - [ ] Verify PITR enabled for rollback
+   - [ ] Schedule maintenance window
+   - [ ] Notify stakeholders
 
----
+2. **Execution steps**
+   ```bash
+   # Upgrade client
+   pip install --upgrade zae-limiter
 
-### Phase 3: Lambda Aggregator (lambda.md)
+   # Update infrastructure
+   zae-limiter upgrade --name X --region us-east-1
 
-**Source**: `troubleshooting.md` §3 (Lambda Aggregator Malfunctions)
+   # Verify
+   zae-limiter check --name X
+   ```
 
-**Task 3.1**: Mermaid decision tree for Lambda issues
-
-**Task 3.2**: Health indicators and monitoring (link to monitoring.md)
-
-**Task 3.3**: Troubleshooting section
-- Error rate issues
-- Timeout/duration issues
-- Permission errors
-- DynamoDB throttling (link to dynamodb.md)
-
-**Task 3.4**: DLQ processing runbook
-- Inspect DLQ messages
-- Reprocessing strategy
-- Purging after resolution
-
-**Task 3.5**: Redeployment runbook
-- `zae-limiter upgrade --lambda-only`
-- Full redeployment scenarios
+3. **Post-upgrade verification**
+   - Run smoke tests
+   - Monitor error rates for 15 minutes
+   - Verify usage snapshots updating
 
 ---
 
-### Phase 4: DynamoDB & Capacity (dynamodb.md)
+## Phase 3: Lambda Aggregator (`lambda.md`)
 
-**Source**: `troubleshooting.md` §2 (DynamoDB Throttling)
+**Source**: `troubleshooting.md` §3
 
-**Task 4.1**: Mermaid decision tree for DynamoDB issues
+### Content Structure
 
-**Task 4.2**: Troubleshooting section
-- Read throttling resolution
-- Write throttling resolution
-- Capacity analysis
+```markdown
+# Lambda Aggregator Operations
 
-**Task 4.3**: Scaling procedures runbook (NEW)
-- Capacity planning (link to performance.md)
-- On-demand vs provisioned considerations
-- Monitoring after scaling changes
+## Decision Tree
+[Mermaid flowchart]
+
+## Health Indicators
+- Link to monitoring.md for metrics/dashboards
+
+## Troubleshooting
+### Error Rate Issues
+### Duration/Timeout Issues
+### Permission Errors
+### Cold Start Issues
+
+## Procedures
+### DLQ Processing Runbook
+### Lambda Redeployment
+### Memory/Timeout Adjustment
+```
+
+### Mermaid Decision Tree
+
+```mermaid
+flowchart TD
+    START([Lambda Issue]) --> Q1{What's the symptom?}
+
+    Q1 -->|Error rate alarm| CHECK1[Check CloudWatch Logs]
+    Q1 -->|Duration alarm| CHECK2[Check processing time]
+    Q1 -->|DLQ messages| CHECK3[Inspect DLQ]
+    Q1 -->|Cold starts| CHECK4[Check init duration]
+
+    CHECK1 --> DIAG{Error type?}
+    DIAG -->|Permission denied| FIX1[Check IAM role]
+    DIAG -->|Timeout| FIX2[Increase memory/timeout]
+    DIAG -->|DynamoDB error| LINK1([→ dynamodb.md])
+    DIAG -->|Code error| FIX3[Check logs, deploy fix]
+
+    CHECK2 --> FIX2
+    CHECK3 --> DLQ[DLQ Processing ↓]
+    CHECK4 --> FIX4[Increase memory]
+```
 
 ---
 
-### Phase 5: Rate Limit Configuration (rate-limits.md)
+## Phase 4: DynamoDB & Capacity (`dynamodb.md`)
 
-**Source**: `troubleshooting.md` §1 (Rate Limit Enforcement Issues) + NEW runbook content
+**Source**: `troubleshooting.md` §2 + NEW scaling runbook
 
-**Task 5.1**: Mermaid decision tree for rate limit issues
+### Content Structure
 
-**Task 5.2**: Troubleshooting section
-- Unexpected RateLimitExceeded
-- Limits not enforcing
-- Cascade behavior issues
+```markdown
+# DynamoDB Operations
 
-**Task 5.3**: Runtime limit adjustment runbook (NEW)
-- Programmatic updates via RateLimiter API
-- Stored vs default limit precedence
-- Verification after changes
+## Decision Tree
+[Mermaid flowchart]
+
+## Troubleshooting
+### Read Throttling
+### Write Throttling
+### Hot Partitions
+
+## Procedures
+### Emergency Capacity Increase
+### Planned Capacity Scaling
+### Switch to On-Demand
+```
+
+### Mermaid Decision Tree
+
+```mermaid
+flowchart TD
+    START([DynamoDB Issue]) --> Q1{What's the symptom?}
+
+    Q1 -->|ReadThrottleEvents| A1[Check read patterns]
+    Q1 -->|WriteThrottleEvents| A2[Check write patterns]
+    Q1 -->|High latency| A3[Check capacity utilization]
+    Q1 -->|Planning scale| A4[Capacity planning]
+
+    A1 --> FIX1{Emergency?}
+    A2 --> FIX1
+    FIX1 -->|Yes| EMERGENCY[Switch to on-demand]
+    FIX1 -->|No| PLAN[Increase provisioned capacity]
+
+    A4 --> LINK([→ performance.md])
+```
 
 ---
 
-### Phase 6: Stream Processing (streams.md)
+## Phase 5: Rate Limit Configuration (`rate-limits.md`)
 
-**Source**: `troubleshooting.md` §5 (DynamoDB Stream Processing Issues)
+**Source**: `troubleshooting.md` §1 + NEW runtime adjustment runbook
 
-**Task 6.1**: Mermaid decision tree for stream issues
+### Content Structure
 
-**Task 6.2**: Troubleshooting section
-- Iterator age alarm response
-- Processing lag diagnosis
+```markdown
+# Rate Limit Operations
 
-**Task 6.3**: Concurrency tuning runbook
-- Batch size configuration
-- Concurrent execution tuning
+## Decision Tree
+[Mermaid flowchart]
+
+## Troubleshooting
+### Unexpected RateLimitExceeded
+### Limits Not Enforcing
+### Cascade Not Working
+
+## Procedures
+### Adjust Limits at Runtime
+### Verify Limit Configuration
+### Debug Bucket State
+```
+
+### NEW: Runtime Limit Adjustment
+
+```python
+# Programmatic limit adjustment
+from zae_limiter import RateLimiter, Limit
+
+limiter = RateLimiter(name="my-app", region="us-east-1")
+
+# Update stored limits for an entity
+await limiter.update_entity(
+    entity_id="api-key-123",
+    limits=[
+        Limit.per_minute("rpm", 1000),  # Increase from 500
+        Limit.per_minute("tpm", 100000),
+    ],
+)
+```
 
 ---
 
-### Phase 7: Recovery & Rollback (recovery.md)
+## Phase 6: Stream Processing (`streams.md`)
 
-**Source**: `troubleshooting.md` §6 (Recovery Procedures) + NEW runbook content
+**Source**: `troubleshooting.md` §5
 
-**Task 7.1**: Markmap decision tree for recovery scenarios
+### Content Structure
+
+```markdown
+# Stream Processing Operations
+
+## Decision Tree
+[Mermaid flowchart]
+
+## Troubleshooting
+### High Iterator Age
+### Lambda Throttling
+
+## Procedures
+### Increase Lambda Concurrency
+### Adjust Batch Size
+### Shard Scaling
+```
+
+---
+
+## Phase 7: Recovery & Rollback (`recovery.md`)
+
+**Source**: `troubleshooting.md` §6 + NEW emergency rollback decision tree
+
+### Content Structure
+
+```markdown
+# Recovery & Rollback
+
+## Decision Tree
+[Markmap - complex hierarchy]
+
+## Procedures
+### Emergency Rollback Decision Matrix
+### DynamoDB Backup/Restore
+### PITR Recovery
+### Migration Rollback
+### Stack Redeployment
+### Data Reconciliation
+```
+
+### Markmap Decision Tree
+
 ```markmap
 # Recovery Decision Tree
 
-## What happened?
+## What went wrong?
 ### Bad deployment
-- CloudFormation rollback
-- Lambda rollback
+- CloudFormation failed → Stack rollback
+- Lambda broken → Redeploy Lambda
+- Config wrong → Update stack
 ### Bad migration
-- Migration rollback
-- Data reconciliation
-### Data loss/corruption
-- PITR recovery
-- Manual backup restore
+- Reversible → Run rollback function
+- Non-reversible → Restore from backup
+### Data corruption
+- Recent → PITR recovery
+- Old → On-demand backup restore
 ### Complete failure
-- Stack redeployment
-- Data reconciliation
+- Table exists → Stack redeployment
+- Table gone → Restore + redeploy
 ```
 
-**Task 7.2**: Emergency rollback decision matrix (NEW)
-- When to rollback vs fix forward
-- Stakeholder notification checklist
+### NEW: Emergency Rollback Decision Matrix
 
-**Task 7.3**: Backup & restore procedures
-- PITR restoration steps
-- Manual backup options
-
-**Task 7.4**: Migration rollback procedures
-- Current limitation: forward-only migrations
-- Manual cleanup procedures
-- When to engage support
-
-**Task 7.5**: Data reconciliation procedures
+| Situation | Action | Time to Recovery |
+|-----------|--------|------------------|
+| Lambda errors after upgrade | `zae-limiter upgrade --lambda-only` with previous version | ~2 min |
+| Schema migration failed | Restore from pre-migration backup | ~10-30 min |
+| Stack update failed | CloudFormation auto-rollback | ~5 min |
+| Data corruption (recent) | PITR restore | ~15-30 min |
+| Complete stack failure | Delete + redeploy (if deletion protection on) | ~10 min |
 
 ---
 
-### Phase 8: Cleanup and Cross-references
+## Phase 8: Cleanup
 
-**Task 8.1**: Delete `docs/troubleshooting.md` (content migrated)
+### 8.1 Delete `docs/troubleshooting.md`
 
-**Task 8.2**: Update cross-references in other docs
-- `docs/monitoring.md` → link to `docs/operations/`
-- `docs/cli.md` → link to relevant operations sections
-- `docs/migrations.md` → link to `docs/operations/version.md`
+All content migrated to `docs/operations/` files.
 
-**Task 8.3**: Update CLAUDE.md with documentation guidelines
+### 8.2 Update Cross-references
+
+| File | Update |
+|------|--------|
+| `docs/monitoring.md` | Change "Troubleshooting Guide" link to "Operations Guide" |
+| `docs/cli.md` | Link to relevant operations sections |
+| `docs/migrations.md` | Link to `operations/version.md` |
+| `docs/index.md` | Update navigation |
+| `mkdocs.yml` | Add operations/ nav section |
+
+### 8.3 Update `mkdocs.yml` Navigation
+
+```yaml
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - User Guide:
+      - guide/basic-usage.md
+      - guide/hierarchical.md
+      - guide/llm-integration.md
+      - guide/failure-modes.md
+  - Operations:
+      - operations/index.md
+      - operations/version.md
+      - operations/lambda.md
+      - operations/dynamodb.md
+      - operations/rate-limits.md
+      - operations/streams.md
+      - operations/recovery.md
+  - Infrastructure:
+      - infra/deployment.md
+      - infra/cloudformation.md
+      - infra/localstack.md
+  - Reference:
+      - cli.md
+      - monitoring.md
+      - performance.md
+      - migrations.md
+      - api/index.md
+```
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] All six requested runbook sections documented
-- [ ] Interactive Markmap navigation in index.md
-- [ ] Mermaid decision trees in each component file
-- [ ] Content from troubleshooting.md fully migrated
-- [ ] troubleshooting.md deleted
-- [ ] Cross-references updated throughout docs/
+- [ ] `docs/operations/index.md` with Markmap navigation
+- [ ] 6 component files with Mermaid decision trees
+- [ ] All content from `troubleshooting.md` migrated
+- [ ] `troubleshooting.md` deleted
+- [ ] Cross-references updated
+- [ ] `mkdocs.yml` navigation updated
 - [ ] Each procedure has verification steps
 - [ ] Warning callouts for destructive operations
 
 ---
 
-## Diagram Guidelines
+## Implementation Order
 
-### Markmap (Interactive Mind Maps)
-Use for:
-- Top-level navigation (index.md)
-- Complex hierarchical decision trees
-- Overview/orientation diagrams
-
-```markmap
-# Topic
-## Branch 1
-- Leaf 1
-- Leaf 2
-## Branch 2
-- Leaf 3
-```
-
-### Mermaid Flowcharts
-Use for:
-- Linear decision flows within a component
-- Step-by-step procedures
-- Simple yes/no decision trees
-
-```mermaid
-flowchart TD
-    A[Start] --> B{Decision}
-    B -->|Yes| C[Action 1]
-    B -->|No| D[Action 2]
-```
+1. Create `docs/operations/` directory
+2. Create `index.md` with Markmap
+3. Create component files (can be done in parallel):
+   - `version.md`
+   - `lambda.md`
+   - `dynamodb.md`
+   - `rate-limits.md`
+   - `streams.md`
+   - `recovery.md`
+4. Update cross-references
+5. Update `mkdocs.yml`
+6. Delete `troubleshooting.md`
+7. Test all links and diagrams render correctly
 
 ---
 
 ## Notes
 
-- **MkDocs Material + mkdocs-markmap plugin** required for interactive diagrams
-- **Dependency on #45/#46**: Some metrics thresholds depend on benchmark data
-- **Future enhancements**: Lambda versioning, automated rollback not yet implemented
+- **MkDocs plugins required**: `mkdocs-markmap` for interactive mind maps
+- **Mermaid**: Built into MkDocs Material, no extra plugin needed
+- **Dependencies**: Some metrics thresholds reference #45 (benchmarks) data
+- **Limitations to document**: Lambda versioning not implemented, migrations are forward-only
