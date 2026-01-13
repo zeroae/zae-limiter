@@ -109,12 +109,13 @@ fields @timestamp, @message
 ```
 
 ### 5. X-Ray Tracing Integration (Future Work)
-- Mark as future enhancement
+- Mark as future enhancement (not in scope for v1.0.0)
 - Describe potential integration points:
   - Lambda function tracing
   - DynamoDB SDK instrumentation
   - Custom subsegments for business logic
 - Link to AWS X-Ray documentation
+- Reference the GitHub issue to be created (see Follow-up Actions below)
 
 ### 6. Dashboard Templates
 
@@ -191,6 +192,14 @@ Common issues and diagnostic steps:
 - Test Logs Insights queries in CloudWatch console
 - Validate dashboard JSON syntax
 - Ensure links resolve correctly
+
+## Follow-up Actions
+
+- [ ] **Open GitHub issue for X-Ray tracing integration** - Create a new issue for a future release to add AWS X-Ray distributed tracing support. Suggested title: `✨ feat(infra): add X-Ray tracing integration`. Include:
+  - Lambda function active tracing
+  - DynamoDB SDK instrumentation via AWS X-Ray SDK
+  - Custom subsegments for acquire/release operations
+  - Trace header propagation for client libraries
 
 ## References
 
