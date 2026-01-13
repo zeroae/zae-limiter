@@ -125,6 +125,22 @@ def cli() -> None:
     default=True,
     help="Wait for stack creation to complete",
 )
+@click.option(
+    "--permission-boundary",
+    type=str,
+    default=None,
+    help="IAM permission boundary for Lambda role (policy name or full ARN)",
+)
+@click.option(
+    "--role-name-format",
+    type=str,
+    default=None,
+    help=(
+        "Format template for Lambda role name. "
+        "Use {} as placeholder for default name. "
+        "Example: 'app-{}' produces 'app-mytable-aggregator-role'."
+    ),
+)
 def deploy(
     table_name: str,
     stack_name: str | None,
@@ -141,6 +157,8 @@ def deploy(
     alarm_sns_topic: str | None,
     lambda_duration_threshold_pct: int,
     wait: bool,
+    permission_boundary: str | None,
+    role_name_format: str | None,
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
 
@@ -159,6 +177,8 @@ def deploy(
                 alarm_sns_topic=alarm_sns_topic,
                 lambda_duration_threshold_pct=lambda_duration_threshold_pct,
                 stack_name=stack_name,
+                permission_boundary=permission_boundary,
+                role_name_format=role_name_format,
             )
 
             actual_stack_name = stack_options.stack_name or manager.get_stack_name()

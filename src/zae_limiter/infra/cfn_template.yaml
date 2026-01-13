@@ -103,6 +103,21 @@ Parameters:
     MinValue: 1
     MaxValue: 900000
 
+  PermissionBoundary:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) IAM permission boundary for the Lambda execution role.
+      Accepts policy name or full ARN. If a name is provided,
+      the ARN is constructed automatically.
+
+  RoleName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the Lambda execution role.
+      If empty, uses default: {TableName}-aggregator-role.
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
   UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
@@ -111,6 +126,11 @@ Conditions:
     - !Condition DeployAggregator
     - !Condition DeployAlarms
   HasSNSTopic: !Not [!Equals [!Ref AlarmSNSTopicArn, '']]
+  HasPermissionBoundary: !Not [!Equals [!Ref PermissionBoundary, '']]
+  HasCustomRoleName: !Not [!Equals [!Ref RoleName, '']]
+  PermissionBoundaryIsArn: !Equals
+    - !Select [0, !Split [':', !Ref PermissionBoundary]]
+    - 'arn'
 
 Resources:
   # -------------------------------------------------------------------------
@@ -222,7 +242,17 @@ Resources:
     Type: AWS::IAM::Role
     Condition: DeployAggregator
     Properties:
-      RoleName: !Sub ${TableName}-aggregator-role
+      RoleName: !If
+        - HasCustomRoleName
+        - !Ref RoleName
+        - !Sub ${TableName}-aggregator-role
+      PermissionsBoundary: !If
+        - HasPermissionBoundary
+        - !If
+          - PermissionBoundaryIsArn
+          - !Ref PermissionBoundary
+          - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundary}'
+        - !Ref AWS::NoValue
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

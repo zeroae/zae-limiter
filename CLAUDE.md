@@ -109,6 +109,17 @@ zae-limiter deploy --table-name rate_limits --lambda-duration-threshold-pct 90
 # Disable CloudWatch alarms
 zae-limiter deploy --table-name rate_limits --no-alarms
 
+# Deploy with permission boundary (for restricted IAM environments)
+zae-limiter deploy --table-name rate_limits --permission-boundary MyBoundaryPolicy
+
+# Deploy with custom role name format (for organizational naming policies)
+zae-limiter deploy --table-name rate_limits --role-name-format "app-{}"
+
+# Enterprise deployment with both options
+zae-limiter deploy --table-name rate_limits \
+  --permission-boundary arn:aws:iam::aws:policy/PowerUserAccess \
+  --role-name-format "pb-{}-PowerUser"
+
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
 
@@ -154,6 +165,16 @@ limiter = RateLimiter(
         retention_days=30,
         enable_alarms=True,
         alarm_sns_topic="arn:aws:sns:us-east-1:123456789012:alerts",
+    ),
+)
+
+# Enterprise deployment with permission boundary and custom role naming
+limiter = RateLimiter(
+    table_name="rate_limits",
+    region="us-east-1",
+    stack_options=StackOptions(
+        permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+        role_name_format="pb-{}-PowerUser",
     ),
 )
 ```

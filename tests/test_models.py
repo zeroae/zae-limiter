@@ -161,6 +161,8 @@ class TestStackOptions:
         assert opts.alarm_sns_topic is None
         assert opts.lambda_duration_threshold_pct == 80
         assert opts.stack_name is None
+        assert opts.permission_boundary is None
+        assert opts.role_name_format is None
 
     def test_custom_values(self):
         """Test custom values are preserved."""
@@ -266,6 +268,93 @@ class TestStackOptions:
         opts = StackOptions()
         with pytest.raises(AttributeError):
             opts.lambda_timeout = 120
+
+    # -------------------------------------------------------------------------
+    # Permission Boundary Tests
+    # -------------------------------------------------------------------------
+
+    def test_permission_boundary_policy_name(self):
+        """Test permission_boundary with just policy name."""
+        opts = StackOptions(permission_boundary="MyBoundary")
+        params = opts.to_parameters()
+        assert params["permission_boundary"] == "MyBoundary"
+
+    def test_permission_boundary_full_arn(self):
+        """Test permission_boundary with full ARN."""
+        arn = "arn:aws:iam::123456789012:policy/MyBoundary"
+        opts = StackOptions(permission_boundary=arn)
+        params = opts.to_parameters()
+        assert params["permission_boundary"] == arn
+
+    def test_permission_boundary_aws_managed_policy(self):
+        """Test permission_boundary with AWS managed policy ARN."""
+        arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+        opts = StackOptions(permission_boundary=arn)
+        params = opts.to_parameters()
+        assert params["permission_boundary"] == arn
+
+    def test_permission_boundary_not_in_params_when_none(self):
+        """Test permission_boundary is not in params when None."""
+        opts = StackOptions()
+        params = opts.to_parameters()
+        assert "permission_boundary" not in params
+
+    # -------------------------------------------------------------------------
+    # Role Name Format Tests
+    # -------------------------------------------------------------------------
+
+    def test_role_name_format_valid(self):
+        """Test role_name_format with valid placeholder."""
+        opts = StackOptions(role_name_format="app-{}")
+        assert opts.get_role_name("mytable") == "app-mytable-aggregator-role"
+
+    def test_role_name_format_prefix_suffix(self):
+        """Test role_name_format with both prefix and suffix."""
+        opts = StackOptions(role_name_format="pb-{}-PowerUser")
+        assert opts.get_role_name("mytable") == "pb-mytable-aggregator-role-PowerUser"
+
+    def test_role_name_format_suffix_only(self):
+        """Test role_name_format with suffix only."""
+        opts = StackOptions(role_name_format="{}-prod")
+        assert opts.get_role_name("mytable") == "mytable-aggregator-role-prod"
+
+    def test_role_name_format_no_placeholder(self):
+        """Test role_name_format without placeholder raises ValueError."""
+        with pytest.raises(ValueError, match="exactly one"):
+            StackOptions(role_name_format="my-custom-role")
+
+    def test_role_name_format_multiple_placeholders(self):
+        """Test role_name_format with multiple placeholders raises ValueError."""
+        with pytest.raises(ValueError, match="exactly one"):
+            StackOptions(role_name_format="app-{}-{}-role")
+
+    def test_role_name_format_too_long(self):
+        """Test role_name_format that would exceed IAM 64 char limit."""
+        with pytest.raises(ValueError, match="too long"):
+            StackOptions(role_name_format="a" * 50 + "-{}")
+
+    def test_get_role_name_returns_none_when_format_not_set(self):
+        """Test get_role_name returns None when role_name_format is None."""
+        opts = StackOptions()
+        assert opts.get_role_name("mytable") is None
+
+    def test_role_name_in_params_with_table_name(self):
+        """Test role_name is in params when table_name is provided."""
+        opts = StackOptions(role_name_format="app-{}")
+        params = opts.to_parameters(table_name="mytable")
+        assert params["role_name"] == "app-mytable-aggregator-role"
+
+    def test_role_name_not_in_params_without_table_name(self):
+        """Test role_name is not in params when table_name is not provided."""
+        opts = StackOptions(role_name_format="app-{}")
+        params = opts.to_parameters()
+        assert "role_name" not in params
+
+    def test_role_name_not_in_params_when_format_none(self):
+        """Test role_name is not in params when role_name_format is None."""
+        opts = StackOptions()
+        params = opts.to_parameters(table_name="mytable")
+        assert "role_name" not in params
 
 
 class TestInputValidation:
