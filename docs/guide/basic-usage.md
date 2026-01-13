@@ -43,6 +43,9 @@ async with limiter.acquire(
 
 All limits are checked atomically. If any limit is exceeded, the request is rejected.
 
+!!! tip "Performance Tip"
+    Combining multiple limits into a single `acquire()` call is more efficient than separate calls. See [Batch Operation Patterns](../performance.md#3-batch-operation-patterns) for details.
+
 ## Burst Capacity
 
 Allow temporary bursts above the sustained rate:

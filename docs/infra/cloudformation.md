@@ -115,6 +115,11 @@ StreamSpecification:
 
 ## Lambda Aggregator
 
+The aggregator Lambda processes DynamoDB Stream events to maintain usage snapshots.
+
+!!! tip "Performance Tuning"
+    For guidance on memory tuning, concurrency management, and error handling configuration, see the [Performance Tuning Guide](../performance.md#2-lambda-concurrency-settings).
+
 ### Function Configuration
 
 ```yaml
