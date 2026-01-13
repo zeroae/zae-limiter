@@ -32,15 +32,29 @@ def build_lambda_package() -> bytes:
             arcname = py_file.relative_to(package_path.parent)
             zf.write(py_file, arcname)
 
-        # Also include the CloudFormation template for reference
+        # Also include the CloudFormation templates for reference
         # (not used by Lambda, but useful for debugging)
-        cfn_template = package_path / "infra" / "cfn_template.yaml"
-        if cfn_template.exists():
-            arcname = cfn_template.relative_to(package_path.parent)
-            zf.write(cfn_template, arcname)
+        for template_name in ("cfn_template.yaml", "cfn_admin_template.yaml"):
+            cfn_template = package_path / "infra" / template_name
+            if cfn_template.exists():
+                arcname = cfn_template.relative_to(package_path.parent)
+                zf.write(cfn_template, arcname)
 
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
+
+
+def build_admin_lambda_package() -> bytes:
+    """
+    Build Lambda deployment package for Admin API.
+
+    This is an alias for build_lambda_package() since the admin handler
+    is part of the same package.
+
+    Returns:
+        Zip file contents as bytes
+    """
+    return build_lambda_package()
 
 
 def write_lambda_package(output_path: str | Path) -> int:

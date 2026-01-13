@@ -1,0 +1,563 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ZAE-Limiter Admin API - REST API for rate limiter administration'
+
+Parameters:
+  StackName:
+    Type: String
+    Description: Base stack name (will be prefixed with ZAEL-)
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9-]*'
+    ConstraintDescription: Must start with a letter and contain only alphanumeric characters and hyphens
+
+  CoreStackName:
+    Type: String
+    Description: Name of the core ZAEL stack (for DynamoDB table reference)
+
+  LambdaMemory:
+    Type: Number
+    Default: 256
+    MinValue: 128
+    MaxValue: 3008
+    Description: Memory allocation for Lambda functions (MB)
+
+  LambdaTimeout:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 300
+    Description: Lambda function timeout (seconds)
+
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: CloudWatch log retention period
+
+  AuthType:
+    Type: String
+    Default: IAM
+    AllowedValues: [IAM, NONE]
+    Description: API authorization type (IAM or NONE for development)
+
+  PermissionBoundary:
+    Type: String
+    Default: ''
+    Description: Optional IAM permission boundary ARN
+
+  RoleNameFormat:
+    Type: String
+    Default: ''
+    Description: Optional role name format (use {} as placeholder for role suffix)
+
+Conditions:
+  HasPermissionBoundary: !Not [!Equals [!Ref PermissionBoundary, '']]
+  HasRoleNameFormat: !Not [!Equals [!Ref RoleNameFormat, '']]
+  UseIamAuth: !Equals [!Ref AuthType, 'IAM']
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # IAM Role for Lambda
+  # ---------------------------------------------------------------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !If
+        - HasRoleNameFormat
+        - !Sub
+          - '${Format}'
+          - Format: !Join ['', !Split ['{}', !Sub '${RoleNameFormat}-admin-lambda']]
+        - !Sub '${StackName}-admin-lambda-role'
+      PermissionsBoundary: !If [HasPermissionBoundary, !Ref PermissionBoundary, !Ref 'AWS::NoValue']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CoreStackName}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CoreStackName}/index/*'
+
+  # ---------------------------------------------------------------------------
+  # Lambda Function
+  # ---------------------------------------------------------------------------
+  AdminApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${StackName}-admin-api'
+      Description: 'ZAE-Limiter Admin API handler'
+      Runtime: python3.12
+      Handler: zae_limiter.admin.handler.lambda_handler
+      MemorySize: !Ref LambdaMemory
+      Timeout: !Ref LambdaTimeout
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref CoreStackName
+          STACK_NAME: !Ref StackName
+          LOG_LEVEL: INFO
+      # Code is deployed separately via API after stack creation
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {'statusCode': 501, 'body': 'Not deployed yet'}
+
+  AdminApiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AdminApiFunction}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ---------------------------------------------------------------------------
+  # API Gateway REST API
+  # ---------------------------------------------------------------------------
+  AdminApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${StackName}-admin'
+      Description: 'ZAE-Limiter Admin API'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Application
+          Value: zae-limiter
+        - Key: Component
+          Value: admin-api
+
+  # ---------------------------------------------------------------------------
+  # API Gateway Resources
+  # ---------------------------------------------------------------------------
+
+  # /entities
+  EntitiesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !GetAtt AdminApi.RootResourceId
+      PathPart: entities
+
+  # /entities/{entity_id}
+  EntityResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntitiesResource
+      PathPart: '{entity_id}'
+
+  # /entities/{entity_id}/children
+  EntityChildrenResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntityResource
+      PathPart: children
+
+  # /entities/{entity_id}/limits
+  EntityLimitsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntityResource
+      PathPart: limits
+
+  # /entities/{entity_id}/limits/{resource}
+  EntityLimitsResourceResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntityLimitsResource
+      PathPart: '{resource}'
+
+  # /entities/{entity_id}/buckets
+  EntityBucketsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntityResource
+      PathPart: buckets
+
+  # /entities/{entity_id}/buckets/{resource}
+  EntityBucketsResourceResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntityBucketsResource
+      PathPart: '{resource}'
+
+  # /entities/{entity_id}/buckets/{resource}/{limit_name}
+  EntityBucketResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntityBucketsResourceResource
+      PathPart: '{limit_name}'
+
+  # /entities/{entity_id}/buckets/{resource}/{limit_name}/reset
+  EntityBucketResetResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntityBucketResource
+      PathPart: reset
+
+  # /entities/{entity_id}/audit
+  EntityAuditResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref EntityResource
+      PathPart: audit
+
+  # /resources
+  ResourcesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !GetAtt AdminApi.RootResourceId
+      PathPart: resources
+
+  # /resources/{resource}
+  ResourceResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref ResourcesResource
+      PathPart: '{resource}'
+
+  # /resources/{resource}/capacity
+  ResourceCapacityResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AdminApi
+      ParentId: !Ref ResourceResource
+      PathPart: capacity
+
+  # ---------------------------------------------------------------------------
+  # Lambda Permission for API Gateway
+  # ---------------------------------------------------------------------------
+  AdminApiFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AdminApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AdminApi}/*'
+
+  # ---------------------------------------------------------------------------
+  # API Gateway Methods - Entities Collection
+  # ---------------------------------------------------------------------------
+
+  # GET /entities
+  EntitiesGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntitiesResource
+      HttpMethod: GET
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # POST /entities
+  EntitiesPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntitiesResource
+      HttpMethod: POST
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # ---------------------------------------------------------------------------
+  # API Gateway Methods - Entity Resource
+  # ---------------------------------------------------------------------------
+
+  # GET /entities/{entity_id}
+  EntityGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityResource
+      HttpMethod: GET
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # PATCH /entities/{entity_id}
+  EntityPatchMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityResource
+      HttpMethod: PATCH
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # DELETE /entities/{entity_id}
+  EntityDeleteMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityResource
+      HttpMethod: DELETE
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # GET /entities/{entity_id}/children
+  EntityChildrenGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityChildrenResource
+      HttpMethod: GET
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # ---------------------------------------------------------------------------
+  # API Gateway Methods - Limits
+  # ---------------------------------------------------------------------------
+
+  # GET /entities/{entity_id}/limits/{resource}
+  EntityLimitsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityLimitsResourceResource
+      HttpMethod: GET
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+        method.request.path.resource: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # PUT /entities/{entity_id}/limits/{resource}
+  EntityLimitsPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityLimitsResourceResource
+      HttpMethod: PUT
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+        method.request.path.resource: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # DELETE /entities/{entity_id}/limits/{resource}
+  EntityLimitsDeleteMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityLimitsResourceResource
+      HttpMethod: DELETE
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+        method.request.path.resource: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # ---------------------------------------------------------------------------
+  # API Gateway Methods - Buckets
+  # ---------------------------------------------------------------------------
+
+  # GET /entities/{entity_id}/buckets
+  EntityBucketsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityBucketsResource
+      HttpMethod: GET
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # GET /entities/{entity_id}/buckets/{resource}
+  EntityBucketsResourceGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityBucketsResourceResource
+      HttpMethod: GET
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+        method.request.path.resource: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # POST /entities/{entity_id}/buckets/{resource}/{limit_name}/reset
+  EntityBucketResetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityBucketResetResource
+      HttpMethod: POST
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+        method.request.path.resource: true
+        method.request.path.limit_name: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # ---------------------------------------------------------------------------
+  # API Gateway Methods - Audit
+  # ---------------------------------------------------------------------------
+
+  # GET /entities/{entity_id}/audit
+  EntityAuditGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref EntityAuditResource
+      HttpMethod: GET
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.entity_id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # ---------------------------------------------------------------------------
+  # API Gateway Methods - Resource Capacity
+  # ---------------------------------------------------------------------------
+
+  # GET /resources/{resource}/capacity
+  ResourceCapacityGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AdminApi
+      ResourceId: !Ref ResourceCapacityResource
+      HttpMethod: GET
+      AuthorizationType: !If [UseIamAuth, AWS_IAM, NONE]
+      RequestParameters:
+        method.request.path.resource: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AdminApiFunction.Arn}/invocations'
+
+  # ---------------------------------------------------------------------------
+  # API Gateway Deployment
+  # ---------------------------------------------------------------------------
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - EntitiesGetMethod
+      - EntitiesPostMethod
+      - EntityGetMethod
+      - EntityPatchMethod
+      - EntityDeleteMethod
+      - EntityChildrenGetMethod
+      - EntityLimitsGetMethod
+      - EntityLimitsPutMethod
+      - EntityLimitsDeleteMethod
+      - EntityBucketsGetMethod
+      - EntityBucketsResourceGetMethod
+      - EntityBucketResetMethod
+      - EntityAuditGetMethod
+      - ResourceCapacityGetMethod
+    Properties:
+      RestApiId: !Ref AdminApi
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref AdminApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: v1
+      Description: 'Production stage'
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
+      Tags:
+        - Key: Application
+          Value: zae-limiter
+        - Key: Component
+          Value: admin-api
+
+Outputs:
+  ApiEndpoint:
+    Description: Admin API endpoint URL
+    Value: !Sub 'https://${AdminApi}.execute-api.${AWS::Region}.amazonaws.com/v1'
+    Export:
+      Name: !Sub '${StackName}-admin-api-endpoint'
+
+  ApiId:
+    Description: API Gateway REST API ID
+    Value: !Ref AdminApi
+    Export:
+      Name: !Sub '${StackName}-admin-api-id'
+
+  LambdaFunctionArn:
+    Description: Admin API Lambda function ARN
+    Value: !GetAtt AdminApiFunction.Arn
+    Export:
+      Name: !Sub '${StackName}-admin-lambda-arn'
+
+  LambdaFunctionName:
+    Description: Admin API Lambda function name
+    Value: !Ref AdminApiFunction
+    Export:
+      Name: !Sub '${StackName}-admin-lambda-name'

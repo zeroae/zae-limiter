@@ -217,6 +217,51 @@ docker compose down
 
 **Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services.
 
+### Admin API (Optional)
+
+The Admin API provides a REST interface for managing entities, limits, buckets, and viewing audit logs. It's deployed as a **separate CloudFormation stack** with API Gateway and Lambda.
+
+```bash
+# Deploy admin API stack (requires core stack to exist)
+zae-limiter deploy-admin --name my-app --core-stack my-app --region us-east-1
+
+# Deploy without IAM auth (for development)
+zae-limiter deploy-admin --name my-app --core-stack my-app --auth-type NONE
+
+# Deploy to LocalStack
+zae-limiter deploy-admin --name my-app --core-stack my-app \
+  --endpoint-url http://localhost:4566 --region us-east-1
+```
+
+**Admin API Endpoints:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/entities` | List entities (use `?parent_id=X` to list children) |
+| POST | `/entities` | Create entity |
+| GET | `/entities/{id}` | Get entity details |
+| PATCH | `/entities/{id}` | Update entity |
+| DELETE | `/entities/{id}` | Delete entity |
+| GET | `/entities/{id}/children` | Get child entities |
+| GET | `/entities/{id}/limits/{resource}` | Get stored limits |
+| PUT | `/entities/{id}/limits/{resource}` | Set stored limits |
+| DELETE | `/entities/{id}/limits/{resource}` | Delete stored limits |
+| GET | `/entities/{id}/buckets` | Get all buckets |
+| GET | `/entities/{id}/buckets/{resource}` | Get buckets for resource |
+| POST | `/entities/{id}/buckets/{resource}/{limit}/reset` | Reset bucket |
+| GET | `/entities/{id}/audit` | Get audit events |
+| GET | `/resources/{resource}/capacity` | Get resource utilization |
+
+**Architecture:**
+```
+┌─────────────────────────────────┐     ┌─────────────────────────────────┐
+│   ZAEL-{name} (core stack)      │     │   ZAEL-{name}-admin (optional)  │
+│   • DynamoDB table              │◄────│   • API Gateway REST API        │
+│   • Lambda aggregator           │     │   • Lambda admin handler        │
+│   • CloudWatch alarms           │     │   • IAM/NONE auth               │
+└─────────────────────────────────┘     └─────────────────────────────────┘
+```
+
 ## Project Structure
 
 ```
@@ -230,7 +275,7 @@ src/zae_limiter/
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
-├── cli.py             # CLI commands (deploy, delete, status, cfn-template, version, upgrade, check)
+├── cli.py             # CLI commands (deploy, deploy-admin, delete, status, cfn-template, version, upgrade, check)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
@@ -238,10 +283,15 @@ src/zae_limiter/
 ├── aggregator/        # Lambda for usage snapshots
 │   ├── handler.py     # Lambda entry point
 │   └── processor.py   # Stream processing logic
+├── admin/             # Admin API Lambda
+│   ├── __init__.py
+│   └── handler.py     # REST API handler for admin endpoints
 └── infra/
-    ├── stack_manager.py    # CloudFormation stack operations
-    ├── lambda_builder.py   # Lambda deployment package builder
-    └── cfn_template.yaml   # CloudFormation template
+    ├── stack_manager.py       # CloudFormation stack operations (core)
+    ├── admin_stack_manager.py # CloudFormation stack operations (admin API)
+    ├── lambda_builder.py      # Lambda deployment package builder
+    ├── cfn_template.yaml      # Core CloudFormation template
+    └── cfn_admin_template.yaml # Admin API CloudFormation template
 ```
 
 ## Naming Convention

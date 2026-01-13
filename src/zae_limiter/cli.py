@@ -785,5 +785,152 @@ def check(
     asyncio.run(_check())
 
 
+@cli.command("deploy-admin")
+@click.option(
+    "--name",
+    "-n",
+    required=True,
+    help="Admin stack identifier (will be prefixed with 'ZAEL-' and suffixed with '-admin')",
+)
+@click.option(
+    "--core-stack",
+    required=True,
+    help="Name of the core ZAEL stack (for DynamoDB table reference)",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+@click.option(
+    "--auth-type",
+    type=click.Choice(["IAM", "NONE"]),
+    default="IAM",
+    help="API authorization type (IAM or NONE for development)",
+)
+@click.option(
+    "--lambda-timeout",
+    default=30,
+    type=int,
+    help="Lambda function timeout in seconds",
+)
+@click.option(
+    "--lambda-memory",
+    default=256,
+    type=int,
+    help="Lambda function memory in MB",
+)
+@click.option(
+    "--log-retention-days",
+    default="14",
+    type=click.Choice(
+        ["1", "3", "5", "7", "14", "30", "60", "90", "120", "150", "180", "365"]
+    ),
+    help="CloudWatch log retention period",
+)
+@click.option(
+    "--permission-boundary",
+    type=str,
+    default=None,
+    help="ARN of IAM permission boundary to attach to Lambda execution role",
+)
+@click.option(
+    "--role-name-format",
+    type=str,
+    default=None,
+    help="Format template for Lambda role name. Use {} as placeholder for default name.",
+)
+@click.option(
+    "--wait/--no-wait",
+    default=True,
+    help="Wait for stack creation to complete",
+)
+def deploy_admin(
+    name: str,
+    core_stack: str,
+    region: str | None,
+    endpoint_url: str | None,
+    auth_type: str,
+    lambda_timeout: int,
+    lambda_memory: int,
+    log_retention_days: str,
+    permission_boundary: str | None,
+    role_name_format: str | None,
+    wait: bool,
+) -> None:
+    """Deploy Admin API stack (API Gateway + Lambda) for rate limiter administration."""
+    from .exceptions import ValidationError
+    from .infra.admin_stack_manager import AdminStackManager
+
+    try:
+        manager = AdminStackManager(name, core_stack, region, endpoint_url)
+    except ValidationError as e:
+        click.echo(f"Error: {e.reason}", err=True)
+        sys.exit(1)
+
+    async def _deploy() -> None:
+        async with manager:
+            click.echo(f"Deploying Admin API stack: {manager.stack_name}")
+            click.echo(f"  Core stack: {manager.core_stack_name}")
+            click.echo(f"  Region: {region or 'default'}")
+            click.echo(f"  Auth type: {auth_type}")
+            click.echo(f"  Lambda timeout: {lambda_timeout}s")
+            click.echo(f"  Lambda memory: {lambda_memory}MB")
+            click.echo()
+
+            try:
+                result = await manager.create_stack(
+                    auth_type=auth_type,
+                    lambda_timeout=lambda_timeout,
+                    lambda_memory=lambda_memory,
+                    log_retention_days=int(log_retention_days),
+                    permission_boundary=permission_boundary,
+                    role_name_format=role_name_format,
+                    wait=wait,
+                )
+
+                status = result.get("status", "unknown")
+                click.echo(f"✓ Stack {status.lower().replace('_', ' ')}")
+
+                if result.get("stack_id"):
+                    click.echo(f"  Stack ID: {result['stack_id']}")
+
+                # Deploy Lambda code if wait is True
+                if wait:
+                    click.echo()
+                    click.echo("Deploying Lambda function code...")
+
+                    try:
+                        lambda_result = await manager.deploy_lambda_code(wait=True)
+
+                        if lambda_result.get("status") == "deployed":
+                            size_kb = lambda_result.get("size_bytes", 0) / 1024
+                            click.echo(f"✓ Lambda code deployed ({size_kb:.1f} KB)")
+                            click.echo(f"  Function ARN: {lambda_result['function_arn']}")
+                        elif lambda_result.get("status") == "skipped_local":
+                            click.echo("  Lambda deployment skipped (local environment)")
+                    except Exception as e:
+                        click.echo(f"⚠️  Lambda deployment failed: {e}", err=True)
+                        sys.exit(1)
+
+                # Show API endpoint
+                if result.get("api_endpoint"):
+                    click.echo()
+                    click.echo("Admin API Endpoint:")
+                    click.echo(f"  {result['api_endpoint']}")
+
+            except Exception as e:
+                click.echo(f"✗ Deployment failed: {e}", err=True)
+                sys.exit(1)
+
+    asyncio.run(_deploy())
+
+
 if __name__ == "__main__":
     cli()
