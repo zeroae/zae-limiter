@@ -228,8 +228,8 @@ class TestE2ELocalStackFullWorkflow:
         )
 
         # After consuming 1 rph from each, both should have 99 available
-        assert child_available["rph"] == 99, f"Expected child rph=99, got {child_available['rph']}"
-        assert parent_available["rph"] == 99, f"Expected parent rph=99, got {parent_available['rph']}"
+        assert child_available["rph"] == 99, f"child rph={child_available['rph']}"
+        assert parent_available["rph"] == 99, f"parent rph={parent_available['rph']}"
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_rate_limit_exceeded_workflow(self, e2e_limiter):
