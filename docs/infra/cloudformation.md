@@ -323,4 +323,4 @@ aws cloudformation describe-stacks \
 ## Next Steps
 
 - [Deployment](deployment.md) - Deployment guide
-- [LocalStack](localstack.md) - Local development
+- [LocalStack](../contributing/localstack.md) - Local development

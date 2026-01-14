@@ -19,6 +19,10 @@ zae-limiter provides built-in observability through:
 | Structured Logs | JSON-formatted logs for analysis |
 | Dead Letter Queue | Capturing failed events for investigation |
 | Usage Snapshots | Aggregated consumption metrics |
+| Audit Logging | Security and compliance tracking |
+
+!!! tip "Compliance Requirements"
+    For tracking who changed what and when, see the [Audit Logging Guide](infra/auditing.md).
 
 ## Structured Logging
 
@@ -466,6 +470,7 @@ limiter = RateLimiter(
 ## Next Steps
 
 - [Operations Guide](operations/index.md) - Troubleshooting and operational procedures
+- [Audit Logging](infra/auditing.md) - Security and compliance tracking
 - [Performance Tuning](performance.md) - Capacity planning and optimization
 - [Deployment Guide](infra/deployment.md) - Infrastructure setup
 - [CloudFormation Reference](infra/cloudformation.md) - Template customization

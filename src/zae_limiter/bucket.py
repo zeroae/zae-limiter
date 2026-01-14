@@ -1,4 +1,25 @@
-"""Token bucket algorithm implementation using integer arithmetic."""
+"""
+Token bucket algorithm implementation using integer arithmetic.
+
+This module implements a variant of the classic token bucket algorithm
+optimized for distributed systems:
+
+- **Integer Arithmetic**: All values stored as millitokens (x1000) to avoid
+  floating-point precision issues across distributed nodes.
+- **Lazy Refill**: Tokens are calculated on-demand rather than continuously,
+  with drift compensation to prevent accumulated rounding errors.
+- **Negative Buckets**: Buckets can go into debt to support post-hoc
+  reconciliation for operations with unknown cost.
+
+Key functions:
+    refill_bucket: Calculate refilled tokens with drift compensation
+    try_consume: Attempt to consume tokens (atomic check-and-consume)
+    force_consume: Force consume tokens (can go negative for debt)
+    calculate_retry_after: Calculate wait time until tokens available
+
+For conceptual explanation, see docs/guide/token-bucket.md
+For implementation details, see docs/contributing/architecture.md
+"""
 
 from dataclasses import dataclass
 

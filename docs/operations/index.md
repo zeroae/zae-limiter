@@ -105,4 +105,4 @@ flowchart LR
 - [Monitoring Guide](../monitoring.md) - CloudWatch metrics, dashboards, and alerts
 - [Performance Tuning](../performance.md) - Capacity planning and optimization
 - [Migration Guide](../migrations.md) - Schema versioning and upgrades
-- [Failure Modes](../guide/failure-modes.md) - Configure behavior when DynamoDB is unavailable
+- [Unavailability Handling](../guide/unavailability.md) - Configure behavior when DynamoDB is unavailable

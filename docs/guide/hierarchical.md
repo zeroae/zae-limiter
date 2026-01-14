@@ -1,5 +1,8 @@
 # Hierarchical Limits
 
+!!! warning "API Changes Planned"
+    The cascade API is being redesigned. The `cascade` parameter will move from `acquire()` to `create_entity()`, making cascade behavior a property of the entity rather than each call site. This prevents accidental bypass when multiple libraries share a limiter. See [issue #116](https://github.com/zeroae/zae-limiter/issues/116) for details.
+
 zae-limiter supports two-level hierarchies for rate limiting, enabling patterns like:
 
 - **Project → API Keys**: Limit total project usage while also limiting individual keys
@@ -197,5 +200,5 @@ await limiter.set_limits(
 ## Next Steps
 
 - [LLM Integration](llm-integration.md) - Token estimation patterns
-- [Failure Modes](failure-modes.md) - Handling service outages
+- [Unavailability Handling](unavailability.md) - Handling service outages
 - [API Reference](../api/limiter.md) - Complete API documentation

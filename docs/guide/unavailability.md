@@ -1,6 +1,11 @@
-# Failure Modes
+# Unavailability Handling
 
 zae-limiter provides configurable behavior when DynamoDB is unavailable. This guide covers the failure modes and how to choose the right one for your application.
+
+!!! note "Scope"
+    This page covers **infrastructure unavailability** (DynamoDB errors, timeouts, throttling).
+
+    For handling rate limit violations, see [Basic Usage](basic-usage.md#error-handling).
 
 ## Available Failure Modes
 
@@ -8,6 +13,20 @@ zae-limiter provides configurable behavior when DynamoDB is unavailable. This gu
 |------|----------|----------|
 | `FAIL_CLOSED` | Reject requests | Security-critical, billing |
 | `FAIL_OPEN` | Allow requests | User experience priority |
+
+## What Triggers Failure Mode Logic
+
+The failure mode **only applies to infrastructure errors**. These exceptions always propagate regardless of failure mode:
+
+- `RateLimitExceeded` — Rate limit violated (business logic)
+- `ValidationError` — Invalid configuration (user error)
+
+Infrastructure errors that trigger failure mode:
+
+- Connection timeouts
+- DynamoDB throttling
+- Network failures
+- Service unavailable errors
 
 ## FAIL_CLOSED (Default)
 
@@ -61,6 +80,30 @@ async with limiter.acquire(...):
 - Rate limiting is a soft limit
 - Development/staging environments
 
+### No-Op Lease Behavior
+
+When `FAIL_OPEN` activates due to infrastructure failure:
+
+- A **no-op lease** is returned with no bucket entries
+- `lease.consume()`, `lease.adjust()`, and `lease.release()` silently do nothing
+- Your code cannot detect degraded mode from the lease itself
+
+To detect and log degraded operations, wrap with custom error handling:
+
+```python
+async def acquire_with_metrics(limiter, **kwargs):
+    """Wrapper that tracks degraded operations."""
+    try:
+        async with limiter.acquire(**kwargs) as lease:
+            yield lease
+    except Exception as e:
+        # FAIL_OPEN caught the error - we're in degraded mode
+        # This only runs if you use FAIL_CLOSED and catch manually
+        metrics.increment("rate_limiter.degraded")
+        logger.warning(f"Rate limiter degraded: {e}")
+        raise
+```
+
 ## Per-Request Override
 
 Override the default failure mode for specific requests:
@@ -105,27 +148,6 @@ except RateLimiterUnavailable as e:
         await do_work()
 ```
 
-## Monitoring and Alerting
-
-Monitor for rate limiter unavailability:
-
-```python
-import logging
-from zae_limiter import RateLimiterUnavailable
-
-logger = logging.getLogger(__name__)
-
-async def monitored_acquire(limiter, **kwargs):
-    try:
-        async with limiter.acquire(**kwargs) as lease:
-            yield lease
-    except RateLimiterUnavailable as e:
-        # Emit metric for monitoring
-        metrics.increment("rate_limiter.unavailable")
-        logger.warning(f"Rate limiter unavailable: {e}")
-        raise
-```
-
 ## Best Practices
 
 ### 1. Choose Based on Risk
@@ -144,24 +166,7 @@ api_limiter = RateLimiter(
 )
 ```
 
-### 2. Use Circuit Breakers
-
-Combine with circuit breakers to prevent cascading failures:
-
-```python
-from circuitbreaker import circuit
-
-@circuit(failure_threshold=5, recovery_timeout=30)
-async def rate_limited_operation(entity_id: str):
-    async with limiter.acquire(
-        entity_id=entity_id,
-        failure_mode=FailureMode.FAIL_CLOSED,
-        ...
-    ):
-        return await do_work()
-```
-
-### 3. Graceful Degradation
+### 2. Graceful Degradation
 
 Implement fallback behavior:
 
@@ -180,7 +185,7 @@ async def resilient_operation(entity_id: str):
         return await basic_operation()
 ```
 
-### 4. Health Checks
+### 3. Health Checks
 
 Include rate limiter health in your health checks:
 
@@ -188,7 +193,7 @@ Include rate limiter health in your health checks:
 async def health_check():
     checks = {}
 
-    # Check rate limiter
+    # Check rate limiter connectivity
     try:
         await limiter.available(
             entity_id="health-check",
@@ -202,20 +207,9 @@ async def health_check():
     return checks
 ```
 
-## DynamoDB Resilience
+## Observability
 
-DynamoDB itself is highly available, but consider:
-
-- **Region outages**: Use multi-region tables for critical systems
-- **Throttling**: Configure appropriate capacity
-- **Network issues**: Set appropriate timeouts
-
-```python
-limiter = RateLimiter(
-    name="limiter",  # Connects to ZAEL-limiter
-    region="us-east-1",
-)
-```
+For monitoring rate limiter health and setting up alerts, see the [Monitoring Guide](../monitoring.md).
 
 ## Next Steps
 

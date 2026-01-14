@@ -57,7 +57,7 @@ limits = [
 ]
 ```
 
-The bucket starts full at `burst` capacity and refills at `capacity` tokens per period.
+The bucket starts full at `burst` capacity and refills at `capacity` tokens per period. See [Token Bucket Algorithm](token-bucket.md#capacity-and-burst) for details on how burst and capacity interact.
 
 ## Adjusting Consumption
 
@@ -80,6 +80,7 @@ async with limiter.acquire(
 !!! note "Negative Adjustments"
     `adjust()` can go negative, allowing the bucket to go into debt.
     This is useful for post-hoc reconciliation when actual usage exceeds estimates.
+    See [Token Bucket Algorithm - Negative Buckets](token-bucket.md#negative-buckets-debt) for how debt works.
 
 ## Check Capacity Without Consuming
 
@@ -202,4 +203,4 @@ except RateLimiterUnavailable as e:
 
 - [Hierarchical Limits](hierarchical.md) - Parent/child rate limiting
 - [LLM Integration](llm-integration.md) - Token estimation patterns
-- [Failure Modes](failure-modes.md) - Handling service outages
+- [Unavailability Handling](unavailability.md) - Handling service outages

@@ -75,18 +75,18 @@ async with limiter.acquire(
     print("Rate limited request!")
 ```
 
-## Auto-Creation Mode
+## Declarative Infrastructure
 
-For quick iteration, use auto-creation:
+For quick iteration, declare infrastructure in code:
 
 ```python
 from zae_limiter import RateLimiter, StackOptions
 
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",  # ZAEL-limiter resources
     endpoint_url="http://localhost:4566",
     region="us-east-1",
-    stack_options=StackOptions(),  # Creates CloudFormation stack
+    stack_options=StackOptions(),  # Declare desired state
 )
 ```
 
@@ -110,135 +110,6 @@ limiter = RateLimiter(
     endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
     region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
 )
-```
-
-## Testing with LocalStack
-
-### pytest Fixture with Cleanup
-
-For integration tests, use fixtures that properly clean up resources:
-
-```python
-import os
-import uuid
-import pytest
-from zae_limiter import RateLimiter, StackOptions
-
-@pytest.fixture
-def localstack_endpoint():
-    """Get LocalStack endpoint from environment."""
-    return os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
-
-@pytest.fixture(scope="function")
-async def limiter(localstack_endpoint):
-    """
-    Create a rate limiter connected to LocalStack with automatic cleanup.
-
-    This fixture:
-    1. Creates a unique stack for test isolation
-    2. Yields the limiter for test use
-    3. Deletes the stack in teardown
-    """
-    # Unique name prevents test interference
-    name = f"test-{uuid.uuid4().hex[:8]}"
-
-    limiter = RateLimiter(
-        name=name,  # Creates ZAEL-test-{uuid} resources
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-        stack_options=StackOptions(enable_aggregator=False),
-    )
-
-    async with limiter:
-        yield limiter
-
-    # Cleanup: delete the CloudFormation stack
-    await limiter.delete_stack()
-
-@pytest.mark.integration
-async def test_rate_limiting(limiter):
-    async with limiter.acquire(
-        entity_id="test-user",
-        resource="api",
-        limits=[Limit.per_minute("requests", 10)],
-        consume={"requests": 1},
-    ):
-        pass  # Success
-```
-
-### Session-Scoped Fixture (Faster)
-
-For test suites where stack creation overhead is significant:
-
-```python
-@pytest.fixture(scope="session")
-async def shared_limiter(localstack_endpoint):
-    """
-    Session-scoped limiter for faster test execution.
-
-    Trade-off: Tests share state, less isolation.
-    """
-    limiter = RateLimiter(
-        name="integration-test-shared",  # Creates ZAEL-integration-test-shared
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-        stack_options=StackOptions(enable_aggregator=False),
-    )
-
-    async with limiter:
-        yield limiter
-
-    await limiter.delete_stack()
-```
-
-### Sync Fixture Example
-
-```python
-@pytest.fixture(scope="function")
-def sync_limiter(localstack_endpoint):
-    """Synchronous rate limiter with cleanup."""
-    from zae_limiter import SyncRateLimiter, StackOptions
-    import uuid
-
-    name = f"test-sync-{uuid.uuid4().hex[:8]}"
-
-    limiter = SyncRateLimiter(
-        name=name,  # Creates ZAEL-test-sync-{uuid} resources
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-        stack_options=StackOptions(enable_aggregator=False),
-    )
-
-    with limiter:
-        yield limiter
-
-    limiter.delete_stack()
-```
-
-### CI Configuration
-
-```yaml
-# .github/workflows/ci.yml
-jobs:
-  integration:
-    runs-on: ubuntu-latest
-    services:
-      localstack:
-        image: localstack/localstack
-        ports:
-          - 4566:4566
-        env:
-          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
-        options: >-
-          --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock
-    steps:
-      - uses: actions/checkout@v4
-      - run: pip install -e ".[dev]"
-      - run: pytest -m integration
-        env:
-          AWS_ENDPOINT_URL: http://localhost:4566
-          AWS_ACCESS_KEY_ID: test
-          AWS_SECRET_ACCESS_KEY: test
 ```
 
 ## Debugging
@@ -329,5 +200,5 @@ LocalStack can be slow on first request. Consider:
 
 ## Next Steps
 
-- [Deployment](deployment.md) - Production deployment
-- [CloudFormation](cloudformation.md) - Template customization
+- [Testing](testing.md) - pytest fixtures and CI configuration
+- [Development Setup](development.md) - Local development environment

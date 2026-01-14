@@ -4,10 +4,11 @@ This file provides context for AI assistants working on the zae-limiter codebase
 
 ## Project Overview
 
-zae-limiter is a rate limiting library backed by DynamoDB using the token bucket algorithm. It's designed for limiting LLM API calls where:
+zae-limiter is a rate limiting library backed by DynamoDB using the token bucket algorithm. It excels at scenarios where:
 - Multiple limits are tracked per call (rpm, tpm)
-- Token counts are unknown until after the call completes
-- Hierarchical limits exist (API key → project)
+- Consumption is unknown upfront (adjust after the operation completes)
+- Hierarchical limits exist (API key → project, tenant → user)
+- Cost matters (~$1/1M requests)
 
 ## Build & Development
 
@@ -147,19 +148,19 @@ zae-limiter delete --name my-app --yes
 - No S3 bucket required - deployment package (~30KB) is uploaded directly
 - Lambda only depends on `boto3` (provided by AWS Lambda runtime)
 
-### Auto-Creation in Code (Recommended)
+### Declarative Infrastructure (Recommended)
 
-The library is designed to be self-deploying. Pass `StackOptions` to auto-create infrastructure:
+The library uses declarative infrastructure management. Pass `StackOptions` to declare the desired state:
 
 ```python
 from zae_limiter import RateLimiter, StackOptions
 
-# Production - stack auto-creates on first use with sensible defaults
+# Production - declare desired infrastructure state
 # "my-app" becomes "ZAEL-my-app" (all AWS resources use this name)
 limiter = RateLimiter(
-    name="my-app",  # Creates ZAEL-my-app resources
+    name="my-app",  # ZAEL-my-app resources
     region="us-east-1",
-    stack_options=StackOptions(),
+    stack_options=StackOptions(),  # CloudFormation ensures state matches
 )
 
 # With custom configuration
@@ -201,12 +202,12 @@ docker compose up -d
 # Deploy infrastructure with CLI
 zae-limiter deploy --name my-app --endpoint-url http://localhost:4566 --region us-east-1
 
-# Or auto-create in code (recommended)
+# Or declare infrastructure in code (recommended)
 limiter = RateLimiter(
-    name="my-app",  # Creates ZAEL-my-app resources
+    name="my-app",  # ZAEL-my-app resources
     endpoint_url="http://localhost:4566",
     region="us-east-1",
-    stack_options=StackOptions(),  # Creates full CloudFormation stack
+    stack_options=StackOptions(),  # Declare desired state
 )
 
 # Stop LocalStack when done
@@ -440,17 +441,46 @@ flowchart TD
 
 ### Docs Structure
 
+Documentation is organized by **audience** with 4 top-level sections:
+
 ```
 docs/
 ├── index.md                 # Landing page
-├── monitoring.md            # Observability setup
-├── performance.md           # Capacity planning
+├── getting-started.md       # Installation, first deployment
+│
+├── guide/                   # User Guide (library users)
+│   ├── basic-usage.md       # Rate limiting patterns, error handling
+│   ├── hierarchical.md      # Parent/child entities, cascade mode
+│   ├── llm-integration.md   # Token estimation and reconciliation
+│   └── unavailability.md    # Error handling strategies
+│
+├── infra/                   # Operator Guide (ops/platform teams)
+│   ├── deployment.md        # CLI deployment, declarative infrastructure
+│   ├── production.md        # Security, multi-region, cost
+│   ├── cloudformation.md    # Template customization
+│   └── auditing.md          # Audit logging and compliance
+├── operations/              # Troubleshooting runbooks
+├── monitoring.md            # Dashboards, alerts, Logs Insights
+├── performance.md           # Capacity planning, optimization
 ├── migrations.md            # Schema migrations
-├── api/                     # API reference
-├── guide/                   # User guides
-├── infra/                   # Infrastructure docs
-└── operations/              # Operational runbooks (troubleshooting + procedures)
+│
+├── cli.md                   # Reference: CLI commands
+├── api/                     # Reference: API documentation
+│
+└── contributing/            # Contributors (developers)
+    ├── index.md             # Quick start, links to CLAUDE.md
+    ├── development.md       # Environment setup, code quality
+    ├── localstack.md        # Local AWS development (developer-only)
+    ├── testing.md           # Test organization, pytest fixtures
+    └── architecture.md      # DynamoDB schema, token bucket
 ```
+
+**Key organization decisions:**
+- **LocalStack is developer-only** - lives in `contributing/`, not `infra/`
+- **User Guide** = how to use the library (rate limiting, hierarchies, LLM integration)
+- **Operator Guide** = how to run in production (deployment, monitoring, performance)
+- **Contributing** = how to develop the library (setup, testing, architecture)
+- **CLAUDE.md remains the authoritative dev reference** - Contributing docs are lightweight entry points
 
 ## Code Review Guidelines
 
