@@ -200,5 +200,5 @@ await limiter.set_limits(
 ## Next Steps
 
 - [LLM Integration](llm-integration.md) - Token estimation patterns
-- [Failure Modes](failure-modes.md) - Handling service outages
+- [Unavailability Handling](unavailability.md) - Handling service outages
 - [API Reference](../api/limiter.md) - Complete API documentation

@@ -98,7 +98,7 @@ nav:
       - Basic Usage: guide/basic-usage.md
       - Hierarchical Limits: guide/hierarchical.md
       - LLM Integration: guide/llm-integration.md
-      - Failure Modes: guide/failure-modes.md
+      - Unavailability Handling: guide/unavailability.md
   - Operator Guide:
       - Deployment: infra/deployment.md
       - Production: infra/production.md

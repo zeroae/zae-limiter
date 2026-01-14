@@ -203,4 +203,4 @@ except RateLimiterUnavailable as e:
 
 - [Hierarchical Limits](hierarchical.md) - Parent/child rate limiting
 - [LLM Integration](llm-integration.md) - Token estimation patterns
-- [Failure Modes](failure-modes.md) - Handling service outages
+- [Unavailability Handling](unavailability.md) - Handling service outages

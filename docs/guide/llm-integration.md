@@ -262,5 +262,5 @@ async def smart_retry_llm_call(entity_id: str, messages: list):
 
 ## Next Steps
 
-- [Failure Modes](failure-modes.md) - Handling service outages
+- [Unavailability Handling](unavailability.md) - Handling service outages
 - [API Reference](../api/limiter.md) - Complete API documentation
