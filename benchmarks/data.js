@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768332125042,
+  "lastUpdate": 1768363809323,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -2908,6 +2908,205 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.23232805416623273",
             "extra": "mean: 221.6069616000027 msec\nrounds: 25"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06636b70112e1583250767bbfff84b13e2ae016e",
+          "message": "📝 docs: reorganize documentation by persona with production guide (#117)\n\n* 📝 docs: reorganize docs by persona with production guide (#39)\n\nReorganize documentation structure by audience (Option B):\n- User Guide: Getting started, basic usage, hierarchies, LLM integration\n- Operator Guide: Deployment, production, CloudFormation, monitoring\n- Reference: CLI, API documentation\n- Contributing: Development setup, LocalStack, testing, architecture\n\nKey changes:\n- Create docs/infra/production.md with security, multi-region, cost guidance\n- Move LocalStack from infra/ to contributing/ (developer-only feature)\n- Create contributing section with development, testing, architecture docs\n- Restructure README from ~465 lines to ~113 lines (link to full docs)\n- Update CLAUDE.md with new docs organization decisions\n- Fix broken links after LocalStack relocation\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: add audit logging documentation\n\nAdd comprehensive documentation for the audit capabilities:\n- Create docs/infra/auditing.md with operator guide for audit logging\n- Add AuditEvent and AuditAction to API reference\n- Add cross-references from production and monitoring guides\n- Add Auditing nav entry under Operator Guide\n\nPlanned capabilities tracked in #77 (S3 archival) and #114 (public API).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(readme): reorganize quick start for clarity\n\n- Separate Installation and Usage sections\n- Move hierarchical entity example after basic acquire pattern\n- Add inline comment explaining commit/rollback behavior\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: add token bucket algorithm documentation\n\n- Create docs/guide/token-bucket.md explaining the algorithm\n  - Classic algorithm overview with Mermaid diagrams\n  - Comparison table: classic vs zae-limiter implementation\n  - Key concepts: capacity/burst, lazy refill, negative buckets\n  - Practical implications and limit selection guide\n\n- Expand docs/contributing/architecture.md\n  - Add mathematical formulas for refill, drift compensation, retry\n  - Add code walkthrough with function references\n  - Add design decisions table with rationale\n\n- Improve src/zae_limiter/bucket.py module docstring\n  - Document key features and functions\n  - Add links to documentation\n\n- Add cross-references between documentation pages\n- Frame negative buckets as general \"estimate-then-reconcile\" pattern\n  (not LLM-specific)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: generalize project description and fix inaccurate claims\n\n- Replace LLM-specific framing with problem-focused language\n- Fix misleading \"Global\" claim → \"Regional\" (single-region design)\n- Add cost estimate (~$1/1M requests) to overview\n- Add 99.99% SLA to \"Why DynamoDB?\" section\n- Add \"tenant → user\" as additional hierarchy example\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(hierarchical): add warning about planned cascade API changes\n\nLink to issue #116 which proposes moving cascade from per-call\nparameter to per-entity configuration.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: restructure Getting Started with declarative infrastructure focus\n\n- Lead with programmatic API in Quick Start (moved from deployment-first)\n- Add Infrastructure Persistence section explaining AWS resources outlive Python sessions\n- Add Infrastructure Lifecycle section with tabbed Programmatic/CLI options\n- Add Connecting to Existing Infrastructure section (omit stack_options)\n- Add Declarative State Management warning about conflicting StackOptions\n- Expand Understanding Limits with entity_id/resource concepts and examples\n- Cross-link to Token Bucket Algorithm page\n\nMessaging changes applied across all docs:\n- \"auto-creation\" → \"declarative infrastructure\"\n- \"idempotent/creates if not exists\" → \"declare desired state\"\n- Soften production warnings to note about strict infra/app separation\n\nFiles updated: CLAUDE.md, README.md, docs/getting-started.md,\ndocs/infra/deployment.md, docs/index.md, docs/contributing/localstack.md,\nsrc/zae_limiter/__init__.py, src/zae_limiter/limiter.py,\nexamples/basic_rate_limiting.py\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(llm-integration): reframe intro to reflect general-purpose design\n\nLLM APIs fit the library's pattern, not the other way around.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: rename failure-modes.md to unavailability.md\n\nClarifies that the document covers infrastructure unavailability\n(DynamoDB errors) rather than all failure scenarios. Changes include:\n\n- Rename file and update nav/cross-references\n- Add scope note distinguishing from RateLimitExceeded\n- Document which exceptions trigger failure mode logic\n- Document no-op lease behavior during FAIL_OPEN\n- Remove redundant circuit breaker example\n- Remove thin DynamoDB Resilience section\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: fix PR review comments for docs structure and internal API\n\n- Update CLAUDE.md docs structure: failure-modes.md → unavailability.md\n- Add auditing.md to infra/ section in CLAUDE.md\n- Fix Repository import in auditing.md to use internal path\n- Add warning admonition about Repository being internal API\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T23:04:00-05:00",
+          "tree_id": "57f96644f3e53b9e0501d96bbb5f8d1db60b02b7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/06636b70112e1583250767bbfff84b13e2ae016e"
+        },
+        "date": 1768363809036,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 344.3870528201472,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017736747721924093",
+            "extra": "mean: 2.903709625002193 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 23.399973077345845,
+            "unit": "iter/sec",
+            "range": "stddev: 0.059935048323369315",
+            "extra": "mean: 42.735091903508525 msec\nrounds: 228"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 23.465880140259056,
+            "unit": "iter/sec",
+            "range": "stddev: 0.125432336701346",
+            "extra": "mean: 42.61506468211937 msec\nrounds: 151"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 1083.5978905092468,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00006648101734277023",
+            "extra": "mean: 922.8515566139031 usec\nrounds: 945"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 57.407494981182126,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07417746632061674",
+            "extra": "mean: 17.419328265896198 msec\nrounds: 173"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 77.48062841001428,
+            "unit": "iter/sec",
+            "range": "stddev: 0.022054824537144597",
+            "extra": "mean: 12.906451851528239 msec\nrounds: 229"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 26.481174538060543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06326269046830466",
+            "extra": "mean: 37.76267546451658 msec\nrounds: 155"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 55.19280918965997,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05836324307156195",
+            "extra": "mean: 18.118302269480132 msec\nrounds: 308"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 21.06968457104034,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09030403291136732",
+            "extra": "mean: 47.46155532743335 msec\nrounds: 226"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 6.10160304170958,
+            "unit": "iter/sec",
+            "range": "stddev: 0.24077892283400462",
+            "extra": "mean: 163.89135660975654 msec\nrounds: 123"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.528456109557883,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006657208595507799",
+            "extra": "mean: 42.50172622222218 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.415829026802918,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00393396400268562",
+            "extra": "mean: 44.6113324117652 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.04763052045076,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0063745492012561725",
+            "extra": "mean: 26.992279558823263 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.262901045886345,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004851804845552674",
+            "extra": "mean: 30.995352791670427 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.10568408433579,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0064399302408668915",
+            "extra": "mean: 39.83161728000596 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 221.9618768619595,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000697628095286381",
+            "extra": "mean: 4.50527817721559 msec\nrounds: 158"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 39.7819494759077,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1880491074241299",
+            "extra": "mean: 25.137028556270444 msec\nrounds: 311"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 20.922511253253514,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09075299550794437",
+            "extra": "mean: 47.79540982894665 msec\nrounds: 228"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1085.830031529341,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002764627453382746",
+            "extra": "mean: 920.9544504783557 usec\nrounds: 939"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 47.68727823859975,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10143649252134411",
+            "extra": "mean: 20.969953348911513 msec\nrounds: 321"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 59.32002194681708,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0634487558427228",
+            "extra": "mean: 16.857714599238392 msec\nrounds: 262"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 26.44931259564986,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0741529507413895",
+            "extra": "mean: 37.80816595454624 msec\nrounds: 154"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 28.199904678253038,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12516856593904085",
+            "extra": "mean: 35.46111277358932 msec\nrounds: 53"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 17.632783633069366,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008794449417067168",
+            "extra": "mean: 56.71254299999191 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 5.199156485154802,
+            "unit": "iter/sec",
+            "range": "stddev: 0.15145938836434128",
+            "extra": "mean: 192.33889244443958 msec\nrounds: 36"
           }
         ]
       }
