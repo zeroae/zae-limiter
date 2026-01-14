@@ -1,10 +1,10 @@
 {
-    "gitWorktrees.worktrees.dir.path": "../zae-limiter.worktrees",
-    "gitWorktrees.move.openNewVscodeWindow": true,
-    "gitWorktrees.worktreeCopyIncludePatterns": [
+    "vsCodeGitWorktrees.worktrees.dir.path": "../zae-limiter.worktrees",
+    "vsCodeGitWorktrees.move.openNewVscodeWindow": true,
+    "vsCodeGitWorktrees.worktreeCopyIncludePatterns": [
         ".vscode/settings.json",
         ".env",
-        ".env.local"
+        ".env.local",
     ],
     "python.defaultInterpreterPath": ".venv/bin/python",
     "python.terminal.activateEnvironment": true,
