@@ -34,11 +34,11 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 ```python
 from zae_limiter import RateLimiter, Limit, StackOptions
 
-# Async rate limiter with auto-provisioned infrastructure
+# Async rate limiter with declarative infrastructure
 limiter = RateLimiter(
     name="my-app",
     region="us-east-1",
-    stack_options=StackOptions(),  # Idempotent CloudFormation deployment
+    stack_options=StackOptions(),  # Declare desired state - CloudFormation ensures it
 )
 
 # Define default limits (can be overridden per-entity)

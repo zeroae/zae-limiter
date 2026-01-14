@@ -82,12 +82,12 @@ await limiter.delete_stack()
 
 #### Development and Prototyping
 
-For rapid iteration, use auto-creation with cleanup:
+For rapid iteration, declare infrastructure with cleanup:
 
 ```python
 async def dev_session():
     limiter = RateLimiter(
-        name="dev",  # Creates ZAEL-dev resources
+        name="dev",  # ZAEL-dev resources
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
     )
@@ -143,9 +143,9 @@ aws lambda update-function-code \
 | `EnablePITR` | Point-in-time recovery | `false` |
 | `LogRetentionDays` | CloudWatch log retention | `14` |
 
-## Auto-Creation in Code
+## Programmatic Creation
 
-For development, create infrastructure programmatically:
+Create infrastructure directly from your application:
 
 ```python
 from zae_limiter import RateLimiter, StackOptions
@@ -160,14 +160,14 @@ limiter = RateLimiter(
 )
 ```
 
-!!! warning "Production Use"
-    Auto-creation is convenient for development but has limitations:
+`StackOptions` declares the desired infrastructure state. CloudFormation ensures the
+actual infrastructure matches your declaration—creating, updating, or leaving unchanged
+as needed.
 
-    - No control over IAM policies
-    - Limited error handling
-    - Not idempotent
-
-    Use CLI or CloudFormation for production.
+!!! note "Deployment Options"
+    For organizations requiring strict infrastructure/application separation,
+    use CLI deployment or CloudFormation template export. See the
+    [Production Guide](production.md) for deployment recommendations.
 
 ## Infrastructure Details
 

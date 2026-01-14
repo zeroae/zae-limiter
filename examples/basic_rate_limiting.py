@@ -40,9 +40,9 @@ async def async_main() -> None:
 
     # Create rate limiter with LocalStack
     limiter = RateLimiter(
-        name=NAME,  # Creates ZAEL-example resources
+        name=NAME,  # ZAEL-example resources
         endpoint_url=ENDPOINT_URL,
-        stack_options=StackOptions(),  # Auto-create infrastructure for local dev
+        stack_options=StackOptions(),  # Declare desired infrastructure state
         skip_version_check=True,  # Skip version check for local dev
     )
 

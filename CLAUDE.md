@@ -148,19 +148,19 @@ zae-limiter delete --name my-app --yes
 - No S3 bucket required - deployment package (~30KB) is uploaded directly
 - Lambda only depends on `boto3` (provided by AWS Lambda runtime)
 
-### Auto-Creation in Code (Recommended)
+### Declarative Infrastructure (Recommended)
 
-The library is designed to be self-deploying. Pass `StackOptions` to auto-create infrastructure:
+The library uses declarative infrastructure management. Pass `StackOptions` to declare the desired state:
 
 ```python
 from zae_limiter import RateLimiter, StackOptions
 
-# Production - stack auto-creates on first use with sensible defaults
+# Production - declare desired infrastructure state
 # "my-app" becomes "ZAEL-my-app" (all AWS resources use this name)
 limiter = RateLimiter(
-    name="my-app",  # Creates ZAEL-my-app resources
+    name="my-app",  # ZAEL-my-app resources
     region="us-east-1",
-    stack_options=StackOptions(),
+    stack_options=StackOptions(),  # CloudFormation ensures state matches
 )
 
 # With custom configuration
@@ -202,12 +202,12 @@ docker compose up -d
 # Deploy infrastructure with CLI
 zae-limiter deploy --name my-app --endpoint-url http://localhost:4566 --region us-east-1
 
-# Or auto-create in code (recommended)
+# Or declare infrastructure in code (recommended)
 limiter = RateLimiter(
-    name="my-app",  # Creates ZAEL-my-app resources
+    name="my-app",  # ZAEL-my-app resources
     endpoint_url="http://localhost:4566",
     region="us-east-1",
-    stack_options=StackOptions(),  # Creates full CloudFormation stack
+    stack_options=StackOptions(),  # Declare desired state
 )
 
 # Stop LocalStack when done
@@ -455,7 +455,7 @@ docs/
 │   └── failure-modes.md     # Error handling strategies
 │
 ├── infra/                   # Operator Guide (ops/platform teams)
-│   ├── deployment.md        # CLI deployment, auto-creation
+│   ├── deployment.md        # CLI deployment, declarative infrastructure
 │   ├── production.md        # Security, multi-region, cost
 │   └── cloudformation.md    # Template customization
 ├── operations/              # Troubleshooting runbooks

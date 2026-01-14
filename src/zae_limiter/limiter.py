@@ -83,7 +83,7 @@ class RateLimiter:
                 Default: 'limiter' (creates 'ZAEL-limiter' resources)
             region: AWS region
             endpoint_url: DynamoDB endpoint URL (for local development)
-            stack_options: Stack configuration for auto-creation (None = don't create)
+            stack_options: Desired infrastructure state (None = connect only, don't manage)
             failure_mode: Behavior when DynamoDB is unavailable
             auto_update: Auto-update Lambda when version mismatch detected
             strict_version: Fail if version mismatch (when auto_update is False)

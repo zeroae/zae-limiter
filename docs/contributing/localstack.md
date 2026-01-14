@@ -75,18 +75,18 @@ async with limiter.acquire(
     print("Rate limited request!")
 ```
 
-## Auto-Creation Mode
+## Declarative Infrastructure
 
-For quick iteration, use auto-creation:
+For quick iteration, declare infrastructure in code:
 
 ```python
 from zae_limiter import RateLimiter, StackOptions
 
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",  # ZAEL-limiter resources
     endpoint_url="http://localhost:4566",
     region="us-east-1",
-    stack_options=StackOptions(),  # Creates CloudFormation stack
+    stack_options=StackOptions(),  # Declare desired state
 )
 ```
 

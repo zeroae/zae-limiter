@@ -24,7 +24,7 @@ from zae_limiter import RateLimiter, SyncRateLimiter, Limit, StackOptions
 limiter = RateLimiter(
     name="my-app",
     region="us-east-1",
-    # Idempotent creation of infrastructure via CloudFormation
+    # Declare desired infrastructure state - CloudFormation ensures it matches
     stack_options=StackOptions(),
 )
 
@@ -68,10 +68,6 @@ with sync_limiter.acquire(
 # Cleanup (removes all data)
 await limiter.delete_stack()
 ```
-
-## Features
-
-- **Usage Analytics**: Lambda aggregator for hourly/daily usage snapshots
 
 ## Documentation
 
