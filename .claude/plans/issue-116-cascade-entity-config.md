@@ -455,6 +455,189 @@ Log a warning for `cascade=True` without `parent_id` to help users catch configu
 
 ---
 
+## Decision Point 6: DynamoDB Cost Mitigation
+
+Moving cascade to entity configuration introduces a **performance concern**: we must now read the entity metadata on every `acquire()` call to determine if cascade is enabled.
+
+### Current Cost Model
+
+| Scenario | DynamoDB Operations |
+|----------|---------------------|
+| `cascade=False` parameter | N × GetItem (buckets only) |
+| `cascade=True` parameter | 1 GetItem (entity) + 2N × GetItem (child + parent buckets) |
+
+### Naive Implementation Cost
+
+| Scenario | DynamoDB Operations |
+|----------|---------------------|
+| `entity.cascade=False` | **+1 GetItem (entity)** + N × GetItem (buckets) |
+| `entity.cascade=True` | 1 GetItem (entity) + 2N × GetItem (buckets) |
+
+**Problem:** Entities with `cascade=False` would pay **+1 DynamoDB read per acquire()** they don't pay today.
+
+At 1,000 rpm: ~43,200 additional reads/day (~$0.11/day at PAY_PER_REQUEST pricing).
+
+### Option A: In-Memory Entity Caching (Recommended)
+
+Cache entity metadata in the `RateLimiter` instance:
+
+```python
+class RateLimiter:
+    def __init__(self, ..., entity_cache_ttl: float = 60.0):
+        self._entity_cache: dict[str, tuple[Entity, float]] = {}
+        self._entity_cache_ttl = entity_cache_ttl
+
+    async def _get_entity_cached(self, entity_id: str) -> Entity | None:
+        cached = self._entity_cache.get(entity_id)
+        now = time.time()
+        if cached and (now - cached[1]) < self._entity_cache_ttl:
+            return cached[0]
+
+        entity = await self._repository.get_entity(entity_id)
+        if entity:
+            self._entity_cache[entity_id] = (entity, now)
+        return entity
+```
+
+**Pros:**
+- First call pays the cost, subsequent calls are **free** (in-memory)
+- Works for both cascade=True and cascade=False
+- Cache TTL allows cascade configuration changes to propagate
+- Configurable TTL for different use cases
+
+**Cons:**
+- Memory usage grows with number of unique entities
+- Stale data possible within TTL window (acceptable for cascade flag)
+- Need cache invalidation on entity updates via same limiter instance
+
+**Cost impact:** For typical workloads where the same entities are queried repeatedly:
+- Cold start: +1 GetItem per unique entity
+- Subsequent calls: 0 additional cost
+- Net effect: **negligible** for steady-state workloads
+
+### Option B: Query Entity + Buckets Together
+
+Use DynamoDB Query to fetch entity metadata and buckets in one operation:
+
+```python
+# Entity and buckets share the same partition key:
+# PK=ENTITY#key-1, SK=#META          → Entity metadata
+# PK=ENTITY#key-1, SK=#BUCKET#gpt-4#rpm → Bucket
+
+response = await client.query(
+    KeyConditionExpression="PK = :pk",
+    ExpressionAttributeValues={":pk": pk_entity(entity_id)},
+)
+# Filter client-side: separate entity from buckets
+```
+
+**Pros:**
+- Single DynamoDB operation for entity + all buckets
+- Actually **reduces** latency compared to current N+1 GetItems
+- Zero additional cost (Query returns multiple items for same RCU cost)
+
+**Cons:**
+- Returns all buckets for entity, not just the requested resource
+- Requires refactoring bucket fetching logic
+- May return more data than needed (all resources, all limits)
+
+**Cost impact:**
+- Query cost: ~1 RCU per 4KB of data returned
+- Current: N GetItems × 0.5 RCU = N/2 RCUs
+- Proposed: 1 Query × ~1-2 RCU (depending on bucket count)
+- Net effect: **reduced cost** for entities with multiple limits
+
+### Option C: Denormalize Cascade into Bucket Records
+
+Store cascade flag in each bucket record:
+
+```python
+{
+    "PK": "ENTITY#key-1",
+    "SK": "#BUCKET#gpt-4#rpm",
+    "data": { ... },
+    "cascade": true,  # Denormalized from entity
+    "parent_id": "proj-1"  # Also denormalize for cascade lookup
+}
+```
+
+**Pros:**
+- Zero extra reads - cascade info comes with bucket
+- No latency impact
+
+**Cons:**
+- Data duplication (must keep in sync)
+- Updating cascade requires updating ALL bucket records
+- Schema change is invasive
+- Higher storage cost per bucket
+
+### Option D: Hybrid Caching + Query Optimization
+
+Combine Options A and B:
+
+1. **Cache entity metadata** with configurable TTL
+2. **Use Query** when cache miss to fetch entity + buckets together
+3. **Populate cache** from Query result
+
+```python
+async def _do_acquire(self, entity_id, resource, ...):
+    # Try cache first
+    entity = self._entity_cache.get(entity_id)
+    buckets = None
+
+    if entity is None:
+        # Cache miss: fetch entity + buckets together
+        items = await self._query_entity_items(entity_id, resource)
+        entity = self._extract_entity(items)
+        buckets = self._extract_buckets(items, resource)
+
+        if entity:
+            self._entity_cache[entity_id] = (entity, time.time())
+
+    if buckets is None:
+        # Cache hit for entity, but still need buckets
+        buckets = await self._get_buckets_for_resource(entity_id, resource)
+
+    # Continue with cascade logic using entity.cascade
+```
+
+**Pros:**
+- Best of both worlds: caching + efficient fetching
+- Optimal for both cache hits and misses
+- Reduced latency for first call (single round-trip)
+
+**Cons:**
+- Most complex implementation
+- Requires significant refactoring of bucket fetching
+
+### Recommendation: Option A (with Option D as enhancement)
+
+Start with **Option A (In-Memory Caching)** for simplicity:
+- Minimal code changes
+- Eliminates cost for steady-state workloads
+- Configurable TTL for different use cases
+
+Consider **Option D** as a follow-up optimization if:
+- Cold start latency is a concern
+- Users frequently query new entities
+- Benchmark data shows significant impact
+
+### Cache Invalidation Strategy
+
+When entity is updated via same limiter instance:
+
+```python
+async def update_entity(self, entity_id: str, cascade: bool | None = None, ...):
+    # ... update in DynamoDB ...
+
+    # Invalidate cache
+    self._entity_cache.pop(entity_id, None)
+```
+
+Cross-instance invalidation is **not supported** - changes propagate via TTL expiry.
+
+---
+
 ## Implementation Plan
 
 ### Phase 1: Entity Model Changes
@@ -467,10 +650,14 @@ Log a warning for `cascade=True` without `parent_id` to help users catch configu
 
 ### Phase 2: Limiter Changes
 
-1. Remove `cascade` parameter from `acquire()` method signature
-2. Update `_do_acquire()` to read cascade from entity instead of parameter
-3. Always fetch entity metadata at start of acquire (may already be cached)
-4. Update `SyncRateLimiter.acquire()` similarly
+1. Add `entity_cache_ttl: float = 60.0` parameter to `RateLimiter.__init__()`
+2. Implement `_get_entity_cached()` method with TTL-based caching
+3. Remove `cascade` parameter from `acquire()` method signature
+4. Update `_do_acquire()` to:
+   - Call `_get_entity_cached()` to get entity (uses cache if available)
+   - Read `entity.cascade` to determine cascade behavior
+5. Add cache invalidation in `update_entity()` when cascade is changed
+6. Update `SyncRateLimiter` to match async implementation
 
 ### Phase 3: CLI and Infrastructure
 
@@ -518,7 +705,9 @@ Log a warning for `cascade=True` without `parent_id` to help users catch configu
 |------|--------|------------|
 | Breaking change for existing users | High | Clear migration guide, deprecation warnings |
 | Missing cascade attribute in old data | Low | Handle missing attribute with default `False` |
-| Performance regression (always fetching entity) | Low | Entity fetch is already common; cache if needed |
+| Performance regression (always fetching entity) | **Medium** | In-memory caching with configurable TTL (Decision Point 6) |
+| Stale cache data after entity update | Low | TTL expiry (60s default), local invalidation on update |
+| Memory growth with many unique entities | Low | LRU eviction policy if needed (future enhancement) |
 | Multi-library coordination still needed for stored limits | Medium | Out of scope for this issue |
 
 ---
@@ -540,6 +729,7 @@ Log a warning for `cascade=True` without `parent_id` to help users catch configu
 | Default behavior | **Option A**: Default `cascade=False` |
 | Migration strategy | **Option A**: Handle missing field gracefully |
 | Validation rules | **Option C**: Warn but allow cascade without parent |
+| DynamoDB cost mitigation | **Option A**: In-memory entity caching (TTL-based) |
 
 ---
 
