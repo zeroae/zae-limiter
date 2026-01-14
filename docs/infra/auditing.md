@@ -55,8 +55,12 @@ event = AuditEvent(
 
 Track who performed each action by passing the `principal` parameter:
 
+!!! warning "Internal API"
+    The `Repository` class is not part of the public API and may change without notice.
+    See [Issue #114](https://github.com/zeroae/zae-limiter/issues/114) for the planned public interface.
+
 ```python
-from zae_limiter import Repository
+from zae_limiter.repository import Repository  # Internal API
 
 repo = Repository(table_name="ZAEL-limiter", region="us-east-1")
 

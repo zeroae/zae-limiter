@@ -452,12 +452,13 @@ docs/
 │   ├── basic-usage.md       # Rate limiting patterns, error handling
 │   ├── hierarchical.md      # Parent/child entities, cascade mode
 │   ├── llm-integration.md   # Token estimation and reconciliation
-│   └── failure-modes.md     # Error handling strategies
+│   └── unavailability.md    # Error handling strategies
 │
 ├── infra/                   # Operator Guide (ops/platform teams)
 │   ├── deployment.md        # CLI deployment, declarative infrastructure
 │   ├── production.md        # Security, multi-region, cost
-│   └── cloudformation.md    # Template customization
+│   ├── cloudformation.md    # Template customization
+│   └── auditing.md          # Audit logging and compliance
 ├── operations/              # Troubleshooting runbooks
 ├── monitoring.md            # Dashboards, alerts, Logs Insights
 ├── performance.md           # Capacity planning, optimization
