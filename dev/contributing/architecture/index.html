@@ -12,8 +12,10 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/operations/version/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/contributing/architecture/">
       
+      
+        <link rel="prev" href="../testing/">
       
       
       
@@ -25,7 +27,7 @@
     
     
       
-        <title>Version Management - zae-limiter</title>
+        <title>Architecture - zae-limiter</title>
       
     
     
@@ -78,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#version-management" class="md-skip">
+        <a href="#architecture" class="md-skip">
           Skip to content
         </a>
       
@@ -118,7 +120,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Version Management
+              Architecture
             
           </span>
         </div>
@@ -688,7 +690,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../" class="md-nav__link">
+      <a href="../../operations/" class="md-nav__link">
         
   
   
@@ -1064,8 +1066,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -1076,13 +1080,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -1103,7 +1105,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1121,7 +1123,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../contributing/" class="md-nav__link">
+      <a href="../" class="md-nav__link">
         
   
   
@@ -1149,7 +1151,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../contributing/development/" class="md-nav__link">
+      <a href="../development/" class="md-nav__link">
         
   
   
@@ -1177,7 +1179,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../contributing/localstack/" class="md-nav__link">
+      <a href="../localstack/" class="md-nav__link">
         
   
   
@@ -1205,7 +1207,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../contributing/testing/" class="md-nav__link">
+      <a href="../testing/" class="md-nav__link">
         
   
   
@@ -1230,10 +1232,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../contributing/architecture/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1249,6 +1278,242 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#dynamodb-schema-single-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DynamoDB Schema (Single Table)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DynamoDB Schema (Single Table)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#global-secondary-indexes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global Secondary Indexes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#access-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Access Patterns
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#token-bucket-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token Bucket Implementation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Token Bucket Implementation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#core-functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mathematical-formulas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mathematical Formulas
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#integer-arithmetic-for-precision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integer Arithmetic for Precision
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#refill-rate-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Refill Rate Storage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lazy-refill-with-drift-compensation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lazy Refill with Drift Compensation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#negative-buckets-debt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Negative Buckets (Debt)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#burst-capacity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Burst Capacity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#design-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Decisions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#atomicity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Atomicity
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Atomicity">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#transactwriteitems" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TransactWriteItems
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#optimistic-locking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optimistic Locking
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-design-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Design Decisions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1288,33 +1553,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#decision-tree" class="md-nav__link">
+  <a href="#dynamodb-schema-single-table" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Decision Tree
+        DynamoDB Schema (Single Table)
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Troubleshooting">
+    <nav class="md-nav" aria-label="DynamoDB Schema (Single Table)">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#symptoms" class="md-nav__link">
+  <a href="#global-secondary-indexes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Symptoms
+        Global Secondary Indexes
       
     </span>
   </a>
@@ -1322,43 +1576,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#diagnostic-steps" class="md-nav__link">
+  <a href="#access-patterns" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Diagnostic Steps
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#versionmismatcherror" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VersionMismatchError
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#incompatibleschemaerror" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        IncompatibleSchemaError
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#minimum-client-version-error" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Minimum Client Version Error
+        Access Patterns
       
     </span>
   </a>
@@ -1371,22 +1592,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#upgrade-procedure" class="md-nav__link">
+  <a href="#token-bucket-implementation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Upgrade Procedure
+        Token Bucket Implementation
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Upgrade Procedure">
+    <nav class="md-nav" aria-label="Token Bucket Implementation">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#pre-upgrade-checklist" class="md-nav__link">
+  <a href="#core-functions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-upgrade Checklist
+        Core Functions
       
     </span>
   </a>
@@ -1394,10 +1615,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#upgrade-execution" class="md-nav__link">
+  <a href="#mathematical-formulas" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Upgrade Execution
+        Mathematical Formulas
       
     </span>
   </a>
@@ -1405,10 +1626,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#post-upgrade-verification" class="md-nav__link">
+  <a href="#integer-arithmetic-for-precision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Post-upgrade Verification
+        Integer Arithmetic for Precision
       
     </span>
   </a>
@@ -1416,10 +1637,54 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#rollback" class="md-nav__link">
+  <a href="#refill-rate-storage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Rollback
+        Refill Rate Storage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lazy-refill-with-drift-compensation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lazy Refill with Drift Compensation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#negative-buckets-debt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Negative Buckets (Debt)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#burst-capacity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Burst Capacity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#design-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Decisions
       
     </span>
   </a>
@@ -1432,10 +1697,71 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#related" class="md-nav__link">
+  <a href="#atomicity" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Related
+        Atomicity
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Atomicity">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#transactwriteitems" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TransactWriteItems
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#optimistic-locking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optimistic Locking
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-design-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Design Decisions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next Steps
       
     </span>
   </a>
@@ -1459,7 +1785,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/operations/version.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/contributing/architecture.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1467,165 +1793,286 @@
   
 
 
-<h1 id="version-management">Version Management<a class="headerlink" href="#version-management" title="Permanent link">&para;</a></h1>
-<p>This guide covers version compatibility issues and upgrade procedures for zae-limiter.</p>
-<h2 id="decision-tree">Decision Tree<a class="headerlink" href="#decision-tree" title="Permanent link">&para;</a></h2>
-<div class="mermaid">flowchart TD
-    START([Version Issue]) --&gt; Q1{What's happening?}
-
-    Q1 --&gt;|VersionMismatchError| A1[Lambda needs update]
-    Q1 --&gt;|IncompatibleSchemaError| A2[Schema migration required]
-    Q1 --&gt;|Minimum client error| A3[Upgrade pip package]
-    Q1 --&gt;|Planning upgrade| A4[Follow upgrade procedure]
-
-    A1 --&gt; CMD1["zae-limiter upgrade --name X"]
-    A2 --&gt; CMD2[Follow migrations guide]
-    A3 --&gt; CMD3["pip install --upgrade zae-limiter"]
-    A4 --&gt; PROC[Pre-upgrade checklist]
-
-    CMD1 --&gt; VERIFY
-    CMD2 --&gt; VERIFY
-    CMD3 --&gt; VERIFY
-    VERIFY([Verify: zae-limiter check])
-
-    click A1 "#versionmismatcherror" "Version mismatch details"
-    click A2 "#incompatibleschemaerror" "Schema error details"
-    click CMD1 "#upgrade-procedure" "Upgrade steps"
-    click CMD2 "../migrations/" "Migration guide"
-    click A4 "#upgrade-procedure" "Upgrade checklist"
-    click VERIFY "#verification" "Verify upgrade"</div>
-<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
-<h3 id="symptoms">Symptoms<a class="headerlink" href="#symptoms" title="Permanent link">&para;</a></h3>
+<h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
+<p>This guide covers the internal architecture of zae-limiter, including the DynamoDB schema and token bucket implementation.</p>
+<h2 id="dynamodb-schema-single-table">DynamoDB Schema (Single Table)<a class="headerlink" href="#dynamodb-schema-single-table" title="Permanent link">&para;</a></h2>
+<p>All data is stored in a single DynamoDB table using a composite key pattern:</p>
+<table>
+<thead>
+<tr>
+<th>Record Type</th>
+<th>PK</th>
+<th>SK</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Entity metadata</td>
+<td><code>ENTITY#{id}</code></td>
+<td><code>#META</code></td>
+</tr>
+<tr>
+<td>Bucket</td>
+<td><code>ENTITY#{id}</code></td>
+<td><code>#BUCKET#{resource}#{limit_name}</code></td>
+</tr>
+<tr>
+<td>Limit config</td>
+<td><code>ENTITY#{id}</code></td>
+<td><code>#LIMIT#{resource}#{limit_name}</code></td>
+</tr>
+<tr>
+<td>Usage snapshot</td>
+<td><code>ENTITY#{id}</code></td>
+<td><code>#USAGE#{resource}#{window_key}</code></td>
+</tr>
+<tr>
+<td>System version</td>
+<td><code>SYSTEM#</code></td>
+<td><code>#VERSION</code></td>
+</tr>
+<tr>
+<td>Audit events</td>
+<td><code>AUDIT#{entity_id}</code></td>
+<td><code>#AUDIT#{timestamp}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="global-secondary-indexes">Global Secondary Indexes<a class="headerlink" href="#global-secondary-indexes" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Index</th>
+<th>Purpose</th>
+<th>Key Pattern</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GSI1</strong></td>
+<td>Parent → Children lookup</td>
+<td><code>GSI1PK=PARENT#{id}</code> → <code>GSI1SK=CHILD#{id}</code></td>
+</tr>
+<tr>
+<td><strong>GSI2</strong></td>
+<td>Resource aggregation</td>
+<td><code>GSI2PK=RESOURCE#{name}</code> → buckets/usage</td>
+</tr>
+</tbody>
+</table>
+<h3 id="access-patterns">Access Patterns<a class="headerlink" href="#access-patterns" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Query</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Get entity</td>
+<td><code>PK=ENTITY#{id}, SK=#META</code></td>
+</tr>
+<tr>
+<td>Get buckets</td>
+<td><code>PK=ENTITY#{id}, SK begins_with #BUCKET#</code></td>
+</tr>
+<tr>
+<td>Get children</td>
+<td>GSI1: <code>GSI1PK=PARENT#{id}</code></td>
+</tr>
+<tr>
+<td>Resource capacity</td>
+<td>GSI2: <code>GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#</code></td>
+</tr>
+<tr>
+<td>Get version</td>
+<td><code>PK=SYSTEM#, SK=#VERSION</code></td>
+</tr>
+<tr>
+<td>Get audit events</td>
+<td><code>PK=AUDIT#{entity_id}, SK begins_with #AUDIT#</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="token-bucket-implementation">Token Bucket Implementation<a class="headerlink" href="#token-bucket-implementation" title="Permanent link">&para;</a></h2>
+<p>For a conceptual overview of the token bucket algorithm, see the <a href="../../guide/token-bucket/">User Guide</a>. This section covers implementation details for contributors.</p>
+<h3 id="core-functions">Core Functions<a class="headerlink" href="#core-functions" title="Permanent link">&para;</a></h3>
+<p>The algorithm is implemented in <a href="https://github.com/zeroae/zae-limiter/blob/main/src/zae_limiter/bucket.py"><code>bucket.py</code></a>:</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Purpose</th>
+<th>Lines</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>refill_bucket()</code></td>
+<td>Calculate refilled tokens with drift compensation</td>
+<td>27-75</td>
+</tr>
+<tr>
+<td><code>try_consume()</code></td>
+<td>Atomic check-and-consume operation</td>
+<td>78-134</td>
+</tr>
+<tr>
+<td><code>force_consume()</code></td>
+<td>Force consume (can go negative)</td>
+<td>224-255</td>
+</tr>
+<tr>
+<td><code>calculate_retry_after()</code></td>
+<td>Calculate wait time for deficit</td>
+<td>137-159</td>
+</tr>
+</tbody>
+</table>
+<h3 id="mathematical-formulas">Mathematical Formulas<a class="headerlink" href="#mathematical-formulas" title="Permanent link">&para;</a></h3>
+<p><strong>Refill calculation</strong> (lazy, on-demand):</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>tokens_to_add = (elapsed_ms × refill_amount_milli) // refill_period_ms
+</span></code></pre></div>
+<p><strong>Drift compensation</strong> (prevents accumulated rounding errors):</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>time_used_ms = (tokens_to_add × refill_period_ms) // refill_amount_milli
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>new_last_refill = last_refill_ms + time_used_ms
+</span></code></pre></div>
+<p>The inverse calculation ensures we only "consume" the time that corresponds to whole tokens, preventing drift over many refill cycles.</p>
+<p><strong>Retry-after calculation</strong>:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>time_ms = (deficit_milli × refill_period_ms) // refill_amount_milli
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>retry_seconds = (time_ms + 1) / 1000.0  # +1ms rounds up
+</span></code></pre></div>
+<h3 id="integer-arithmetic-for-precision">Integer Arithmetic for Precision<a class="headerlink" href="#integer-arithmetic-for-precision" title="Permanent link">&para;</a></h3>
+<p>All token values are stored as <strong>millitokens</strong> (×1000) to avoid floating-point precision issues in distributed systems:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># User sees: 100 tokens/minute</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1"># Stored as: 100,000 millitokens/minute</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">capacity_milli</span> <span class="o">=</span> <span class="mi">100_000</span>
+</span></code></pre></div>
+<p><strong>Why integers matter in distributed systems:</strong></p>
 <ul>
-<li><code>VersionMismatchError</code> exception raised</li>
-<li><code>IncompatibleSchemaError</code> exception raised</li>
-<li>CLI commands fail with version errors</li>
-<li>Rate limiter initialization fails</li>
+<li>Floating-point operations can produce different results on different hardware</li>
+<li>DynamoDB stores numbers as strings, so precision loss can occur during serialization</li>
+<li>Rate limiting across multiple nodes requires identical calculations</li>
 </ul>
-<h3 id="diagnostic-steps">Diagnostic Steps<a class="headerlink" href="#diagnostic-steps" title="Permanent link">&para;</a></h3>
-<p><strong>Check compatibility with CLI:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;
+<h3 id="refill-rate-storage">Refill Rate Storage<a class="headerlink" href="#refill-rate-storage" title="Permanent link">&para;</a></h3>
+<p>Refill rates are stored as a fraction (amount/period) rather than a decimal:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># 100 tokens per minute stored as:</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">refill_amount_milli</span> <span class="o">=</span> <span class="mi">100_000</span>  <span class="c1"># millitokens (numerator)</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">refill_period_ms</span> <span class="o">=</span> <span class="mi">60_000</span>      <span class="c1"># milliseconds (denominator)</span>
 </span></code></pre></div>
-<p><strong>View detailed version information:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;
+<p>This avoids representing <code>1.6667 tokens/second</code> as a float. Instead:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># 100 tokens/minute = 100,000 millitokens / 60,000 ms</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1"># Integer division handles the math precisely</span>
 </span></code></pre></div>
-<p><strong>Query version record directly:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;SYSTEM#&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#VERSION&quot;}}&#39;</span>
-</span></code></pre></div>
-<h3 id="versionmismatcherror">VersionMismatchError<a class="headerlink" href="#versionmismatcherror" title="Permanent link">&para;</a></h3>
-<p><strong>Cause:</strong> Client library version differs from deployed Lambda version.</p>
-<p><strong>Example error:</strong>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>VersionMismatchError: Version mismatch: client=1.2.0, schema=1.0.0, lambda=1.0.0.
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>Lambda update available.
-</span></code></pre></div></p>
-<p><strong>Solution:</strong> Upgrade Lambda to match client:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;
-</span></code></pre></div>
-<p>Or programmatically:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">StackOptions</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1"># Auto-update Lambda on initialization</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;&lt;name&gt;&quot;</span><span class="p">,</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;&lt;region&gt;&quot;</span><span class="p">,</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="n">stack_options</span><span class="o">=</span><span class="n">StackOptions</span><span class="p">(),</span>  <span class="c1"># Enables auto-update</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="incompatibleschemaerror">IncompatibleSchemaError<a class="headerlink" href="#incompatibleschemaerror" title="Permanent link">&para;</a></h3>
-<p><strong>Cause:</strong> Major version difference requiring schema migration.</p>
-<p><strong>Example error:</strong>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>IncompatibleSchemaError: Incompatible schema: client 2.0.0 is not compatible
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>with schema 1.0.0. Migration required.
-</span></code></pre></div></p>
-<p><strong>Solution:</strong> Follow the <a href="../../migrations/">Migration Guide</a> to upgrade the schema:</p>
+<h3 id="lazy-refill-with-drift-compensation">Lazy Refill with Drift Compensation<a class="headerlink" href="#lazy-refill-with-drift-compensation" title="Permanent link">&para;</a></h3>
+<p>Tokens are calculated on-demand rather than via a background timer. The <code>refill_bucket()</code> function:</p>
 <ol>
-<li>Create a backup</li>
-<li>Run migration</li>
-<li>Update client</li>
+<li>Calculates elapsed time since last refill</li>
+<li>Computes tokens to add using integer division</li>
+<li>Tracks "time consumed" to prevent drift</li>
 </ol>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Create backup before migration</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>create-backup<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--backup-name<span class="w"> </span><span class="s2">&quot;pre-migration-</span><span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span><span class="s2">&quot;</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># From bucket.py:refill_bucket()</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">tokens_to_add</span> <span class="o">=</span> <span class="p">(</span><span class="n">elapsed_ms</span> <span class="o">*</span> <span class="n">refill_amount_milli</span><span class="p">)</span> <span class="o">//</span> <span class="n">refill_period_ms</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Drift compensation: only advance time for tokens actually added</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">time_used_ms</span> <span class="o">=</span> <span class="p">(</span><span class="n">tokens_to_add</span> <span class="o">*</span> <span class="n">refill_period_ms</span><span class="p">)</span> <span class="o">//</span> <span class="n">refill_amount_milli</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">new_last_refill</span> <span class="o">=</span> <span class="n">last_refill_ms</span> <span class="o">+</span> <span class="n">time_used_ms</span>
 </span></code></pre></div>
-<p>Then follow the migration procedures in the <a href="../../migrations/#sample-migration-v200">Migration Guide</a>.</p>
-<h3 id="minimum-client-version-error">Minimum Client Version Error<a class="headerlink" href="#minimum-client-version-error" title="Permanent link">&para;</a></h3>
-<p><strong>Cause:</strong> Infrastructure requires a newer client version.</p>
-<p><strong>Solution:</strong> Upgrade the client library:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>zae-limiter
+<p>Without drift compensation, repeated calls with small time intervals would accumulate rounding errors.</p>
+<h3 id="negative-buckets-debt">Negative Buckets (Debt)<a class="headerlink" href="#negative-buckets-debt" title="Permanent link">&para;</a></h3>
+<p>Buckets can go negative to support post-hoc reconciliation:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Estimate 500 tokens, actually used 2000</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">})</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">actual</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call_llm</span><span class="p">()</span>  <span class="c1"># Returns 2000 tokens</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="k">await</span> <span class="n">lease</span><span class="o">.</span><span class="n">adjust</span><span class="p">(</span><span class="n">tpm</span><span class="o">=</span><span class="mi">2000</span> <span class="o">-</span> <span class="mi">500</span><span class="p">)</span>  <span class="c1"># Bucket at -1500</span>
 </span></code></pre></div>
-<h2 id="upgrade-procedure">Upgrade Procedure<a class="headerlink" href="#upgrade-procedure" title="Permanent link">&para;</a></h2>
-<h3 id="pre-upgrade-checklist">Pre-upgrade Checklist<a class="headerlink" href="#pre-upgrade-checklist" title="Permanent link">&para;</a></h3>
-<p>Before upgrading, verify the following:</p>
-<ul>
-<li>[ ] Check current version: <code>zae-limiter version --name &lt;name&gt;</code></li>
-<li>[ ] Check compatibility: <code>zae-limiter check --name &lt;name&gt;</code></li>
-<li>[ ] Review release notes for breaking changes</li>
-<li>[ ] Verify PITR is enabled for rollback capability</li>
-<li>[ ] Schedule maintenance window (if major upgrade)</li>
-<li>[ ] Notify stakeholders</li>
-</ul>
-<h3 id="upgrade-execution">Upgrade Execution<a class="headerlink" href="#upgrade-execution" title="Permanent link">&para;</a></h3>
-<p><strong>Standard upgrade (Lambda + client):</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Step 1: Upgrade client library</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>zae-limiter
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># Step 2: Update infrastructure</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># Step 3: Verify</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;
+<p>The <code>force_consume()</code> function handles this:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># From bucket.py:force_consume()</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1"># Consume can go negative - no bounds checking</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">new_tokens_milli</span> <span class="o">=</span> <span class="n">refill</span><span class="o">.</span><span class="n">new_tokens_milli</span> <span class="o">-</span> <span class="p">(</span><span class="n">amount</span> <span class="o">*</span> <span class="mi">1000</span><span class="p">)</span>
 </span></code></pre></div>
-<p><strong>Lambda-only upgrade:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Update Lambda without schema changes</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;<span class="w"> </span>--lambda-only
+<p>The debt is repaid as tokens refill over time. A bucket at -1500 millitokens needs 1.5 minutes to reach 0 (at 1000 tokens/minute).</p>
+<h3 id="burst-capacity">Burst Capacity<a class="headerlink" href="#burst-capacity" title="Permanent link">&para;</a></h3>
+<p>Burst allows temporary exceeding of sustained rate:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Sustained: 10k tokens/minute</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="c1"># Burst: 15k tokens (one-time)</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="mi">15_000</span><span class="p">)</span>
 </span></code></pre></div>
-<p><strong>Force upgrade (skip compatibility check):</strong></p>
-<div class="admonition warning">
-<p class="admonition-title">Use with caution</p>
-<p>Only use <code>--force</code> when you understand the implications.</p>
-</div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;<span class="w"> </span>--force
+<p>When <code>burst &gt; capacity</code>, users can consume up to <code>burst</code> tokens immediately, then sustain at <code>capacity</code> rate.</p>
+<h3 id="design-decisions">Design Decisions<a class="headerlink" href="#design-decisions" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Integer over float</td>
+<td>Identical results across distributed nodes; no precision drift</td>
+</tr>
+<tr>
+<td>Lazy over continuous</td>
+<td>No background timers; accurate retry_after; efficient</td>
+</tr>
+<tr>
+<td>Negative allowed</td>
+<td>Estimate-then-reconcile pattern; operations with unknown cost</td>
+</tr>
+<tr>
+<td>Fraction over decimal</td>
+<td>Exact representation of rates like 100/minute</td>
+</tr>
+</tbody>
+</table>
+<h2 id="atomicity">Atomicity<a class="headerlink" href="#atomicity" title="Permanent link">&para;</a></h2>
+<h3 id="transactwriteitems">TransactWriteItems<a class="headerlink" href="#transactwriteitems" title="Permanent link">&para;</a></h3>
+<p>Multi-entity updates (like cascade mode) use DynamoDB transactions:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Single atomic operation:</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="c1"># 1. Consume from child entity</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="c1"># 2. Consume from parent entity</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># Both succeed or both fail</span>
 </span></code></pre></div>
-<h3 id="post-upgrade-verification">Post-upgrade Verification<a class="headerlink" href="#post-upgrade-verification" title="Permanent link">&para;</a></h3>
-<p>After upgrading, verify the system is healthy:</p>
+<p>Transaction limits: max 100 items per transaction.</p>
+<h3 id="optimistic-locking">Optimistic Locking<a class="headerlink" href="#optimistic-locking" title="Permanent link">&para;</a></h3>
+<p>Entity metadata uses version numbers for optimistic locking:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># Read entity with version 5</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="c1"># Update fails if version changed</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">condition_expression</span><span class="o">=</span><span class="s2">&quot;version = :expected_version&quot;</span>
+</span></code></pre></div>
+<h2 id="project-structure">Project Structure<a class="headerlink" href="#project-structure" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>src/zae_limiter/
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>├── __init__.py        # Public API exports
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, etc.
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>├── naming.py          # Resource name validation and ZAEL- prefix logic
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>├── bucket.py          # Token bucket math (integer arithmetic)
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>├── schema.py          # DynamoDB key builders
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>├── repository.py      # DynamoDB operations
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>├── lease.py           # Lease context manager
+</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>├── limiter.py         # RateLimiter, SyncRateLimiter
+</span><span id="__span-12-11"><a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>├── cli.py             # CLI commands
+</span><span id="__span-12-12"><a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>├── version.py         # Version tracking and compatibility
+</span><span id="__span-12-13"><a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a>├── migrations/        # Schema migration framework
+</span><span id="__span-12-14"><a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>└── infra/
+</span><span id="__span-12-15"><a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>    ├── stack_manager.py    # CloudFormation stack operations
+</span><span id="__span-12-16"><a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a>    ├── lambda_builder.py   # Lambda deployment package builder
+</span><span id="__span-12-17"><a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>    └── cfn_template.yaml   # CloudFormation template
+</span></code></pre></div>
+<h2 id="key-design-decisions">Key Design Decisions<a class="headerlink" href="#key-design-decisions" title="Permanent link">&para;</a></h2>
 <ol>
-<li>
-<p><strong>Check version alignment:</strong>
-   <div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;
-</span></code></pre></div></p>
-</li>
-<li>
-<p><strong>Run smoke tests:</strong>
-   <div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;&lt;name&gt;&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;&lt;region&gt;&quot;</span><span class="p">)</span>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>
-</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="c1"># Test basic operation</span>
-</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;test-entity&quot;</span><span class="p">,</span>
-</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;test&quot;</span><span class="p">,</span>
-</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-13-10"><a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-13-11"><a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="p">):</span>
-</span><span id="__span-13-12"><a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Rate limiting working&quot;</span><span class="p">)</span>
-</span></code></pre></div></p>
-</li>
-<li>
-<p><strong>Monitor for 15 minutes:</strong></p>
-</li>
-<li>Check Lambda error rate in CloudWatch</li>
-<li>Verify usage snapshots are updating</li>
-<li>Watch for unexpected exceptions in application logs</li>
+<li><strong>Lease commits only on success</strong>: If any exception occurs in the context, changes are rolled back</li>
+<li><strong>Bucket can go negative</strong>: <code>lease.adjust()</code> never throws, allows debt</li>
+<li><strong>Cascade is optional</strong>: Parent is only checked if <code>cascade=True</code></li>
+<li><strong>Stored limits override defaults</strong>: When <code>use_stored_limits=True</code></li>
+<li><strong>Transactions are atomic</strong>: Multi-entity updates succeed or fail together</li>
 </ol>
-<h3 id="rollback">Rollback<a class="headerlink" href="#rollback" title="Permanent link">&para;</a></h3>
-<p>If issues occur after upgrade, see <a href="../recovery/#emergency-rollback-decision-matrix">Recovery &amp; Rollback</a>.</p>
-<h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
+<h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../../migrations/">Migration Guide</a> - Schema versioning and migration procedures</li>
-<li><a href="../recovery/">Recovery &amp; Rollback</a> - Emergency rollback procedures</li>
-<li><a href="../../cli/">CLI Reference</a> - Full CLI command documentation</li>
+<li><a href="../development/">Development Setup</a> - Setting up your environment</li>
+<li><a href="../testing/">Testing</a> - Test organization and fixtures</li>
 </ul>
 
 
@@ -1657,6 +2104,28 @@
       
         <footer class="md-footer">
   
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../testing/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Testing">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Testing
+              </div>
+            </div>
+          </a>
+        
+        
+      </nav>
     
   
   <div class="md-footer-meta md-typeset">
