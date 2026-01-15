@@ -1,0 +1,3 @@
+[submodule ".claude/rules/zeroae"]
+	path = .claude/rules/zeroae
+	url = https://github.com/zeroae/.claude.git
