@@ -457,82 +457,131 @@ def _format_count(count: int | None) -> str:
     ),
 )
 def status(name: str, region: str | None, endpoint_url: str | None) -> None:
-    """Get comprehensive status of rate limiter infrastructure."""
+    """Get comprehensive status of rate limiter infrastructure (read-only)."""
+    import time
+
+    from . import __version__
     from .exceptions import ValidationError
-    from .limiter import RateLimiter
+    from .naming import normalize_name
+    from .repository import Repository
 
     try:
-        limiter = RateLimiter(
-            name=name,
-            region=region,
-            endpoint_url=endpoint_url,
-            skip_version_check=True,  # Don't check version for status command
-        )
+        stack_name = normalize_name(name)
     except ValidationError as e:
         click.echo(f"Error: {e.reason}", err=True)
         sys.exit(1)
 
     async def _status() -> None:
+        # Initialize status values
+        available = False
+        latency_ms: float | None = None
+        cfn_status: str | None = None
+        table_status: str | None = None
+        aggregator_enabled = False
+        schema_version: str | None = None
+        lambda_version: str | None = None
+        table_item_count: int | None = None
+        table_size_bytes: int | None = None
+
+        # Get CloudFormation stack status (read-only)
         try:
-            status = await limiter.get_status()
+            async with StackManager(stack_name, region, endpoint_url) as manager:
+                cfn_status = await manager.get_stack_status(stack_name)
+        except Exception:
+            pass  # Stack status unavailable
+
+        # Create repository for read-only DynamoDB access
+        repository = Repository(stack_name, region, endpoint_url)
+
+        try:
+            # Ping DynamoDB and measure latency
+            try:
+                start_time = time.time()
+                client = await repository._get_client()
+
+                # Use DescribeTable to check connectivity and get table info
+                response = await client.describe_table(TableName=stack_name)
+                latency_ms = (time.time() - start_time) * 1000
+                available = True
+
+                # Extract table information
+                table = response.get("Table", {})
+                table_status = table.get("TableStatus")
+                table_item_count = table.get("ItemCount")
+                table_size_bytes = table.get("TableSizeInBytes")
+
+                # Check if aggregator is enabled by looking for stream specification
+                stream_spec = table.get("StreamSpecification", {})
+                aggregator_enabled = stream_spec.get("StreamEnabled", False)
+
+            except Exception:
+                pass  # DynamoDB unavailable
+
+            # Get version information from DynamoDB
+            if available:
+                try:
+                    version_record = await repository.get_version_record()
+                    if version_record:
+                        schema_version = version_record.get("schema_version")
+                        lambda_version = version_record.get("lambda_version")
+                except Exception:
+                    pass  # Version record unavailable
 
             # Header
             click.echo()
-            click.echo(f"Status: {status.name}")
+            click.echo(f"Status: {stack_name}")
             click.echo("=" * 50)
             click.echo()
 
             # Connectivity section
             click.echo("Connectivity")
-            available_str = "✓ Yes" if status.available else "✗ No"
+            available_str = "✓ Yes" if available else "✗ No"
             click.echo(f"  Available:     {available_str}")
-            if status.latency_ms is not None:
-                click.echo(f"  Latency:       {status.latency_ms:.0f}ms")
+            if latency_ms is not None:
+                click.echo(f"  Latency:       {latency_ms:.0f}ms")
             else:
                 click.echo("  Latency:       N/A")
-            click.echo(f"  Region:        {status.region or 'default'}")
+            click.echo(f"  Region:        {region or 'default'}")
             click.echo()
 
             # Infrastructure section
             click.echo("Infrastructure")
-            click.echo(f"  Stack:         {status.stack_status or 'Not found'}")
-            click.echo(f"  Table:         {status.table_status or 'Not found'}")
-            aggregator_str = "Enabled" if status.aggregator_enabled else "Disabled"
+            click.echo(f"  Stack:         {cfn_status or 'Not found'}")
+            click.echo(f"  Table:         {table_status or 'Not found'}")
+            aggregator_str = "Enabled" if aggregator_enabled else "Disabled"
             click.echo(f"  Aggregator:    {aggregator_str}")
             click.echo()
 
             # Versions section
             click.echo("Versions")
-            click.echo(f"  Client:        {status.client_version}")
-            click.echo(f"  Schema:        {status.schema_version or 'N/A'}")
-            click.echo(f"  Lambda:        {status.lambda_version or 'N/A'}")
+            click.echo(f"  Client:        {__version__}")
+            click.echo(f"  Schema:        {schema_version or 'N/A'}")
+            click.echo(f"  Lambda:        {lambda_version or 'N/A'}")
             click.echo()
 
             # Table Metrics section
             click.echo("Table Metrics")
-            click.echo(f"  Items:         {_format_count(status.table_item_count)}")
-            click.echo(f"  Size:          {_format_size(status.table_size_bytes)}")
+            click.echo(f"  Items:         {_format_count(table_item_count)}")
+            click.echo(f"  Size:          {_format_size(table_size_bytes)}")
             click.echo()
 
             # Exit with appropriate status code
-            if not status.available:
+            if not available:
                 click.echo("✗ Infrastructure is not available", err=True)
                 sys.exit(1)
-            elif status.stack_status and (
-                "FAILED" in status.stack_status or "ROLLBACK" in status.stack_status
-            ):
+            elif cfn_status and ("FAILED" in cfn_status or "ROLLBACK" in cfn_status):
                 click.echo("✗ Stack is in failed state", err=True)
                 sys.exit(1)
-            elif status.stack_status and "IN_PROGRESS" in status.stack_status:
+            elif cfn_status and "IN_PROGRESS" in cfn_status:
                 click.echo("⏳ Operation in progress...")
-            elif status.stack_status == "CREATE_COMPLETE":
+            elif cfn_status == "CREATE_COMPLETE":
                 click.echo("✓ Infrastructure is ready")
 
         except Exception as e:
             click.echo(f"✗ Failed to get status: {e}", err=True)
             sys.exit(1)
         finally:
-            await limiter.close()
+            await repository.close()
 
     asyncio.run(_status())
 

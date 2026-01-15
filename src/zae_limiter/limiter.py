@@ -708,43 +708,6 @@ class RateLimiter:
         ) as manager:
             await manager.delete_stack(self.stack_name)
 
-    async def stack_status(self) -> str | None:
-        """
-        Get current status of the CloudFormation stack.
-
-        Returns the current CloudFormation stack status, which indicates whether
-        the infrastructure is ready, being created/updated, or in a failed state.
-
-        Returns:
-            Stack status string (e.g., 'CREATE_COMPLETE', 'UPDATE_IN_PROGRESS',
-            'DELETE_IN_PROGRESS') or None if the stack doesn't exist.
-
-        Example:
-            Check if infrastructure is ready::
-
-                limiter = RateLimiter(name="my-app", region="us-east-1")
-
-                status = await limiter.stack_status()
-                if status is None:
-                    print("Stack does not exist")
-                elif status == "CREATE_COMPLETE":
-                    print("Stack is ready")
-                elif "IN_PROGRESS" in status:
-                    print(f"Operation in progress: {status}")
-                elif "FAILED" in status:
-                    print(f"Stack in failed state: {status}")
-
-        Note:
-            This method does not require the stack to exist. It safely returns
-            None if the stack has not been created yet.
-        """
-        from .infra.stack_manager import StackManager
-
-        async with StackManager(
-            self.stack_name, self._repository.region, self._repository.endpoint_url
-        ) as manager:
-            return await manager.get_stack_status(self.stack_name)
-
     async def get_status(self) -> Status:
         """
         Get comprehensive status of the RateLimiter infrastructure.
@@ -1114,33 +1077,6 @@ class SyncRateLimiter:
             This operation is irreversible. All data will be permanently deleted.
         """
         self._run(self._limiter.delete_stack())
-
-    @property
-    def stack_status(self) -> str | None:
-        """
-        Get current status of the CloudFormation stack.
-
-        Synchronous property for :meth:`RateLimiter.stack_status`.
-        See the async version for full documentation.
-
-        Returns:
-            Stack status string (e.g., 'CREATE_COMPLETE', 'UPDATE_IN_PROGRESS')
-            or None if the stack doesn't exist.
-
-        Example:
-            Check infrastructure status::
-
-                limiter = SyncRateLimiter(name="my-app", region="us-east-1")
-
-                status = limiter.stack_status
-                if status is None:
-                    print("Stack does not exist")
-                elif status == "CREATE_COMPLETE":
-                    print("Stack is ready")
-                elif "IN_PROGRESS" in status:
-                    print(f"Operation in progress: {status}")
-        """
-        return self._run(self._limiter.stack_status())
 
     def get_status(self) -> Status:
         """

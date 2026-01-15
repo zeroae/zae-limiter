@@ -91,14 +91,46 @@ class TestE2ELocalStackCLIWorkflow:
                     "status",
                     "--name",
                     stack_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
                     "--region",
                     "us-east-1",
                 ],
-                env={"AWS_ENDPOINT_URL": localstack_endpoint},
             )
-            assert result.exit_code == 0
-            # Status output contains the stack status
-            assert "CREATE_COMPLETE" in result.output or "Status:" in result.output
+            assert result.exit_code == 0, f"Status failed: {result.output}"
+
+            # Verify CLI output format with all sections
+            assert f"Status: {stack_name}" in result.output
+
+            # Connectivity section
+            assert "Connectivity" in result.output
+            assert "Available:" in result.output
+            assert "✓ Yes" in result.output
+            assert "Latency:" in result.output
+            assert "Region:" in result.output
+
+            # Infrastructure section
+            assert "Infrastructure" in result.output
+            assert "Stack:" in result.output
+            assert "Table:" in result.output
+            assert "ACTIVE" in result.output
+            assert "Aggregator:" in result.output
+
+            # Versions section
+            assert "Versions" in result.output
+            assert "Client:" in result.output
+            assert "Schema:" in result.output
+            assert "Lambda:" in result.output
+
+            # Table Metrics section
+            assert "Table Metrics" in result.output
+            assert "Items:" in result.output
+            assert "Size:" in result.output
+
+            # Final status indicator
+            assert (
+                "✓ Infrastructure is ready" in result.output or "CREATE_COMPLETE" in result.output
+            )
 
             # Step 3: Use SyncRateLimiter with deployed infrastructure
             limiter = SyncRateLimiter(
