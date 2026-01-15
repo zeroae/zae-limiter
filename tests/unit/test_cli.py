@@ -80,8 +80,11 @@ class TestCLI:
         assert "AWSTemplateFormatVersion" in content
         assert "AWS::DynamoDB::Table" in content
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_default_parameters(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    def test_deploy_default_parameters(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
         """Test deploy command with default parameters."""
         # Mock stack manager
         mock_instance = Mock()
@@ -106,11 +109,17 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
+
         result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 0
         assert "Deploying stack: ZAEL-rate-limits" in result.output
         assert "✓" in result.output
+        assert "Version record initialized" in result.output
 
         # Verify default values for new parameters via StackOptions
         call_args = mock_instance.create_stack.call_args
@@ -122,8 +131,17 @@ class TestCLI:
         assert stack_options.enable_alarms is True
         assert stack_options.lambda_duration_threshold_pct == 80
 
+        # Verify version record was created
+        mock_repo_instance.set_version_record.assert_called_once()
+        version_call_args = mock_repo_instance.set_version_record.call_args
+        assert version_call_args[1]["schema_version"] == "1.0.0"
+        assert version_call_args[1]["client_min_version"] == "0.0.0"
+
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_custom_parameters(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    def test_deploy_custom_parameters(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
         """Test deploy command with custom parameters."""
         mock_instance = Mock()
         mock_instance.stack_name = "ZAEL-my-custom-stack"
@@ -137,6 +155,11 @@ class TestCLI:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
+
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
             cli,
@@ -157,9 +180,10 @@ class TestCLI:
         assert result.exit_code == 0
         assert "ZAEL-my-custom-stack" in result.output
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_pitr_recovery_days(
-        self, mock_stack_manager: Mock, runner: CliRunner
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
     ) -> None:
         """Test deploy command with --pitr-recovery-days parameter."""
         mock_instance = Mock()
@@ -174,6 +198,11 @@ class TestCLI:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
+
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
             cli,
@@ -192,9 +221,10 @@ class TestCLI:
         stack_options = call_args[1]["stack_options"]
         assert stack_options.pitr_recovery_days == 7
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_log_retention_days(
-        self, mock_stack_manager: Mock, runner: CliRunner
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
     ) -> None:
         """Test deploy command with --log-retention-days parameter."""
         mock_instance = Mock()
@@ -209,6 +239,11 @@ class TestCLI:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
+
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
             cli,
@@ -227,9 +262,10 @@ class TestCLI:
         stack_options = call_args[1]["stack_options"]
         assert stack_options.log_retention_days == 90
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_lambda_timeout_and_memory(
-        self, mock_stack_manager: Mock, runner: CliRunner
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
     ) -> None:
         """Test deploy command with --lambda-timeout and --lambda-memory parameters."""
         mock_instance = Mock()
@@ -253,6 +289,11 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
+
         result = runner.invoke(
             cli,
             [
@@ -275,8 +316,11 @@ class TestCLI:
         assert stack_options.lambda_timeout == 120
         assert stack_options.lambda_memory == 512
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_with_alarms_disabled(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    def test_deploy_with_alarms_disabled(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
         """Test deploy command with --no-alarms parameter."""
         mock_instance = Mock()
         mock_instance.stack_name = "ZAEL-rate-limits"
@@ -290,6 +334,11 @@ class TestCLI:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
+
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
             cli,
@@ -309,8 +358,11 @@ class TestCLI:
         stack_options = call_args[1]["stack_options"]
         assert stack_options.enable_alarms is False
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_with_alarm_sns_topic(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    def test_deploy_with_alarm_sns_topic(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
         """Test deploy command with --alarm-sns-topic parameter."""
         mock_instance = Mock()
         mock_instance.stack_name = "ZAEL-rate-limits"
@@ -324,6 +376,11 @@ class TestCLI:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
+
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
 
         sns_topic = "arn:aws:sns:us-east-1:123456789012:my-topic"
         result = runner.invoke(
@@ -345,9 +402,10 @@ class TestCLI:
         stack_options = call_args[1]["stack_options"]
         assert stack_options.alarm_sns_topic == sns_topic
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_lambda_duration_threshold_pct(
-        self, mock_stack_manager: Mock, runner: CliRunner
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
     ) -> None:
         """Test deploy command with --lambda-duration-threshold-pct parameter."""
         mock_instance = Mock()
@@ -362,6 +420,11 @@ class TestCLI:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
+
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
 
         # Lambda timeout 60s with 50% threshold
         result = runner.invoke(
@@ -385,9 +448,10 @@ class TestCLI:
         assert stack_options.lambda_timeout == 60
         assert stack_options.lambda_duration_threshold_pct == 50
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
     def test_deploy_duration_threshold_calculation(
-        self, mock_stack_manager: Mock, runner: CliRunner
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
     ) -> None:
         """Test that duration threshold is correctly calculated from timeout and percentage."""
         mock_instance = Mock()
@@ -402,6 +466,11 @@ class TestCLI:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
+
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
 
         # Lambda timeout 120s with 80% threshold
         result = runner.invoke(
@@ -495,8 +564,11 @@ class TestCLI:
         )
         assert result.exit_code != 0
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_lambda_skipped_local(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    def test_deploy_lambda_skipped_local(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
         """Test deploy shows correct message when Lambda deployment is skipped for local."""
         mock_instance = Mock()
         mock_instance.stack_name = "ZAEL-rate-limits"
@@ -517,13 +589,21 @@ class TestCLI:
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
 
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
+
         result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 0
         assert "Lambda deployment skipped (local environment)" in result.output
 
+    @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    def test_deploy_with_endpoint_url(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
         """Test deploy command with --endpoint-url for LocalStack."""
         mock_instance = Mock()
         mock_instance.stack_name = "ZAEL-test"
@@ -545,6 +625,11 @@ class TestCLI:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
+
+        # Mock repository for version record
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
             cli,

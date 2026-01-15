@@ -240,6 +240,24 @@ def deploy(
                         )
                         sys.exit(1)
 
+                # Step 3: Initialize version record in DynamoDB
+                if wait:
+                    from . import __version__
+                    from .repository import Repository
+                    from .version import get_schema_version
+
+                    click.echo()
+                    click.echo("Initializing version record...")
+
+                    repo = Repository(manager.table_name, region, endpoint_url)
+                    await repo.set_version_record(
+                        schema_version=get_schema_version(),
+                        lambda_version=__version__ if not endpoint_url else None,
+                        client_min_version="0.0.0",
+                        updated_by=f"cli:{__version__}",
+                    )
+                    click.echo(f"✓ Version record initialized (schema {get_schema_version()})")
+
                 if not wait:
                     click.echo()
                     click.echo("Stack creation initiated. Use 'status' command to check progress.")

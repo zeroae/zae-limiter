@@ -117,10 +117,15 @@ class TestE2ELocalStackCLIWorkflow:
             assert "Aggregator:" in result.output
 
             # Versions section
+            # After deploy, version record should exist (not N/A)
             assert "Versions" in result.output
             assert "Client:" in result.output
             assert "Schema:" in result.output
+            # Schema should be initialized by deploy (not N/A)
+            assert "Schema:        1.0.0" in result.output
             assert "Lambda:" in result.output
+            # Lambda is N/A for LocalStack (no real Lambda deployment)
+            assert "Lambda:        N/A" in result.output
 
             # Table Metrics section
             assert "Table Metrics" in result.output

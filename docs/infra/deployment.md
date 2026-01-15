@@ -52,18 +52,20 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
 === "Programmatic"
 
     ```python
+    from zae_limiter import RateLimiter
+
     limiter = RateLimiter(name="limiter", region="us-east-1")
 
-    status = await limiter.stack_status()  # Async
-    # or
-    status = limiter.stack_status  # Sync (property)
+    status = await limiter.get_status()  # Returns Status dataclass
 
-    if status is None:
-        print("Stack does not exist")
-    elif status == "CREATE_COMPLETE":
+    if not status.available:
+        print("DynamoDB not reachable")
+    elif status.stack_status == "CREATE_COMPLETE":
         print("Stack is ready")
-    elif "IN_PROGRESS" in status:
-        print(f"Operation in progress: {status}")
+        print(f"Schema version: {status.schema_version}")
+        print(f"Table items: {status.table_item_count}")
+    elif status.stack_status and "IN_PROGRESS" in status.stack_status:
+        print(f"Operation in progress: {status.stack_status}")
     ```
 
 ### Delete Stack
