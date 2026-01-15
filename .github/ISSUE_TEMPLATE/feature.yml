@@ -1,0 +1,53 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "✨ "
+type: Feature
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case
+      description: What problem does this solve? What's the use case?
+      placeholder: |
+        I want to be able to...
+        Currently I have to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How should this work? Include API examples if relevant.
+      placeholder: |
+        ```python
+        # Example usage
+        limiter = RateLimiter(...)
+        result = limiter.new_feature()
+        ```
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches did you consider?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which component would this affect?
+      options:
+        - area/limiter
+        - area/cli
+        - area/infra
+        - area/aggregator
+        - area/ci
+        - Unknown
+    validations:
+      required: false

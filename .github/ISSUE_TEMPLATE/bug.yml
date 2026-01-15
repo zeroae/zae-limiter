@@ -1,0 +1,55 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "🐛 "
+type: Bug
+labels: []
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect to happen?
+      placeholder: |
+        When I do X, Y happens.
+        I expected Z to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the behavior
+      placeholder: |
+        1. Create a RateLimiter with...
+        2. Call acquire() with...
+        3. Observe error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Version, Python version, AWS region, etc.
+      placeholder: |
+        - zae-limiter version: 0.2.0
+        - Python: 3.12
+        - AWS Region: us-east-1
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which component is affected?
+      options:
+        - area/limiter
+        - area/cli
+        - area/infra
+        - area/aggregator
+        - area/ci
+        - Unknown
+    validations:
+      required: false
