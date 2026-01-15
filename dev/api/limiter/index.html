@@ -1231,6 +1231,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.get_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_status
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1424,6 +1435,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;delete_stack
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.SyncRateLimiter.get_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_status
       
     </span>
   </a>
@@ -1975,6 +1997,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.get_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_status
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2168,6 +2201,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;delete_stack
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.SyncRateLimiter.get_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_status
       
     </span>
   </a>
@@ -3853,6 +3897,137 @@ and usage history will be permanently deleted.</p>
 
 </div>
 
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.limiter.RateLimiter.get_status" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_status</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.limiter.RateLimiter.get_status" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_status</span><span class="p">()</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Get comprehensive status of the RateLimiter infrastructure.</p>
+<p>Consolidates connectivity, infrastructure state, version information,
+and table metrics into a single status object. This method does not
+raise exceptions for missing infrastructure - it gracefully handles
+all error cases and returns status information accordingly.</p>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="zae_limiter.models.Status">Status</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Status object containing:</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="zae_limiter.models.Status">Status</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <ul>
+<li>Connectivity: available, latency_ms</li>
+</ul>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="zae_limiter.models.Status">Status</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <ul>
+<li>Infrastructure: stack_status, table_status, aggregator_enabled</li>
+</ul>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="zae_limiter.models.Status">Status</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <ul>
+<li>Identity: name, region</li>
+</ul>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="zae_limiter.models.Status">Status</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <ul>
+<li>Versions: schema_version, lambda_version, client_version</li>
+</ul>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="zae_limiter.models.Status">Status</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <ul>
+<li>Table metrics: table_item_count, table_size_bytes</li>
+</ul>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>Check infrastructure health::</p>
+<div class="language-text highlight"><pre><span></span><code>status = await limiter.get_status()
+if status.available:
+    print(f&quot;Ready! Latency: {status.latency_ms}ms&quot;)
+    print(f&quot;Stack: {status.stack_status}&quot;)
+    print(f&quot;Schema: {status.schema_version}&quot;)
+else:
+    print(&quot;DynamoDB is not reachable&quot;)
+</code></pre></div>
+</details>
+
+<details class="note" open>
+  <summary>Note</summary>
+  <p>This method measures actual DynamoDB latency by performing a
+lightweight operation. The latency_ms value reflects real
+round-trip time to the DynamoDB endpoint.</p>
+</details>
+
+    </div>
+
+</div>
+
 
 
   </div>
@@ -4320,6 +4495,65 @@ limiter.delete_stack()
 <details class="warning" open>
   <summary>Warning</summary>
   <p>This operation is irreversible. All data will be permanently deleted.</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.limiter.SyncRateLimiter.get_status" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_status</span>
+
+
+<a href="#zae_limiter.limiter.SyncRateLimiter.get_status" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_status</span><span class="p">()</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Get comprehensive status of the RateLimiter infrastructure.</p>
+<p>Synchronous wrapper for :meth:<code>RateLimiter.get_status</code>.
+See the async version for full documentation.</p>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="zae_limiter.models.Status">Status</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Status object with connectivity, infrastructure, versions, and metrics.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>Check infrastructure health::</p>
+<div class="language-text highlight"><pre><span></span><code>limiter = SyncRateLimiter(name=&quot;my-app&quot;, region=&quot;us-east-1&quot;)
+
+status = limiter.get_status()
+if status.available:
+    print(f&quot;Ready! Latency: {status.latency_ms}ms&quot;)
+    print(f&quot;Schema: {status.schema_version}&quot;)
+else:
+    print(&quot;DynamoDB is not reachable&quot;)
+</code></pre></div>
 </details>
 
     </div>
