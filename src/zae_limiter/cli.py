@@ -240,6 +240,24 @@ def deploy(
                         )
                         sys.exit(1)
 
+                # Step 3: Initialize version record in DynamoDB
+                if wait:
+                    from . import __version__
+                    from .repository import Repository
+                    from .version import get_schema_version
+
+                    click.echo()
+                    click.echo("Initializing version record...")
+
+                    repo = Repository(manager.table_name, region, endpoint_url)
+                    await repo.set_version_record(
+                        schema_version=get_schema_version(),
+                        lambda_version=__version__ if not endpoint_url else None,
+                        client_min_version="0.0.0",
+                        updated_by=f"cli:{__version__}",
+                    )
+                    click.echo(f"✓ Version record initialized (schema {get_schema_version()})")
+
                 if not wait:
                     click.echo()
                     click.echo("Stack creation initiated. Use 'status' command to check progress.")
@@ -412,6 +430,32 @@ def lambda_export(output: str, info: bool, force: bool) -> None:
         sys.exit(1)
 
 
+def _format_size(size_bytes: int | None) -> str:
+    """Format size in bytes to human-readable format."""
+    if size_bytes is None:
+        return "N/A"
+    if size_bytes < 1024:
+        return f"~{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"~{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"~{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"~{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+
+def _format_count(count: int | None) -> str:
+    """Format item count to human-readable format."""
+    if count is None:
+        return "N/A"
+    if count < 1000:
+        return f"~{count:,}"
+    elif count < 1000000:
+        return f"~{count / 1000:.1f}K"
+    else:
+        return f"~{count / 1000000:.1f}M"
+
+
 @cli.command()
 @click.option(
     "--name",
@@ -431,41 +475,131 @@ def lambda_export(output: str, info: bool, force: bool) -> None:
     ),
 )
 def status(name: str, region: str | None, endpoint_url: str | None) -> None:
-    """Get CloudFormation stack status."""
+    """Get comprehensive status of rate limiter infrastructure (read-only)."""
+    import time
+
+    from . import __version__
     from .exceptions import ValidationError
+    from .naming import normalize_name
+    from .repository import Repository
 
     try:
-        manager = StackManager(name, region, endpoint_url)
+        stack_name = normalize_name(name)
     except ValidationError as e:
         click.echo(f"Error: {e.reason}", err=True)
         sys.exit(1)
 
     async def _status() -> None:
-        async with manager:
+        # Initialize status values
+        available = False
+        latency_ms: float | None = None
+        cfn_status: str | None = None
+        table_status: str | None = None
+        aggregator_enabled = False
+        schema_version: str | None = None
+        lambda_version: str | None = None
+        table_item_count: int | None = None
+        table_size_bytes: int | None = None
+
+        # Get CloudFormation stack status (read-only)
+        try:
+            async with StackManager(stack_name, region, endpoint_url) as manager:
+                cfn_status = await manager.get_stack_status(stack_name)
+        except Exception:
+            pass  # Stack status unavailable
+
+        # Create repository for read-only DynamoDB access
+        repository = Repository(stack_name, region, endpoint_url)
+
+        try:
+            # Ping DynamoDB and measure latency
             try:
-                stack_status = await manager.get_stack_status(manager.stack_name)
+                start_time = time.time()
+                client = await repository._get_client()
 
-                if stack_status is None:
-                    click.echo(f"Stack '{manager.stack_name}' not found")
-                    sys.exit(1)
+                # Use DescribeTable to check connectivity and get table info
+                response = await client.describe_table(TableName=stack_name)
+                latency_ms = (time.time() - start_time) * 1000
+                available = True
 
-                click.echo(f"Stack: {manager.stack_name}")
-                click.echo(f"Status: {stack_status}")
+                # Extract table information
+                table = response.get("Table", {})
+                table_status = table.get("TableStatus")
+                table_item_count = table.get("ItemCount")
+                table_size_bytes = table.get("TableSizeInBytes")
 
-                # Interpret status
-                if stack_status == "CREATE_COMPLETE":
-                    click.echo("✓ Stack is ready")
-                elif stack_status == "DELETE_COMPLETE":
-                    click.echo("✓ Stack has been deleted")
-                elif "IN_PROGRESS" in stack_status:
-                    click.echo("⏳ Operation in progress...")
-                elif "FAILED" in stack_status or "ROLLBACK" in stack_status:
-                    click.echo("✗ Stack operation failed", err=True)
-                    sys.exit(1)
+                # Check if aggregator is enabled by looking for stream specification
+                stream_spec = table.get("StreamSpecification", {})
+                aggregator_enabled = stream_spec.get("StreamEnabled", False)
 
-            except Exception as e:
-                click.echo(f"✗ Failed to get status: {e}", err=True)
+            except Exception:
+                pass  # DynamoDB unavailable
+
+            # Get version information from DynamoDB
+            if available:
+                try:
+                    version_record = await repository.get_version_record()
+                    if version_record:
+                        schema_version = version_record.get("schema_version")
+                        lambda_version = version_record.get("lambda_version")
+                except Exception:
+                    pass  # Version record unavailable
+
+            # Header
+            click.echo()
+            click.echo(f"Status: {stack_name}")
+            click.echo("=" * 50)
+            click.echo()
+
+            # Connectivity section
+            click.echo("Connectivity")
+            available_str = "✓ Yes" if available else "✗ No"
+            click.echo(f"  Available:     {available_str}")
+            if latency_ms is not None:
+                click.echo(f"  Latency:       {latency_ms:.0f}ms")
+            else:
+                click.echo("  Latency:       N/A")
+            click.echo(f"  Region:        {region or 'default'}")
+            click.echo()
+
+            # Infrastructure section
+            click.echo("Infrastructure")
+            click.echo(f"  Stack:         {cfn_status or 'Not found'}")
+            click.echo(f"  Table:         {table_status or 'Not found'}")
+            aggregator_str = "Enabled" if aggregator_enabled else "Disabled"
+            click.echo(f"  Aggregator:    {aggregator_str}")
+            click.echo()
+
+            # Versions section
+            click.echo("Versions")
+            click.echo(f"  Client:        {__version__}")
+            click.echo(f"  Schema:        {schema_version or 'N/A'}")
+            click.echo(f"  Lambda:        {lambda_version or 'N/A'}")
+            click.echo()
+
+            # Table Metrics section
+            click.echo("Table Metrics")
+            click.echo(f"  Items:         {_format_count(table_item_count)}")
+            click.echo(f"  Size:          {_format_size(table_size_bytes)}")
+            click.echo()
+
+            # Exit with appropriate status code
+            if not available:
+                click.echo("✗ Infrastructure is not available", err=True)
                 sys.exit(1)
+            elif cfn_status and ("FAILED" in cfn_status or "ROLLBACK" in cfn_status):
+                click.echo("✗ Stack is in failed state", err=True)
+                sys.exit(1)
+            elif cfn_status and "IN_PROGRESS" in cfn_status:
+                click.echo("⏳ Operation in progress...")
+            elif cfn_status == "CREATE_COMPLETE":
+                click.echo("✓ Infrastructure is ready")
+
+        except Exception as e:
+            click.echo(f"✗ Failed to get status: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repository.close()
 
     asyncio.run(_status())
 

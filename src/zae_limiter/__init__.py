@@ -80,6 +80,7 @@ from .models import (
     LimitStatus,
     ResourceCapacity,
     StackOptions,
+    Status,
     UsageSnapshot,
 )
 
@@ -115,6 +116,7 @@ __all__ = [
     "ResourceCapacity",
     "EntityCapacity",
     "StackOptions",
+    "Status",
     # Audit
     "AuditEvent",
     "AuditAction",

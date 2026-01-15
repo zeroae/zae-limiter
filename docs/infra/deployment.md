@@ -43,9 +43,30 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
 ### Check Stack Status
 
-```bash
-zae-limiter status --name limiter --region us-east-1
-```
+=== "CLI"
+
+    ```bash
+    zae-limiter status --name limiter --region us-east-1
+    ```
+
+=== "Programmatic"
+
+    ```python
+    from zae_limiter import RateLimiter
+
+    limiter = RateLimiter(name="limiter", region="us-east-1")
+
+    status = await limiter.get_status()  # Returns Status dataclass
+
+    if not status.available:
+        print("DynamoDB not reachable")
+    elif status.stack_status == "CREATE_COMPLETE":
+        print("Stack is ready")
+        print(f"Schema version: {status.schema_version}")
+        print(f"Table items: {status.table_item_count}")
+    elif status.stack_status and "IN_PROGRESS" in status.stack_status:
+        print(f"Operation in progress: {status.stack_status}")
+    ```
 
 ### Delete Stack
 

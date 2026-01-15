@@ -567,6 +567,62 @@ class StackOptions:
         return params
 
 
+@dataclass
+class Status:
+    """
+    Comprehensive status of a RateLimiter instance.
+
+    Consolidates connectivity, infrastructure, identity, versions, and table
+    metrics into a single status object. Returned by ``RateLimiter.get_status()``
+    and ``SyncRateLimiter.get_status()``.
+
+    Example:
+        Check if infrastructure is ready::
+
+            status = await limiter.get_status()
+            if status.available and status.stack_status == "CREATE_COMPLETE":
+                print(f"Ready! Latency: {status.latency_ms}ms")
+            else:
+                print(f"Not ready: {status.stack_status}")
+
+    Attributes:
+        available: Whether DynamoDB is reachable and responding
+        latency_ms: Round-trip latency in milliseconds (None if unavailable)
+        stack_status: CloudFormation stack status (e.g., 'CREATE_COMPLETE')
+        table_status: DynamoDB table status (e.g., 'ACTIVE')
+        aggregator_enabled: Whether Lambda aggregator is deployed
+        name: Resource name (with ZAEL- prefix)
+        region: AWS region (None if using default)
+        schema_version: Deployed schema version
+        lambda_version: Deployed Lambda version
+        client_version: Current client library version
+        table_item_count: Approximate item count in table
+        table_size_bytes: Approximate table size in bytes
+    """
+
+    # Connectivity
+    available: bool
+    latency_ms: float | None
+
+    # Infrastructure
+    stack_status: str | None
+    table_status: str | None
+    aggregator_enabled: bool
+
+    # Identity
+    name: str
+    region: str | None
+
+    # Versions
+    schema_version: str | None
+    lambda_version: str | None
+    client_version: str
+
+    # Table metrics
+    table_item_count: int | None
+    table_size_bytes: int | None
+
+
 class AuditAction:
     """Audit action type constants."""
 

@@ -729,9 +729,205 @@ class TestRateLimiterResourceCapacity:
         assert capacity.utilization_pct == 0.0
 
 
-class TestRateLimiterInputValidation:
-    """Tests for input validation at API boundary."""
+class TestRateLimiterGetStatus:
+    """Tests for get_status method."""
 
+    @pytest.mark.asyncio
+    async def test_get_status_returns_status_object(self, limiter):
+        """get_status should return a Status object with all fields."""
+        from zae_limiter import Status
+
+        status = await limiter.get_status()
+
+        # Verify it returns a Status object
+        assert isinstance(status, Status)
+
+        # Verify all fields are present
+        assert isinstance(status.available, bool)
+        assert status.name == limiter.name
+        assert isinstance(status.client_version, str)
+
+    @pytest.mark.asyncio
+    async def test_get_status_shows_available_when_table_exists(self, limiter):
+        """get_status should show available=True when DynamoDB table exists."""
+        status = await limiter.get_status()
+
+        assert status.available is True
+        assert status.latency_ms is not None
+        assert status.latency_ms > 0
+        assert status.table_status == "ACTIVE"
+
+    @pytest.mark.asyncio
+    async def test_get_status_shows_unavailable_when_no_connection(self, mock_dynamodb):
+        """get_status should show available=False when DynamoDB is not reachable."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-status-unavailable",
+                region="us-east-1",
+            )
+
+            # Mock the client to raise an exception
+            async def mock_describe_table(*args, **kwargs):
+                raise Exception("Connection refused")
+
+            mock_client = MagicMock()
+            mock_client.describe_table = AsyncMock(side_effect=mock_describe_table)
+
+            # Patch _get_client to return our mock
+            async def mock_get_client():
+                return mock_client
+
+            with patch.object(limiter._repository, "_get_client", mock_get_client):
+                status = await limiter.get_status()
+
+            assert status.available is False
+            assert status.latency_ms is None
+            assert status.table_status is None
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_status_includes_version_info(self, limiter):
+        """get_status should include version information when available."""
+        from zae_limiter import __version__
+
+        # First, set up version record
+        from zae_limiter.version import get_schema_version
+
+        await limiter._repository.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version="0.1.0",
+            client_min_version="0.0.0",
+        )
+
+        status = await limiter.get_status()
+
+        assert status.client_version == __version__
+        assert status.schema_version == get_schema_version()
+        assert status.lambda_version == "0.1.0"
+
+    @pytest.mark.asyncio
+    async def test_get_status_handles_missing_version_record(self, mock_dynamodb):
+        """get_status should handle missing version record gracefully."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter, __version__
+
+        with _patch_aiobotocore_response():
+            # Create a fresh limiter without going through context manager
+            # (which would call _ensure_initialized and create version record)
+            limiter = RateLimiter(
+                name="test-no-version",
+                region="us-east-1",
+                skip_version_check=True,
+            )
+            # Create table without version record
+            await limiter._repository.create_table()
+
+            status = await limiter.get_status()
+
+            # Should still have client version
+            assert status.client_version == __version__
+            # Schema and lambda versions should be None when no version record
+            assert status.schema_version is None
+            assert status.lambda_version is None
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_status_returns_name_and_region(self, limiter):
+        """get_status should return the correct name and region."""
+        status = await limiter.get_status()
+
+        assert status.name == limiter.name
+        assert status.name.startswith("ZAEL-")
+        assert status.region == "us-east-1"
+
+    @pytest.mark.asyncio
+    async def test_get_status_returns_table_metrics(self, limiter):
+        """get_status should return table metrics."""
+        status = await limiter.get_status()
+
+        # Item count should be available when table exists
+        # Note: table_size_bytes may be None with moto mock
+        assert status.table_item_count is not None
+        assert status.table_item_count >= 0
+        # table_size_bytes may be None in mocked environments
+        # but should be an int >= 0 if present
+        if status.table_size_bytes is not None:
+            assert status.table_size_bytes >= 0
+
+    @pytest.mark.asyncio
+    async def test_get_status_with_stack_status(self, mock_dynamodb):
+        """get_status should include stack status when available."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-stack-status-in-get-status",
+                region="us-east-1",
+            )
+
+            # Create table first
+            await limiter._repository.create_table()
+
+            # Mock StackManager to return a stack status
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_status()
+
+            assert status.stack_status == "CREATE_COMPLETE"
+
+            await limiter.close()
+
+
+class TestSyncRateLimiterGetStatus:
+    """Tests for SyncRateLimiter.get_status method."""
+
+    def test_sync_get_status_returns_status_object(self, sync_limiter):
+        """SyncRateLimiter.get_status should return a Status object."""
+        from zae_limiter import Status
+
+        status = sync_limiter.get_status()
+
+        assert isinstance(status, Status)
+        assert status.available is True
+        assert status.name == sync_limiter._limiter.name
+
+    def test_sync_get_status_includes_all_fields(self, sync_limiter):
+        """SyncRateLimiter.get_status should include all status fields."""
+        status = sync_limiter.get_status()
+
+        # All fields should be accessible
+        assert hasattr(status, "available")
+        assert hasattr(status, "latency_ms")
+        assert hasattr(status, "stack_status")
+        assert hasattr(status, "table_status")
+        assert hasattr(status, "aggregator_enabled")
+        assert hasattr(status, "name")
+        assert hasattr(status, "region")
+        assert hasattr(status, "schema_version")
+        assert hasattr(status, "lambda_version")
+        assert hasattr(status, "client_version")
+        assert hasattr(status, "table_item_count")
+        assert hasattr(status, "table_size_bytes")
+
+
+class TestRateLimiterInputValidation:
     @pytest.mark.asyncio
     async def test_acquire_validates_entity_id(self, limiter):
         """Acquire should reject entity_id containing reserved delimiter."""

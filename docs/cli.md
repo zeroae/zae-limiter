@@ -101,18 +101,29 @@ zae-limiter status --name limiter --region us-east-1
 **Output:**
 
 ```
-Stack: ZAEL-limiter
-Status: CREATE_COMPLETE
-Created: 2024-01-15 10:30:00
+Status: ZAEL-limiter
+==================================================
 
-Resources:
-  - RateLimitsTable (AWS::DynamoDB::Table): CREATE_COMPLETE
-  - AggregatorFunction (AWS::Lambda::Function): CREATE_COMPLETE
-  - AggregatorRole (AWS::IAM::Role): CREATE_COMPLETE
+Connectivity
+  Available:     ✓ Yes
+  Latency:       42ms
+  Region:        us-east-1
 
-Outputs:
-  - TableName: ZAEL-limiter
-  - TableArn: arn:aws:dynamodb:us-east-1:123456789:table/ZAEL-limiter
+Infrastructure
+  Stack:         CREATE_COMPLETE
+  Table:         ACTIVE
+  Aggregator:    Enabled
+
+Versions
+  Client:        0.2.0
+  Schema:        1.0.0
+  Lambda:        0.2.0
+
+Table Metrics
+  Items:         1,234
+  Size:          128.5 KB
+
+✓ Infrastructure is ready
 ```
 
 ---

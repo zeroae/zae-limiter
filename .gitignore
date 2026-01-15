@@ -99,6 +99,7 @@ Thumbs.db
 
 # Claude Code
 .claude/settings.local.json
+*.local.md
 
 # Benchmark outputs
 benchmark.json

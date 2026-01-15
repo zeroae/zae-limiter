@@ -91,14 +91,51 @@ class TestE2ELocalStackCLIWorkflow:
                     "status",
                     "--name",
                     stack_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
                     "--region",
                     "us-east-1",
                 ],
-                env={"AWS_ENDPOINT_URL": localstack_endpoint},
             )
-            assert result.exit_code == 0
-            # Status output contains the stack status
-            assert "CREATE_COMPLETE" in result.output or "Status:" in result.output
+            assert result.exit_code == 0, f"Status failed: {result.output}"
+
+            # Verify CLI output format with all sections
+            assert f"Status: {stack_name}" in result.output
+
+            # Connectivity section
+            assert "Connectivity" in result.output
+            assert "Available:" in result.output
+            assert "✓ Yes" in result.output
+            assert "Latency:" in result.output
+            assert "Region:" in result.output
+
+            # Infrastructure section
+            assert "Infrastructure" in result.output
+            assert "Stack:" in result.output
+            assert "Table:" in result.output
+            assert "ACTIVE" in result.output
+            assert "Aggregator:" in result.output
+
+            # Versions section
+            # After deploy, version record should exist (not N/A)
+            assert "Versions" in result.output
+            assert "Client:" in result.output
+            assert "Schema:" in result.output
+            # Schema should be initialized by deploy (not N/A)
+            assert "Schema:        1.0.0" in result.output
+            assert "Lambda:" in result.output
+            # Lambda is N/A for LocalStack (no real Lambda deployment)
+            assert "Lambda:        N/A" in result.output
+
+            # Table Metrics section
+            assert "Table Metrics" in result.output
+            assert "Items:" in result.output
+            assert "Size:" in result.output
+
+            # Final status indicator
+            assert (
+                "✓ Infrastructure is ready" in result.output or "CREATE_COMPLETE" in result.output
+            )
 
             # Step 3: Use SyncRateLimiter with deployed infrastructure
             limiter = SyncRateLimiter(
@@ -120,6 +157,14 @@ class TestE2ELocalStackCLIWorkflow:
                     consume={"rpm": 1},
                 ) as lease:
                     assert lease.consumed == {"rpm": 1}
+
+                # Step 3b: Test SyncRateLimiter.get_status()
+                status = limiter.get_status()
+                assert status.available is True
+                assert status.latency_ms is not None
+                assert status.latency_ms > 0
+                assert status.table_status == "ACTIVE"
+                assert status.name.startswith("ZAEL-")
 
         finally:
             # Step 4: Delete stack via CLI
@@ -361,6 +406,46 @@ class TestE2ELocalStackFullWorkflow:
         # Should have consumed 250 tpm total (with tolerance for timing/refill)
         assert available["tpm"] < 10000 - 150  # Consumed at least ~150 tokens
         assert available["tpm"] > 10000 - 350  # But not more than ~350
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_get_status_returns_comprehensive_info(self, e2e_limiter):
+        """
+        Test get_status() returns comprehensive infrastructure information.
+
+        Verifies:
+        - Connectivity: available=True, latency_ms > 0
+        - Infrastructure: table_status='ACTIVE'
+        - Identity: name is ZAEL-prefixed, region set
+        - Versions: client_version populated, schema_version may be set
+        - Metrics: item_count and size_bytes are integers
+        """
+        from zae_limiter import Status
+
+        status = await e2e_limiter.get_status()
+
+        # Verify Status type
+        assert isinstance(status, Status)
+
+        # Connectivity
+        assert status.available is True
+        assert status.latency_ms is not None
+        assert status.latency_ms > 0
+
+        # Infrastructure
+        assert status.table_status == "ACTIVE"
+        # stack_status depends on CloudFormation availability in LocalStack
+
+        # Identity
+        assert status.name.startswith("ZAEL-")
+        assert status.region == "us-east-1"
+
+        # Versions
+        assert status.client_version is not None
+        assert len(status.client_version) > 0
+
+        # Metrics
+        assert status.table_item_count is not None
+        assert status.table_item_count >= 0
 
 
 class TestE2ELocalStackAggregatorWorkflow:
