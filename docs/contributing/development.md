@@ -13,7 +13,7 @@ This guide covers setting up a local development environment for zae-limiter.
 ### Using uv (Recommended)
 
 ```bash
-git clone https://github.com/zeroae/zae-limiter.git
+git clone --recurse-submodules https://github.com/zeroae/zae-limiter.git
 cd zae-limiter
 uv sync --all-extras
 ```
@@ -21,12 +21,18 @@ uv sync --all-extras
 ### Using conda
 
 ```bash
-git clone https://github.com/zeroae/zae-limiter.git
+git clone --recurse-submodules https://github.com/zeroae/zae-limiter.git
 cd zae-limiter
 conda create -n zae-limiter python=3.12
 conda activate zae-limiter
 pip install -e ".[dev]"
 ```
+
+!!! tip "Already cloned?"
+    If you cloned without `--recurse-submodules`, run:
+    ```bash
+    git submodule update --init --recursive
+    ```
 
 ## Running Tests
 
@@ -58,7 +64,7 @@ mypy src/zae_limiter
 
 ## Commit Messages
 
-Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md):
+Follow the ZeroAE [commit conventions](https://github.com/zeroae/.claude/blob/main/commits.md):
 
 ```bash
 # Examples

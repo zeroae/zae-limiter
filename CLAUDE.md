@@ -16,6 +16,7 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 
 ```bash
 # Setup (one-time)
+git submodule update --init --recursive
 uv sync --all-extras
 
 # Deploy infrastructure (CloudFormation)
@@ -36,6 +37,8 @@ uv run ruff format .
 ### Using conda
 
 ```bash
+# Setup (one-time)
+git submodule update --init --recursive
 conda create -n zae-limiter python=3.12
 conda activate zae-limiter
 pip install -e ".[dev]"
@@ -77,6 +80,28 @@ All changes to the codebase must go through pull requests. Direct commits to the
 6. Once approved and CI passes, the PR will be merged to main
 
 **Important:** Never force-push to main or bypass CI checks.
+
+### Release Planning
+
+See org conventions in `.claude/rules/zeroae/github.md` for issue types, labels, and workflow.
+
+**Closed milestones:**
+- [v0.1.0](https://github.com/zeroae/zae-limiter/milestone/7) - Initial Release (#137)
+- [v0.2.0](https://github.com/zeroae/zae-limiter/milestone/6) - Infrastructure & Security (#136)
+
+**Open milestones:**
+- [v0.9.0](https://github.com/zeroae/zae-limiter/milestone/1) - API Polish (#121)
+- [v0.10.0](https://github.com/zeroae/zae-limiter/milestone/2) - Observability (#122)
+- [v0.11.0](https://github.com/zeroae/zae-limiter/milestone/3) - Central Config, IAM & Performance (#123)
+- [v0.12.0](https://github.com/zeroae/zae-limiter/milestone/4) - Cascade Redesign (#124)
+- [v1.0.0](https://github.com/zeroae/zae-limiter/milestone/5) - Stable Release (#49)
+
+**Project scopes (for commits and area labels):**
+- `limiter` / `area/limiter` - Core rate limiting logic
+- `cli` / `area/cli` - Command line interface
+- `infra` / `area/infra` - CloudFormation, IAM, infrastructure
+- `aggregator` / `area/aggregator` - Lambda aggregator function
+- `ci` / `area/ci` - CI/CD workflows
 
 ## Infrastructure Deployment
 

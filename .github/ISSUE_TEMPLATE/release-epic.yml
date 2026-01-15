@@ -1,0 +1,80 @@
+name: Release Epic
+description: Create an epic issue for tracking a release
+title: "🎯 vX.Y.Z: Theme"
+type: Epic
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to create an epic for a new release.
+        Update the title with the actual version and theme.
+
+  - type: input
+    id: theme
+    attributes:
+      label: Theme
+      description: One sentence describing the release focus
+      placeholder: "Store configuration in DynamoDB to enable offline config and IAM separation"
+    validations:
+      required: true
+
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      description: Link to the milestone (create milestone first)
+      placeholder: "[vX.Y.Z](https://github.com/zeroae/zae-limiter/milestone/N)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: goals
+    attributes:
+      label: Goals
+      description: Numbered list of goals for this release
+      placeholder: |
+        1. First goal
+        2. Second goal
+        3. Third goal
+    validations:
+      required: true
+
+  - type: textarea
+    id: tickets
+    attributes:
+      label: Tickets
+      description: Group related tickets by category
+      placeholder: |
+        **Category 1:** #issue1, #issue2
+
+        **Category 2:** #issue3
+    validations:
+      required: true
+
+  - type: textarea
+    id: success-criteria
+    attributes:
+      label: Success Criteria
+      description: Checkboxes for success criteria (use - [ ] syntax)
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+        - [ ] Documentation updated
+    validations:
+      required: true
+
+  - type: textarea
+    id: breaking-changes
+    attributes:
+      label: Breaking Changes
+      description: List breaking changes, or "None" if backward compatible
+      value: "None - all additions are backward compatible."
+
+  - type: textarea
+    id: documentation
+    attributes:
+      label: Documentation Updates
+      description: Checkboxes for documentation that needs updating
+      placeholder: |
+        - [ ] CLAUDE.md: What to update
+        - [ ] `docs/path/file.md`: What to update
