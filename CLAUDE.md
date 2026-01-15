@@ -90,10 +90,10 @@ See org conventions in `.claude/rules/zeroae/github.md` for issue types, labels,
 - [v0.2.0](https://github.com/zeroae/zae-limiter/milestone/6) - Infrastructure & Security (#136)
 
 **Open milestones:**
-- [v0.9.0](https://github.com/zeroae/zae-limiter/milestone/1) - API Polish (#121)
-- [v0.10.0](https://github.com/zeroae/zae-limiter/milestone/2) - Observability (#122)
-- [v0.11.0](https://github.com/zeroae/zae-limiter/milestone/3) - Central Config, IAM & Performance (#123)
-- [v0.12.0](https://github.com/zeroae/zae-limiter/milestone/4) - Cascade Redesign (#124)
+- [v0.3.0](https://github.com/zeroae/zae-limiter/milestone/1) - API Polish (#121)
+- [v0.4.0](https://github.com/zeroae/zae-limiter/milestone/2) - Observability (#122)
+- [v0.5.0](https://github.com/zeroae/zae-limiter/milestone/3) - Central Config, IAM & Performance (#123)
+- [v0.6.0](https://github.com/zeroae/zae-limiter/milestone/4) - Cascade Redesign (#124)
 - [v1.0.0](https://github.com/zeroae/zae-limiter/milestone/5) - Stable Release (#49)
 
 **Project scopes (for commits and area labels):**
