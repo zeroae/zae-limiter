@@ -3,7 +3,7 @@
 import pytest
 from botocore.exceptions import ClientError
 
-from zae_limiter import Limit, RateLimitExceeded
+from zae_limiter import Limit, OnUnavailable, RateLimiterUnavailable, RateLimitExceeded
 
 
 class TestSyncRateLimiter:
@@ -118,3 +118,113 @@ class TestSyncRateLimiterIsAvailable:
         finally:
             # Restore original _run for fixture cleanup
             sync_limiter._run = original_run
+
+
+class TestSyncRateLimiterOnUnavailable:
+    """Tests for ALLOW vs BLOCK behavior when DynamoDB is unavailable."""
+
+    def test_allow_returns_noop_lease_on_dynamodb_error(self, sync_limiter, monkeypatch):
+        """ALLOW should return no-op lease on infrastructure error."""
+
+        # Mock repository method to raise error
+        async def mock_error(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ServiceUnavailable", "Message": "DynamoDB down"}},
+                "GetItem",
+            )
+
+        monkeypatch.setattr(sync_limiter._limiter._repository, "get_bucket", mock_error)
+
+        # Set on_unavailable to ALLOW
+        sync_limiter._limiter.on_unavailable = OnUnavailable.ALLOW
+
+        # Should not raise, should return no-op lease
+        limits = [Limit.per_minute("rpm", 100)]
+        with sync_limiter.acquire(
+            entity_id="test-entity",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            # No-op lease has no entries
+            assert len(lease._lease.entries) == 0
+            assert lease.consumed == {}
+
+    def test_block_raises_unavailable_on_dynamodb_error(self, sync_limiter, monkeypatch):
+        """BLOCK should reject requests when DynamoDB is down."""
+
+        # Mock repository method to raise error
+        async def mock_error(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}},
+                "Query",
+            )
+
+        monkeypatch.setattr(sync_limiter._limiter._repository, "get_bucket", mock_error)
+
+        # Set on_unavailable to BLOCK (default)
+        sync_limiter._limiter.on_unavailable = OnUnavailable.BLOCK
+
+        # Should raise RateLimiterUnavailable
+        limits = [Limit.per_minute("rpm", 100)]
+        with pytest.raises(RateLimiterUnavailable) as exc_info:
+            with sync_limiter.acquire(
+                entity_id="test-entity",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        # Verify exception details
+        assert exc_info.value.cause is not None
+        assert "ProvisionedThroughputExceededException" in str(exc_info.value.cause)
+
+    def test_allow_override_in_acquire_call(self, sync_limiter, monkeypatch):
+        """on_unavailable parameter should override limiter default."""
+
+        # Mock error
+        async def mock_error(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "InternalServerError"}},
+                "TransactWriteItems",
+            )
+
+        monkeypatch.setattr(sync_limiter._limiter._repository, "get_bucket", mock_error)
+
+        # Set limiter to BLOCK, but override in acquire
+        sync_limiter._limiter.on_unavailable = OnUnavailable.BLOCK
+
+        limits = [Limit.per_minute("rpm", 100)]
+        with sync_limiter.acquire(
+            entity_id="test-entity",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+            on_unavailable=OnUnavailable.ALLOW,  # Override to ALLOW
+        ) as lease:
+            # Should get no-op lease due to override
+            assert len(lease._lease.entries) == 0
+
+    def test_block_override_in_acquire_call(self, sync_limiter, monkeypatch):
+        """on_unavailable parameter should override limiter default."""
+
+        # Mock error
+        async def mock_error(*args, **kwargs):
+            raise Exception("DynamoDB timeout")
+
+        monkeypatch.setattr(sync_limiter._limiter._repository, "get_bucket", mock_error)
+
+        # Set limiter to ALLOW, but override in acquire
+        sync_limiter._limiter.on_unavailable = OnUnavailable.ALLOW
+
+        limits = [Limit.per_minute("rpm", 100)]
+        with pytest.raises(RateLimiterUnavailable):
+            with sync_limiter.acquire(
+                entity_id="test-entity",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+                on_unavailable=OnUnavailable.BLOCK,  # Override to BLOCK
+            ):
+                pass
