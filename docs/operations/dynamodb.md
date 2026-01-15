@@ -39,7 +39,7 @@ flowchart TD
 - `ProvisionedThroughputExceededException` errors
 - Increased latency on rate limit checks
 - CloudWatch throttle alarms triggered
-- `RateLimiterUnavailable` with `FAIL_CLOSED` mode
+- `RateLimiterUnavailable` with `OnUnavailable.BLOCK` mode
 
 ### Diagnostic Steps
 

@@ -38,11 +38,11 @@ from .schema import DEFAULT_RESOURCE
 _T = TypeVar("_T")
 
 
-class FailureMode(Enum):
+class OnUnavailable(Enum):
     """Behavior when DynamoDB is unavailable."""
 
-    FAIL_OPEN = "open"  # Allow requests
-    FAIL_CLOSED = "closed"  # Reject requests
+    ALLOW = "allow"  # Allow requests
+    BLOCK = "block"  # Block requests
 
 
 class RateLimiter:
@@ -70,7 +70,7 @@ class RateLimiter:
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
-        failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
+        on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
@@ -85,7 +85,7 @@ class RateLimiter:
             region: AWS region
             endpoint_url: DynamoDB endpoint URL (for local development)
             stack_options: Desired infrastructure state (None = connect only, don't manage)
-            failure_mode: Behavior when DynamoDB is unavailable
+            on_unavailable: Behavior when DynamoDB is unavailable
             auto_update: Auto-update Lambda when version mismatch detected
             strict_version: Fail if version mismatch (when auto_update is False)
             skip_version_check: Skip all version checks (dangerous)
@@ -97,7 +97,7 @@ class RateLimiter:
         # Internal: stack_name and table_name for AWS resources
         self.stack_name = self._name
         self.table_name = self._name
-        self.failure_mode = failure_mode
+        self.on_unavailable = on_unavailable
         self._auto_update = auto_update
         self._strict_version = strict_version
         self._skip_version_check = skip_version_check
@@ -310,7 +310,7 @@ class RateLimiter:
         consume: dict[str, int],
         cascade: bool = False,
         use_stored_limits: bool = False,
-        failure_mode: FailureMode | None = None,
+        on_unavailable: OnUnavailable | None = None,
     ) -> AsyncIterator[Lease]:
         """
         Acquire rate limit capacity.
@@ -322,17 +322,17 @@ class RateLimiter:
             consume: Amounts to consume by limit name
             cascade: If True, also consume from parent entity
             use_stored_limits: If True, use stored limits if available
-            failure_mode: Override default failure mode
+            on_unavailable: Override default on_unavailable behavior
 
         Yields:
             Lease for managing additional consumption
 
         Raises:
             RateLimitExceeded: If any limit would be exceeded
-            RateLimiterUnavailable: If DynamoDB unavailable and FAIL_CLOSED
+            RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
         """
         await self._ensure_initialized()
-        mode = failure_mode or self.failure_mode
+        mode = on_unavailable or self.on_unavailable
 
         # Acquire the lease (this may fail due to rate limit or infrastructure)
         try:
@@ -347,7 +347,7 @@ class RateLimiter:
         except (RateLimitExceeded, ValidationError):
             raise
         except Exception as e:
-            if mode == FailureMode.FAIL_OPEN:
+            if mode == OnUnavailable.ALLOW:
                 # Return a no-op lease
                 yield Lease(repository=self._repository)
                 return
@@ -860,7 +860,7 @@ class SyncRateLimiter:
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
-        failure_mode: FailureMode = FailureMode.FAIL_CLOSED,
+        on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
@@ -870,7 +870,7 @@ class SyncRateLimiter:
             region=region,
             endpoint_url=endpoint_url,
             stack_options=stack_options,
-            failure_mode=failure_mode,
+            on_unavailable=on_unavailable,
             auto_update=auto_update,
             strict_version=strict_version,
             skip_version_check=skip_version_check,
@@ -972,7 +972,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         cascade: bool = False,
         use_stored_limits: bool = False,
-        failure_mode: FailureMode | None = None,
+        on_unavailable: OnUnavailable | None = None,
     ) -> Iterator[SyncLease]:
         """Acquire rate limit capacity (synchronous)."""
         loop = self._get_loop()
@@ -985,7 +985,7 @@ class SyncRateLimiter:
                 consume=consume,
                 cascade=cascade,
                 use_stored_limits=use_stored_limits,
-                failure_mode=failure_mode,
+                on_unavailable=on_unavailable,
             )
             lease = await ctx.__aenter__()
             return lease, True

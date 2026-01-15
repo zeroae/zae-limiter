@@ -195,7 +195,7 @@ try:
         ...
 except RateLimiterUnavailable as e:
     # DynamoDB is unavailable
-    # Behavior depends on failure_mode setting
+    # Behavior depends on on_unavailable setting
     print(f"Service unavailable: {e}")
 ```
 

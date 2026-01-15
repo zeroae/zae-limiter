@@ -230,10 +230,11 @@ class TestRateLimiterUnavailable:
         assert "entity=" not in str(exc)
         assert "resource=" not in str(exc)
 
-    def test_inherits_from_rate_limit_error(self) -> None:
-        """RateLimiterUnavailable is a RateLimitError."""
+    def test_inherits_from_infrastructure_error(self) -> None:
+        """RateLimiterUnavailable is an InfrastructureError (not RateLimitError)."""
         exc = RateLimiterUnavailable("test")
-        assert isinstance(exc, RateLimitError)
+        assert isinstance(exc, InfrastructureError)
+        assert not isinstance(exc, RateLimitError)
 
 
 class TestEntityNotFoundError:

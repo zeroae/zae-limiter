@@ -20,9 +20,9 @@ The main rate limiter classes for async and sync usage.
       members_order: source
       heading_level: 3
 
-## FailureMode
+## OnUnavailable
 
-::: zae_limiter.limiter.FailureMode
+::: zae_limiter.limiter.OnUnavailable
     options:
       show_root_heading: true
       show_source: false
