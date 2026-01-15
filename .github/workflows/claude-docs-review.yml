@@ -1,0 +1,251 @@
+name: Documentation Sync Check
+
+on:
+  pull_request:
+    paths:
+      - 'src/zae_limiter/**/*.py'
+      - 'docs/**/*.md'
+      - 'mkdocs.yml'
+      - '.github/workflows/claude-docs-review.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check-code-changes:
+    name: Check if code changes need docs updates
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.changed_files, 'src/zae_limiter/')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            src/zae_limiter/**/*.py
+          files_ignore: |
+            **/__pycache__/**
+            **/*.pyc
+
+      - name: Check if docs were also updated
+        id: docs-changed
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            docs/**/*.md
+
+      - name: Check for public API changes
+        if: steps.changed-files.outputs.any_changed == 'true'
+        id: api-changes
+        run: |
+          # Check if changes touch public API files
+          PUBLIC_API_FILES="
+          src/zae_limiter/__init__.py
+          src/zae_limiter/limiter.py
+          src/zae_limiter/models.py
+          src/zae_limiter/exceptions.py
+          src/zae_limiter/cli.py
+          "
+
+          API_CHANGED=false
+          for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
+            for api_file in $PUBLIC_API_FILES; do
+              if [[ "$file" == "$api_file" ]]; then
+                API_CHANGED=true
+                break 2
+              fi
+            done
+          done
+
+          echo "api_changed=$API_CHANGED" >> $GITHUB_OUTPUT
+
+      - name: Add needs-docs-review label
+        if: |
+          steps.api-changes.outputs.api_changed == 'true' &&
+          steps.docs-changed.outputs.any_changed == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['needs-docs-review']
+            });
+
+      - name: Comment on PR
+        if: |
+          steps.api-changes.outputs.api_changed == 'true' &&
+          steps.docs-changed.outputs.any_changed == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = `## ⚠️ Documentation Review Needed
+
+            This PR modifies public API files but doesn't include documentation updates.
+
+            **Changed API files:**
+            ${{ steps.changed-files.outputs.all_changed_files }}
+
+            **Please consider:**
+            - Do these changes affect the public API?
+            - Should examples in the documentation be updated?
+            - Do docstrings need updates?
+            - Should the API reference be regenerated?
+
+            If documentation updates aren't needed, please add a comment explaining why.
+            `;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
+
+  check-docs-changes:
+    name: Check if docs changes match code
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.changed_files, 'docs/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv sync --all-extras
+
+      - name: Build documentation
+        id: build-docs
+        run: |
+          # Build in strict mode to catch broken links and missing references
+          uv run mkdocs build --strict 2>&1 | tee build.log
+
+          # Check if build succeeded
+          if [ $? -eq 0 ]; then
+            echo "build_success=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_success=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate code examples
+        id: validate-examples
+        run: |
+          # Extract and validate Python code blocks from docs
+          # This is a placeholder - could be expanded with actual validation
+          echo "Checking for common issues in code examples..."
+
+          # Check for outdated import patterns
+          if grep -r "from zae_limiter import.*StackCreationError" docs/; then
+            echo "Found references to StackCreationError - verify it's still exported"
+          fi
+
+          echo "validation_complete=true" >> $GITHUB_OUTPUT
+
+      - name: Check for API signature changes
+        id: check-signatures
+        run: |
+          # Basic check: ensure documented classes/methods exist
+          python3 << 'EOF'
+          import sys
+          try:
+              from zae_limiter import (
+                  RateLimiter, SyncRateLimiter,
+                  Limit, Entity, LimitStatus, BucketState,
+                  RateLimitExceeded, RateLimiterUnavailable,
+                  FailureMode
+              )
+              print("✅ All documented exports are available")
+              sys.exit(0)
+          except ImportError as e:
+              print(f"❌ Import error: {e}")
+              sys.exit(1)
+          EOF
+
+      - name: Comment on PR if issues found
+        if: steps.build-docs.outputs.build_success == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const buildLog = fs.readFileSync('build.log', 'utf8');
+
+            const comment = `## ❌ Documentation Build Failed
+
+            The documentation failed to build in strict mode. Please fix the following issues:
+
+            \`\`\`
+            ${buildLog}
+            \`\`\`
+
+            Common issues:
+            - Broken internal links
+            - Missing API references
+            - Invalid mkdocstrings directives
+            `;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
+
+  auto-label:
+    name: Auto-label PR based on changes
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Label based on changed files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+
+            const labels = new Set();
+
+            for (const file of files) {
+              if (file.filename.startsWith('src/zae_limiter/')) {
+                labels.add('code-change');
+              }
+              if (file.filename.startsWith('docs/')) {
+                labels.add('documentation');
+              }
+              if (file.filename.includes('test_')) {
+                labels.add('tests');
+              }
+              if (file.filename.includes('infra/') || file.filename.includes('cfn_template.yaml')) {
+                labels.add('infrastructure');
+              }
+            }
+
+            if (labels.size > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: Array.from(labels)
+              });
+            }

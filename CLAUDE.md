@@ -71,12 +71,43 @@ All changes to the codebase must go through pull requests. Direct commits to the
    - **Lint**: Code style and formatting (ruff)
    - **Type Check**: Static type checking (mypy)
    - **Tests**: Unit tests with coverage (pytest on Python 3.11 & 3.12)
+   - **Docs Build**: Documentation builds successfully (mkdocs strict mode)
+   - **Docs Sync**: Automated check for code/docs synchronization
 
 5. Address review feedback if needed
 
 6. Once approved and CI passes, the PR will be merged to main
 
 **Important:** Never force-push to main or bypass CI checks.
+
+### Documentation Sync Workflow
+
+The repository includes automated documentation synchronization checks via `.github/workflows/claude-docs-review.yml`:
+
+**Automatic Labeling:**
+- `code-change` - Applied when `src/zae_limiter/` files are modified
+- `documentation` - Applied when `docs/` files are modified
+- `needs-docs-review` - Applied when public API changes without corresponding docs updates
+- `infrastructure` - Applied when CloudFormation or infrastructure files change
+- `tests` - Applied when test files are modified
+
+**Documentation Validation:**
+When documentation files are changed, the workflow:
+1. Builds documentation in strict mode (`mkdocs build --strict`)
+2. Validates that documented imports/exports still exist
+3. Comments on PR if build fails with error details
+
+**Code Change Detection:**
+When public API files are modified (`__init__.py`, `limiter.py`, `models.py`, `exceptions.py`, `cli.py`):
+1. Checks if documentation was also updated
+2. Adds `needs-docs-review` label if docs weren't updated
+3. Comments on PR prompting for documentation review
+
+**Best Practices:**
+- Update documentation when modifying public APIs
+- Run `uv run mkdocs build --strict` locally before pushing
+- Review auto-generated API docs match your changes
+- Update code examples if method signatures change
 
 ## Infrastructure Deployment
 
