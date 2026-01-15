@@ -1,9 +1,14 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(grep:*)",
-      "mcp__plugin_github_github__pull_request_read",
-      "Bash(git mv:*)"
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"$CLAUDE_PROJECT_DIR/.claude/rules/zeroae/.git\" || git -C \"$CLAUDE_PROJECT_DIR\" submodule update --init --recursive"
+          }
+        ]
+      }
     ]
   }
 }

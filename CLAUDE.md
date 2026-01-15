@@ -16,6 +16,7 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 
 ```bash
 # Setup (one-time)
+git submodule update --init --recursive
 uv sync --all-extras
 
 # Deploy infrastructure (CloudFormation)
@@ -36,6 +37,8 @@ uv run ruff format .
 ### Using conda
 
 ```bash
+# Setup (one-time)
+git submodule update --init --recursive
 conda create -n zae-limiter python=3.12
 conda activate zae-limiter
 pip install -e ".[dev]"
