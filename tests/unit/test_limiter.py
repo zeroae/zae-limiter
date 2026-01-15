@@ -6,8 +6,8 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import (
-    FailureMode,
     Limit,
+    OnUnavailable,
     RateLimiterUnavailable,
     RateLimitExceeded,
 )
@@ -441,12 +441,12 @@ class TestRateLimitExceededException:
             assert int(header) > 0
 
 
-class TestRateLimiterFailureMode:
-    """Tests for FAIL_OPEN vs FAIL_CLOSED behavior."""
+class TestRateLimiterOnUnavailable:
+    """Tests for ALLOW vs BLOCK behavior when DynamoDB is unavailable."""
 
     @pytest.mark.asyncio
-    async def test_fail_open_returns_noop_lease_on_dynamodb_error(self, limiter, monkeypatch):
-        """FAIL_OPEN should return no-op lease on infrastructure error."""
+    async def test_allow_returns_noop_lease_on_dynamodb_error(self, limiter, monkeypatch):
+        """ALLOW should return no-op lease on infrastructure error."""
 
         # Mock repository method to raise error
         async def mock_error(*args, **kwargs):
@@ -457,8 +457,8 @@ class TestRateLimiterFailureMode:
 
         monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
 
-        # Set failure mode to FAIL_OPEN
-        limiter.failure_mode = FailureMode.FAIL_OPEN
+        # Set on_unavailable to ALLOW
+        limiter.on_unavailable = OnUnavailable.ALLOW
 
         # Should not raise, should return no-op lease
         limits = [Limit.per_minute("rpm", 100)]
@@ -473,8 +473,8 @@ class TestRateLimiterFailureMode:
             assert lease.consumed == {}
 
     @pytest.mark.asyncio
-    async def test_fail_closed_raises_unavailable_on_dynamodb_error(self, limiter, monkeypatch):
-        """FAIL_CLOSED should reject requests when DynamoDB is down."""
+    async def test_block_raises_unavailable_on_dynamodb_error(self, limiter, monkeypatch):
+        """BLOCK should reject requests when DynamoDB is down."""
 
         # Mock repository method to raise error
         async def mock_error(*args, **kwargs):
@@ -485,8 +485,8 @@ class TestRateLimiterFailureMode:
 
         monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
 
-        # Set failure mode to FAIL_CLOSED (default)
-        limiter.failure_mode = FailureMode.FAIL_CLOSED
+        # Set on_unavailable to BLOCK (default)
+        limiter.on_unavailable = OnUnavailable.BLOCK
 
         # Should raise RateLimiterUnavailable
         limits = [Limit.per_minute("rpm", 100)]
@@ -504,8 +504,8 @@ class TestRateLimiterFailureMode:
         assert "ProvisionedThroughputExceededException" in str(exc_info.value.cause)
 
     @pytest.mark.asyncio
-    async def test_fail_open_override_in_acquire_call(self, limiter, monkeypatch):
-        """failure_mode parameter should override limiter default."""
+    async def test_allow_override_in_acquire_call(self, limiter, monkeypatch):
+        """on_unavailable parameter should override limiter default."""
 
         # Mock error
         async def mock_error(*args, **kwargs):
@@ -516,8 +516,8 @@ class TestRateLimiterFailureMode:
 
         monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
 
-        # Set limiter to FAIL_CLOSED, but override in acquire
-        limiter.failure_mode = FailureMode.FAIL_CLOSED
+        # Set limiter to BLOCK, but override in acquire
+        limiter.on_unavailable = OnUnavailable.BLOCK
 
         limits = [Limit.per_minute("rpm", 100)]
         async with limiter.acquire(
@@ -525,14 +525,14 @@ class TestRateLimiterFailureMode:
             resource="api",
             limits=limits,
             consume={"rpm": 1},
-            failure_mode=FailureMode.FAIL_OPEN,  # Override to FAIL_OPEN
+            on_unavailable=OnUnavailable.ALLOW,  # Override to ALLOW
         ) as lease:
             # Should get no-op lease due to override
             assert len(lease.entries) == 0
 
     @pytest.mark.asyncio
-    async def test_fail_closed_override_in_acquire_call(self, limiter, monkeypatch):
-        """failure_mode parameter should override limiter default."""
+    async def test_block_override_in_acquire_call(self, limiter, monkeypatch):
+        """on_unavailable parameter should override limiter default."""
 
         # Mock error
         async def mock_error(*args, **kwargs):
@@ -540,8 +540,8 @@ class TestRateLimiterFailureMode:
 
         monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
 
-        # Set limiter to FAIL_OPEN, but override in acquire
-        limiter.failure_mode = FailureMode.FAIL_OPEN
+        # Set limiter to ALLOW, but override in acquire
+        limiter.on_unavailable = OnUnavailable.ALLOW
 
         limits = [Limit.per_minute("rpm", 100)]
         with pytest.raises(RateLimiterUnavailable):
@@ -550,7 +550,7 @@ class TestRateLimiterFailureMode:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                failure_mode=FailureMode.FAIL_CLOSED,  # Override to FAIL_CLOSED
+                on_unavailable=OnUnavailable.BLOCK,  # Override to BLOCK
             ):
                 pass
 

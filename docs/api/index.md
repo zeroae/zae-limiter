@@ -123,20 +123,20 @@ from zae_limiter import (
     BucketState,
 
     # Enums
-    FailureMode,
+    OnUnavailable,
 
     # Exceptions - Base
     ZAELimiterError,
 
     # Exceptions - Rate Limit
     RateLimitExceeded,
-    RateLimiterUnavailable,
 
     # Exceptions - Entity
     EntityNotFoundError,
     EntityExistsError,
 
     # Exceptions - Infrastructure
+    RateLimiterUnavailable,
     StackCreationError,
     StackAlreadyExistsError,
     InfrastructureNotFoundError,

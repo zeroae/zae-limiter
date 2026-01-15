@@ -1,50 +1,53 @@
 # Unavailability Handling
 
-zae-limiter provides configurable behavior when DynamoDB is unavailable. This guide covers the failure modes and how to choose the right one for your application.
+zae-limiter provides configurable behavior when DynamoDB is unavailable. This guide covers the `on_unavailable` modes and how to choose the right one for your application.
 
 !!! note "Scope"
     This page covers **infrastructure unavailability** (DynamoDB errors, timeouts, throttling).
 
     For handling rate limit violations, see [Basic Usage](basic-usage.md#error-handling).
 
-## Available Failure Modes
+## Available Modes
 
 | Mode | Behavior | Use Case |
 |------|----------|----------|
-| `FAIL_CLOSED` | Reject requests | Security-critical, billing |
-| `FAIL_OPEN` | Allow requests | User experience priority |
+| `BLOCK` | Reject requests | Security-critical, billing |
+| `ALLOW` | Allow requests | User experience priority |
 
-## What Triggers Failure Mode Logic
+## What Triggers on_unavailable Logic
 
-The failure mode **only applies to infrastructure errors**. These exceptions always propagate regardless of failure mode:
+The `on_unavailable` mode **only applies to infrastructure errors**. These exceptions always propagate regardless of mode:
 
 - `RateLimitExceeded` — Rate limit violated (business logic)
 - `ValidationError` — Invalid configuration (user error)
 
-Infrastructure errors that trigger failure mode:
+Infrastructure errors that trigger on_unavailable:
 
 - Connection timeouts
 - DynamoDB throttling
 - Network failures
 - Service unavailable errors
 
-## FAIL_CLOSED (Default)
+## BLOCK (Default)
 
-When DynamoDB is unavailable, reject all rate-limited requests:
+When DynamoDB is unavailable, reject all rate-limited requests by raising `RateLimiterUnavailable`.
+
+!!! warning "Exception Handling Required"
+    When using `BLOCK` mode (the default), your application **must** catch `RateLimiterUnavailable` to handle infrastructure failures gracefully. This exception inherits from `InfrastructureError`, not `RateLimitExceeded`.
 
 ```python
-from zae_limiter import RateLimiter, FailureMode, RateLimiterUnavailable
+from zae_limiter import RateLimiter, OnUnavailable, RateLimiterUnavailable
 
 limiter = RateLimiter(
     name="limiter",  # Connects to ZAEL-limiter
-    failure_mode=FailureMode.FAIL_CLOSED,  # Default
+    on_unavailable=OnUnavailable.BLOCK,  # Default
 )
 
 try:
     async with limiter.acquire(...):
         await do_work()
 except RateLimiterUnavailable as e:
-    # DynamoDB is unavailable
+    # DynamoDB is unavailable - handle degraded mode
     return JSONResponse(
         status_code=503,
         content={"error": "Service temporarily unavailable"},
@@ -58,14 +61,14 @@ except RateLimiterUnavailable as e:
 - When over-consumption has significant costs
 - Compliance requirements
 
-## FAIL_OPEN
+## ALLOW
 
 When DynamoDB is unavailable, allow requests to proceed:
 
 ```python
 limiter = RateLimiter(
     name="limiter",  # Connects to ZAEL-limiter
-    failure_mode=FailureMode.FAIL_OPEN,
+    on_unavailable=OnUnavailable.ALLOW,
 )
 
 # Requests proceed even if DynamoDB is down
@@ -82,7 +85,7 @@ async with limiter.acquire(...):
 
 ### No-Op Lease Behavior
 
-When `FAIL_OPEN` activates due to infrastructure failure:
+When `ALLOW` activates due to infrastructure failure:
 
 - A **no-op lease** is returned with no bucket entries
 - `lease.consume()`, `lease.adjust()`, and `lease.release()` silently do nothing
@@ -97,8 +100,8 @@ async def acquire_with_metrics(limiter, **kwargs):
         async with limiter.acquire(**kwargs) as lease:
             yield lease
     except Exception as e:
-        # FAIL_OPEN caught the error - we're in degraded mode
-        # This only runs if you use FAIL_CLOSED and catch manually
+        # BLOCK caught the error - we're in degraded mode
+        # This only runs if you use BLOCK and catch manually
         metrics.increment("rate_limiter.degraded")
         logger.warning(f"Rate limiter degraded: {e}")
         raise
@@ -106,13 +109,13 @@ async def acquire_with_metrics(limiter, **kwargs):
 
 ## Per-Request Override
 
-Override the default failure mode for specific requests:
+Override the default mode for specific requests:
 
 ```python
-# Default to FAIL_CLOSED
+# Default to BLOCK
 limiter = RateLimiter(
     name="limiter",  # Connects to ZAEL-limiter
-    failure_mode=FailureMode.FAIL_CLOSED,
+    on_unavailable=OnUnavailable.BLOCK,
 )
 
 # But allow this specific request to proceed
@@ -121,7 +124,7 @@ async with limiter.acquire(
     resource="api",
     limits=[...],
     consume={"requests": 1},
-    failure_mode=FailureMode.FAIL_OPEN,  # Override for this call
+    on_unavailable=OnUnavailable.ALLOW,  # Override for this call
 ) as lease:
     await do_work()
 ```
@@ -156,13 +159,13 @@ except RateLimiterUnavailable as e:
 # High-risk: billing, security
 billing_limiter = RateLimiter(
     name="billing",  # Connects to ZAEL-billing
-    failure_mode=FailureMode.FAIL_CLOSED,
+    on_unavailable=OnUnavailable.BLOCK,
 )
 
 # Lower-risk: general API
 api_limiter = RateLimiter(
     name="api",  # Connects to ZAEL-api
-    failure_mode=FailureMode.FAIL_OPEN,
+    on_unavailable=OnUnavailable.ALLOW,
 )
 ```
 
@@ -175,7 +178,7 @@ async def resilient_operation(entity_id: str):
     try:
         async with limiter.acquire(
             entity_id=entity_id,
-            failure_mode=FailureMode.FAIL_CLOSED,
+            on_unavailable=OnUnavailable.BLOCK,
             ...
         ):
             return await premium_operation()

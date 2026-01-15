@@ -33,7 +33,7 @@ Example:
 # ---------------------------------------------------------------------------
 # Lazy imports for Lambda compatibility
 # ---------------------------------------------------------------------------
-# RateLimiter, SyncRateLimiter, FailureMode, and StackManager are imported
+# RateLimiter, SyncRateLimiter, OnUnavailable, and StackManager are imported
 # lazily via __getattr__ below. This is REQUIRED because:
 #
 # 1. These modules depend on aioboto3, which is NOT available in the AWS
@@ -88,7 +88,7 @@ if TYPE_CHECKING:
     # Type-checking imports for static analysis and IDE support.
     # These are never executed at runtime.
     from .infra.stack_manager import StackManager as StackManager
-    from .limiter import FailureMode as FailureMode
+    from .limiter import OnUnavailable as OnUnavailable
     from .limiter import RateLimiter as RateLimiter
     from .limiter import SyncRateLimiter as SyncRateLimiter
 
@@ -121,7 +121,7 @@ __all__ = [
     "AuditEvent",
     "AuditAction",
     # Enums
-    "FailureMode",
+    "OnUnavailable",
     # Exceptions - Base
     "ZAELimiterError",
     # Exceptions - Categories
@@ -131,11 +131,11 @@ __all__ = [
     "VersionError",
     # Exceptions - Rate Limit
     "RateLimitExceeded",
-    "RateLimiterUnavailable",
     # Exceptions - Entity
     "EntityNotFoundError",
     "EntityExistsError",
     # Exceptions - Infrastructure
+    "RateLimiterUnavailable",
     "StackCreationError",
     "StackAlreadyExistsError",
     "InfrastructureNotFoundError",
@@ -158,7 +158,7 @@ def __getattr__(name: str) -> type:
 
     The Lambda aggregator function (``zae_limiter.aggregator.handler``) uses
     only boto3 for DynamoDB stream processing. By deferring imports of
-    ``RateLimiter``, ``SyncRateLimiter``, ``FailureMode``, and ``StackManager``
+    ``RateLimiter``, ``SyncRateLimiter``, ``OnUnavailable``, and ``StackManager``
     until they are actually accessed, we allow the Lambda handler to import
     the package successfully.
 
@@ -177,10 +177,10 @@ def __getattr__(name: str) -> type:
         from .limiter import SyncRateLimiter
 
         return SyncRateLimiter
-    if name == "FailureMode":
-        from .limiter import FailureMode
+    if name == "OnUnavailable":
+        from .limiter import OnUnavailable
 
-        return FailureMode
+        return OnUnavailable
     if name == "StackManager":
         from .infra.stack_manager import StackManager
 

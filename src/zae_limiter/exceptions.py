@@ -147,11 +147,13 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
         return str(int(self.retry_after_seconds) + 1)  # round up
 
 
-class RateLimiterUnavailable(RateLimitError):  # noqa: N818
+class RateLimiterUnavailable(InfrastructureError):  # noqa: N818
     """
-    Raised when DynamoDB is unavailable and failure_mode=FAIL_CLOSED.
+    Raised when DynamoDB is unavailable and on_unavailable=OnUnavailable.BLOCK.
 
     This indicates a transient infrastructure issue, not a rate limit.
+    When using OnUnavailable.BLOCK (the default), your application should
+    be prepared to catch this exception and handle degraded mode gracefully.
 
     Attributes:
         cause: The underlying exception that caused the unavailability
