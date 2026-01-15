@@ -412,6 +412,32 @@ def lambda_export(output: str, info: bool, force: bool) -> None:
         sys.exit(1)
 
 
+def _format_size(size_bytes: int | None) -> str:
+    """Format size in bytes to human-readable format."""
+    if size_bytes is None:
+        return "N/A"
+    if size_bytes < 1024:
+        return f"~{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"~{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"~{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"~{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+
+def _format_count(count: int | None) -> str:
+    """Format item count to human-readable format."""
+    if count is None:
+        return "N/A"
+    if count < 1000:
+        return f"~{count:,}"
+    elif count < 1000000:
+        return f"~{count / 1000:.1f}K"
+    else:
+        return f"~{count / 1000000:.1f}M"
+
+
 @cli.command()
 @click.option(
     "--name",
@@ -431,41 +457,82 @@ def lambda_export(output: str, info: bool, force: bool) -> None:
     ),
 )
 def status(name: str, region: str | None, endpoint_url: str | None) -> None:
-    """Get CloudFormation stack status."""
+    """Get comprehensive status of rate limiter infrastructure."""
     from .exceptions import ValidationError
+    from .limiter import RateLimiter
 
     try:
-        manager = StackManager(name, region, endpoint_url)
+        limiter = RateLimiter(
+            name=name,
+            region=region,
+            endpoint_url=endpoint_url,
+            skip_version_check=True,  # Don't check version for status command
+        )
     except ValidationError as e:
         click.echo(f"Error: {e.reason}", err=True)
         sys.exit(1)
 
     async def _status() -> None:
-        async with manager:
-            try:
-                stack_status = await manager.get_stack_status(manager.stack_name)
+        try:
+            status = await limiter.get_status()
 
-                if stack_status is None:
-                    click.echo(f"Stack '{manager.stack_name}' not found")
-                    sys.exit(1)
+            # Header
+            click.echo()
+            click.echo(f"Status: {status.name}")
+            click.echo("=" * 50)
+            click.echo()
 
-                click.echo(f"Stack: {manager.stack_name}")
-                click.echo(f"Status: {stack_status}")
+            # Connectivity section
+            click.echo("Connectivity")
+            available_str = "✓ Yes" if status.available else "✗ No"
+            click.echo(f"  Available:     {available_str}")
+            if status.latency_ms is not None:
+                click.echo(f"  Latency:       {status.latency_ms:.0f}ms")
+            else:
+                click.echo("  Latency:       N/A")
+            click.echo(f"  Region:        {status.region or 'default'}")
+            click.echo()
 
-                # Interpret status
-                if stack_status == "CREATE_COMPLETE":
-                    click.echo("✓ Stack is ready")
-                elif stack_status == "DELETE_COMPLETE":
-                    click.echo("✓ Stack has been deleted")
-                elif "IN_PROGRESS" in stack_status:
-                    click.echo("⏳ Operation in progress...")
-                elif "FAILED" in stack_status or "ROLLBACK" in stack_status:
-                    click.echo("✗ Stack operation failed", err=True)
-                    sys.exit(1)
+            # Infrastructure section
+            click.echo("Infrastructure")
+            click.echo(f"  Stack:         {status.stack_status or 'Not found'}")
+            click.echo(f"  Table:         {status.table_status or 'Not found'}")
+            aggregator_str = "Enabled" if status.aggregator_enabled else "Disabled"
+            click.echo(f"  Aggregator:    {aggregator_str}")
+            click.echo()
 
-            except Exception as e:
-                click.echo(f"✗ Failed to get status: {e}", err=True)
+            # Versions section
+            click.echo("Versions")
+            click.echo(f"  Client:        {status.client_version}")
+            click.echo(f"  Schema:        {status.schema_version or 'N/A'}")
+            click.echo(f"  Lambda:        {status.lambda_version or 'N/A'}")
+            click.echo()
+
+            # Table Metrics section
+            click.echo("Table Metrics")
+            click.echo(f"  Items:         {_format_count(status.table_item_count)}")
+            click.echo(f"  Size:          {_format_size(status.table_size_bytes)}")
+            click.echo()
+
+            # Exit with appropriate status code
+            if not status.available:
+                click.echo("✗ Infrastructure is not available", err=True)
                 sys.exit(1)
+            elif status.stack_status and (
+                "FAILED" in status.stack_status or "ROLLBACK" in status.stack_status
+            ):
+                click.echo("✗ Stack is in failed state", err=True)
+                sys.exit(1)
+            elif status.stack_status and "IN_PROGRESS" in status.stack_status:
+                click.echo("⏳ Operation in progress...")
+            elif status.stack_status == "CREATE_COMPLETE":
+                click.echo("✓ Infrastructure is ready")
+
+        except Exception as e:
+            click.echo(f"✗ Failed to get status: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await limiter.close()
 
     asyncio.run(_status())
 

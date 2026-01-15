@@ -51,7 +51,7 @@ class TestCLI:
         """Test status command help."""
         result = runner.invoke(cli, ["status", "--help"])
         assert result.exit_code == 0
-        assert "Get CloudFormation stack status" in result.output
+        assert "Get comprehensive status" in result.output
 
     def test_cfn_template_help(self, runner: CliRunner) -> None:
         """Test cfn-template command help."""
@@ -656,43 +656,93 @@ class TestCLI:
             "test-stack", "us-east-1", "http://localhost:4566"
         )
 
-    @patch("zae_limiter.cli.StackManager")
-    def test_status_exists(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    @patch("zae_limiter.limiter.RateLimiter")
+    def test_status_exists(self, mock_rate_limiter: Mock, runner: CliRunner) -> None:
         """Test status command for existing stack."""
+        from zae_limiter import Status
+
         mock_instance = Mock()
-        mock_instance.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=None)
-        mock_stack_manager.return_value = mock_instance
+        mock_instance.get_status = AsyncMock(
+            return_value=Status(
+                available=True,
+                latency_ms=10.5,
+                stack_status="CREATE_COMPLETE",
+                table_status="ACTIVE",
+                aggregator_enabled=True,
+                name="ZAEL-test-stack",
+                region="us-east-1",
+                schema_version="1.0.0",
+                lambda_version="0.1.0",
+                client_version="0.1.0",
+                table_item_count=100,
+                table_size_bytes=1024,
+            )
+        )
+        mock_instance.close = AsyncMock(return_value=None)
+        mock_rate_limiter.return_value = mock_instance
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
         assert result.exit_code == 0
         assert "CREATE_COMPLETE" in result.output
-        assert "✓ Stack is ready" in result.output
+        assert "✓ Infrastructure is ready" in result.output
+        assert "Available:     ✓ Yes" in result.output
 
-    @patch("zae_limiter.cli.StackManager")
-    def test_status_not_found(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    @patch("zae_limiter.limiter.RateLimiter")
+    def test_status_not_found(self, mock_rate_limiter: Mock, runner: CliRunner) -> None:
         """Test status command for non-existent stack."""
+        from zae_limiter import Status
+
         mock_instance = Mock()
-        mock_instance.get_stack_status = AsyncMock(return_value=None)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=None)
-        mock_stack_manager.return_value = mock_instance
+        mock_instance.get_status = AsyncMock(
+            return_value=Status(
+                available=False,
+                latency_ms=None,
+                stack_status=None,
+                table_status=None,
+                aggregator_enabled=False,
+                name="ZAEL-nonexistent",
+                region=None,
+                schema_version=None,
+                lambda_version=None,
+                client_version="0.1.0",
+                table_item_count=None,
+                table_size_bytes=None,
+            )
+        )
+        mock_instance.close = AsyncMock(return_value=None)
+        mock_rate_limiter.return_value = mock_instance
 
         result = runner.invoke(cli, ["status", "--name", "nonexistent"])
 
         assert result.exit_code == 1
-        assert "not found" in result.output
+        assert "Not found" in result.output
+        assert "✗ Infrastructure is not available" in result.output
 
-    @patch("zae_limiter.cli.StackManager")
-    def test_status_in_progress(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    @patch("zae_limiter.limiter.RateLimiter")
+    def test_status_in_progress(self, mock_rate_limiter: Mock, runner: CliRunner) -> None:
         """Test status command for stack in progress."""
+        from zae_limiter import Status
+
         mock_instance = Mock()
-        mock_instance.get_stack_status = AsyncMock(return_value="CREATE_IN_PROGRESS")
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=None)
-        mock_stack_manager.return_value = mock_instance
+        mock_instance.get_status = AsyncMock(
+            return_value=Status(
+                available=True,
+                latency_ms=10.0,
+                stack_status="CREATE_IN_PROGRESS",
+                table_status="ACTIVE",
+                aggregator_enabled=True,
+                name="ZAEL-test-stack",
+                region="us-east-1",
+                schema_version="1.0.0",
+                lambda_version=None,
+                client_version="0.1.0",
+                table_item_count=0,
+                table_size_bytes=0,
+            )
+        )
+        mock_instance.close = AsyncMock(return_value=None)
+        mock_rate_limiter.return_value = mock_instance
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
@@ -700,14 +750,30 @@ class TestCLI:
         assert "CREATE_IN_PROGRESS" in result.output
         assert "⏳" in result.output
 
-    @patch("zae_limiter.cli.StackManager")
-    def test_status_failed(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    @patch("zae_limiter.limiter.RateLimiter")
+    def test_status_failed(self, mock_rate_limiter: Mock, runner: CliRunner) -> None:
         """Test status command for failed stack."""
+        from zae_limiter import Status
+
         mock_instance = Mock()
-        mock_instance.get_stack_status = AsyncMock(return_value="CREATE_FAILED")
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=None)
-        mock_stack_manager.return_value = mock_instance
+        mock_instance.get_status = AsyncMock(
+            return_value=Status(
+                available=True,
+                latency_ms=10.0,
+                stack_status="CREATE_FAILED",
+                table_status=None,
+                aggregator_enabled=False,
+                name="ZAEL-test-stack",
+                region="us-east-1",
+                schema_version=None,
+                lambda_version=None,
+                client_version="0.1.0",
+                table_item_count=None,
+                table_size_bytes=None,
+            )
+        )
+        mock_instance.close = AsyncMock(return_value=None)
+        mock_rate_limiter.return_value = mock_instance
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
@@ -715,14 +781,30 @@ class TestCLI:
         assert "CREATE_FAILED" in result.output
         assert "✗" in result.output
 
-    @patch("zae_limiter.cli.StackManager")
-    def test_status_with_endpoint_url(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
+    @patch("zae_limiter.limiter.RateLimiter")
+    def test_status_with_endpoint_url(self, mock_rate_limiter: Mock, runner: CliRunner) -> None:
         """Test status command with --endpoint-url for LocalStack."""
+        from zae_limiter import Status
+
         mock_instance = Mock()
-        mock_instance.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=None)
-        mock_stack_manager.return_value = mock_instance
+        mock_instance.get_status = AsyncMock(
+            return_value=Status(
+                available=True,
+                latency_ms=5.0,
+                stack_status="CREATE_COMPLETE",
+                table_status="ACTIVE",
+                aggregator_enabled=True,
+                name="ZAEL-test-stack",
+                region="us-east-1",
+                schema_version="1.0.0",
+                lambda_version="0.1.0",
+                client_version="0.1.0",
+                table_item_count=50,
+                table_size_bytes=512,
+            )
+        )
+        mock_instance.close = AsyncMock(return_value=None)
+        mock_rate_limiter.return_value = mock_instance
 
         result = runner.invoke(
             cli,
@@ -739,9 +821,12 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert "CREATE_COMPLETE" in result.output
-        # Verify StackManager was called with endpoint_url
-        mock_stack_manager.assert_called_once_with(
-            "test-stack", "us-east-1", "http://localhost:4566"
+        # Verify RateLimiter was called with correct parameters
+        mock_rate_limiter.assert_called_once_with(
+            name="test-stack",
+            region="us-east-1",
+            endpoint_url="http://localhost:4566",
+            skip_version_check=True,
         )
 
     def test_version_help(self, runner: CliRunner) -> None:

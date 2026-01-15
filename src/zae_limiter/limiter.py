@@ -28,6 +28,7 @@ from .models import (
     LimitStatus,
     ResourceCapacity,
     StackOptions,
+    Status,
     validate_identifier,
     validate_name,
 )
@@ -744,6 +745,110 @@ class RateLimiter:
         ) as manager:
             return await manager.get_stack_status(self.stack_name)
 
+    async def get_status(self) -> Status:
+        """
+        Get comprehensive status of the RateLimiter infrastructure.
+
+        Consolidates connectivity, infrastructure state, version information,
+        and table metrics into a single status object. This method does not
+        raise exceptions for missing infrastructure - it gracefully handles
+        all error cases and returns status information accordingly.
+
+        Returns:
+            Status object containing:
+            - Connectivity: available, latency_ms
+            - Infrastructure: stack_status, table_status, aggregator_enabled
+            - Identity: name, region
+            - Versions: schema_version, lambda_version, client_version
+            - Table metrics: table_item_count, table_size_bytes
+
+        Example:
+            Check infrastructure health::
+
+                status = await limiter.get_status()
+                if status.available:
+                    print(f"Ready! Latency: {status.latency_ms}ms")
+                    print(f"Stack: {status.stack_status}")
+                    print(f"Schema: {status.schema_version}")
+                else:
+                    print("DynamoDB is not reachable")
+
+        Note:
+            This method measures actual DynamoDB latency by performing a
+            lightweight operation. The latency_ms value reflects real
+            round-trip time to the DynamoDB endpoint.
+        """
+        from . import __version__
+        from .infra.stack_manager import StackManager
+
+        # Initialize defaults
+        available = False
+        latency_ms: float | None = None
+        cfn_status: str | None = None
+        table_status: str | None = None
+        aggregator_enabled = False
+        schema_version: str | None = None
+        lambda_version: str | None = None
+        table_item_count: int | None = None
+        table_size_bytes: int | None = None
+
+        # Get CloudFormation stack status (does not require table to exist)
+        try:
+            async with StackManager(
+                self.stack_name, self._repository.region, self._repository.endpoint_url
+            ) as manager:
+                cfn_status = await manager.get_stack_status(self.stack_name)
+        except Exception:
+            pass  # Stack status unavailable
+
+        # Ping DynamoDB and measure latency
+        try:
+            start_time = time.time()
+            client = await self._repository._get_client()
+
+            # Use DescribeTable to check connectivity and get table info
+            response = await client.describe_table(TableName=self.table_name)
+            latency_ms = (time.time() - start_time) * 1000
+            available = True
+
+            # Extract table information
+            table = response.get("Table", {})
+            table_status = table.get("TableStatus")
+            table_item_count = table.get("ItemCount")
+            table_size_bytes = table.get("TableSizeInBytes")
+
+            # Check if aggregator is enabled by looking for stream specification
+            stream_spec = table.get("StreamSpecification", {})
+            aggregator_enabled = stream_spec.get("StreamEnabled", False)
+
+        except Exception:
+            pass  # DynamoDB unavailable
+
+        # Get version information from DynamoDB
+        if available:
+            try:
+                version_record = await self._repository.get_version_record()
+                if version_record:
+                    schema_version = version_record.get("schema_version")
+                    lambda_version = version_record.get("lambda_version")
+            except Exception:
+                pass  # Version record unavailable
+
+        return Status(
+            available=available,
+            latency_ms=latency_ms,
+            stack_status=cfn_status,
+            table_status=table_status,
+            aggregator_enabled=aggregator_enabled,
+            name=self._name,
+            region=self._repository.region,
+            schema_version=schema_version,
+            lambda_version=lambda_version,
+            client_version=__version__,
+            table_item_count=table_item_count,
+            table_size_bytes=table_size_bytes,
+        )
+
 
 class SyncRateLimiter:
     """
@@ -1036,3 +1141,27 @@ class SyncRateLimiter:
                     print(f"Operation in progress: {status}")
         """
         return self._run(self._limiter.stack_status())
+
+    def get_status(self) -> Status:
+        """
+        Get comprehensive status of the RateLimiter infrastructure.
+
+        Synchronous wrapper for :meth:`RateLimiter.get_status`.
+        See the async version for full documentation.
+
+        Returns:
+            Status object with connectivity, infrastructure, versions, and metrics.
+
+        Example:
+            Check infrastructure health::
+
+                limiter = SyncRateLimiter(name="my-app", region="us-east-1")
+
+                status = limiter.get_status()
+                if status.available:
+                    print(f"Ready! Latency: {status.latency_ms}ms")
+                    print(f"Schema: {status.schema_version}")
+                else:
+                    print("DynamoDB is not reachable")
+        """
+        return self._run(self._limiter.get_status())
