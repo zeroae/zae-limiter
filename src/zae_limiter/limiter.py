@@ -748,11 +748,8 @@ class SyncRateLimiter:
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Get or create an event loop."""
         if self._loop is None or self._loop.is_closed():
-            try:
-                self._loop = asyncio.get_event_loop()
-            except RuntimeError:
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
         return self._loop
 
     def _run(self, coro: Coroutine[Any, Any, _T]) -> _T:
