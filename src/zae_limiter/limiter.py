@@ -220,6 +220,33 @@ class RateLimiter:
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
 
+    async def is_available(self, timeout: float = 1.0) -> bool:
+        """
+        Check if the rate limiter backend (DynamoDB) is reachable.
+
+        Performs a lightweight health check without requiring initialization.
+        This method never raises exceptions - it returns False on any error.
+
+        Args:
+            timeout: Maximum time in seconds to wait for response (default: 1.0)
+
+        Returns:
+            True if DynamoDB table is reachable, False otherwise.
+
+        Example:
+            limiter = RateLimiter(name="my-app", region="us-east-1")
+            if await limiter.is_available():
+                async with limiter.acquire(...) as lease:
+                    ...
+            else:
+                # Handle degraded mode
+                pass
+        """
+        try:
+            return await asyncio.wait_for(self._repository.ping(), timeout=timeout)
+        except (TimeoutError, Exception):
+            return False
+
     # -------------------------------------------------------------------------
     # Entity management
     # -------------------------------------------------------------------------
@@ -766,6 +793,33 @@ class SyncRateLimiter:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+    def is_available(self, timeout: float = 1.0) -> bool:
+        """
+        Check if the rate limiter backend (DynamoDB) is reachable.
+
+        Performs a lightweight health check without requiring initialization.
+        This method never raises exceptions - it returns False on any error.
+
+        Args:
+            timeout: Maximum time in seconds to wait for response (default: 1.0)
+
+        Returns:
+            True if DynamoDB table is reachable, False otherwise.
+
+        Example:
+            limiter = SyncRateLimiter(name="my-app", region="us-east-1")
+            if limiter.is_available():
+                with limiter.acquire(...) as lease:
+                    ...
+            else:
+                # Handle degraded mode
+                pass
+        """
+        try:
+            return self._run(self._limiter.is_available(timeout=timeout))
+        except Exception:
+            return False
 
     # -------------------------------------------------------------------------
     # Entity management

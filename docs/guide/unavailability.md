@@ -187,24 +187,39 @@ async def resilient_operation(entity_id: str):
 
 ### 3. Health Checks
 
-Include rate limiter health in your health checks:
+Use `is_available()` to check rate limiter connectivity:
 
 ```python
 async def health_check():
     checks = {}
 
     # Check rate limiter connectivity
-    try:
-        await limiter.available(
-            entity_id="health-check",
-            resource="health",
-            limits=[Limit.per_minute("requests", 1)],
-        )
+    if await limiter.is_available():
         checks["rate_limiter"] = "healthy"
-    except Exception as e:
-        checks["rate_limiter"] = f"unhealthy: {e}"
+    else:
+        checks["rate_limiter"] = "unhealthy"
 
     return checks
+```
+
+The `is_available()` method:
+
+- Returns `True` if DynamoDB is reachable, `False` otherwise
+- Never raises exceptions
+- Uses a configurable timeout (default 1 second)
+- Works without requiring initialization
+
+```python
+# FastAPI health endpoint example
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy" if await limiter.is_available() else "degraded",
+    }
+
+# Pre-flight check before operations
+if not await limiter.is_available():
+    logger.warning("Rate limiter unavailable, using fallback")
 ```
 
 ## Observability

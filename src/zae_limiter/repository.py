@@ -576,6 +576,29 @@ class Repository:
 
         return self._deserialize_map(item.get("data", {}).get("M", {}))
 
+    async def ping(self) -> bool:
+        """
+        Check if the DynamoDB table is reachable.
+
+        Performs a lightweight GetItem operation to verify connectivity.
+        Does not verify the table is initialized or has valid data.
+
+        Returns:
+            True if the table is reachable, False otherwise.
+        """
+        try:
+            client = await self._get_client()
+            await client.get_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_system()},
+                    "SK": {"S": schema.sk_version()},
+                },
+            )
+            return True
+        except Exception:
+            return False
+
     async def set_version_record(
         self,
         schema_version: str,

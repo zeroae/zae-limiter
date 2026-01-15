@@ -1,5 +1,7 @@
 """Tests for RateLimiter."""
 
+import asyncio
+
 import pytest
 from botocore.exceptions import ClientError
 
@@ -786,3 +788,57 @@ class TestRateLimiterInputValidation:
         # Should not raise
         async with limiter.acquire("user-123", "gpt-3.5-turbo", limits, {"rpm": 1}):
             pass
+
+
+class TestRateLimiterIsAvailable:
+    """Tests for is_available() health check method."""
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_true_when_table_exists(self, limiter):
+        """is_available should return True when DynamoDB table is reachable."""
+        result = await limiter.is_available()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_client_error(self, limiter, monkeypatch):
+        """is_available should return False when DynamoDB returns error."""
+
+        async def mock_error(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "Table not found"}},
+                "GetItem",
+            )
+
+        monkeypatch.setattr(limiter._repository, "ping", mock_error)
+        result = await limiter.is_available()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_timeout(self, limiter, monkeypatch):
+        """is_available should return False when request times out."""
+
+        async def mock_slow(*args, **kwargs):
+            await asyncio.sleep(10)  # Will be cancelled by timeout
+            return True
+
+        monkeypatch.setattr(limiter._repository, "ping", mock_slow)
+        result = await limiter.is_available(timeout=0.1)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_connection_error(self, limiter, monkeypatch):
+        """is_available should return False when connection fails."""
+
+        async def mock_connection_error(*args, **kwargs):
+            raise ConnectionError("Cannot connect to DynamoDB")
+
+        monkeypatch.setattr(limiter._repository, "ping", mock_connection_error)
+        result = await limiter.is_available()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_available_custom_timeout(self, limiter):
+        """is_available should respect custom timeout parameter."""
+        # With a reasonable timeout, should still succeed
+        result = await limiter.is_available(timeout=5.0)
+        assert result is True
