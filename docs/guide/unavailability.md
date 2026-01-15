@@ -206,7 +206,7 @@ The `is_available()` method:
 
 - Returns `True` if DynamoDB is reachable, `False` otherwise
 - Never raises exceptions
-- Uses a configurable timeout (default 3 seconds)
+- Uses a configurable timeout (default 1 second)
 - Works without requiring initialization
 
 ```python

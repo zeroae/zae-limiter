@@ -220,7 +220,7 @@ class RateLimiter:
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
 
-    async def is_available(self, timeout: float = 3.0) -> bool:
+    async def is_available(self, timeout: float = 1.0) -> bool:
         """
         Check if the rate limiter backend (DynamoDB) is reachable.
 
@@ -228,7 +228,7 @@ class RateLimiter:
         This method never raises exceptions - it returns False on any error.
 
         Args:
-            timeout: Maximum time in seconds to wait for response (default: 3.0)
+            timeout: Maximum time in seconds to wait for response (default: 1.0)
 
         Returns:
             True if DynamoDB table is reachable, False otherwise.
@@ -794,7 +794,7 @@ class SyncRateLimiter:
     def __exit__(self, *args: Any) -> None:
         self.close()
 
-    def is_available(self, timeout: float = 3.0) -> bool:
+    def is_available(self, timeout: float = 1.0) -> bool:
         """
         Check if the rate limiter backend (DynamoDB) is reachable.
 
@@ -802,7 +802,7 @@ class SyncRateLimiter:
         This method never raises exceptions - it returns False on any error.
 
         Args:
-            timeout: Maximum time in seconds to wait for response (default: 3.0)
+            timeout: Maximum time in seconds to wait for response (default: 1.0)
 
         Returns:
             True if DynamoDB table is reachable, False otherwise.
