@@ -833,7 +833,6 @@ class TestRateLimiterStackStatus:
 
 
 class TestRateLimiterInputValidation:
-
     @pytest.mark.asyncio
     async def test_acquire_validates_entity_id(self, limiter):
         """Acquire should reject entity_id containing reserved delimiter."""
