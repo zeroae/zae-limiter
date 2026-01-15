@@ -3,6 +3,7 @@
         "GitWorktrees.git-worktrees",
         "charliermarsh.ruff",
         "ms-python.mypy-type-checker",
-        "ms-python.python"
+        "ms-python.python",
+        "anthropic.claude-code"
     ]
 }
