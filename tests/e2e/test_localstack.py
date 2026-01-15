@@ -121,6 +121,14 @@ class TestE2ELocalStackCLIWorkflow:
                 ) as lease:
                     assert lease.consumed == {"rpm": 1}
 
+                # Step 3b: Test SyncRateLimiter.get_status()
+                status = limiter.get_status()
+                assert status.available is True
+                assert status.latency_ms is not None
+                assert status.latency_ms > 0
+                assert status.table_status == "ACTIVE"
+                assert status.name.startswith("ZAEL-")
+
         finally:
             # Step 4: Delete stack via CLI
             result = cli_runner.invoke(
@@ -361,6 +369,46 @@ class TestE2ELocalStackFullWorkflow:
         # Should have consumed 250 tpm total (with tolerance for timing/refill)
         assert available["tpm"] < 10000 - 150  # Consumed at least ~150 tokens
         assert available["tpm"] > 10000 - 350  # But not more than ~350
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_get_status_returns_comprehensive_info(self, e2e_limiter):
+        """
+        Test get_status() returns comprehensive infrastructure information.
+
+        Verifies:
+        - Connectivity: available=True, latency_ms > 0
+        - Infrastructure: table_status='ACTIVE'
+        - Identity: name is ZAEL-prefixed, region set
+        - Versions: client_version populated, schema_version may be set
+        - Metrics: item_count and size_bytes are integers
+        """
+        from zae_limiter import Status
+
+        status = await e2e_limiter.get_status()
+
+        # Verify Status type
+        assert isinstance(status, Status)
+
+        # Connectivity
+        assert status.available is True
+        assert status.latency_ms is not None
+        assert status.latency_ms > 0
+
+        # Infrastructure
+        assert status.table_status == "ACTIVE"
+        # stack_status depends on CloudFormation availability in LocalStack
+
+        # Identity
+        assert status.name.startswith("ZAEL-")
+        assert status.region == "us-east-1"
+
+        # Versions
+        assert status.client_version is not None
+        assert len(status.client_version) > 0
+
+        # Metrics
+        assert status.table_item_count is not None
+        assert status.table_item_count >= 0
 
 
 class TestE2ELocalStackAggregatorWorkflow:
