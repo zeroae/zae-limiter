@@ -6,7 +6,6 @@
       "Bash(gh issue edit:*)",
       "Bash(gh issue list:*)",
       "Bash(gh issue status:*)",
-      "Bash(gh pr create:*)",
       "Bash(gh pr checks:*)",
       "Bash(gh pr checkout:*)",
       "Bash(gh pr create:*)",
