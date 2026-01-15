@@ -295,3 +295,26 @@ class TestRepositoryLocalStackResourceAggregation:
         assert all(b.limit_name == "rpm" for b in rpm_buckets)
         assert all(b.resource == "gpt-4" for b in tpm_buckets)
         assert all(b.limit_name == "tpm" for b in tpm_buckets)
+
+
+class TestRepositoryPing:
+    """Integration tests for Repository.ping() health check."""
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_true_when_table_exists(self, localstack_repo):
+        """ping() should return True when table is reachable."""
+        result = await localstack_repo.ping()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_false_when_table_missing(self, localstack_endpoint):
+        """ping() should return False when table doesn't exist."""
+        repo = Repository(
+            stack_name="ping-missing-table-test",
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+        )
+        # Don't create the table - ping should return False
+        result = await repo.ping()
+        assert result is False
+        await repo.close()

@@ -1,6 +1,7 @@
 """Tests for SyncRateLimiter."""
 
 import pytest
+from botocore.exceptions import ClientError
 
 from zae_limiter import Limit, RateLimitExceeded
 
@@ -73,3 +74,30 @@ class TestSyncRateLimiter:
         retrieved = sync_limiter.get_limits("key-1")
         assert len(retrieved) == 1
         assert retrieved[0].name == "rpm"
+
+
+class TestSyncRateLimiterIsAvailable:
+    """Tests for sync is_available() health check method."""
+
+    def test_is_available_returns_true_when_table_exists(self, sync_limiter):
+        """is_available should return True when DynamoDB table is reachable."""
+        result = sync_limiter.is_available()
+        assert result is True
+
+    def test_is_available_returns_false_on_client_error(self, sync_limiter, monkeypatch):
+        """is_available should return False when DynamoDB returns error."""
+
+        async def mock_error(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "Table not found"}},
+                "GetItem",
+            )
+
+        monkeypatch.setattr(sync_limiter._limiter._repository, "ping", mock_error)
+        result = sync_limiter.is_available()
+        assert result is False
+
+    def test_is_available_custom_timeout(self, sync_limiter):
+        """is_available should respect custom timeout parameter."""
+        result = sync_limiter.is_available(timeout=5.0)
+        assert result is True
