@@ -152,18 +152,19 @@ This is useful when infrastructure is managed separately (e.g., via CLI or Terra
 === "Programmatic"
 
     ```python
-    status = await limiter.stack_status()  # Async
+    status = await limiter.get_status()  # Async
     # or
-    status = limiter.stack_status  # Sync (property)
+    status = limiter.get_status()  # Sync
 
-    if status is None:
-        print("Stack does not exist")
-    elif status == "CREATE_COMPLETE":
+    if not status.available:
+        print("DynamoDB not reachable")
+    elif status.stack_status == "CREATE_COMPLETE":
         print("Stack is ready")
-    elif "IN_PROGRESS" in status:
-        print(f"Operation in progress: {status}")
-    elif "FAILED" in status:
-        print(f"Stack in failed state: {status}")
+        print(f"Latency: {status.latency_ms}ms")
+    elif status.stack_status and "IN_PROGRESS" in status.stack_status:
+        print(f"Operation in progress: {status.stack_status}")
+    elif status.stack_status and "FAILED" in status.stack_status:
+        print(f"Stack in failed state: {status.stack_status}")
     ```
 
 === "CLI"
