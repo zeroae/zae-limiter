@@ -1463,22 +1463,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#failuremode" class="md-nav__link">
+  <a href="#onunavailable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        FailureMode
+        OnUnavailable
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="FailureMode">
+    <nav class="md-nav" aria-label="OnUnavailable">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.limiter.FailureMode" class="md-nav__link">
+  <a href="#zae_limiter.limiter.OnUnavailable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;FailureMode
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;OnUnavailable
       
     </span>
   </a>
@@ -2229,22 +2229,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#failuremode" class="md-nav__link">
+  <a href="#onunavailable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        FailureMode
+        OnUnavailable
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="FailureMode">
+    <nav class="md-nav" aria-label="OnUnavailable">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.limiter.FailureMode" class="md-nav__link">
+  <a href="#zae_limiter.limiter.OnUnavailable" class="md-nav__link">
     <span class="md-ellipsis">
       
-        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;FailureMode
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;OnUnavailable
       
     </span>
   </a>
@@ -2295,7 +2295,7 @@
 
 
 <a href="#zae_limiter.limiter.RateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;limiter&#39;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;limiter&#39;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -2400,10 +2400,10 @@ Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>failure_mode</code>
+                <code>on_unavailable</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-internal" title="            FailureMode (zae_limiter.limiter.FailureMode)" href="#zae_limiter.limiter.FailureMode">FailureMode</a></code>
+                  <code><a class="autorefs autorefs-internal" title="            OnUnavailable (zae_limiter.limiter.OnUnavailable)" href="#zae_limiter.limiter.OnUnavailable">OnUnavailable</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -2411,7 +2411,7 @@ Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
               </div>
             </td>
             <td>
-                  <code><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></code>
+                  <code><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -2863,7 +2863,7 @@ else:
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.acquire" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">acquire</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">acquire</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -2985,14 +2985,14 @@ else:
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>failure_mode</code>
+                <code>on_unavailable</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-internal" title="            FailureMode (zae_limiter.limiter.FailureMode)" href="#zae_limiter.limiter.FailureMode">FailureMode</a> | None</code>
+                  <code><a class="autorefs autorefs-internal" title="            OnUnavailable (zae_limiter.limiter.OnUnavailable)" href="#zae_limiter.limiter.OnUnavailable">OnUnavailable</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Override default failure mode</p>
+                <p>Override default on_unavailable behavior</p>
               </div>
             </td>
             <td>
@@ -3051,7 +3051,7 @@ else:
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If DynamoDB unavailable and FAIL_CLOSED</p>
+                <p>If DynamoDB unavailable and BLOCK</p>
               </div>
             </td>
           </tr>
@@ -4046,7 +4046,7 @@ round-trip time to the DynamoDB endpoint.</p>
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;limiter&#39;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.FailureMode.FAIL_CLOSED">FAIL_CLOSED</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;limiter&#39;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -4281,7 +4281,7 @@ else:
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.acquire" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">acquire</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">failure_mode</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">acquire</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4566,18 +4566,18 @@ else:
 
     </div>
 
-</div><h2 id="failuremode">FailureMode<a class="headerlink" href="#failuremode" title="Permanent link">&para;</a></h2>
+</div><h2 id="onunavailable">OnUnavailable<a class="headerlink" href="#onunavailable" title="Permanent link">&para;</a></h2>
 
 
 <div class="doc doc-object doc-class">
 
 
 
-<h3 id="zae_limiter.limiter.FailureMode" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">FailureMode</span>
+<h3 id="zae_limiter.limiter.OnUnavailable" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">OnUnavailable</span>
 
 
-<a href="#zae_limiter.limiter.FailureMode" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#zae_limiter.limiter.OnUnavailable" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents first">
