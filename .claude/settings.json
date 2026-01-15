@@ -6,6 +6,10 @@
           {
             "type": "command",
             "command": "test -d \"$CLAUDE_PROJECT_DIR/.claude/rules/zeroae/.git\" || git -C \"$CLAUDE_PROJECT_DIR\" submodule update --init --recursive"
+          },
+          {
+            "type": "command",
+            "command": "test -d \"$CLAUDE_PROJECT_DIR/.venv\" || uv sync --all-extras --directory \"$CLAUDE_PROJECT_DIR\""
           }
         ]
       }
