@@ -101,3 +101,20 @@ class TestSyncRateLimiterIsAvailable:
         """is_available should respect custom timeout parameter."""
         result = sync_limiter.is_available(timeout=5.0)
         assert result is True
+
+    def test_is_available_returns_false_on_event_loop_error(self, sync_limiter):
+        """is_available should return False when event loop fails."""
+        original_run = sync_limiter._run
+
+        def mock_run_error(coro):
+            # Close the coroutine to avoid warning, then raise
+            coro.close()
+            raise RuntimeError("Event loop is closed")
+
+        try:
+            sync_limiter._run = mock_run_error
+            result = sync_limiter.is_available()
+            assert result is False
+        finally:
+            # Restore original _run for fixture cleanup
+            sync_limiter._run = original_run
