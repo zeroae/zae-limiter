@@ -728,11 +728,11 @@ class TestRateLimiterResourceCapacity:
 
 
 class TestRateLimiterStackStatus:
-    """Tests for get_stack_status method."""
+    """Tests for stack_status method."""
 
     @pytest.mark.asyncio
-    async def test_get_stack_status_returns_status(self, mock_dynamodb):
-        """get_stack_status should return stack status string."""
+    async def test_stack_status_returns_status(self, mock_dynamodb):
+        """stack_status should return stack status string."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from tests.unit.conftest import _patch_aiobotocore_response
@@ -744,7 +744,7 @@ class TestRateLimiterStackStatus:
                 region="us-east-1",
             )
 
-            # Mock StackManager.get_stack_status
+            # Mock StackManager.get_stack_status (internal method)
             mock_manager = MagicMock()
             mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
             mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
@@ -755,7 +755,7 @@ class TestRateLimiterStackStatus:
                 "zae_limiter.infra.stack_manager.StackManager",
                 MagicMock(return_value=mock_manager),
             ):
-                status = await limiter.get_stack_status()
+                status = await limiter.stack_status()
 
             assert status == "CREATE_COMPLETE"
             mock_manager.get_stack_status.assert_called_once_with(limiter.stack_name)
@@ -763,8 +763,8 @@ class TestRateLimiterStackStatus:
             await limiter.close()
 
     @pytest.mark.asyncio
-    async def test_get_stack_status_returns_none_when_not_exists(self, mock_dynamodb):
-        """get_stack_status should return None when stack doesn't exist."""
+    async def test_stack_status_returns_none_when_not_exists(self, mock_dynamodb):
+        """stack_status should return None when stack doesn't exist."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from tests.unit.conftest import _patch_aiobotocore_response
@@ -786,15 +786,15 @@ class TestRateLimiterStackStatus:
                 "zae_limiter.infra.stack_manager.StackManager",
                 MagicMock(return_value=mock_manager),
             ):
-                status = await limiter.get_stack_status()
+                status = await limiter.stack_status()
 
             assert status is None
 
             await limiter.close()
 
     @pytest.mark.asyncio
-    async def test_get_stack_status_various_states(self, mock_dynamodb):
-        """get_stack_status should return various CloudFormation states."""
+    async def test_stack_status_various_states(self, mock_dynamodb):
+        """stack_status should return various CloudFormation states."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from tests.unit.conftest import _patch_aiobotocore_response
@@ -825,7 +825,7 @@ class TestRateLimiterStackStatus:
                     "zae_limiter.infra.stack_manager.StackManager",
                     MagicMock(return_value=mock_manager),
                 ):
-                    status = await limiter.get_stack_status()
+                    status = await limiter.stack_status()
 
                 assert status == expected_state, f"Expected {expected_state}, got {status}"
 

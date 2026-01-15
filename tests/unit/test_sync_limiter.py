@@ -78,10 +78,10 @@ class TestSyncRateLimiter:
 
 
 class TestSyncRateLimiterStackStatus:
-    """Tests for SyncRateLimiter.get_stack_status method."""
+    """Tests for SyncRateLimiter.stack_status property."""
 
-    def test_get_stack_status_returns_status(self, mock_dynamodb):
-        """get_stack_status should return stack status string."""
+    def test_stack_status_returns_status(self, mock_dynamodb):
+        """stack_status property should return stack status string."""
         from unittest.mock import patch
 
         from tests.unit.conftest import _patch_aiobotocore_response
@@ -93,7 +93,7 @@ class TestSyncRateLimiterStackStatus:
                 region="us-east-1",
             )
 
-            # Mock StackManager.get_stack_status
+            # Mock StackManager.get_stack_status (internal method)
             mock_manager = MagicMock()
             mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
             mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
@@ -103,15 +103,15 @@ class TestSyncRateLimiterStackStatus:
                 "zae_limiter.infra.stack_manager.StackManager",
                 MagicMock(return_value=mock_manager),
             ):
-                status = limiter.get_stack_status()
+                status = limiter.stack_status  # Property access, not method call
 
             assert status == "CREATE_COMPLETE"
             mock_manager.get_stack_status.assert_called_once_with(limiter._limiter.stack_name)
 
             limiter.close()
 
-    def test_get_stack_status_returns_none_when_not_exists(self, mock_dynamodb):
-        """get_stack_status should return None when stack doesn't exist."""
+    def test_stack_status_returns_none_when_not_exists(self, mock_dynamodb):
+        """stack_status property should return None when stack doesn't exist."""
         from unittest.mock import patch
 
         from tests.unit.conftest import _patch_aiobotocore_response
@@ -132,7 +132,7 @@ class TestSyncRateLimiterStackStatus:
                 "zae_limiter.infra.stack_manager.StackManager",
                 MagicMock(return_value=mock_manager),
             ):
-                status = limiter.get_stack_status()
+                status = limiter.stack_status  # Property access, not method call
 
             assert status is None
 

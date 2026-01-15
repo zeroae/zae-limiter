@@ -54,9 +54,9 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
     ```python
     limiter = RateLimiter(name="limiter", region="us-east-1")
 
-    status = await limiter.get_stack_status()  # Async
+    status = await limiter.stack_status()  # Async
     # or
-    status = limiter.get_stack_status()  # Sync
+    status = limiter.stack_status  # Sync (property)
 
     if status is None:
         print("Stack does not exist")

@@ -707,7 +707,7 @@ class RateLimiter:
         ) as manager:
             await manager.delete_stack(self.stack_name)
 
-    async def get_stack_status(self) -> str | None:
+    async def stack_status(self) -> str | None:
         """
         Get current status of the CloudFormation stack.
 
@@ -723,7 +723,7 @@ class RateLimiter:
 
                 limiter = RateLimiter(name="my-app", region="us-east-1")
 
-                status = await limiter.get_stack_status()
+                status = await limiter.stack_status()
                 if status is None:
                     print("Stack does not exist")
                 elif status == "CREATE_COMPLETE":
@@ -1010,11 +1010,12 @@ class SyncRateLimiter:
         """
         self._run(self._limiter.delete_stack())
 
-    def get_stack_status(self) -> str | None:
+    @property
+    def stack_status(self) -> str | None:
         """
         Get current status of the CloudFormation stack.
 
-        Synchronous wrapper for :meth:`RateLimiter.get_stack_status`.
+        Synchronous property for :meth:`RateLimiter.stack_status`.
         See the async version for full documentation.
 
         Returns:
@@ -1026,7 +1027,7 @@ class SyncRateLimiter:
 
                 limiter = SyncRateLimiter(name="my-app", region="us-east-1")
 
-                status = limiter.get_stack_status()
+                status = limiter.stack_status
                 if status is None:
                     print("Stack does not exist")
                 elif status == "CREATE_COMPLETE":
@@ -1034,4 +1035,4 @@ class SyncRateLimiter:
                 elif "IN_PROGRESS" in status:
                     print(f"Operation in progress: {status}")
         """
-        return self._run(self._limiter.get_stack_status())
+        return self._run(self._limiter.stack_status())

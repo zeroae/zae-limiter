@@ -152,9 +152,9 @@ This is useful when infrastructure is managed separately (e.g., via CLI or Terra
 === "Programmatic"
 
     ```python
-    status = await limiter.get_stack_status()  # Async
+    status = await limiter.stack_status()  # Async
     # or
-    status = limiter.get_stack_status()  # Sync
+    status = limiter.stack_status  # Sync (property)
 
     if status is None:
         print("Stack does not exist")
