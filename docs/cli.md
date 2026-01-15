@@ -8,6 +8,8 @@ The CLI is included with the package:
 
 ```bash
 pip install zae-limiter
+# or
+conda install -c conda-forge zae-limiter
 ```
 
 Verify installation:

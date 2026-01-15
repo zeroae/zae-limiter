@@ -22,6 +22,12 @@ This guide will help you install zae-limiter and set up rate limiting in your ap
     poetry add zae-limiter
     ```
 
+=== "conda"
+
+    ```bash
+    conda install -c conda-forge zae-limiter
+    ```
+
 ## Quick Start
 
 zae-limiter creates its own infrastructure automatically. Here's a complete example:
