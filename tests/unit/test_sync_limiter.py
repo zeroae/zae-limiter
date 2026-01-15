@@ -1,5 +1,7 @@
 """Tests for SyncRateLimiter."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from zae_limiter import Limit, RateLimitExceeded
@@ -73,3 +75,65 @@ class TestSyncRateLimiter:
         retrieved = sync_limiter.get_limits("key-1")
         assert len(retrieved) == 1
         assert retrieved[0].name == "rpm"
+
+
+class TestSyncRateLimiterStackStatus:
+    """Tests for SyncRateLimiter.get_stack_status method."""
+
+    def test_get_stack_status_returns_status(self, mock_dynamodb):
+        """get_stack_status should return stack status string."""
+        from unittest.mock import patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(
+                name="test-sync-stack-status",
+                region="us-east-1",
+            )
+
+            # Mock StackManager.get_stack_status
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = limiter.get_stack_status()
+
+            assert status == "CREATE_COMPLETE"
+            mock_manager.get_stack_status.assert_called_once_with(limiter._limiter.stack_name)
+
+            limiter.close()
+
+    def test_get_stack_status_returns_none_when_not_exists(self, mock_dynamodb):
+        """get_stack_status should return None when stack doesn't exist."""
+        from unittest.mock import patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(
+                name="test-sync-stack-none",
+                region="us-east-1",
+            )
+
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value=None)
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = limiter.get_stack_status()
+
+            assert status is None
+
+            limiter.close()

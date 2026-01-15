@@ -43,9 +43,28 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
 ### Check Stack Status
 
-```bash
-zae-limiter status --name limiter --region us-east-1
-```
+=== "CLI"
+
+    ```bash
+    zae-limiter status --name limiter --region us-east-1
+    ```
+
+=== "Programmatic"
+
+    ```python
+    limiter = RateLimiter(name="limiter", region="us-east-1")
+
+    status = await limiter.get_stack_status()  # Async
+    # or
+    status = limiter.get_stack_status()  # Sync
+
+    if status is None:
+        print("Stack does not exist")
+    elif status == "CREATE_COMPLETE":
+        print("Stack is ready")
+    elif "IN_PROGRESS" in status:
+        print(f"Operation in progress: {status}")
+    ```
 
 ### Delete Stack
 

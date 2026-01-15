@@ -727,8 +727,112 @@ class TestRateLimiterResourceCapacity:
         assert capacity.utilization_pct == 0.0
 
 
+class TestRateLimiterStackStatus:
+    """Tests for get_stack_status method."""
+
+    @pytest.mark.asyncio
+    async def test_get_stack_status_returns_status(self, mock_dynamodb):
+        """get_stack_status should return stack status string."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-stack-status",
+                region="us-east-1",
+            )
+
+            # Mock StackManager.get_stack_status
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            # Patch StackManager at the module where it's imported
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_stack_status()
+
+            assert status == "CREATE_COMPLETE"
+            mock_manager.get_stack_status.assert_called_once_with(limiter.stack_name)
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_stack_status_returns_none_when_not_exists(self, mock_dynamodb):
+        """get_stack_status should return None when stack doesn't exist."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-stack-status-none",
+                region="us-east-1",
+            )
+
+            # Mock StackManager.get_stack_status returning None
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value=None)
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_stack_status()
+
+            assert status is None
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_stack_status_various_states(self, mock_dynamodb):
+        """get_stack_status should return various CloudFormation states."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        states_to_test = [
+            "CREATE_IN_PROGRESS",
+            "UPDATE_COMPLETE",
+            "UPDATE_IN_PROGRESS",
+            "DELETE_IN_PROGRESS",
+            "ROLLBACK_COMPLETE",
+            "CREATE_FAILED",
+        ]
+
+        with _patch_aiobotocore_response():
+            for expected_state in states_to_test:
+                limiter = RateLimiter(
+                    name="test-stack-states",
+                    region="us-east-1",
+                )
+
+                mock_manager = MagicMock()
+                mock_manager.get_stack_status = AsyncMock(return_value=expected_state)
+                mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+                mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+                with patch(
+                    "zae_limiter.infra.stack_manager.StackManager",
+                    MagicMock(return_value=mock_manager),
+                ):
+                    status = await limiter.get_stack_status()
+
+                assert status == expected_state, f"Expected {expected_state}, got {status}"
+
+                await limiter.close()
+
+
 class TestRateLimiterInputValidation:
-    """Tests for input validation at API boundary."""
 
     @pytest.mark.asyncio
     async def test_acquire_validates_entity_id(self, limiter):

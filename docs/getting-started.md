@@ -149,9 +149,28 @@ This is useful when infrastructure is managed separately (e.g., via CLI or Terra
 
 ### Checking Status
 
-```bash
-zae-limiter status --name my-app --region us-east-1
-```
+=== "Programmatic"
+
+    ```python
+    status = await limiter.get_stack_status()  # Async
+    # or
+    status = limiter.get_stack_status()  # Sync
+
+    if status is None:
+        print("Stack does not exist")
+    elif status == "CREATE_COMPLETE":
+        print("Stack is ready")
+    elif "IN_PROGRESS" in status:
+        print(f"Operation in progress: {status}")
+    elif "FAILED" in status:
+        print(f"Stack in failed state: {status}")
+    ```
+
+=== "CLI"
+
+    ```bash
+    zae-limiter status --name my-app --region us-east-1
+    ```
 
 ### Deleting Infrastructure
 
