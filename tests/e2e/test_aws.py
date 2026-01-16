@@ -357,17 +357,37 @@ class TestE2EAWSUsageSnapshots:
     @pytest.mark.asyncio
     @pytest.mark.slow
     @pytest.mark.snapshots
-    @pytest.mark.xfail(reason="Flaky: Lambda may not create snapshots within 120s wait. See #84")
-    async def test_usage_snapshots_created(self, aws_limiter_with_snapshots):
+    @pytest.mark.xfail(reason="Blocked by #168: aggregator UpdateExpression bug")
+    async def test_usage_snapshots_created(
+        self, aws_limiter_with_snapshots, aws_cloudwatch_client, aws_lambda_client, unique_name
+    ):
         """
         Verify Lambda aggregator creates usage snapshots.
 
         This test:
-        1. Generates token consumption
-        2. Waits for stream processing
-        3. Queries DynamoDB for usage records
+        1. Generates token consumption (triggers DynamoDB stream events)
+        2. Polls DynamoDB for usage records (180s timeout with exponential backoff)
+        3. On timeout, checks Lambda invocations for diagnostics
         4. Validates snapshot structure
         """
+        from tests.e2e.conftest import (
+            check_lambda_invocations,
+            poll_for_snapshots,
+            wait_for_event_source_mapping,
+        )
+
+        # Wait for Event Source Mapping to be enabled before generating traffic
+        # The ESM may still be in "Creating" or "Enabling" state after stack creation
+        function_name = f"ZAEL-{unique_name}-aggregator"
+        esm_enabled = await wait_for_event_source_mapping(
+            aws_lambda_client,
+            function_name,
+            max_seconds=60,
+        )
+        assert esm_enabled, (
+            f"Event Source Mapping for {function_name} did not become enabled within 60s"
+        )
+
         await aws_limiter_with_snapshots.create_entity("snapshot-test-user")
 
         limits = [
@@ -375,7 +395,7 @@ class TestE2EAWSUsageSnapshots:
             Limit.per_minute("tpm", 100000),
         ]
 
-        # Generate significant traffic
+        # Generate significant traffic to ensure stream events are created
         for _ in range(20):
             async with aws_limiter_with_snapshots.acquire(
                 entity_id="snapshot-test-user",
@@ -385,24 +405,32 @@ class TestE2EAWSUsageSnapshots:
             ):
                 await asyncio.sleep(0.5)
 
-        # Wait for stream processing and snapshot creation
-        # DynamoDB Streams have some latency, and Lambda batches
-        await asyncio.sleep(120)
-
-        # Query for usage snapshots
-        repo = aws_limiter_with_snapshots._repository
-        client = await repo._get_client()
-
-        response = await client.query(
-            TableName=repo.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": "ENTITY#snapshot-test-user"},
-                ":sk_prefix": {"S": "#USAGE#"},
-            },
-        )
-
-        items = response.get("Items", [])
+        # Poll for snapshots with 180s timeout (exponential backoff starting at 5s, capped at 30s)
+        # This gives DynamoDB Streams, Lambda batching, and CloudWatch time to process
+        try:
+            items = await poll_for_snapshots(
+                aws_limiter_with_snapshots,
+                entity_id="snapshot-test-user",
+                max_seconds=180,
+                initial_interval=5.0,
+            )
+        except TimeoutError:
+            # Diagnostic: Check Lambda invocations to help debug the failure
+            # Note: CloudWatch metrics have 1-2 minute delay, so check last 5 minutes
+            invocations = check_lambda_invocations(
+                aws_cloudwatch_client,
+                function_name,
+                lookback_seconds=300,
+            )
+            if invocations == -1:
+                invocations_msg = "CloudWatch metrics unavailable"
+            else:
+                invocations_msg = str(invocations)
+            pytest.fail(
+                f"No usage snapshots found after 180s. "
+                f"Lambda {function_name} invocations in last 5 min: {invocations_msg}. "
+                f"Check DynamoDB Streams configuration and Lambda logs."
+            )
 
         # Should have at least hourly snapshot
         assert len(items) > 0, "No usage snapshots found"
