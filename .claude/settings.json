@@ -19,7 +19,9 @@
       "Bash(uv run pytest:*)",
       "Bash(uv run ruff:*)",
       "Bash(gh api:*)",
-      "Bash(gh pr edit:*)"
+      "Bash(gh pr edit:*)",
+      "Bash(gh run view:*)",
+      "Bash(git push)"
     ],
     "ask": [
       "Bash(gh issue close:*)",

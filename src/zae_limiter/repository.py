@@ -881,9 +881,7 @@ class Repository:
 
             # If resource is also provided, narrow the SK prefix
             if resource:
-                expression_values[":sk_prefix"] = {
-                    "S": f"{schema.SK_USAGE}{resource}#"
-                }
+                expression_values[":sk_prefix"] = {"S": f"{schema.SK_USAGE}{resource}#"}
 
             query_args: dict[str, Any] = {
                 "TableName": self.table_name,
@@ -1050,8 +1048,16 @@ class Repository:
         # Extract counters (dynamic limit names stored as top-level attributes)
         # Known non-counter fields to exclude
         excluded_keys = {
-            "PK", "SK", "entity_id", "resource", "window", "window_start",
-            "total_events", "GSI2PK", "GSI2SK", "ttl",
+            "PK",
+            "SK",
+            "entity_id",
+            "resource",
+            "window",
+            "window_start",
+            "total_events",
+            "GSI2PK",
+            "GSI2SK",
+            "ttl",
         }
 
         counters: dict[str, int] = {}
@@ -1087,9 +1093,7 @@ class Repository:
             elif window_type == "monthly":
                 # Last day of month
                 if dt.month == 12:
-                    end_dt = dt.replace(year=dt.year + 1, month=1, day=1) - timedelta(
-                        seconds=1
-                    )
+                    end_dt = dt.replace(year=dt.year + 1, month=1, day=1) - timedelta(seconds=1)
                 else:
                     end_dt = dt.replace(month=dt.month + 1, day=1) - timedelta(seconds=1)
             else:

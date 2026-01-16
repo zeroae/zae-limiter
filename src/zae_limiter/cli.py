@@ -1141,9 +1141,7 @@ def usage_list(
             click.echo("-" * 100)
             for snap in snapshots:
                 # Format counters as key=value pairs
-                counters_str = ", ".join(
-                    f"{k}={v:,}" for k, v in sorted(snap.counters.items())
-                )
+                counters_str = ", ".join(f"{k}={v:,}" for k, v in sorted(snap.counters.items()))
                 # Truncate long values
                 entity_display = snap.entity_id
                 if len(entity_display) > 18:
