@@ -172,7 +172,11 @@ def extract_delta(record: dict[str, Any]) -> ConsumptionDelta | None:
     """
     Extract consumption delta from a stream record.
 
-    Only processes BUCKET records where tokens decreased (consumption).
+    Uses the total_consumed_milli counter (flat top-level attribute) for accurate
+    tracking. This counter is unaffected by token bucket refill, so it correctly
+    captures consumption even with high rate limits (10M+ TPM). See issue #179.
+
+    Falls back to None if counter not present (old buckets without counter).
 
     Args:
         record: DynamoDB stream record
@@ -200,20 +204,33 @@ def extract_delta(record: dict[str, Any]) -> ConsumptionDelta | None:
     if not entity_id:
         return None
 
-    # Extract token values from data map
-    new_data = new_image.get("data", {}).get("M", {})
-    old_data = old_image.get("data", {}).get("M", {})
+    # Extract counter values from FLAT top-level attribute (not nested data.M).
+    # Counter is stored flat to enable atomic ADD operations. See issue #179.
+    new_counter_attr = new_image.get("total_consumed_milli", {})
+    old_counter_attr = old_image.get("total_consumed_milli", {})
 
-    new_tokens = int(new_data.get("tokens_milli", {}).get("N", "0"))
-    old_tokens = int(old_data.get("tokens_milli", {}).get("N", "0"))
+    # Skip if counter not present in both images (old bucket without counter)
+    if "N" not in new_counter_attr or "N" not in old_counter_attr:
+        logger.debug(
+            "Skipping bucket without consumption counter",
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=limit_name,
+        )
+        return None
+
+    new_counter = int(new_counter_attr["N"])
+    old_counter = int(old_counter_attr["N"])
+
+    # Get timestamp from nested data map
+    new_data = new_image.get("data", {}).get("M", {})
     new_refill_ms = int(new_data.get("last_refill_ms", {}).get("N", "0"))
 
-    # Calculate delta: old - new = amount consumed
-    # (tokens decrease when consumed)
-    tokens_delta = old_tokens - new_tokens
+    # Calculate delta: new - old = net consumption since last update
+    # Positive = consumed, negative = returned (via release/adjust)
+    tokens_delta = new_counter - old_counter
 
-    # We track all changes (consumption and refunds)
-    # but skip pure refill events (no net consumption)
+    # Skip if no consumption change
     if tokens_delta == 0:
         return None
 

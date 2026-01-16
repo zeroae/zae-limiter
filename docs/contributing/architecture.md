@@ -39,7 +39,7 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 Most record types use a nested `data` map for business attributes:
 
 ```python
-# Entity, Bucket, Audit records use nested data.M:
+# Entity and Audit records use nested data.M:
 {
     "PK": "ENTITY#user-1",
     "SK": "#META",
@@ -52,7 +52,37 @@ Most record types use a nested `data` map for business attributes:
 }
 ```
 
-**Exception: Usage snapshots use a FLAT structure** (no nested `data` map):
+**Bucket records use a HYBRID schema:** Most fields are in `data.M`, but
+`total_consumed_milli` is stored as a flat top-level attribute:
+
+```python
+# Bucket record (HYBRID structure):
+{
+    "PK": "ENTITY#user-1",
+    "SK": "#BUCKET#gpt-4#tpm",
+    "entity_id": "user-1",
+    "data": {
+        "M": {
+            "resource": "gpt-4",
+            "limit_name": "tpm",
+            "tokens_milli": 9500000,
+            "last_refill_ms": 1704067200000,
+            # ... other bucket fields
+        }
+    },
+    "total_consumed_milli": 500000,  # FLAT - net consumption counter
+    "GSI2PK": "RESOURCE#gpt-4",
+    "ttl": 1234567890
+}
+```
+
+The `total_consumed_milli` counter tracks net consumption (increases on consume,
+decreases on release) and is used by the aggregator Lambda to accurately calculate
+consumption deltas. This counter is independent of token bucket refill, solving
+the issue where `old_tokens - new_tokens` gives incorrect results when refill rate
+exceeds consumption rate. See [Issue #179](https://github.com/zeroae/zae-limiter/issues/179).
+
+**Usage snapshots use a FLAT structure** (no nested `data` map):
 
 ```python
 # Usage snapshot (FLAT structure):

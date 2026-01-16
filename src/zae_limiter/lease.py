@@ -113,7 +113,11 @@ class Lease:
         for entry, new_tokens, new_refill in updates:
             entry.state.tokens_milli = new_tokens
             entry.state.last_refill_ms = new_refill
-            entry.consumed += amounts.get(entry.limit.name, 0)
+            amount = amounts.get(entry.limit.name, 0)
+            entry.consumed += amount
+            # Update consumption counter if initialized (issue #179)
+            if entry.state.total_consumed_milli is not None:
+                entry.state.total_consumed_milli += amount * 1000
 
     async def adjust(self, **amounts: int) -> None:
         """
@@ -139,6 +143,10 @@ class Lease:
             entry.state.tokens_milli = new_tokens
             entry.state.last_refill_ms = new_refill
             entry.consumed += amount
+            # Update consumption counter if initialized (issue #179)
+            # Net tracking: counter decreases on release/adjust(negative)
+            if entry.state.total_consumed_milli is not None:
+                entry.state.total_consumed_milli += amount * 1000
 
     async def release(self, **amounts: int) -> None:
         """

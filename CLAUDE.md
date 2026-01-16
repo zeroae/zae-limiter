@@ -601,6 +601,30 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 - Bucket state: `data: {resource, limit_name, tokens_milli, ...}`
 - Audit events: `data: {action, principal, details, ...}`
 
+**Bucket records have a hybrid schema:** Most fields are nested in `data.M`, but
+`total_consumed_milli` is stored as a **flat top-level attribute** to enable
+accurate consumption tracking by the aggregator Lambda. See issue #179.
+
+```python
+# Bucket item structure (HYBRID):
+{
+    "PK": "ENTITY#user-1",
+    "SK": "#BUCKET#gpt-4#tpm",
+    "entity_id": "user-1",
+    "data": {
+        "M": {
+            "resource": "gpt-4",
+            "limit_name": "tpm",
+            "tokens_milli": 9500000,
+            # ... other bucket fields
+        }
+    },
+    "total_consumed_milli": 500000,  # FLAT - net consumption counter (issue #179)
+    "GSI2PK": "RESOURCE#gpt-4",
+    "ttl": 1234567890
+}
+```
+
 **Exception: Usage snapshots use FLAT schema (no nested `data` map):**
 
 ```python
