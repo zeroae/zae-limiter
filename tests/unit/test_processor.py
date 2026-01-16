@@ -367,7 +367,15 @@ class TestUpdateSnapshot:
         assert ttl > int(time.time())
 
     def test_update_expression_structure(self) -> None:
-        """Verifies update expression has correct structure."""
+        """Verifies update expression has correct structure.
+
+        Snapshots use a FLAT schema (no nested data map) to allow atomic upsert
+        with ADD counters in a single DynamoDB call. This avoids the "overlapping
+        document paths" error that occurs when trying to SET a map AND ADD to
+        paths within it in the same expression.
+
+        See: https://github.com/zeroae/zae-limiter/issues/168
+        """
         mock_table = MagicMock()
         delta = ConsumptionDelta(
             entity_id="entity-1",
@@ -382,18 +390,20 @@ class TestUpdateSnapshot:
         call_kwargs = mock_table.update_item.call_args[1]
         expr = call_kwargs["UpdateExpression"]
 
-        # Check SET clause elements
+        # Check SET clause elements - flat top-level attributes with if_not_exists
         assert "entity_id = :entity_id" in expr
-        assert "if_not_exists(#data, :initial_data)" in expr
+        assert "if_not_exists(#resource, :resource)" in expr
+        assert "if_not_exists(#window, :window)" in expr
+        assert "if_not_exists(#window_start, :window_start)" in expr
         assert "GSI2PK = :gsi2pk" in expr
         assert "GSI2SK = :gsi2sk" in expr
 
-        # Check ADD clause elements
-        assert "ADD #data.#limit_name :delta" in expr
-        assert "#data.total_events :one" in expr
+        # Check ADD clause elements - flat top-level counters
+        assert "ADD #limit_name :delta" in expr
+        assert "#total_events :one" in expr
 
-    def test_initial_data_structure(self) -> None:
-        """Verifies initial data map structure."""
+    def test_expression_attribute_values(self) -> None:
+        """Verifies expression attribute values for flat structure."""
         mock_table = MagicMock()
         delta = ConsumptionDelta(
             entity_id="entity-1",
@@ -406,16 +416,17 @@ class TestUpdateSnapshot:
         update_snapshot(mock_table, delta, "hourly", 90)
 
         call_kwargs = mock_table.update_item.call_args[1]
-        initial_data = call_kwargs["ExpressionAttributeValues"][":initial_data"]
+        values = call_kwargs["ExpressionAttributeValues"]
 
-        assert initial_data["resource"] == "gpt-4"
-        assert initial_data["window"] == "hourly"
-        assert initial_data["window_start"] == "2024-01-01T14:00:00Z"
-        assert initial_data["tpm"] == 0
-        assert initial_data["total_events"] == 0
+        assert values[":entity_id"] == "entity-1"
+        assert values[":resource"] == "gpt-4"
+        assert values[":window"] == "hourly"
+        assert values[":window_start"] == "2024-01-01T14:00:00Z"
+        assert values[":delta"] == 1000  # 1000000 millitokens / 1000
+        assert values[":one"] == 1
 
     def test_expression_attribute_names(self) -> None:
-        """Verifies expression attribute names are set correctly."""
+        """Verifies expression attribute names for flat structure."""
         mock_table = MagicMock()
         delta = ConsumptionDelta(
             entity_id="entity-1",
@@ -430,8 +441,12 @@ class TestUpdateSnapshot:
         call_kwargs = mock_table.update_item.call_args[1]
         attr_names = call_kwargs["ExpressionAttributeNames"]
 
-        assert attr_names["#data"] == "data"
+        # Flat structure uses top-level attribute names (no #data prefix)
+        assert attr_names["#resource"] == "resource"
+        assert attr_names["#window"] == "window"
+        assert attr_names["#window_start"] == "window_start"
         assert attr_names["#limit_name"] == "tpm"
+        assert attr_names["#total_events"] == "total_events"
         assert attr_names["#ttl"] == "ttl"
 
 

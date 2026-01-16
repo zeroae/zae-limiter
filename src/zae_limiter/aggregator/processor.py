@@ -293,8 +293,9 @@ def update_snapshot(
     Update a usage snapshot record atomically.
 
     Uses DynamoDB ADD operation to increment counters, creating
-    the record if it doesn't exist. Uses if_not_exists to initialize
-    the nested data map, preserving the original schema structure.
+    the record if it doesn't exist. Uses a FLAT schema (no nested
+    data map) to enable atomic upsert with ADD operations in a
+    single DynamoDB call.
 
     Args:
         table: boto3 Table resource
@@ -307,10 +308,19 @@ def update_snapshot(
     # Convert millitokens to tokens for storage
     tokens_delta = delta.tokens_delta // 1000
 
-    # Build update expression
-    # Use if_not_exists to initialize the nested data map when item is first created.
-    # This preserves the original schema while fixing the "invalid document path" error.
-    # ADD then atomically increments the counters within the data map.
+    # Build update expression using FLATTENED schema (no nested data map).
+    #
+    # Snapshots use a flat structure unlike other record types (entities, buckets)
+    # which use nested data.M maps. This is because snapshots require atomic upsert
+    # with ADD counters, and DynamoDB has a limitation: you cannot SET a map path
+    # (#data = if_not_exists(...)) AND ADD to paths within it (#data.counter) in
+    # the same expression - it fails with "overlapping document paths" error.
+    #
+    # The flat structure allows a single atomic update_item call that:
+    # - Creates the item if it doesn't exist (SET with if_not_exists for metadata)
+    # - Atomically increments counters (ADD for limit consumption and event count)
+    #
+    # See: https://github.com/zeroae/zae-limiter/issues/168
     table.update_item(
         Key={
             "PK": pk_entity(delta.entity_id),
@@ -318,27 +328,28 @@ def update_snapshot(
         },
         UpdateExpression="""
             SET entity_id = :entity_id,
-                #data = if_not_exists(#data, :initial_data),
+                #resource = if_not_exists(#resource, :resource),
+                #window = if_not_exists(#window, :window),
+                #window_start = if_not_exists(#window_start, :window_start),
                 GSI2PK = :gsi2pk,
                 GSI2SK = :gsi2sk,
-                #ttl = :ttl
-            ADD #data.#limit_name :delta,
-                #data.total_events :one
+                #ttl = if_not_exists(#ttl, :ttl)
+            ADD #limit_name :delta,
+                #total_events :one
         """,
         ExpressionAttributeNames={
-            "#data": "data",
+            "#resource": "resource",
+            "#window": "window",
+            "#window_start": "window_start",
             "#limit_name": delta.limit_name,
+            "#total_events": "total_events",
             "#ttl": "ttl",
         },
         ExpressionAttributeValues={
             ":entity_id": delta.entity_id,
-            ":initial_data": {
-                "resource": delta.resource,
-                "window": window,
-                "window_start": window_key,
-                delta.limit_name: 0,
-                "total_events": 0,
-            },
+            ":resource": delta.resource,
+            ":window": window,
+            ":window_start": window_key,
             ":gsi2pk": gsi2_pk_resource(delta.resource),
             ":gsi2sk": gsi2_sk_usage(window_key, delta.entity_id),
             ":ttl": calculate_snapshot_ttl(ttl_days),

@@ -538,6 +538,8 @@ When fixing DynamoDB-related bugs, prefer solutions that preserve the existing s
 - Schema changes require version bumps, migrations, and careful rollout planning
 - Only change schema when there's no viable alternative
 
+**Exception: Usage Snapshots use FLAT schema** (see DynamoDB Schema section below)
+
 ### Migrations (changes to migrations/)
 - Verify migration follows protocol (async, Repository param)
 - Check backward compatibility
@@ -587,6 +589,38 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
+| Get usage snapshots | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
+
+### Schema Design Notes
+
+**Most record types use nested `data.M` maps:**
+- Entity metadata: `data: {name, parent_id, metadata, created_at}`
+- Bucket state: `data: {resource, limit_name, tokens_milli, ...}`
+- Audit events: `data: {action, principal, details, ...}`
+
+**Exception: Usage snapshots use FLAT schema (no nested `data` map):**
+
+```python
+# Snapshot item structure (FLAT):
+{
+    "PK": "ENTITY#user-1",
+    "SK": "#USAGE#gpt-4#2024-01-01T14:00:00Z",
+    "entity_id": "user-1",
+    "resource": "gpt-4",        # Top-level, not data.resource
+    "window": "hourly",         # Top-level, not data.window
+    "window_start": "...",      # Top-level
+    "tpm": 5000,                # Counter at top-level
+    "total_events": 10,         # Counter at top-level
+    "GSI2PK": "RESOURCE#gpt-4",
+    "ttl": 1234567890
+}
+```
+
+**Why snapshots are flat:** DynamoDB has a limitation where you cannot SET a map path
+(`#data = if_not_exists(#data, :map)`) AND ADD to paths within it (`#data.counter`)
+in the same UpdateExpression - it fails with "overlapping document paths" error.
+Snapshots require atomic upsert with ADD counters, so they use a flat structure
+to enable single-call atomic updates. See: https://github.com/zeroae/zae-limiter/issues/168
 
 ## Dependencies
 
