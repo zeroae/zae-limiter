@@ -479,6 +479,9 @@ class RateLimiter:
                     # Update local state
                     state.tokens_milli = result.new_tokens_milli
                     state.last_refill_ms = result.new_last_refill_ms
+                    # Update consumption counter if initialized (issue #179)
+                    if state.total_consumed_milli is not None and amount > 0:
+                        state.total_consumed_milli += amount * 1000
 
                 entries.append(
                     LeaseEntry(

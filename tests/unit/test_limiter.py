@@ -225,6 +225,113 @@ class TestRateLimiterLease:
             assert lease.consumed == {"tpm": 300}
 
 
+class TestRateLimiterLeaseCounter:
+    """Tests for consumption counter tracking (issue #179).
+
+    The counter tracks net consumption in millitokens, stored as a flat
+    top-level DynamoDB attribute to enable atomic ADD operations.
+    """
+
+    async def test_acquire_initializes_counter(self, limiter):
+        """Initial acquire initializes counter to consumed amount."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="counter-test-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ):
+            pass
+
+        # Check the bucket state has counter initialized
+        buckets = await limiter._repository.get_buckets(
+            entity_id="counter-test-1", resource="gpt-4"
+        )
+        bucket = buckets[0]
+        # Counter should be 100 tokens * 1000 = 100000 millitokens
+        assert bucket.total_consumed_milli == 100_000
+
+    async def test_lease_consume_increments_counter(self, limiter):
+        """Additional consume() calls increment the counter."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="counter-test-2",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            await lease.consume(tpm=50)
+
+        buckets = await limiter._repository.get_buckets(
+            entity_id="counter-test-2", resource="gpt-4"
+        )
+        bucket = buckets[0]
+        # Counter: (100 + 50) * 1000 = 150000 millitokens
+        assert bucket.total_consumed_milli == 150_000
+
+    async def test_lease_adjust_negative_decrements_counter(self, limiter):
+        """Negative adjust() decrements counter (net tracking)."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="counter-test-3",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            # Return 30 tokens via adjust (negative amount)
+            await lease.adjust(tpm=-30)
+
+        buckets = await limiter._repository.get_buckets(
+            entity_id="counter-test-3", resource="gpt-4"
+        )
+        bucket = buckets[0]
+        # Counter: (100 - 30) * 1000 = 70000 millitokens
+        assert bucket.total_consumed_milli == 70_000
+
+    async def test_lease_release_decrements_counter(self, limiter):
+        """release() decrements counter (same as negative adjust)."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="counter-test-4",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            # Return 40 tokens via release
+            await lease.release(tpm=40)
+
+        buckets = await limiter._repository.get_buckets(
+            entity_id="counter-test-4", resource="gpt-4"
+        )
+        bucket = buckets[0]
+        # Counter: (100 - 40) * 1000 = 60000 millitokens
+        assert bucket.total_consumed_milli == 60_000
+
+    async def test_lease_adjust_positive_increments_counter(self, limiter):
+        """Positive adjust() increments counter (same as consume)."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="counter-test-5",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            # Consume 200 more tokens via adjust (positive amount)
+            await lease.adjust(tpm=200)
+
+        buckets = await limiter._repository.get_buckets(
+            entity_id="counter-test-5", resource="gpt-4"
+        )
+        bucket = buckets[0]
+        # Counter: (100 + 200) * 1000 = 300000 millitokens
+        assert bucket.total_consumed_milli == 300_000
+
+
 class TestRateLimiterCascade:
     """Tests for cascade functionality."""
 

@@ -66,9 +66,15 @@ class TestExtractDelta:
         old_tokens: int = 10000,
         new_tokens: int = 5000,
         last_refill_ms: int = 1704067200000,
+        old_counter: int | None = 0,
+        new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
     ) -> dict:
-        """Helper to create a stream record."""
-        return {
+        """Helper to create a stream record.
+
+        The counter values (old_counter, new_counter) track consumption in millitokens.
+        Set both to None to simulate old buckets without counter (issue #179).
+        """
+        record: dict = {
             "eventName": "MODIFY",
             "dynamodb": {
                 "NewImage": {
@@ -95,15 +101,24 @@ class TestExtractDelta:
                 },
             },
         }
+        # Add counter as FLAT top-level attribute (not in data.M) - issue #179
+        if new_counter is not None:
+            record["dynamodb"]["NewImage"]["total_consumed_milli"] = {"N": str(new_counter)}
+        if old_counter is not None:
+            record["dynamodb"]["OldImage"]["total_consumed_milli"] = {"N": str(old_counter)}
+        return record
 
     def test_valid_bucket_record_consumption(self) -> None:
         """Extract delta from valid BUCKET record with consumption."""
+        # Counter tracks consumption in millitokens: 5000 tokens = 5000000 millitokens
         record = self._make_record(
             sk="#BUCKET#gpt-4#tpm",
             entity_id="test-entity",
             old_tokens=10000,
             new_tokens=5000,
             last_refill_ms=1704067200000,
+            old_counter=0,
+            new_counter=5000000,  # consumed 5000 tokens (in millitokens)
         )
 
         delta = extract_delta(record)
@@ -112,20 +127,23 @@ class TestExtractDelta:
         assert delta.entity_id == "test-entity"
         assert delta.resource == "gpt-4"
         assert delta.limit_name == "tpm"
-        assert delta.tokens_delta == 5000  # 10000 - 5000 = consumed
+        assert delta.tokens_delta == 5000000  # counter delta in millitokens
         assert delta.timestamp_ms == 1704067200000
 
     def test_valid_bucket_record_refund(self) -> None:
-        """Extract negative delta when tokens increase (refund)."""
+        """Extract negative delta when tokens are released (refund)."""
+        # Counter decreases when tokens are released (net tracking)
         record = self._make_record(
             old_tokens=5000,
-            new_tokens=10000,  # tokens increased
+            new_tokens=10000,  # tokens increased (release)
+            old_counter=10000000,  # was at 10000 tokens consumed
+            new_counter=5000000,  # now at 5000 tokens (released 5000)
         )
 
         delta = extract_delta(record)
 
         assert delta is not None
-        assert delta.tokens_delta == -5000  # negative = returned
+        assert delta.tokens_delta == -5000000  # negative = returned (millitokens)
 
     def test_non_bucket_record_returns_none(self) -> None:
         """Non-BUCKET records return None."""
@@ -140,7 +158,12 @@ class TestExtractDelta:
 
     def test_zero_delta_returns_none(self) -> None:
         """Zero delta (no consumption) returns None."""
-        record = self._make_record(old_tokens=5000, new_tokens=5000)
+        record = self._make_record(
+            old_tokens=5000,
+            new_tokens=5000,
+            old_counter=1000000,
+            new_counter=1000000,  # same counter = no consumption
+        )
         assert extract_delta(record) is None
 
     def test_malformed_sk_returns_none(self) -> None:
@@ -149,11 +172,24 @@ class TestExtractDelta:
         record = self._make_record(sk="#BUCKET#gpt-4")
         assert extract_delta(record) is None
 
-        # Empty parts
-        record = self._make_record(sk="#BUCKET##")
+        # Empty parts - counter delta still valid
+        record = self._make_record(sk="#BUCKET##", old_counter=0, new_counter=1000000)
         delta = extract_delta(record)
         # This actually extracts "" and "" which is valid format
         assert delta is not None
+
+    def test_missing_counter_returns_none(self) -> None:
+        """Missing counter (old bucket) returns None - issue #179."""
+        record = self._make_record(old_counter=None, new_counter=None)
+        assert extract_delta(record) is None
+
+    def test_partial_counter_returns_none(self) -> None:
+        """Partial counter (only one image has it) returns None."""
+        record = self._make_record(old_counter=None, new_counter=1000000)
+        assert extract_delta(record) is None
+
+        record = self._make_record(old_counter=1000000, new_counter=None)
+        assert extract_delta(record) is None
 
     def test_missing_entity_id_returns_none(self) -> None:
         """Missing entity_id returns None."""
@@ -168,13 +204,14 @@ class TestExtractDelta:
         assert extract_delta(record) is None
 
     def test_missing_data_uses_defaults(self) -> None:
-        """Missing data fields default to 0."""
-        record = self._make_record()
+        """Missing data fields default to 0 (but counter still works)."""
+        record = self._make_record(old_counter=0, new_counter=1000000)
         del record["dynamodb"]["NewImage"]["data"]["M"]["tokens_milli"]
         del record["dynamodb"]["OldImage"]["data"]["M"]["tokens_milli"]
 
         delta = extract_delta(record)
-        assert delta is None  # 0 - 0 = 0, returns None
+        assert delta is not None  # counter delta is 1000000
+        assert delta.tokens_delta == 1000000
 
     def test_missing_dynamodb_key(self) -> None:
         """Missing dynamodb key returns None."""
@@ -460,9 +497,11 @@ class TestProcessStreamRecords:
         entity_id: str = "entity-1",
         old_tokens: int = 10000,
         new_tokens: int = 5000,
+        old_counter: int | None = 0,
+        new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
     ) -> dict:
-        """Helper to create a stream record."""
-        return {
+        """Helper to create a stream record with counter (issue #179)."""
+        record: dict = {
             "eventName": event_name,
             "dynamodb": {
                 "NewImage": {
@@ -489,6 +528,12 @@ class TestProcessStreamRecords:
                 },
             },
         }
+        # Add counter as FLAT top-level attribute (issue #179)
+        if new_counter is not None:
+            record["dynamodb"]["NewImage"]["total_consumed_milli"] = {"N": str(new_counter)}
+        if old_counter is not None:
+            record["dynamodb"]["OldImage"]["total_consumed_milli"] = {"N": str(old_counter)}
+        return record
 
     def test_empty_records(self) -> None:
         """Empty records list returns zero counts."""
@@ -515,8 +560,20 @@ class TestProcessStreamRecords:
     def test_processes_valid_modify_events(self) -> None:
         """Valid MODIFY events are processed."""
         records = [
-            self._make_record(entity_id="e1", old_tokens=10000, new_tokens=5000),
-            self._make_record(entity_id="e2", old_tokens=8000, new_tokens=3000),
+            self._make_record(
+                entity_id="e1",
+                old_tokens=10000,
+                new_tokens=5000,
+                old_counter=0,
+                new_counter=5000000,
+            ),
+            self._make_record(
+                entity_id="e2",
+                old_tokens=8000,
+                new_tokens=3000,
+                old_counter=0,
+                new_counter=5000000,
+            ),
         ]
 
         with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
@@ -545,17 +602,24 @@ class TestProcessStreamRecords:
 
     def test_handles_extract_delta_exception(self) -> None:
         """Handles exceptions during extract_delta."""
-        # Create a record that will cause an exception
+        # Create a record that will cause an exception - counter value is not a number
         bad_record = {
             "eventName": "MODIFY",
             "dynamodb": {
                 "NewImage": {
                     "SK": {"S": "#BUCKET#res#limit"},
                     "entity_id": {"S": "entity"},
-                    "data": {"M": {"tokens_milli": {"N": "not_a_number"}}},
+                    "data": {
+                        "M": {
+                            "tokens_milli": {"N": "1000"},
+                            "last_refill_ms": {"N": "1704067200000"},
+                        }
+                    },
+                    "total_consumed_milli": {"N": "not_a_number"},  # invalid counter
                 },
                 "OldImage": {
                     "data": {"M": {"tokens_milli": {"N": "1000"}}},
+                    "total_consumed_milli": {"N": "0"},
                 },
             },
         }
@@ -585,7 +649,13 @@ class TestProcessStreamRecords:
     def test_skips_zero_delta_records(self) -> None:
         """Records with zero delta are skipped."""
         records = [
-            self._make_record(old_tokens=5000, new_tokens=5000),  # zero delta
+            # Zero counter delta = no consumption change
+            self._make_record(
+                old_tokens=5000,
+                new_tokens=5000,
+                old_counter=1000000,
+                new_counter=1000000,  # same counter = zero delta
+            ),
         ]
 
         with patch("zae_limiter.aggregator.processor.boto3"):
@@ -597,9 +667,23 @@ class TestProcessStreamRecords:
     def test_mixed_valid_and_invalid_records(self) -> None:
         """Processes valid records even when some are invalid."""
         records = [
-            self._make_record(entity_id="valid", old_tokens=10000, new_tokens=5000),
-            self._make_record(sk="#LIMIT#res#name"),  # non-bucket, will be None
-            self._make_record(old_tokens=5000, new_tokens=5000),  # zero delta
+            # Valid: has counter with positive delta
+            self._make_record(
+                entity_id="valid",
+                old_tokens=10000,
+                new_tokens=5000,
+                old_counter=0,
+                new_counter=5000000,
+            ),
+            # Invalid: non-bucket SK (will return None)
+            self._make_record(sk="#LIMIT#res#name"),
+            # Invalid: zero counter delta
+            self._make_record(
+                old_tokens=5000,
+                new_tokens=5000,
+                old_counter=1000000,
+                new_counter=1000000,
+            ),
         ]
 
         with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
@@ -686,9 +770,11 @@ class TestStructuredLoggingIntegration:
         entity_id: str = "entity-1",
         old_tokens: int = 10000,
         new_tokens: int = 5000,
+        old_counter: int | None = 0,
+        new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
     ) -> dict:
-        """Helper to create a stream record."""
-        return {
+        """Helper to create a stream record with counter (issue #179)."""
+        record: dict = {
             "eventName": event_name,
             "dynamodb": {
                 "NewImage": {
@@ -715,6 +801,12 @@ class TestStructuredLoggingIntegration:
                 },
             },
         }
+        # Add counter as FLAT top-level attribute (issue #179)
+        if new_counter is not None:
+            record["dynamodb"]["NewImage"]["total_consumed_milli"] = {"N": str(new_counter)}
+        if old_counter is not None:
+            record["dynamodb"]["OldImage"]["total_consumed_milli"] = {"N": str(old_counter)}
+        return record
 
     def test_batch_processing_logs_start_and_end(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Logs batch start and completion with metrics."""

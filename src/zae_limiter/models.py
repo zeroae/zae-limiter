@@ -321,6 +321,10 @@ class BucketState:
     burst_milli: int  # max burst (in millitokens)
     refill_amount_milli: int  # refill numerator (in millitokens)
     refill_period_ms: int  # refill denominator (in milliseconds)
+    # Net consumption counter (millitokens). Stored as FLAT top-level attribute
+    # (not in nested data.M) to enable atomic ADD operations. See issue #179.
+    # None means counter not yet initialized (old bucket).
+    total_consumed_milli: int | None = None
 
     @property
     def tokens(self) -> int:
@@ -368,6 +372,7 @@ class BucketState:
             burst_milli=limit.burst * 1000,
             refill_amount_milli=limit.refill_amount * 1000,
             refill_period_ms=limit.refill_period_seconds * 1000,
+            total_consumed_milli=0,  # initialize counter for new buckets
         )
 
 

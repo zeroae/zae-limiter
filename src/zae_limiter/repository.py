@@ -370,31 +370,31 @@ class Repository:
     ) -> dict[str, Any]:
         """Build a PutItem for a bucket (for use in transactions)."""
         now_ms = self._now_ms()
-        return {
-            "Put": {
-                "TableName": self.table_name,
-                "Item": {
-                    "PK": {"S": schema.pk_entity(state.entity_id)},
-                    "SK": {"S": schema.sk_bucket(state.resource, state.limit_name)},
-                    "entity_id": {"S": state.entity_id},
-                    "data": {
-                        "M": {
-                            "resource": {"S": state.resource},
-                            "limit_name": {"S": state.limit_name},
-                            "tokens_milli": {"N": str(state.tokens_milli)},
-                            "last_refill_ms": {"N": str(state.last_refill_ms)},
-                            "capacity_milli": {"N": str(state.capacity_milli)},
-                            "burst_milli": {"N": str(state.burst_milli)},
-                            "refill_amount_milli": {"N": str(state.refill_amount_milli)},
-                            "refill_period_ms": {"N": str(state.refill_period_ms)},
-                        }
-                    },
-                    "GSI2PK": {"S": schema.gsi2_pk_resource(state.resource)},
-                    "GSI2SK": {"S": schema.gsi2_sk_bucket(state.entity_id, state.limit_name)},
-                    "ttl": {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))},
-                },
-            }
+        item: dict[str, Any] = {
+            "PK": {"S": schema.pk_entity(state.entity_id)},
+            "SK": {"S": schema.sk_bucket(state.resource, state.limit_name)},
+            "entity_id": {"S": state.entity_id},
+            "data": {
+                "M": {
+                    "resource": {"S": state.resource},
+                    "limit_name": {"S": state.limit_name},
+                    "tokens_milli": {"N": str(state.tokens_milli)},
+                    "last_refill_ms": {"N": str(state.last_refill_ms)},
+                    "capacity_milli": {"N": str(state.capacity_milli)},
+                    "burst_milli": {"N": str(state.burst_milli)},
+                    "refill_amount_milli": {"N": str(state.refill_amount_milli)},
+                    "refill_period_ms": {"N": str(state.refill_period_ms)},
+                }
+            },
+            "GSI2PK": {"S": schema.gsi2_pk_resource(state.resource)},
+            "GSI2SK": {"S": schema.gsi2_sk_bucket(state.entity_id, state.limit_name)},
+            "ttl": {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))},
         }
+        # Add consumption counter as FLAT top-level attribute (not in data.M)
+        # to enable atomic ADD operations. See issue #179.
+        if state.total_consumed_milli is not None:
+            item["total_consumed_milli"] = {"N": str(state.total_consumed_milli)}
+        return {"Put": {"TableName": self.table_name, "Item": item}}
 
     def build_bucket_update_item(
         self,
@@ -939,6 +939,10 @@ class Repository:
     def _deserialize_bucket(self, item: dict[str, Any]) -> BucketState:
         """Deserialize a DynamoDB item to BucketState."""
         data = self._deserialize_map(item.get("data", {}).get("M", {}))
+        # Counter is stored as FLAT top-level attribute (not in data.M).
+        # None if not present (old bucket without counter). See issue #179.
+        counter_attr = item.get("total_consumed_milli", {})
+        total_consumed_milli = int(counter_attr["N"]) if "N" in counter_attr else None
         return BucketState(
             entity_id=item.get("entity_id", {}).get("S", ""),
             resource=data.get("resource", ""),
@@ -949,4 +953,5 @@ class Repository:
             burst_milli=int(data.get("burst_milli", 0)),
             refill_amount_milli=int(data.get("refill_amount_milli", 0)),
             refill_period_ms=int(data.get("refill_period_ms", 0)),
+            total_consumed_milli=total_consumed_milli,
         )

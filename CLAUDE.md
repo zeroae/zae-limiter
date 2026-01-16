@@ -554,6 +554,9 @@ When fixing DynamoDB-related bugs, prefer solutions that preserve the existing s
 - Check type hints match descriptions
 - Flag public API changes without changelog entry
 
+### Design Validation (new features with derived data)
+When implementing features that derive data from state changes (like consumption from token deltas), use the `design-validator` agent to validate the approach before implementation. See issue #179 for an example where the snapshot aggregator failed because `old_tokens - new_tokens` doesn't work when refill rate exceeds consumption rate.
+
 ## Commit Messages
 
 Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md).
@@ -594,6 +597,30 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 - Entity metadata: `data: {name, parent_id, metadata, created_at}`
 - Bucket state: `data: {resource, limit_name, tokens_milli, ...}`
 - Audit events: `data: {action, principal, details, ...}`
+
+**Bucket records have a hybrid schema:** Most fields are nested in `data.M`, but
+`total_consumed_milli` is stored as a **flat top-level attribute** to enable
+accurate consumption tracking by the aggregator Lambda. See issue #179.
+
+```python
+# Bucket item structure (HYBRID):
+{
+    "PK": "ENTITY#user-1",
+    "SK": "#BUCKET#gpt-4#tpm",
+    "entity_id": "user-1",
+    "data": {
+        "M": {
+            "resource": "gpt-4",
+            "limit_name": "tpm",
+            "tokens_milli": 9500000,
+            # ... other bucket fields
+        }
+    },
+    "total_consumed_milli": 500000,  # FLAT - net consumption counter (issue #179)
+    "GSI2PK": "RESOURCE#gpt-4",
+    "ttl": 1234567890
+}
+```
 
 **Exception: Usage snapshots use FLAT schema (no nested `data` map):**
 

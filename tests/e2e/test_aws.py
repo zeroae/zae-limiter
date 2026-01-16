@@ -357,61 +357,132 @@ class TestE2EAWSUsageSnapshots:
     @pytest.mark.asyncio
     @pytest.mark.slow
     @pytest.mark.snapshots
-    @pytest.mark.xfail(reason="Flaky: Lambda may not create snapshots within 120s wait. See #84")
-    async def test_usage_snapshots_created(self, aws_limiter_with_snapshots):
+    async def test_usage_snapshots_created(
+        self, aws_limiter_with_snapshots, aws_cloudwatch_client, aws_lambda_client, unique_name
+    ):
         """
         Verify Lambda aggregator creates usage snapshots.
 
         This test:
-        1. Generates token consumption
-        2. Waits for stream processing
-        3. Queries DynamoDB for usage records
+        1. Generates token consumption (triggers DynamoDB stream events)
+        2. Polls DynamoDB for usage records (180s timeout with exponential backoff)
+        3. On timeout, checks Lambda invocations for diagnostics
         4. Validates snapshot structure
         """
-        await aws_limiter_with_snapshots.create_entity("snapshot-test-user")
-
-        limits = [
-            Limit.per_minute("rpm", 1000),
-            Limit.per_minute("tpm", 100000),
-        ]
-
-        # Generate significant traffic
-        for _ in range(20):
-            async with aws_limiter_with_snapshots.acquire(
-                entity_id="snapshot-test-user",
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1, "tpm": 100},
-            ):
-                await asyncio.sleep(0.5)
-
-        # Wait for stream processing and snapshot creation
-        # DynamoDB Streams have some latency, and Lambda batches
-        await asyncio.sleep(120)
-
-        # Query for usage snapshots
-        repo = aws_limiter_with_snapshots._repository
-        client = await repo._get_client()
-
-        response = await client.query(
-            TableName=repo.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": "ENTITY#snapshot-test-user"},
-                ":sk_prefix": {"S": "#USAGE#"},
-            },
+        from tests.e2e.conftest import (
+            check_lambda_invocations,
+            poll_for_snapshots,
+            wait_for_event_source_mapping,
         )
 
-        items = response.get("Items", [])
+        # Wait for Event Source Mapping to be enabled before generating traffic
+        # The ESM may still be in "Creating" or "Enabling" state after stack creation
+        function_name = f"ZAEL-{unique_name}-aggregator"
+        esm_enabled = await wait_for_event_source_mapping(
+            aws_lambda_client,
+            function_name,
+            max_seconds=60,
+        )
+
+        assert esm_enabled, (
+            f"Event Source Mapping for {function_name} did not become enabled within 60s"
+        )
+
+        # Use unique entity per test run to avoid conflicts with shared stack
+        import uuid
+
+        entity_id = f"snapshot-test-{uuid.uuid4().hex[:8]}"
+        await aws_limiter_with_snapshots.create_entity(entity_id)
+
+        # Use limits designed for reliable snapshot capture in tests.
+        #
+        # IMPORTANT: See issue #179 for a known design limitation with high TPM limits.
+        #
+        # Key insight: DynamoDB stream records capture OldImage (before write) and
+        # NewImage (after write). The aggregator calculates:
+        #   tokens_delta = old_tokens - new_tokens = consumed - refilled_since_last_read
+        #
+        # If refill >= consumed during the operation's round-trip time, delta <= 0
+        # and the record is skipped. With realistic 10M TPM and ~100ms latency:
+        #   refill = 100ms * (10M / 60000ms) = 16,667 tokens
+        #   Need to consume >> 16,667 tokens per operation for positive delta.
+        #
+        # For testing, we use lower TPM (100K) so smaller consumption values work:
+        #   refill = 100ms * (100K / 60000ms) = 167 tokens
+        #   Consuming 1,000 tokens ensures positive delta: 1000 - 167 = 833 (captured!)
+        #
+        # Note: This is a known limitation (#179). The snapshot feature does not reliably
+        # capture usage when refill_rate > consumption_rate / operation_latency.
+        # A proposed fix is to track gross consumption in a separate counter.
+        limits = [
+            Limit.per_minute("rpm", 10000),  # 10K requests per minute
+            Limit.per_minute("tpm", 100_000),  # 100K TPM for reliable test capture
+        ]
+
+        # Phase 1: Initial acquire to create bucket records (INSERT events).
+        # The ESM filter only captures MODIFY events on #BUCKET# records, so we need
+        # to first create the buckets, then modify them to trigger the Lambda.
+        async with aws_limiter_with_snapshots.acquire(
+            entity_id=entity_id,
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1, "tpm": 1000},  # 1K tokens >> 167 refill per 100ms
+        ):
+            pass
+
+        # Wait for DynamoDB streams to stabilize and ESM to be fully ready.
+        # Even though ESM reports "Enabled", there can be a brief delay before
+        # it starts processing events from the stream.
+        await asyncio.sleep(5)
+
+        # Phase 2: Generate more traffic (MODIFY events) that will be captured.
+        # These operations update existing bucket records, producing MODIFY events
+        # that match the ESM filter and trigger Lambda invocations.
+        for _ in range(5):
+            async with aws_limiter_with_snapshots.acquire(
+                entity_id=entity_id,
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1, "tpm": 1000},  # 1K tokens >> refill ensures positive delta
+            ):
+                pass  # No sleep - back-to-back requests
+
+        # Poll for snapshots with 180s timeout (exponential backoff starting at 5s, capped at 30s)
+        # This gives DynamoDB Streams, Lambda batching, and CloudWatch time to process
+        try:
+            items = await poll_for_snapshots(
+                aws_limiter_with_snapshots,
+                entity_id=entity_id,
+                max_seconds=180,
+                initial_interval=5.0,
+            )
+        except TimeoutError:
+            # Diagnostic: Check Lambda invocations to help debug the failure
+            # Note: CloudWatch metrics have 1-2 minute delay, so check last 5 minutes
+            invocations = check_lambda_invocations(
+                aws_cloudwatch_client,
+                function_name,
+                lookback_seconds=300,
+            )
+            if invocations == -1:
+                invocations_msg = "CloudWatch metrics unavailable"
+            else:
+                invocations_msg = str(invocations)
+            pytest.fail(
+                f"No usage snapshots found after 180s. "
+                f"Lambda {function_name} invocations in last 5 min: {invocations_msg}. "
+                f"Check DynamoDB Streams configuration and Lambda logs."
+            )
 
         # Should have at least hourly snapshot
         assert len(items) > 0, "No usage snapshots found"
 
-        # Validate snapshot structure
+        # Validate snapshot structure (flat schema per issue #168)
         for item in items:
-            data = item.get("data", {}).get("M", {})
-            # Snapshots should have window and resource info
-            assert data, "Snapshot should have data"
+            # Snapshots use a flat schema (not nested data.M) for atomic upserts
+            assert "window" in item, "Snapshot should have window"
+            assert "resource" in item, "Snapshot should have resource"
+            assert "total_events" in item, "Snapshot should have total_events"
 
 
 class TestE2EAWSRateLimiting:
