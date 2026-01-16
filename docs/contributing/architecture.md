@@ -32,6 +32,51 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
+| Get usage snapshots | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
+
+### Item Structure
+
+Most record types use a nested `data` map for business attributes:
+
+```python
+# Entity, Bucket, Audit records use nested data.M:
+{
+    "PK": "ENTITY#user-1",
+    "SK": "#META",
+    "entity_id": "user-1",
+    "data": {                    # Nested map
+        "name": "User One",
+        "parent_id": null,
+        "metadata": {...}
+    }
+}
+```
+
+**Exception: Usage snapshots use a FLAT structure** (no nested `data` map):
+
+```python
+# Usage snapshot (FLAT structure):
+{
+    "PK": "ENTITY#user-1",
+    "SK": "#USAGE#gpt-4#2024-01-01T14:00:00Z",
+    "entity_id": "user-1",
+    "resource": "gpt-4",        # Top-level attribute
+    "window": "hourly",         # Top-level attribute
+    "window_start": "...",      # Top-level attribute
+    "tpm": 5000,                # Counter at top-level
+    "total_events": 10,         # Counter at top-level
+    "GSI2PK": "RESOURCE#gpt-4",
+    "ttl": 1234567890
+}
+```
+
+**Why snapshots are flat:** DynamoDB has a limitation where you cannot SET a map path
+(`#data = if_not_exists(#data, :map)`) AND ADD to paths within it (`#data.counter`)
+in the same UpdateExpression - it fails with "overlapping document paths" error.
+Snapshots require atomic upsert (create-or-update) with ADD counters for usage
+aggregation, so they use a flat structure to enable single-call atomic updates.
+
+See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
 
 ## Token Bucket Implementation
 
