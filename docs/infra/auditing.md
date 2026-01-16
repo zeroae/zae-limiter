@@ -53,31 +53,58 @@ event = AuditEvent(
 
 ## Principal Tracking
 
-Track who performed each action by passing the `principal` parameter:
-
-!!! warning "Internal API"
-    The `Repository` class is not part of the public API and may change without notice.
-    See [Issue #114](https://github.com/zeroae/zae-limiter/issues/114) for the planned public interface.
+Track who performed each action by passing the `principal` parameter to entity and limit management methods:
 
 ```python
-from zae_limiter.repository import Repository  # Internal API
+from zae_limiter import RateLimiter, Limit
 
-repo = Repository(table_name="ZAEL-limiter", region="us-east-1")
+limiter = RateLimiter(name="limiter", region="us-east-1")
 
 # Track who created the entity
-await repo.create_entity(
+await limiter.create_entity(
     entity_id="api-key-123",
     name="Production Key",
     principal="admin@example.com",  # Tracks the caller
 )
 
 # Track who configured limits
-await repo.set_limits(
+await limiter.set_limits(
     entity_id="api-key-123",
     limits=[Limit.per_minute("rpm", 100)],
     principal="ops-team@example.com",
 )
+
+# Track who deleted limits
+await limiter.delete_limits(
+    entity_id="api-key-123",
+    resource="gpt-4",
+    principal="ops-team@example.com",
+)
+
+# Track who deleted the entity
+await limiter.delete_entity(
+    entity_id="api-key-123",
+    principal="admin@example.com",
+)
 ```
+
+### Auto-Detection of AWS Caller Identity
+
+When `principal` is not provided, zae-limiter automatically detects the AWS caller identity (ARN) using STS `GetCallerIdentity`. This means audit events automatically capture who made changes without requiring explicit principal tracking:
+
+```python
+# No principal specified - AWS ARN is auto-detected
+await limiter.create_entity(
+    entity_id="api-key-123",
+    name="Production Key",
+)
+# Audit event will have principal like:
+# "arn:aws:iam::123456789012:user/admin"
+# or "arn:aws:sts::123456789012:assumed-role/MyRole/session"
+```
+
+!!! tip "Best Practice"
+    For human-readable audit trails, explicitly pass a `principal` that identifies the user or service (e.g., email address or service name). Auto-detection is useful as a fallback when the caller identity is not available at the application level.
 
 **Valid principal formats:**
 
@@ -87,15 +114,33 @@ await repo.set_limits(
 
 ## Querying Audit Events
 
-Retrieve audit events for an entity:
+Retrieve audit events for an entity using the `get_audit_events()` method:
 
 ```python
+from zae_limiter import RateLimiter
+
+limiter = RateLimiter(name="limiter", region="us-east-1")
+
 # Get recent audit events (most recent first)
-events = await repo.get_audit_events(
+events = await limiter.get_audit_events(
     entity_id="api-key-123",
     limit=100,
 )
 
+for event in events:
+    print(f"{event.timestamp}: {event.action} by {event.principal}")
+```
+
+### Synchronous API
+
+For synchronous code, use `SyncRateLimiter`:
+
+```python
+from zae_limiter import SyncRateLimiter
+
+limiter = SyncRateLimiter(name="limiter", region="us-east-1")
+
+events = limiter.get_audit_events(entity_id="api-key-123", limit=100)
 for event in events:
     print(f"{event.timestamp}: {event.action} by {event.principal}")
 ```
@@ -106,18 +151,33 @@ Use `start_event_id` for pagination through large result sets:
 
 ```python
 # First page
-events = await repo.get_audit_events(
+events = await limiter.get_audit_events(
     entity_id="api-key-123",
     limit=50,
 )
 
 # Next page (use last event's ID)
 if events:
-    more_events = await repo.get_audit_events(
+    more_events = await limiter.get_audit_events(
         entity_id="api-key-123",
         limit=50,
         start_event_id=events[-1].event_id,
     )
+```
+
+### CLI Access
+
+Query audit events from the command line:
+
+```bash
+# List audit events for an entity
+zae-limiter audit list --name limiter --entity-id api-key-123
+
+# Limit results
+zae-limiter audit list --entity-id api-key-123 --limit 10
+
+# Paginate
+zae-limiter audit list --entity-id api-key-123 --start-event-id 01HXYZ...
 ```
 
 ## Retention and TTL
@@ -175,8 +235,12 @@ for item in response["Items"]:
 Answer "who changed what, when?" for SOC2, HIPAA, or internal audits:
 
 ```python
+from zae_limiter import RateLimiter
+
+limiter = RateLimiter(name="limiter", region="us-east-1")
+
 # Find all changes to a specific entity
-events = await repo.get_audit_events("sensitive-api-key")
+events = await limiter.get_audit_events(entity_id="sensitive-api-key")
 
 for event in events:
     print(f"""
@@ -192,8 +256,12 @@ for event in events:
 Investigate when limits were changed:
 
 ```python
+from zae_limiter import RateLimiter, AuditAction
+
+limiter = RateLimiter(name="limiter", region="us-east-1")
+
 # Filter for limit changes
-events = await repo.get_audit_events("api-key-123")
+events = await limiter.get_audit_events(entity_id="api-key-123")
 limit_changes = [e for e in events if e.action in (
     AuditAction.LIMITS_SET,
     AuditAction.LIMITS_DELETED,
@@ -211,9 +279,11 @@ for event in limit_changes:
 Track entity deletions during an incident window:
 
 ```python
-from datetime import datetime
+from zae_limiter import RateLimiter, AuditAction
 
-events = await repo.get_audit_events("compromised-key")
+limiter = RateLimiter(name="limiter", region="us-east-1")
+
+events = await limiter.get_audit_events(entity_id="compromised-key")
 deletions = [
     e for e in events
     if e.action == AuditAction.ENTITY_DELETED
@@ -233,21 +303,6 @@ for event in deletions:
 - S3 storage with date partitioning (`/audit/year=YYYY/month=MM/`)
 - Query with Athena for historical analysis
 - Target: v1.1.0
-
-### Public RateLimiter API
-
-[Issue #114](https://github.com/zeroae/zae-limiter/issues/114) - Expose audit through the public interface:
-
-```python
-# Proposed API (not yet implemented)
-events = await limiter.get_audit_events("api-key-123")
-
-await limiter.create_entity(
-    entity_id="api-key-123",
-    name="Production Key",
-    principal="admin@example.com",  # Track caller
-)
-```
 
 ## Next Steps
 

@@ -1220,3 +1220,258 @@ class TestCLIValidationErrors:
         result = runner.invoke(cli, ["deploy", "--name", "my app"])
         assert result.exit_code == 1
         assert "space" in result.output.lower()
+
+    def test_audit_list_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test audit list rejects names with underscores."""
+        result = runner.invoke(cli, ["audit", "list", "--name", "rate_limits", "-e", "test"])
+        assert result.exit_code == 1
+        assert "underscore" in result.output.lower()
+
+
+class TestAuditCommands:
+    """Test audit CLI commands."""
+
+    def test_audit_help(self, runner: CliRunner) -> None:
+        """Test audit command group help."""
+        result = runner.invoke(cli, ["audit", "--help"])
+        assert result.exit_code == 0
+        assert "Audit log commands" in result.output
+
+    def test_audit_list_help(self, runner: CliRunner) -> None:
+        """Test audit list command help."""
+        result = runner.invoke(cli, ["audit", "list", "--help"])
+        assert result.exit_code == 0
+        assert "List audit events for an entity" in result.output
+        assert "--entity-id" in result.output
+        assert "--limit" in result.output
+        assert "--start-event-id" in result.output
+
+    def test_audit_list_requires_entity_id(self, runner: CliRunner) -> None:
+        """Test audit list requires --entity-id."""
+        result = runner.invoke(cli, ["audit", "list"])
+        assert result.exit_code != 0
+        assert "entity-id" in result.output.lower()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_no_events(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test audit list when no events are found."""
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        assert "No audit events found for entity: test-entity" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_with_events(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test audit list displays events in table format."""
+        from zae_limiter.models import AuditEvent
+
+        mock_events = [
+            AuditEvent(
+                event_id="01ABCDEF",
+                timestamp="2025-01-16T12:00:00Z",
+                action="entity_created",
+                entity_id="test-entity",
+                principal="admin@example.com",
+                resource=None,
+            ),
+            AuditEvent(
+                event_id="01ABCDEG",
+                timestamp="2025-01-16T12:01:00Z",
+                action="limits_set",
+                entity_id="test-entity",
+                principal="admin@example.com",
+                resource="api-calls",
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(return_value=mock_events)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        assert "Audit Events for: test-entity" in result.output
+        assert "Timestamp" in result.output
+        assert "Action" in result.output
+        assert "Principal" in result.output
+        assert "Resource" in result.output
+        assert "entity_created" in result.output
+        assert "limits_set" in result.output
+        assert "admin@example.com" in result.output
+        assert "api-calls" in result.output
+        assert "Total: 2 events" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_truncates_long_principal(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test audit list truncates long principal values."""
+        from zae_limiter.models import AuditEvent
+
+        long_principal = "arn:aws:iam::123456789012:user/very-long-username-that-exceeds-limit"
+        mock_events = [
+            AuditEvent(
+                event_id="01ABCDEF",
+                timestamp="2025-01-16T12:00:00Z",
+                action="entity_created",
+                entity_id="test-entity",
+                principal=long_principal,
+                resource=None,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(return_value=mock_events)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        # Principal should be truncated
+        assert "..." in result.output
+        # But not the full ARN
+        assert long_principal not in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_shows_pagination_hint(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test audit list shows pagination hint when limit is reached."""
+        from zae_limiter.models import AuditEvent
+
+        # Create exactly 5 events (matches limit)
+        mock_events = [
+            AuditEvent(
+                event_id=f"01ABCDE{i}",
+                timestamp="2025-01-16T12:00:00Z",
+                action="entity_created",
+                entity_id="test-entity",
+                principal="admin@example.com",
+                resource=None,
+            )
+            for i in range(5)
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(return_value=mock_events)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["audit", "list", "-e", "test-entity", "-l", "5"])
+
+        assert result.exit_code == 0
+        assert "More events may exist" in result.output
+        assert "--start-event-id" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_with_custom_limit(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test audit list with custom limit."""
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["audit", "list", "-e", "test-entity", "--limit", "50"])
+
+        assert result.exit_code == 0
+        mock_repo.get_audit_events.assert_called_once_with(
+            entity_id="test-entity",
+            limit=50,
+            start_event_id=None,
+        )
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_with_start_event_id(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test audit list with pagination via start-event-id."""
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["audit", "list", "-e", "test-entity", "--start-event-id", "01ABCDEF"]
+        )
+
+        assert result.exit_code == 0
+        mock_repo.get_audit_events.assert_called_once_with(
+            entity_id="test-entity",
+            limit=100,
+            start_event_id="01ABCDEF",
+        )
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_with_endpoint_url(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test audit list with --endpoint-url for LocalStack."""
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "audit",
+                "list",
+                "-e",
+                "test-entity",
+                "--endpoint-url",
+                "http://localhost:4566",
+                "--region",
+                "us-east-1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_repo_class.assert_called_once_with("limiter", "us-east-1", "http://localhost:4566")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_handles_exception(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test audit list handles exceptions gracefully."""
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 1
+        assert "Error" in result.output
+        assert "Failed to list audit events" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_handles_none_resource(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test audit list handles None resource field."""
+        from zae_limiter.models import AuditEvent
+
+        mock_events = [
+            AuditEvent(
+                event_id="01ABCDEF",
+                timestamp="2025-01-16T12:00:00Z",
+                action="entity_deleted",
+                entity_id="test-entity",
+                principal=None,
+                resource=None,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_audit_events = AsyncMock(return_value=mock_events)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        # None values should display as "-"
+        assert "-" in result.output
+        assert "entity_deleted" in result.output

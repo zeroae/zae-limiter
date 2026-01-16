@@ -256,7 +256,7 @@ src/zae_limiter/
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
-├── cli.py             # CLI commands (deploy, delete, status, cfn-template, version, upgrade, check)
+├── cli.py             # CLI commands (deploy, delete, status, cfn-template, version, upgrade, check, audit)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner

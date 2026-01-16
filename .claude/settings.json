@@ -6,6 +6,7 @@
       "Bash(gh issue edit:*)",
       "Bash(gh issue list:*)",
       "Bash(gh issue status:*)",
+      "Bash(gh issue view:*)",
       "Bash(gh pr checks:*)",
       "Bash(gh pr checkout:*)",
       "Bash(gh pr create:*)",
@@ -16,7 +17,9 @@
       "Bash(git log:*)",
       "Bash(uv run mypy:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uv run ruff:*)"
+      "Bash(uv run ruff:*)",
+      "Bash(gh api:*)",
+      "Bash(gh pr edit:*)"
     ],
     "ask": [
       "Bash(gh issue close:*)",

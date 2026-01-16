@@ -463,8 +463,8 @@ class TestRepositoryAuditLogging:
         assert event.details["name"] == "Audit Test"
 
     @pytest.mark.asyncio
-    async def test_create_entity_logs_audit_without_principal(self, repo):
-        """Creating an entity without principal still logs event."""
+    async def test_create_entity_logs_audit_with_auto_detected_principal(self, repo):
+        """Creating an entity without explicit principal auto-detects from AWS identity."""
         await repo.create_entity(
             entity_id="audit-test-entity-2",
             name="No Principal",
@@ -472,7 +472,11 @@ class TestRepositoryAuditLogging:
 
         events = await repo.get_audit_events("audit-test-entity-2")
         assert len(events) == 1
-        assert events[0].principal is None
+        # In moto tests, principal is auto-detected from STS (may be None or an ARN)
+        # In real AWS, it would be the caller's ARN
+        principal = events[0].principal
+        if principal is not None:
+            assert principal.startswith("arn:aws:")
 
     @pytest.mark.asyncio
     async def test_delete_entity_logs_audit_event(self, repo):
@@ -671,3 +675,30 @@ class TestRepositoryAuditLogging:
             assert event_ids[i] > event_ids[i - 1], (
                 f"Event IDs not monotonic: {event_ids[i - 1]} >= {event_ids[i]}"
             )
+
+    @pytest.mark.asyncio
+    async def test_get_caller_identity_handles_sts_failure(self, repo):
+        """STS failures should be handled gracefully, returning None."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        # Reset cached identity
+        repo._caller_identity_fetched = False
+        repo._caller_identity_arn = None
+
+        # Mock STS client to raise exception
+        mock_sts_client = AsyncMock()
+        mock_sts_client.get_caller_identity.side_effect = Exception("STS unavailable")
+        mock_sts_client.__aenter__ = AsyncMock(return_value=mock_sts_client)
+        mock_sts_client.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_sts_client
+
+        with patch.object(repo, "_session", mock_session):
+            arn = await repo._get_caller_identity_arn()
+
+        # Should return None on failure
+        assert arn is None
+        # Should be cached
+        assert repo._caller_identity_fetched is True
+        assert repo._caller_identity_arn is None

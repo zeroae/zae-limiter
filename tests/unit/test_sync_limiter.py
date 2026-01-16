@@ -228,3 +228,43 @@ class TestSyncRateLimiterOnUnavailable:
                 on_unavailable=OnUnavailable.BLOCK,  # Override to BLOCK
             ):
                 pass
+
+
+class TestSyncRateLimiterAudit:
+    """Tests for sync audit functionality."""
+
+    def test_get_audit_events_after_create_entity(self, sync_limiter):
+        """Test that create_entity logs an audit event."""
+        sync_limiter.create_entity(
+            entity_id="proj-1",
+            name="Test Project",
+            principal="admin@example.com",
+        )
+
+        events = sync_limiter.get_audit_events("proj-1")
+        assert len(events) == 1
+        assert events[0].action == "entity_created"
+        assert events[0].principal == "admin@example.com"
+
+    def test_get_audit_events_with_principal(self, sync_limiter):
+        """Test principal parameter on sync methods."""
+        sync_limiter.create_entity(entity_id="proj-1")
+        sync_limiter.set_limits(
+            "proj-1",
+            [Limit.per_minute("rpm", 100)],
+            principal="admin",
+        )
+        sync_limiter.delete_limits("proj-1", principal="admin")
+
+        events = sync_limiter.get_audit_events("proj-1")
+        assert len(events) >= 2
+
+    def test_delete_entity_with_principal(self, sync_limiter):
+        """Test delete_entity logs with principal."""
+        sync_limiter.create_entity(entity_id="proj-1")
+        sync_limiter.delete_entity("proj-1", principal="admin")
+
+        events = sync_limiter.get_audit_events("proj-1")
+        delete_events = [e for e in events if e.action == "entity_deleted"]
+        assert len(delete_events) == 1
+        assert delete_events[0].principal == "admin"
