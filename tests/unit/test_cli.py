@@ -1372,9 +1372,7 @@ class TestAuditCommands:
         assert "--start-event-id" in result.output
 
     @patch("zae_limiter.repository.Repository")
-    def test_audit_list_with_custom_limit(
-        self, mock_repo_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_audit_list_with_custom_limit(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test audit list with custom limit."""
         mock_repo = Mock()
         mock_repo.get_audit_events = AsyncMock(return_value=[])
@@ -1391,9 +1389,7 @@ class TestAuditCommands:
         )
 
     @patch("zae_limiter.repository.Repository")
-    def test_audit_list_with_start_event_id(
-        self, mock_repo_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_audit_list_with_start_event_id(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test audit list with pagination via start-event-id."""
         mock_repo = Mock()
         mock_repo.get_audit_events = AsyncMock(return_value=[])
@@ -1412,9 +1408,7 @@ class TestAuditCommands:
         )
 
     @patch("zae_limiter.repository.Repository")
-    def test_audit_list_with_endpoint_url(
-        self, mock_repo_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_audit_list_with_endpoint_url(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test audit list with --endpoint-url for LocalStack."""
         mock_repo = Mock()
         mock_repo.get_audit_events = AsyncMock(return_value=[])
@@ -1439,9 +1433,7 @@ class TestAuditCommands:
         mock_repo_class.assert_called_once_with("limiter", "us-east-1", "http://localhost:4566")
 
     @patch("zae_limiter.repository.Repository")
-    def test_audit_list_handles_exception(
-        self, mock_repo_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_audit_list_handles_exception(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test audit list handles exceptions gracefully."""
         mock_repo = Mock()
         mock_repo.get_audit_events = AsyncMock(side_effect=Exception("DynamoDB error"))
