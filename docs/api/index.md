@@ -122,6 +122,10 @@ from zae_limiter import (
     LimitStatus,
     BucketState,
 
+    # Audit
+    AuditEvent,
+    AuditAction,
+
     # Enums
     OnUnavailable,
 

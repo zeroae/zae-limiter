@@ -21,6 +21,7 @@ from .exceptions import (
 )
 from .lease import Lease, LeaseEntry, SyncLease
 from .models import (
+    AuditEvent,
     BucketState,
     Entity,
     EntityCapacity,
@@ -258,6 +259,7 @@ class RateLimiter:
         name: str | None = None,
         parent_id: str | None = None,
         metadata: dict[str, str] | None = None,
+        principal: str | None = None,
     ) -> Entity:
         """
         Create a new entity.
@@ -267,6 +269,7 @@ class RateLimiter:
             name: Human-readable name (defaults to entity_id)
             parent_id: Parent entity ID (None for root/project entities)
             metadata: Additional metadata to store
+            principal: Caller identity for audit logging (optional)
 
         Returns:
             The created Entity
@@ -280,6 +283,7 @@ class RateLimiter:
             name=name,
             parent_id=parent_id,
             metadata=metadata,
+            principal=principal,
         )
 
     async def get_entity(self, entity_id: str) -> Entity | None:
@@ -287,15 +291,57 @@ class RateLimiter:
         await self._ensure_initialized()
         return await self._repository.get_entity(entity_id)
 
-    async def delete_entity(self, entity_id: str) -> None:
-        """Delete an entity and all its related data."""
+    async def delete_entity(
+        self,
+        entity_id: str,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete an entity and all its related data.
+
+        Args:
+            entity_id: ID of the entity to delete
+            principal: Caller identity for audit logging (optional)
+        """
         await self._ensure_initialized()
-        await self._repository.delete_entity(entity_id)
+        await self._repository.delete_entity(entity_id, principal=principal)
 
     async def get_children(self, parent_id: str) -> list[Entity]:
         """Get all children of a parent entity."""
         await self._ensure_initialized()
         return await self._repository.get_children(parent_id)
+
+    async def get_audit_events(
+        self,
+        entity_id: str,
+        limit: int = 100,
+        start_event_id: str | None = None,
+    ) -> list[AuditEvent]:
+        """
+        Get audit events for an entity.
+
+        Retrieves security audit events logged for administrative operations
+        on the specified entity, ordered by most recent first.
+
+        Args:
+            entity_id: ID of the entity to query
+            limit: Maximum number of events to return (default: 100)
+            start_event_id: Event ID to start after (for pagination)
+
+        Returns:
+            List of AuditEvent objects, ordered by most recent first
+
+        Example:
+            events = await limiter.get_audit_events("proj-1")
+            for event in events:
+                print(f"{event.timestamp}: {event.action} by {event.principal}")
+        """
+        await self._ensure_initialized()
+        return await self._repository.get_audit_events(
+            entity_id=entity_id,
+            limit=limit,
+            start_event_id=start_event_id,
+        )
 
     # -------------------------------------------------------------------------
     # Rate limiting
@@ -548,6 +594,7 @@ class RateLimiter:
         entity_id: str,
         limits: list[Limit],
         resource: str = DEFAULT_RESOURCE,
+        principal: str | None = None,
     ) -> None:
         """
         Store limit configs for an entity.
@@ -556,9 +603,10 @@ class RateLimiter:
             entity_id: Entity to set limits for
             limits: Limits to store
             resource: Resource these limits apply to (or _default_)
+            principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
-        await self._repository.set_limits(entity_id, limits, resource)
+        await self._repository.set_limits(entity_id, limits, resource, principal=principal)
 
     async def get_limits(
         self,
@@ -582,6 +630,7 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str = DEFAULT_RESOURCE,
+        principal: str | None = None,
     ) -> None:
         """
         Delete stored limit configs for an entity.
@@ -589,9 +638,10 @@ class RateLimiter:
         Args:
             entity_id: Entity to delete limits for
             resource: Resource to delete limits for
+            principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
-        await self._repository.delete_limits(entity_id, resource)
+        await self._repository.delete_limits(entity_id, resource, principal=principal)
 
     # -------------------------------------------------------------------------
     # Capacity queries
@@ -936,6 +986,7 @@ class SyncRateLimiter:
         name: str | None = None,
         parent_id: str | None = None,
         metadata: dict[str, str] | None = None,
+        principal: str | None = None,
     ) -> Entity:
         """Create a new entity."""
         return self._run(
@@ -944,6 +995,7 @@ class SyncRateLimiter:
                 name=name,
                 parent_id=parent_id,
                 metadata=metadata,
+                principal=principal,
             )
         )
 
@@ -951,13 +1003,32 @@ class SyncRateLimiter:
         """Get an entity by ID."""
         return self._run(self._limiter.get_entity(entity_id))
 
-    def delete_entity(self, entity_id: str) -> None:
+    def delete_entity(
+        self,
+        entity_id: str,
+        principal: str | None = None,
+    ) -> None:
         """Delete an entity and all its related data."""
-        self._run(self._limiter.delete_entity(entity_id))
+        self._run(self._limiter.delete_entity(entity_id, principal=principal))
 
     def get_children(self, parent_id: str) -> list[Entity]:
         """Get all children of a parent entity."""
         return self._run(self._limiter.get_children(parent_id))
+
+    def get_audit_events(
+        self,
+        entity_id: str,
+        limit: int = 100,
+        start_event_id: str | None = None,
+    ) -> list[AuditEvent]:
+        """Get audit events for an entity."""
+        return self._run(
+            self._limiter.get_audit_events(
+                entity_id=entity_id,
+                limit=limit,
+                start_event_id=start_event_id,
+            )
+        )
 
     # -------------------------------------------------------------------------
     # Rate limiting
@@ -1051,9 +1122,10 @@ class SyncRateLimiter:
         entity_id: str,
         limits: list[Limit],
         resource: str = DEFAULT_RESOURCE,
+        principal: str | None = None,
     ) -> None:
         """Store limit configs for an entity."""
-        self._run(self._limiter.set_limits(entity_id, limits, resource))
+        self._run(self._limiter.set_limits(entity_id, limits, resource, principal=principal))
 
     def get_limits(
         self,
@@ -1067,9 +1139,10 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str = DEFAULT_RESOURCE,
+        principal: str | None = None,
     ) -> None:
         """Delete stored limit configs for an entity."""
-        self._run(self._limiter.delete_limits(entity_id, resource))
+        self._run(self._limiter.delete_limits(entity_id, resource, principal=principal))
 
     # -------------------------------------------------------------------------
     # Capacity queries

@@ -335,6 +335,54 @@ zae-limiter upgrade --name limiter --region us-east-1
 zae-limiter upgrade --name limiter --region us-east-1 --lambda-only --force
 ```
 
+---
+
+## audit list
+
+List audit events for an entity.
+
+```bash
+zae-limiter audit list [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint | None |
+| `--entity-id`, `-e` | Entity ID to query (required) | - |
+| `--limit`, `-l` | Maximum events to return | `100` |
+| `--start-event-id` | Event ID for pagination | None |
+
+**Examples:**
+
+```bash
+# List audit events for an entity
+zae-limiter audit list --name limiter --entity-id proj-1
+
+# Limit results
+zae-limiter audit list --entity-id proj-1 --limit 10
+
+# Paginate through results
+zae-limiter audit list --entity-id proj-1 --start-event-id 01HXYZ...
+```
+
+**Output:**
+
+```
+Audit Events for: proj-1
+================================================================================
+
+Timestamp                Action             Principal            Resource
+--------------------------------------------------------------------------------
+2024-01-15T10:30:00Z     limits_set         admin@example.com    gpt-4
+2024-01-15T10:00:00Z     entity_created     admin@example.com    -
+
+Total: 2 events
+```
+
 ## Environment Variables
 
 The CLI respects standard AWS environment variables:

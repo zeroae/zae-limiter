@@ -184,6 +184,100 @@ class TestE2ELocalStackCLIWorkflow:
             )
             # Don't assert exit code - stack might not exist if deploy failed
 
+    def test_audit_list_cli_workflow(self, cli_runner, localstack_endpoint, unique_name):
+        """
+        E2E workflow for audit list CLI command.
+
+        Steps:
+        1. Deploy stack via CLI
+        2. Create entity using SyncRateLimiter (generates audit event)
+        3. Run audit list CLI command
+        4. Verify table format output contains audit event data
+        5. Delete stack via CLI
+        """
+        stack_name = f"ZAEL-{unique_name}"
+
+        try:
+            # Step 1: Deploy stack via CLI
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "deploy",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--no-aggregator",
+                    "--no-alarms",
+                    "--wait",
+                ],
+            )
+            assert result.exit_code == 0, f"Deploy failed: {result.output}"
+
+            # Step 2: Create entity using SyncRateLimiter (generates audit event)
+            limiter = SyncRateLimiter(
+                name=unique_name,
+                endpoint_url=localstack_endpoint,
+                region="us-east-1",
+            )
+
+            with limiter:
+                entity = limiter.create_entity(
+                    "audit-test-user",
+                    name="Audit Test User",
+                    principal="test-admin@example.com",
+                )
+                assert entity.id == "audit-test-user"
+
+                # Step 3: Run audit list CLI command
+                result = cli_runner.invoke(
+                    cli,
+                    [
+                        "audit",
+                        "list",
+                        "--name",
+                        unique_name,
+                        "--endpoint-url",
+                        localstack_endpoint,
+                        "--region",
+                        "us-east-1",
+                        "--entity-id",
+                        "audit-test-user",
+                    ],
+                )
+                assert result.exit_code == 0, f"Audit list failed: {result.output}"
+
+                # Step 4: Verify table format output contains expected data
+                # Table should have header row and at least one data row
+                assert "Timestamp" in result.output, "Table header should include Timestamp"
+                assert "Action" in result.output, "Table header should include Action"
+                assert "Principal" in result.output, "Table header should include Principal"
+                assert "Resource" in result.output, "Table header should include Resource"
+
+                # Verify audit event data is present
+                assert "entity_created" in result.output, "Should show entity_created action"
+                assert "test-admin@example.com" in result.output, "Should show principal"
+
+        finally:
+            # Step 5: Delete stack via CLI
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "delete",
+                    "--name",
+                    stack_name,
+                    "--region",
+                    "us-east-1",
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--yes",
+                    "--wait",
+                ],
+            )
+            # Don't assert exit code - stack might not exist if deploy failed
+
 
 class TestE2ELocalStackFullWorkflow:
     """E2E tests for full rate limiting workflow."""

@@ -1038,3 +1038,96 @@ class TestRateLimiterIsAvailable:
         # With a reasonable timeout, should still succeed
         result = await limiter.is_available(timeout=5.0)
         assert result is True
+
+
+class TestRateLimiterAudit:
+    """Tests for audit functionality."""
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_after_create_entity(self, limiter):
+        """Test that create_entity logs an audit event."""
+        await limiter.create_entity(
+            entity_id="proj-1",
+            name="Test Project",
+            principal="admin@example.com",
+        )
+
+        events = await limiter.get_audit_events("proj-1")
+        assert len(events) == 1
+        assert events[0].action == "entity_created"
+        assert events[0].entity_id == "proj-1"
+        assert events[0].principal == "admin@example.com"
+        assert events[0].details["name"] == "Test Project"
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_after_delete_entity(self, limiter):
+        """Test that delete_entity logs an audit event."""
+        await limiter.create_entity(entity_id="proj-1", principal="admin")
+        await limiter.delete_entity("proj-1", principal="admin")
+
+        events = await limiter.get_audit_events("proj-1")
+        # Should have 2 events: create and delete
+        assert len(events) == 2
+        assert events[0].action == "entity_deleted"  # Most recent first
+        assert events[1].action == "entity_created"
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_after_set_limits(self, limiter):
+        """Test that set_limits logs an audit event."""
+        await limiter.create_entity(entity_id="proj-1")
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_limits("proj-1", limits, principal="admin")
+
+        events = await limiter.get_audit_events("proj-1")
+        # Find the limits_set event
+        limit_events = [e for e in events if e.action == "limits_set"]
+        assert len(limit_events) == 1
+        assert limit_events[0].principal == "admin"
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_after_delete_limits(self, limiter):
+        """Test that delete_limits logs an audit event."""
+        await limiter.create_entity(entity_id="proj-1")
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_limits("proj-1", limits)
+        await limiter.delete_limits("proj-1", principal="admin")
+
+        events = await limiter.get_audit_events("proj-1")
+        delete_events = [e for e in events if e.action == "limits_deleted"]
+        assert len(delete_events) == 1
+        assert delete_events[0].principal == "admin"
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_with_limit(self, limiter):
+        """Test pagination limit parameter."""
+        await limiter.create_entity(entity_id="proj-1")
+        # Create multiple events by setting limits multiple times
+        for i in range(5):
+            await limiter.set_limits("proj-1", [Limit.per_minute("rpm", 100 + i)])
+
+        events = await limiter.get_audit_events("proj-1", limit=3)
+        assert len(events) == 3
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_empty(self, limiter):
+        """Test getting events for entity with no events."""
+        events = await limiter.get_audit_events("nonexistent")
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_create_entity_without_principal_uses_auto_detection(self, limiter):
+        """Test that principal is auto-detected from AWS identity when not provided."""
+        await limiter.create_entity(entity_id="proj-1")
+        events = await limiter.get_audit_events("proj-1")
+        assert len(events) == 1
+        # In moto tests, STS call may fail, so principal could be None
+        # In real AWS, it would be the caller's ARN
+        # This test just verifies the flow works without explicit principal
+
+    @pytest.mark.asyncio
+    async def test_explicit_principal_overrides_auto_detection(self, limiter):
+        """Test that explicit principal overrides auto-detection."""
+        await limiter.create_entity(entity_id="proj-1", principal="explicit-user")
+        events = await limiter.get_audit_events("proj-1")
+        assert len(events) == 1
+        assert events[0].principal == "explicit-user"

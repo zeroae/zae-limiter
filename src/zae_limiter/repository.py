@@ -46,6 +46,8 @@ class Repository:
         self.endpoint_url = endpoint_url
         self._session: aioboto3.Session | None = None
         self._client: Any = None
+        self._caller_identity_arn: str | None = None
+        self._caller_identity_fetched = False
 
     async def _get_client(self) -> Any:
         """Get or create the DynamoDB client."""
@@ -64,6 +66,34 @@ class Repository:
             await self._client.__aexit__(None, None, None)
             self._client = None
             self._session = None
+
+    async def _get_caller_identity_arn(self) -> str | None:
+        """
+        Get the ARN of the AWS caller identity (lazy cached).
+
+        Returns the full ARN of the IAM user/role making API calls.
+        Returns None if the identity cannot be determined (e.g., local testing).
+        """
+        if self._caller_identity_fetched:
+            return self._caller_identity_arn
+
+        self._caller_identity_fetched = True
+        try:
+            if self._session is None:
+                self._session = aioboto3.Session()
+
+            async with self._session.client(
+                "sts",
+                region_name=self.region,
+                endpoint_url=self.endpoint_url,
+            ) as sts_client:
+                response = await sts_client.get_caller_identity()
+                self._caller_identity_arn = response.get("Arn")
+        except Exception:
+            # Silently fail - caller identity is optional
+            self._caller_identity_arn = None
+
+        return self._caller_identity_arn
 
     def _now_ms(self) -> int:
         """Current time in milliseconds."""
@@ -665,7 +695,8 @@ class Repository:
         Args:
             action: Type of action (see AuditAction constants)
             entity_id: ID of the entity affected
-            principal: Caller identity who performed the action
+            principal: Caller identity who performed the action. If None,
+                auto-detects from AWS STS caller identity (lazy cached).
             resource: Resource name for limit-related actions
             details: Additional action-specific details
             ttl_seconds: TTL for the audit record (default 90 days)
@@ -676,8 +707,14 @@ class Repository:
         Raises:
             InvalidIdentifierError: If principal is invalid
         """
-        # Validate principal if provided
-        if principal is not None:
+        # Auto-detect principal from AWS caller identity if not provided
+        if principal is None:
+            principal = await self._get_caller_identity_arn()
+
+        # Validate principal if provided (skip validation for ARNs from STS)
+        # ARNs contain colons which would fail identifier validation
+        # Only validate user-provided principals that aren't ARNs
+        if principal is not None and not principal.startswith("arn:"):
             validate_identifier(principal, "principal")
 
         client = await self._get_client()

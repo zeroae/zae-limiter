@@ -919,5 +919,115 @@ def check(
     asyncio.run(_check())
 
 
+# -------------------------------------------------------------------------
+# Audit commands
+# -------------------------------------------------------------------------
+
+
+@cli.group()
+def audit() -> None:
+    """Audit log commands."""
+    pass
+
+
+@audit.command("list")
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+@click.option(
+    "--entity-id",
+    "-e",
+    required=True,
+    help="Entity ID to query audit events for",
+)
+@click.option(
+    "--limit",
+    "-l",
+    default=100,
+    type=int,
+    help="Maximum number of events to return (default: 100)",
+)
+@click.option(
+    "--start-event-id",
+    help="Event ID to start after (for pagination)",
+)
+def audit_list(
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    entity_id: str,
+    limit: int,
+    start_event_id: str | None,
+) -> None:
+    """List audit events for an entity."""
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _list() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            events = await repo.get_audit_events(
+                entity_id=entity_id,
+                limit=limit,
+                start_event_id=start_event_id,
+            )
+
+            if not events:
+                click.echo(f"No audit events found for entity: {entity_id}")
+                return
+
+            # Table format
+            click.echo()
+            click.echo(f"Audit Events for: {entity_id}")
+            click.echo("=" * 100)
+            click.echo()
+            click.echo(f"{'Timestamp':<24} {'Action':<18} {'Principal':<40} {'Resource':<15}")
+            click.echo("-" * 100)
+            for event in events:
+                principal = event.principal or "-"
+                resource = event.resource or "-"
+                # Truncate long values
+                if len(principal) > 38:
+                    principal = principal[:35] + "..."
+                if len(resource) > 13:
+                    resource = resource[:10] + "..."
+                click.echo(
+                    f"{event.timestamp:<24} {event.action:<18} {principal:<40} {resource:<15}"
+                )
+            click.echo()
+            click.echo(f"Total: {len(events)} events")
+
+            if len(events) == limit:
+                last_id = events[-1].event_id
+                click.echo(f"More events may exist. Use --start-event-id {last_id}")
+
+        except Exception as e:
+            click.echo(f"Error: Failed to list audit events: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_list())
+
+
 if __name__ == "__main__":
     cli()

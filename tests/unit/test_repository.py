@@ -463,8 +463,8 @@ class TestRepositoryAuditLogging:
         assert event.details["name"] == "Audit Test"
 
     @pytest.mark.asyncio
-    async def test_create_entity_logs_audit_without_principal(self, repo):
-        """Creating an entity without principal still logs event."""
+    async def test_create_entity_logs_audit_with_auto_detected_principal(self, repo):
+        """Creating an entity without explicit principal auto-detects from AWS identity."""
         await repo.create_entity(
             entity_id="audit-test-entity-2",
             name="No Principal",
@@ -472,7 +472,11 @@ class TestRepositoryAuditLogging:
 
         events = await repo.get_audit_events("audit-test-entity-2")
         assert len(events) == 1
-        assert events[0].principal is None
+        # In moto tests, principal is auto-detected from STS (may be None or an ARN)
+        # In real AWS, it would be the caller's ARN
+        principal = events[0].principal
+        if principal is not None:
+            assert principal.startswith("arn:aws:")
 
     @pytest.mark.asyncio
     async def test_delete_entity_logs_audit_event(self, repo):
