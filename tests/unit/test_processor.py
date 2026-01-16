@@ -561,12 +561,18 @@ class TestProcessStreamRecords:
         """Valid MODIFY events are processed."""
         records = [
             self._make_record(
-                entity_id="e1", old_tokens=10000, new_tokens=5000,
-                old_counter=0, new_counter=5000000,
+                entity_id="e1",
+                old_tokens=10000,
+                new_tokens=5000,
+                old_counter=0,
+                new_counter=5000000,
             ),
             self._make_record(
-                entity_id="e2", old_tokens=8000, new_tokens=3000,
-                old_counter=0, new_counter=5000000,
+                entity_id="e2",
+                old_tokens=8000,
+                new_tokens=3000,
+                old_counter=0,
+                new_counter=5000000,
             ),
         ]
 
@@ -645,8 +651,10 @@ class TestProcessStreamRecords:
         records = [
             # Zero counter delta = no consumption change
             self._make_record(
-                old_tokens=5000, new_tokens=5000,
-                old_counter=1000000, new_counter=1000000,  # same counter = zero delta
+                old_tokens=5000,
+                new_tokens=5000,
+                old_counter=1000000,
+                new_counter=1000000,  # same counter = zero delta
             ),
         ]
 
@@ -661,15 +669,20 @@ class TestProcessStreamRecords:
         records = [
             # Valid: has counter with positive delta
             self._make_record(
-                entity_id="valid", old_tokens=10000, new_tokens=5000,
-                old_counter=0, new_counter=5000000,
+                entity_id="valid",
+                old_tokens=10000,
+                new_tokens=5000,
+                old_counter=0,
+                new_counter=5000000,
             ),
             # Invalid: non-bucket SK (will return None)
             self._make_record(sk="#LIMIT#res#name"),
             # Invalid: zero counter delta
             self._make_record(
-                old_tokens=5000, new_tokens=5000,
-                old_counter=1000000, new_counter=1000000,
+                old_tokens=5000,
+                new_tokens=5000,
+                old_counter=1000000,
+                new_counter=1000000,
             ),
         ]
 
