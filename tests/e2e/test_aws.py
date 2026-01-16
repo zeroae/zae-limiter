@@ -396,6 +396,8 @@ class TestE2EAWSUsageSnapshots:
 
         # Use limits designed for reliable snapshot capture in tests.
         #
+        # IMPORTANT: See issue #179 for a known design limitation with high TPM limits.
+        #
         # Key insight: DynamoDB stream records capture OldImage (before write) and
         # NewImage (after write). The aggregator calculates:
         #   tokens_delta = old_tokens - new_tokens = consumed - refilled_since_last_read
@@ -409,8 +411,9 @@ class TestE2EAWSUsageSnapshots:
         #   refill = 100ms * (100K / 60000ms) = 167 tokens
         #   Consuming 1,000 tokens ensures positive delta: 1000 - 167 = 833 (captured!)
         #
-        # Note: Production workloads with 10M+ TPM would naturally have higher
-        # consumption per operation (LLM responses are thousands of tokens).
+        # Note: This is a known limitation (#179). The snapshot feature does not reliably
+        # capture usage when refill_rate > consumption_rate / operation_latency.
+        # A proposed fix is to track gross consumption in a separate counter.
         limits = [
             Limit.per_minute("rpm", 10000),  # 10K requests per minute
             Limit.per_minute("tpm", 100_000),  # 100K TPM for reliable test capture
