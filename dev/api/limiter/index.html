@@ -1133,6 +1133,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.get_audit_events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_audit_events
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.acquire" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1336,6 +1347,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_children
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.SyncRateLimiter.get_audit_events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_audit_events
       
     </span>
   </a>
@@ -1899,6 +1921,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.get_audit_events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_audit_events
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.acquire" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2102,6 +2135,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_children
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.SyncRateLimiter.get_audit_events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_audit_events
       
     </span>
   </a>
@@ -2637,7 +2681,7 @@ else:
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.create_entity" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -2714,6 +2758,22 @@ else:
             <td>
               <div class="doc-md-description">
                 <p>Additional metadata to store</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>principal</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Caller identity for audit logging (optional)</p>
               </div>
             </td>
             <td>
@@ -2815,12 +2875,59 @@ else:
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.delete_entity" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Delete an entity and all its related data.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>ID of the entity to delete</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>principal</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Caller identity for audit logging (optional)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -2846,6 +2953,130 @@ else:
 
         <p>Get all children of a parent entity.</p>
 
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.limiter.RateLimiter.get_audit_events" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_audit_events</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.limiter.RateLimiter.get_audit_events" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_audit_events</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">limit</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">start_event_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Get audit events for an entity.</p>
+<p>Retrieves security audit events logged for administrative operations
+on the specified entity, ordered by most recent first.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>ID of the entity to query</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>limit</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Maximum number of events to return (default: 100)</p>
+              </div>
+            </td>
+            <td>
+                  <code>100</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>start_event_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Event ID to start after (for pagination)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            AuditEvent
+
+
+  
+      dataclass
+   (zae_limiter.models.AuditEvent)" href="../models/#zae_limiter.models.AuditEvent">AuditEvent</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of AuditEvent objects, ordered by most recent first</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>events = await limiter.get_audit_events("proj-1")
+for event in events:
+    print(f"{event.timestamp}: {event.action} by {event.principal}")</p>
+</details>
 
     </div>
 
@@ -3355,7 +3586,7 @@ Can return negative values if bucket is in debt.</p>
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.set_limits" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -3425,6 +3656,22 @@ Can return negative values if bucket is in debt.</p>
             </td>
             <td>
                   <code><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>principal</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Caller identity for audit logging (optional)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -3546,7 +3793,7 @@ Can return negative values if bucket is in debt.</p>
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.delete_limits" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -3595,6 +3842,22 @@ Can return negative values if bucket is in debt.</p>
             </td>
             <td>
                   <code><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>principal</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Caller identity for audit logging (optional)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -4201,7 +4464,7 @@ else:
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.create_entity" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4241,7 +4504,7 @@ else:
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.delete_entity" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4267,6 +4530,26 @@ else:
     <div class="doc doc-contents ">
 
         <p>Get all children of a parent entity.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.limiter.SyncRateLimiter.get_audit_events" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_audit_events</span>
+
+
+<a href="#zae_limiter.limiter.SyncRateLimiter.get_audit_events" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_audit_events</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">limit</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">start_event_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Get audit events for an entity.</p>
 
 
     </div>
@@ -4341,7 +4624,7 @@ else:
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.set_limits" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4381,7 +4664,7 @@ else:
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.delete_limits" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="n"><span title="zae_limiter.schema.DEFAULT_RESOURCE">DEFAULT_RESOURCE</span></span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">

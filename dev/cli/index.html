@@ -1041,6 +1041,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#audit-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        audit list
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#environment-variables" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1604,6 +1615,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#audit-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        audit list
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#environment-variables" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2117,6 +2139,74 @@ This action cannot be undone.</p>
 </span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>
 </span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="c1"># Force Lambda update only</span>
 </span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>--lambda-only<span class="w"> </span>--force
+</span></code></pre></div>
+<hr />
+<h2 id="audit-list">audit list<a class="headerlink" href="#audit-list" title="Permanent link">&para;</a></h2>
+<p>List audit events for an entity.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>zae-limiter<span class="w"> </span>audit<span class="w"> </span>list<span class="w"> </span><span class="o">[</span>OPTIONS<span class="o">]</span>
+</span></code></pre></div>
+<p><strong>Options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--name</code>, <code>-n</code></td>
+<td>Resource identifier (ZAEL-{name})</td>
+<td><code>limiter</code></td>
+</tr>
+<tr>
+<td><code>--region</code></td>
+<td>AWS region</td>
+<td>boto3 default</td>
+</tr>
+<tr>
+<td><code>--endpoint-url</code></td>
+<td>Custom AWS endpoint</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>--entity-id</code>, <code>-e</code></td>
+<td>Entity ID to query (required)</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>--limit</code>, <code>-l</code></td>
+<td>Maximum events to return</td>
+<td><code>100</code></td>
+</tr>
+<tr>
+<td><code>--start-event-id</code></td>
+<td>Event ID for pagination</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Examples:</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="c1"># List audit events for an entity</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>zae-limiter<span class="w"> </span>audit<span class="w"> </span>list<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--entity-id<span class="w"> </span>proj-1
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="c1"># Limit results</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>zae-limiter<span class="w"> </span>audit<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>proj-1<span class="w"> </span>--limit<span class="w"> </span><span class="m">10</span>
+</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a>
+</span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="c1"># Paginate through results</span>
+</span><span id="__span-23-8"><a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a>zae-limiter<span class="w"> </span>audit<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>proj-1<span class="w"> </span>--start-event-id<span class="w"> </span>01HXYZ...
+</span></code></pre></div>
+<p><strong>Output:</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>Audit Events for: proj-1
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>================================================================================
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a>Timestamp                Action             Principal            Resource
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a>--------------------------------------------------------------------------------
+</span><span id="__span-24-6"><a id="__codelineno-24-6" name="__codelineno-24-6" href="#__codelineno-24-6"></a>2024-01-15T10:30:00Z     limits_set         admin@example.com    gpt-4
+</span><span id="__span-24-7"><a id="__codelineno-24-7" name="__codelineno-24-7" href="#__codelineno-24-7"></a>2024-01-15T10:00:00Z     entity_created     admin@example.com    -
+</span><span id="__span-24-8"><a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a>
+</span><span id="__span-24-9"><a id="__codelineno-24-9" name="__codelineno-24-9" href="#__codelineno-24-9"></a>Total: 2 events
 </span></code></pre></div>
 <h2 id="environment-variables">Environment Variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
 <p>The CLI respects standard AWS environment variables:</p>
