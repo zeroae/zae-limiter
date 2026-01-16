@@ -85,6 +85,14 @@ All changes to the codebase must go through pull requests. Direct commits to the
 
 See `.claude/rules/zeroae/github.md` for issue types, labels, milestone queries, and workflow.
 
+**Milestone assignment:** Every issue MUST be assigned to a milestone. Before assigning, query milestone descriptions to find the best thematic fit:
+
+```bash
+gh api repos/zeroae/zae-limiter/milestones --jq '.[] | "\(.title): \(.description)"'
+```
+
+Choose the milestone whose description best matches the issue - don't just pick the next version number. If no existing milestone fits the issue's theme, suggest a new milestone topic and ask the user before creating it.
+
 **Project scopes (for commits and area labels):**
 - `limiter` / `area/limiter` - Core rate limiting logic
 - `cli` / `area/cli` - Command line interface
