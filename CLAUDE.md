@@ -557,6 +557,16 @@ When fixing DynamoDB-related bugs, prefer solutions that preserve the existing s
 - Check type hints match descriptions
 - Flag public API changes without changelog entry
 
+### Design Validation (new features with derived data)
+When implementing features that derive data from state changes (like consumption from token deltas):
+- **Document the derivation formula** and its mathematical assumptions
+- **Test with production-scale parameters** (e.g., 10M TPM, not just 100 RPM)
+- **Check boundary conditions**: What if `refill_rate × latency > consumption`?
+- **Consider timing effects**: Network latency affects what values are observed
+- See `.claude/rules/design-validation.md` for detailed checklist
+
+**Example failure (issue #179)**: Snapshot aggregator uses `old_tokens - new_tokens` to derive consumption. This fails when refill during operation latency exceeds consumption, resulting in zero or negative deltas.
+
 ## Commit Messages
 
 Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md).
