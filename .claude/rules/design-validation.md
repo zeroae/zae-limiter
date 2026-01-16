@@ -1,62 +1,23 @@
-# Design Validation Rules
+# Design Validation
 
-Guidelines for validating feature designs before implementation.
+When implementing features that derive data from state changes (e.g., consumption from token deltas, metrics from stream events), use the `design-validator` agent before implementation.
 
-## Derived Data Validation
+## Quick Check
 
-When a feature derives data from state changes (like calculating consumption from token deltas), validate the derivation formula against boundary conditions:
+Ask yourself: **Does this feature calculate something from `old_state - new_state`?**
 
-### Required Analysis
+If yes, the derivation may fail when recovery/refill exceeds the change being measured.
 
-1. **Formula Constraints**: List all mathematical conditions that must hold for the formula to produce correct results
+## Example Failure (Issue #179)
 
-2. **Boundary Conditions**: Test the formula with:
-   - Maximum realistic parameter values
-   - Minimum realistic parameter values
-   - Edge cases where parameters interact adversarially
+The snapshot aggregator used `old_tokens - new_tokens` to derive consumption. With 10M TPM and 100ms latency:
+- Refill during operation: 16,667 tokens
+- Typical consumption: 1,000 tokens
+- Result: `delta = -15,667` (wrong!)
 
-3. **Real-World Scenarios**: Validate with production-like parameters, not just test values
+## When to Invoke the Agent
 
-### Example: Delta-Based Consumption Tracking
-
-**Formula**: `consumption = old_value - new_value`
-
-**Hidden Constraint**: This only works when `consumption > recovery_during_observation_window`
-
-**Boundary Test**:
-```
-rate_limit = 10,000,000/minute (10M TPM)
-recovery_rate = 166,667/second
-observation_window = 100ms (network latency)
-recovery_during_window = 16,667 tokens
-consumption = 1,000 tokens
-
-Result: old_value - new_value = 1000 - 16667 = -15667 (WRONG!)
-```
-
-**Conclusion**: Formula fails for high-rate-limit, low-consumption scenarios.
-
-## Checklist for Stateful Feature Designs
-
-Before implementing features that track or aggregate state changes:
-
-- [ ] **Document the derivation formula** and its mathematical assumptions
-- [ ] **List boundary conditions** where the formula might fail
-- [ ] **Test with production-scale parameters** (not just test-friendly values)
-- [ ] **Consider timing/latency effects** on state observation
-- [ ] **Validate with adversarial scenarios** (high rates + low consumption + high latency)
-- [ ] **Propose alternative approaches** if the primary approach has significant limitations
-
-## When to Apply This Rule
-
-Apply design validation when implementing:
-- Metrics/analytics derived from state deltas
-- Aggregation systems processing stream events
-- Any feature where `new_state - old_state` is used to infer actions
-- Rate limiting or quota tracking systems
-- Billing/metering based on usage inference
-
-## References
-
-- Issue #179: Snapshot aggregator fails with high rate limits
-- Root cause: Delta-based consumption tracking fails when refill > consumption
+- Adding metrics/analytics derived from state deltas
+- Building aggregation systems for stream events
+- Implementing billing/metering from usage inference
+- Any `new - old` derivation in a system with recovery/refill
