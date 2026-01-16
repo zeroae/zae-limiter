@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from enum import Enum
 from typing import Any, TypeVar
 
@@ -30,6 +31,8 @@ from .models import (
     ResourceCapacity,
     StackOptions,
     Status,
+    UsageSnapshot,
+    UsageSummary,
     validate_identifier,
     validate_name,
 )
@@ -115,6 +118,30 @@ class RateLimiter:
     def name(self) -> str:
         """The resource identifier (with ZAEL- prefix)."""
         return self._name
+
+    @staticmethod
+    def _datetime_to_iso(dt: datetime) -> str:
+        """Convert datetime to ISO 8601 UTC string.
+
+        Handles both timezone-aware and naive datetimes:
+        - Timezone-aware: Converted to UTC, formatted as ISO 8601
+        - Naive: Assumed to be UTC, formatted with 'Z' suffix
+
+        Args:
+            dt: Datetime to convert
+
+        Returns:
+            ISO 8601 formatted UTC timestamp (e.g., "2024-01-01T14:00:00Z")
+        """
+        from datetime import UTC
+
+        if dt.tzinfo is not None:
+            # Convert to UTC if timezone-aware
+            utc_dt = dt.astimezone(UTC)
+            return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            # Assume naive datetime is UTC
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     async def _ensure_initialized(self) -> None:
         """Ensure infrastructure exists and version is compatible."""
@@ -341,6 +368,137 @@ class RateLimiter:
             entity_id=entity_id,
             limit=limit,
             start_event_id=start_event_id,
+        )
+
+    # -------------------------------------------------------------------------
+    # Usage snapshots
+    # -------------------------------------------------------------------------
+
+    async def get_usage_snapshots(
+        self,
+        entity_id: str | None = None,
+        resource: str | None = None,
+        window_type: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 100,
+        next_key: dict[str, Any] | None = None,
+    ) -> tuple[list[UsageSnapshot], dict[str, Any] | None]:
+        """
+        Query usage snapshots for historical consumption data.
+
+        Usage snapshots are created by the aggregator Lambda from DynamoDB
+        stream events. They track token consumption per entity/resource
+        within time windows (hourly, daily).
+
+        Supports two query modes:
+        1. Entity-scoped: Provide entity_id (optionally with resource filter)
+        2. Resource-scoped: Provide resource to query across all entities
+
+        Args:
+            entity_id: Entity to query (uses primary key)
+            resource: Resource name filter (required if entity_id is None)
+            window_type: Filter by window type ("hourly", "daily")
+            start_time: Filter snapshots >= this timestamp
+            end_time: Filter snapshots <= this timestamp
+            limit: Maximum snapshots to return (default: 100)
+            next_key: Pagination cursor from previous call
+
+        Returns:
+            Tuple of (snapshots, next_key). next_key is None if no more results.
+
+        Raises:
+            ValueError: If neither entity_id nor resource is provided
+
+        Example:
+            # Get hourly snapshots for an entity
+            snapshots, cursor = await limiter.get_usage_snapshots(
+                entity_id="user-123",
+                resource="gpt-4",
+                window_type="hourly",
+                start_time=datetime(2024, 1, 1),
+                end_time=datetime(2024, 1, 31),
+            )
+            for snap in snapshots:
+                print(f"{snap.window_start}: {snap.counters}")
+
+            # Paginate through results
+            while cursor:
+                more, cursor = await limiter.get_usage_snapshots(
+                    entity_id="user-123",
+                    next_key=cursor,
+                )
+        """
+        await self._ensure_initialized()
+
+        # Convert datetime to ISO strings for repository
+        # Note: Naive datetimes are assumed to be UTC
+        start_str = self._datetime_to_iso(start_time) if start_time else None
+        end_str = self._datetime_to_iso(end_time) if end_time else None
+
+        return await self._repository.get_usage_snapshots(
+            entity_id=entity_id,
+            resource=resource,
+            window_type=window_type,
+            start_time=start_str,
+            end_time=end_str,
+            limit=limit,
+            next_key=next_key,
+        )
+
+    async def get_usage_summary(
+        self,
+        entity_id: str | None = None,
+        resource: str | None = None,
+        window_type: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> UsageSummary:
+        """
+        Get aggregated usage summary across multiple snapshots.
+
+        Fetches all matching snapshots and computes total and average
+        consumption statistics. Useful for billing, reporting, and
+        capacity planning.
+
+        Args:
+            entity_id: Entity to query
+            resource: Resource name filter (required if entity_id is None)
+            window_type: Filter by window type ("hourly", "daily")
+            start_time: Filter snapshots >= this timestamp
+            end_time: Filter snapshots <= this timestamp
+
+        Returns:
+            UsageSummary with total and average consumption per limit type
+
+        Raises:
+            ValueError: If neither entity_id nor resource is provided
+
+        Example:
+            summary = await limiter.get_usage_summary(
+                entity_id="user-123",
+                resource="gpt-4",
+                window_type="hourly",
+                start_time=datetime(2024, 1, 1),
+                end_time=datetime(2024, 1, 31),
+            )
+            print(f"Total tokens: {summary.total.get('tpm', 0)}")
+            print(f"Average per hour: {summary.average.get('tpm', 0.0):.1f}")
+            print(f"Snapshots: {summary.snapshot_count}")
+        """
+        await self._ensure_initialized()
+
+        # Convert datetime to ISO strings for repository
+        # Note: Naive datetimes are assumed to be UTC
+        start_str = self._datetime_to_iso(start_time) if start_time else None
+        end_str = self._datetime_to_iso(end_time) if end_time else None
+
+        return await self._repository.get_usage_summary(
+            entity_id=entity_id,
+            resource=resource,
+            window_type=window_type,
+            start_time=start_str,
+            end_time=end_str,
         )
 
     # -------------------------------------------------------------------------
@@ -1030,6 +1188,68 @@ class SyncRateLimiter:
                 entity_id=entity_id,
                 limit=limit,
                 start_event_id=start_event_id,
+            )
+        )
+
+    # -------------------------------------------------------------------------
+    # Usage snapshots
+    # -------------------------------------------------------------------------
+
+    def get_usage_snapshots(
+        self,
+        entity_id: str | None = None,
+        resource: str | None = None,
+        window_type: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 100,
+        next_key: dict[str, Any] | None = None,
+    ) -> tuple[list[UsageSnapshot], dict[str, Any] | None]:
+        """
+        Query usage snapshots for historical consumption data.
+
+        Synchronous wrapper for :meth:`RateLimiter.get_usage_snapshots`.
+        See the async version for full documentation.
+
+        Returns:
+            Tuple of (snapshots, next_key). next_key is None if no more results.
+        """
+        return self._run(
+            self._limiter.get_usage_snapshots(
+                entity_id=entity_id,
+                resource=resource,
+                window_type=window_type,
+                start_time=start_time,
+                end_time=end_time,
+                limit=limit,
+                next_key=next_key,
+            )
+        )
+
+    def get_usage_summary(
+        self,
+        entity_id: str | None = None,
+        resource: str | None = None,
+        window_type: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> UsageSummary:
+        """
+        Get aggregated usage summary across multiple snapshots.
+
+        Synchronous wrapper for :meth:`RateLimiter.get_usage_summary`.
+        See the async version for full documentation.
+
+        Returns:
+            UsageSummary with total and average consumption per limit type.
+        """
+        return self._run(
+            self._limiter.get_usage_summary(
+                entity_id=entity_id,
+                resource=resource,
+                window_type=window_type,
+                start_time=start_time,
+                end_time=end_time,
             )
         )
 

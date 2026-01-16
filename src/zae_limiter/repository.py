@@ -16,6 +16,8 @@ from .models import (
     Entity,
     Limit,
     StackOptions,
+    UsageSnapshot,
+    UsageSummary,
     validate_identifier,
 )
 from .naming import normalize_stack_name
@@ -826,6 +828,276 @@ class Repository:
             resource=data.get("resource"),
             details=data.get("details", {}),
         )
+
+    # -------------------------------------------------------------------------
+    # Usage snapshot operations
+    # -------------------------------------------------------------------------
+
+    async def get_usage_snapshots(
+        self,
+        entity_id: str | None = None,
+        resource: str | None = None,
+        window_type: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        limit: int = 100,
+        next_key: dict[str, Any] | None = None,
+    ) -> tuple[list[UsageSnapshot], dict[str, Any] | None]:
+        """
+        Query usage snapshots with filtering and pagination.
+
+        Supports two query modes:
+        1. Entity-scoped: Query by entity_id (uses primary key)
+        2. Resource-scoped: Query by resource across all entities (uses GSI2)
+
+        Args:
+            entity_id: Entity to query (mutually exclusive for efficient queries)
+            resource: Resource name filter (required if entity_id is None)
+            window_type: Filter by window type ("hourly", "daily")
+            start_time: Filter snapshots >= this timestamp (ISO format)
+            end_time: Filter snapshots <= this timestamp (ISO format)
+            limit: Maximum snapshots to return (default: 100)
+            next_key: Pagination cursor from previous call
+
+        Returns:
+            Tuple of (snapshots, next_key). next_key is None if no more results.
+
+        Raises:
+            ValueError: If neither entity_id nor resource is provided
+        """
+        if entity_id is None and resource is None:
+            raise ValueError("Either entity_id or resource must be provided")
+
+        client = await self._get_client()
+        snapshots: list[UsageSnapshot] = []
+
+        if entity_id is not None:
+            # Query by entity (primary key)
+            key_condition = "PK = :pk AND begins_with(SK, :sk_prefix)"
+            expression_values: dict[str, Any] = {
+                ":pk": {"S": schema.pk_entity(entity_id)},
+                ":sk_prefix": {"S": schema.SK_USAGE},
+            }
+
+            # If resource is also provided, narrow the SK prefix
+            if resource:
+                expression_values[":sk_prefix"] = {
+                    "S": f"{schema.SK_USAGE}{resource}#"
+                }
+
+            query_args: dict[str, Any] = {
+                "TableName": self.table_name,
+                "KeyConditionExpression": key_condition,
+                "ExpressionAttributeValues": expression_values,
+                "ScanIndexForward": False,  # Most recent first
+                "Limit": limit,
+            }
+
+            if next_key:
+                query_args["ExclusiveStartKey"] = next_key
+
+            response = await client.query(**query_args)
+
+        else:
+            # Query by resource across entities (GSI2)
+            key_condition = "GSI2PK = :pk AND begins_with(GSI2SK, :sk_prefix)"
+            expression_values = {
+                ":pk": {"S": schema.gsi2_pk_resource(resource)},  # type: ignore
+                ":sk_prefix": {"S": "USAGE#"},
+            }
+
+            query_args = {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI2_NAME,
+                "KeyConditionExpression": key_condition,
+                "ExpressionAttributeValues": expression_values,
+                "ScanIndexForward": False,  # Most recent first
+                "Limit": limit,
+            }
+
+            if next_key:
+                query_args["ExclusiveStartKey"] = next_key
+
+            response = await client.query(**query_args)
+
+        # Deserialize and filter results
+        for item in response.get("Items", []):
+            snapshot = self._deserialize_usage_snapshot(item)
+            if snapshot is None:
+                continue
+
+            # Apply filters
+            if window_type and snapshot.window_type != window_type:
+                continue
+            if start_time and snapshot.window_start < start_time:
+                continue
+            if end_time and snapshot.window_start > end_time:
+                continue
+
+            snapshots.append(snapshot)
+
+        # Get next pagination key
+        returned_next_key = response.get("LastEvaluatedKey")
+
+        return snapshots, returned_next_key
+
+    async def get_usage_summary(
+        self,
+        entity_id: str | None = None,
+        resource: str | None = None,
+        window_type: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> UsageSummary:
+        """
+        Aggregate usage across snapshots into a summary.
+
+        Fetches all matching snapshots (auto-paginates internally) and computes:
+        - Total consumption per limit type
+        - Average consumption per snapshot per limit type
+        - Time range of aggregated data
+
+        Args:
+            entity_id: Entity to query
+            resource: Resource name filter
+            window_type: Filter by window type ("hourly", "daily")
+            start_time: Filter snapshots >= this timestamp (ISO format)
+            end_time: Filter snapshots <= this timestamp (ISO format)
+
+        Returns:
+            UsageSummary with aggregated statistics
+
+        Raises:
+            ValueError: If neither entity_id nor resource is provided
+        """
+        # Collect all matching snapshots with auto-pagination
+        all_snapshots: list[UsageSnapshot] = []
+        next_key: dict[str, Any] | None = None
+
+        while True:
+            snapshots, next_key = await self.get_usage_snapshots(
+                entity_id=entity_id,
+                resource=resource,
+                window_type=window_type,
+                start_time=start_time,
+                end_time=end_time,
+                limit=1000,  # Larger batch for efficiency
+                next_key=next_key,
+            )
+            all_snapshots.extend(snapshots)
+
+            if next_key is None:
+                break
+
+            # Safety limit to prevent unbounded memory usage
+            if len(all_snapshots) >= 10000:
+                break
+
+        # Aggregate statistics
+        total: dict[str, int] = {}
+        counts: dict[str, int] = {}
+        min_window: str | None = None
+        max_window: str | None = None
+
+        for snapshot in all_snapshots:
+            # Track time range
+            if min_window is None or snapshot.window_start < min_window:
+                min_window = snapshot.window_start
+            if max_window is None or snapshot.window_start > max_window:
+                max_window = snapshot.window_start
+
+            # Sum counters
+            for limit_name, value in snapshot.counters.items():
+                total[limit_name] = total.get(limit_name, 0) + value
+                counts[limit_name] = counts.get(limit_name, 0) + 1
+
+        # Calculate averages
+        average: dict[str, float] = {}
+        for limit_name, sum_value in total.items():
+            count = counts.get(limit_name, 1)
+            average[limit_name] = sum_value / count if count > 0 else 0.0
+
+        return UsageSummary(
+            snapshot_count=len(all_snapshots),
+            total=total,
+            average=average,
+            min_window_start=min_window,
+            max_window_start=max_window,
+        )
+
+    def _deserialize_usage_snapshot(self, item: dict[str, Any]) -> UsageSnapshot | None:
+        """
+        Deserialize a DynamoDB item to UsageSnapshot.
+
+        Snapshots use FLAT schema (no nested data.M) to support atomic ADD
+        operations. See issue #168.
+        """
+        # Extract from flat schema (not nested data.M)
+        entity_id = item.get("entity_id", {}).get("S", "")
+        resource = item.get("resource", {}).get("S", "")
+        window_type = item.get("window", {}).get("S", "")
+        window_start = item.get("window_start", {}).get("S", "")
+
+        if not entity_id or not resource or not window_start:
+            return None
+
+        # Calculate window_end based on window_type
+        window_end = self._calculate_window_end(window_start, window_type)
+
+        # Extract total_events
+        total_events = int(item.get("total_events", {}).get("N", "0"))
+
+        # Extract counters (dynamic limit names stored as top-level attributes)
+        # Known non-counter fields to exclude
+        excluded_keys = {
+            "PK", "SK", "entity_id", "resource", "window", "window_start",
+            "total_events", "GSI2PK", "GSI2SK", "ttl",
+        }
+
+        counters: dict[str, int] = {}
+        for key, value in item.items():
+            if key in excluded_keys:
+                continue
+            # Counter values are stored as numbers
+            if "N" in value:
+                counters[key] = int(value["N"])
+
+        return UsageSnapshot(
+            entity_id=entity_id,
+            resource=resource,
+            window_start=window_start,
+            window_end=window_end,
+            window_type=window_type,
+            counters=counters,
+            total_events=total_events,
+        )
+
+    def _calculate_window_end(self, window_start: str, window_type: str) -> str:
+        """Calculate window end timestamp from start and type."""
+        from datetime import datetime, timedelta
+
+        try:
+            # Parse ISO timestamp
+            dt = datetime.fromisoformat(window_start.replace("Z", "+00:00"))
+
+            if window_type == "hourly":
+                end_dt = dt.replace(minute=59, second=59, microsecond=999999)
+            elif window_type == "daily":
+                end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+            elif window_type == "monthly":
+                # Last day of month
+                if dt.month == 12:
+                    end_dt = dt.replace(year=dt.year + 1, month=1, day=1) - timedelta(
+                        seconds=1
+                    )
+                else:
+                    end_dt = dt.replace(month=dt.month + 1, day=1) - timedelta(seconds=1)
+            else:
+                end_dt = dt
+
+            return end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except (ValueError, AttributeError):
+            return window_start
 
     # -------------------------------------------------------------------------
     # Resource aggregation

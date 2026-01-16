@@ -82,6 +82,7 @@ from .models import (
     StackOptions,
     Status,
     UsageSnapshot,
+    UsageSummary,
 )
 
 if TYPE_CHECKING:
@@ -113,6 +114,7 @@ __all__ = [
     "LimitStatus",
     "BucketState",
     "UsageSnapshot",
+    "UsageSummary",
     "ResourceCapacity",
     "EntityCapacity",
     "StackOptions",

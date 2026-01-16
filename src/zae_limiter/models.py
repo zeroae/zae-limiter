@@ -378,7 +378,21 @@ class BucketState:
 
 @dataclass
 class UsageSnapshot:
-    """Aggregated usage for a time window."""
+    """
+    Aggregated usage for a time window.
+
+    Created by the aggregator Lambda from DynamoDB stream events.
+    Tracks token consumption per limit type within a time window.
+
+    Attributes:
+        entity_id: Entity that consumed tokens
+        resource: Resource being rate-limited (e.g., "gpt-4")
+        window_start: ISO timestamp of window start (e.g., "2024-01-01T14:00:00Z")
+        window_end: ISO timestamp of window end
+        window_type: Window granularity ("hourly", "daily")
+        counters: Consumption by limit name (e.g., {"tpm": 5000, "rpm": 10})
+        total_events: Number of consumption events in this window
+    """
 
     entity_id: str
     resource: str
@@ -387,6 +401,38 @@ class UsageSnapshot:
     window_type: str  # "hourly", "daily"
     counters: dict[str, int]  # limit_name -> total consumed
     total_events: int
+
+
+@dataclass
+class UsageSummary:
+    """
+    Aggregated usage summary across multiple snapshots.
+
+    Returned by `RateLimiter.get_usage_summary()` to provide
+    total and average consumption statistics over a time range.
+
+    Attributes:
+        snapshot_count: Number of snapshots aggregated
+        total: Sum of consumption by limit name (e.g., {"tpm": 50000, "rpm": 100})
+        average: Average consumption per snapshot by limit name
+        min_window_start: Earliest snapshot window start (ISO timestamp)
+        max_window_start: Latest snapshot window start (ISO timestamp)
+
+    Example:
+        summary = await limiter.get_usage_summary(
+            entity_id="user-123",
+            resource="gpt-4",
+            window_type="hourly",
+        )
+        print(f"Total tokens: {summary.total.get('tpm', 0)}")
+        print(f"Average per hour: {summary.average.get('tpm', 0.0):.1f}")
+    """
+
+    snapshot_count: int
+    total: dict[str, int]  # limit_name -> sum of consumption
+    average: dict[str, float]  # limit_name -> average per snapshot
+    min_window_start: str | None  # Earliest window (ISO timestamp)
+    max_window_start: str | None  # Latest window (ISO timestamp)
 
 
 @dataclass
