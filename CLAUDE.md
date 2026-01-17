@@ -590,7 +590,7 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
-| Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with USAGE#` |
+| Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
 
 ### Schema Design Notes
 

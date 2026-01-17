@@ -401,7 +401,7 @@ class RateLimiter:
             window_type: Filter by window type ("hourly", "daily")
             start_time: Filter snapshots >= this timestamp
             end_time: Filter snapshots <= this timestamp
-            limit: Maximum snapshots to return (default: 100)
+            limit: Maximum items to fetch from DynamoDB per page (default: 100)
             next_key: Pagination cursor from previous call
 
         Returns:
@@ -409,6 +409,12 @@ class RateLimiter:
 
         Raises:
             ValueError: If neither entity_id nor resource is provided
+
+        Note:
+            The ``limit`` parameter controls the DynamoDB query batch size.
+            Client-side filters (window_type, start_time, end_time) are applied
+            after fetching, so the returned count may be less than ``limit``.
+            Use ``next_key`` to paginate through all matching results.
 
         Example:
             # Get hourly snapshots for an entity

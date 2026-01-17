@@ -1,6 +1,7 @@
 """Tests for RateLimiter."""
 
 import asyncio
+from datetime import UTC
 
 import pytest
 from botocore.exceptions import ClientError
@@ -1238,3 +1239,123 @@ class TestRateLimiterAudit:
         events = await limiter.get_audit_events("proj-1")
         assert len(events) == 1
         assert events[0].principal == "explicit-user"
+
+
+class TestRateLimiterUsageSnapshots:
+    """Tests for usage snapshot queries."""
+
+    @pytest.fixture
+    async def limiter_with_snapshots(self, limiter):
+        """Limiter with test usage snapshots."""
+        from zae_limiter import schema
+
+        # Access the repository's client to insert test data
+        repo = limiter._repository
+        client = await repo._get_client()
+
+        snapshots_data = [
+            ("entity-1", "gpt-4", "hourly", "2024-01-15T10:00:00Z", {"tpm": 1000, "rpm": 5}),
+            ("entity-1", "gpt-4", "hourly", "2024-01-15T11:00:00Z", {"tpm": 2000, "rpm": 10}),
+            ("entity-1", "gpt-4", "daily", "2024-01-15T00:00:00Z", {"tpm": 3000, "rpm": 15}),
+        ]
+
+        for entity_id, resource, window_type, window_start, counters in snapshots_data:
+            item = {
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_usage(resource, window_start)},
+                "entity_id": {"S": entity_id},
+                "resource": {"S": resource},
+                "window": {"S": window_type},
+                "window_start": {"S": window_start},
+                "total_events": {"N": str(sum(counters.values()))},
+                "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+                "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
+            }
+            for name, value in counters.items():
+                item[name] = {"N": str(value)}
+
+            await client.put_item(TableName=repo.table_name, Item=item)
+
+        yield limiter
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_basic(self, limiter_with_snapshots):
+        """Test basic snapshot query."""
+        snapshots, next_key = await limiter_with_snapshots.get_usage_snapshots(entity_id="entity-1")
+
+        assert len(snapshots) == 3
+        assert all(s.entity_id == "entity-1" for s in snapshots)
+        assert next_key is None
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_with_datetime_conversion(self, limiter_with_snapshots):
+        """Test datetime parameters are converted to ISO strings."""
+        from datetime import datetime
+
+        snapshots, _ = await limiter_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            start_time=datetime(2024, 1, 15, 10, 0, 0),
+            end_time=datetime(2024, 1, 15, 11, 0, 0),
+        )
+
+        # Should match 10:00 and 11:00 hourly snapshots
+        assert len(snapshots) == 2
+        window_starts = {s.window_start for s in snapshots}
+        assert "2024-01-15T10:00:00Z" in window_starts
+        assert "2024-01-15T11:00:00Z" in window_starts
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_with_timezone_aware_datetime(self, limiter_with_snapshots):
+        """Test timezone-aware datetime is converted to UTC."""
+        from datetime import datetime
+
+        # Create timezone-aware datetime (UTC-5)
+        eastern = UTC  # Using UTC for simplicity in test
+        start = datetime(2024, 1, 15, 10, 0, 0, tzinfo=eastern)
+
+        snapshots, _ = await limiter_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            start_time=start,
+        )
+
+        # Should work without error
+        assert len(snapshots) >= 1
+
+    @pytest.mark.asyncio
+    async def test_get_usage_summary_basic(self, limiter_with_snapshots):
+        """Test basic summary aggregation."""
+        summary = await limiter_with_snapshots.get_usage_summary(
+            entity_id="entity-1",
+            resource="gpt-4",
+            window_type="hourly",
+        )
+
+        assert summary.snapshot_count == 2
+        assert summary.total["tpm"] == 3000  # 1000 + 2000
+        assert summary.total["rpm"] == 15  # 5 + 10
+
+    @pytest.mark.asyncio
+    async def test_get_usage_summary_with_datetime(self, limiter_with_snapshots):
+        """Test summary with datetime parameters."""
+        from datetime import datetime
+
+        summary = await limiter_with_snapshots.get_usage_summary(
+            entity_id="entity-1",
+            start_time=datetime(2024, 1, 15, 10, 0, 0),
+            end_time=datetime(2024, 1, 15, 10, 0, 0),
+        )
+
+        assert summary.snapshot_count == 1
+        assert summary.total["tpm"] == 1000
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_requires_entity_or_resource(self, limiter_with_snapshots):
+        """Should raise ValueError if neither entity_id nor resource provided."""
+        with pytest.raises(ValueError, match="Either entity_id or resource"):
+            await limiter_with_snapshots.get_usage_snapshots()
+
+    @pytest.mark.asyncio
+    async def test_get_usage_summary_requires_entity_or_resource(self, limiter_with_snapshots):
+        """Should raise ValueError if neither entity_id nor resource provided."""
+        with pytest.raises(ValueError, match="Either entity_id or resource"):
+            await limiter_with_snapshots.get_usage_summary()

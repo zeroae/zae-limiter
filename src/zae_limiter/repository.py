@@ -856,7 +856,7 @@ class Repository:
             window_type: Filter by window type ("hourly", "daily")
             start_time: Filter snapshots >= this timestamp (ISO format)
             end_time: Filter snapshots <= this timestamp (ISO format)
-            limit: Maximum snapshots to return (default: 100)
+            limit: Maximum items to fetch from DynamoDB per page (default: 100)
             next_key: Pagination cursor from previous call
 
         Returns:
@@ -864,6 +864,12 @@ class Repository:
 
         Raises:
             ValueError: If neither entity_id nor resource is provided
+
+        Note:
+            The ``limit`` parameter controls the DynamoDB query batch size.
+            Client-side filters (window_type, start_time, end_time) are applied
+            after fetching, so the returned count may be less than ``limit``.
+            Use ``next_key`` to paginate through all matching results.
         """
         if entity_id is None and resource is None:
             raise ValueError("Either entity_id or resource must be provided")

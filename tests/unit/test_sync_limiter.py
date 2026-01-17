@@ -268,3 +268,84 @@ class TestSyncRateLimiterAudit:
         delete_events = [e for e in events if e.action == "entity_deleted"]
         assert len(delete_events) == 1
         assert delete_events[0].principal == "admin"
+
+
+class TestSyncRateLimiterUsageSnapshots:
+    """Tests for sync usage snapshot queries."""
+
+    @pytest.fixture
+    def sync_limiter_with_snapshots(self, sync_limiter):
+        """Sync limiter with test usage snapshots."""
+        import asyncio
+
+        from zae_limiter import schema
+
+        async def setup():
+            repo = sync_limiter._limiter._repository
+            client = await repo._get_client()
+
+            snapshots_data = [
+                ("entity-1", "gpt-4", "hourly", "2024-01-15T10:00:00Z", {"tpm": 1000}),
+                ("entity-1", "gpt-4", "hourly", "2024-01-15T11:00:00Z", {"tpm": 2000}),
+            ]
+
+            for entity_id, resource, window_type, window_start, counters in snapshots_data:
+                item = {
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_usage(resource, window_start)},
+                    "entity_id": {"S": entity_id},
+                    "resource": {"S": resource},
+                    "window": {"S": window_type},
+                    "window_start": {"S": window_start},
+                    "total_events": {"N": str(sum(counters.values()))},
+                    "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+                    "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
+                }
+                for name, value in counters.items():
+                    item[name] = {"N": str(value)}
+
+                await client.put_item(TableName=repo.table_name, Item=item)
+
+        asyncio.get_event_loop().run_until_complete(setup())
+        yield sync_limiter
+
+    def test_get_usage_snapshots_sync(self, sync_limiter_with_snapshots):
+        """Test sync get_usage_snapshots."""
+        snapshots, next_key = sync_limiter_with_snapshots.get_usage_snapshots(entity_id="entity-1")
+
+        assert len(snapshots) == 2
+        assert all(s.entity_id == "entity-1" for s in snapshots)
+        assert next_key is None
+
+    def test_get_usage_snapshots_with_datetime(self, sync_limiter_with_snapshots):
+        """Test sync get_usage_snapshots with datetime parameters."""
+        from datetime import datetime
+
+        snapshots, _ = sync_limiter_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            start_time=datetime(2024, 1, 15, 10, 0, 0),
+            end_time=datetime(2024, 1, 15, 10, 0, 0),
+        )
+
+        assert len(snapshots) == 1
+        assert snapshots[0].window_start == "2024-01-15T10:00:00Z"
+
+    def test_get_usage_summary_sync(self, sync_limiter_with_snapshots):
+        """Test sync get_usage_summary."""
+        summary = sync_limiter_with_snapshots.get_usage_summary(
+            entity_id="entity-1",
+            resource="gpt-4",
+        )
+
+        assert summary.snapshot_count == 2
+        assert summary.total["tpm"] == 3000  # 1000 + 2000
+
+    def test_get_usage_snapshots_requires_entity_or_resource(self, sync_limiter_with_snapshots):
+        """Should raise ValueError if neither entity_id nor resource provided."""
+        with pytest.raises(ValueError, match="Either entity_id or resource"):
+            sync_limiter_with_snapshots.get_usage_snapshots()
+
+    def test_get_usage_summary_requires_entity_or_resource(self, sync_limiter_with_snapshots):
+        """Should raise ValueError if neither entity_id nor resource provided."""
+        with pytest.raises(ValueError, match="Either entity_id or resource"):
+            sync_limiter_with_snapshots.get_usage_summary()
