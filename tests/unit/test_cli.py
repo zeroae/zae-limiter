@@ -1475,3 +1475,420 @@ class TestAuditCommands:
         # None values should display as "-"
         assert "-" in result.output
         assert "entity_deleted" in result.output
+
+
+class TestUsageCommands:
+    """Test usage CLI commands."""
+
+    def test_usage_help(self, runner: CliRunner) -> None:
+        """Test usage command group help."""
+        result = runner.invoke(cli, ["usage", "--help"])
+        assert result.exit_code == 0
+        assert "Usage snapshot commands" in result.output
+
+    def test_usage_list_help(self, runner: CliRunner) -> None:
+        """Test usage list command help."""
+        result = runner.invoke(cli, ["usage", "list", "--help"])
+        assert result.exit_code == 0
+        assert "List usage snapshots" in result.output
+        assert "--entity-id" in result.output
+        assert "--resource" in result.output
+        assert "--window" in result.output
+        assert "--start" in result.output
+        assert "--end" in result.output
+        assert "--limit" in result.output
+
+    def test_usage_list_requires_entity_or_resource(self, runner: CliRunner) -> None:
+        """Test usage list requires --entity-id or --resource."""
+        result = runner.invoke(cli, ["usage", "list"])
+        assert result.exit_code != 0
+        assert "entity-id" in result.output.lower() or "resource" in result.output.lower()
+
+    def test_usage_summary_help(self, runner: CliRunner) -> None:
+        """Test usage summary command help."""
+        result = runner.invoke(cli, ["usage", "summary", "--help"])
+        assert result.exit_code == 0
+        assert "Show aggregated usage summary" in result.output
+
+    def test_usage_summary_requires_entity_or_resource(self, runner: CliRunner) -> None:
+        """Test usage summary requires --entity-id or --resource."""
+        result = runner.invoke(cli, ["usage", "summary"])
+        assert result.exit_code != 0
+        assert "entity-id" in result.output.lower() or "resource" in result.output.lower()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_no_snapshots(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage list when no snapshots are found."""
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        assert "No usage snapshots found" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_with_snapshots(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage list displays snapshots in table format."""
+        from zae_limiter.models import UsageSnapshot
+
+        mock_snapshots = [
+            UsageSnapshot(
+                entity_id="test-entity",
+                resource="gpt-4",
+                window_start="2024-01-15T10:00:00Z",
+                window_end="2024-01-15T10:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 1000, "rpm": 5},
+                total_events=5,
+            ),
+            UsageSnapshot(
+                entity_id="test-entity",
+                resource="gpt-4",
+                window_start="2024-01-15T11:00:00Z",
+                window_end="2024-01-15T11:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 2000, "rpm": 10},
+                total_events=10,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        assert "Usage Snapshots" in result.output
+        assert "Window Start" in result.output
+        assert "Resource" in result.output
+        assert "gpt-4" in result.output
+        assert "2024-01-15T10:00:00Z" in result.output
+        assert "Total: 2 snapshots" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_by_resource(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage list by resource (GSI2 query)."""
+        from zae_limiter.models import UsageSnapshot
+
+        mock_snapshots = [
+            UsageSnapshot(
+                entity_id="entity-1",
+                resource="gpt-4",
+                window_start="2024-01-15T10:00:00Z",
+                window_end="2024-01-15T10:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 1000},
+                total_events=5,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "gpt-4" in result.output
+        mock_repo.get_usage_snapshots.assert_called_once()
+        call_kwargs = mock_repo.get_usage_snapshots.call_args.kwargs
+        assert call_kwargs["resource"] == "gpt-4"
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_with_filters(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage list with window type and time filters."""
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "usage",
+                "list",
+                "-e",
+                "test-entity",
+                "-w",
+                "hourly",
+                "--start",
+                "2024-01-15T00:00:00Z",
+                "--end",
+                "2024-01-15T23:59:59Z",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_repo.get_usage_snapshots.assert_called_once()
+        call_kwargs = mock_repo.get_usage_snapshots.call_args.kwargs
+        assert call_kwargs["window_type"] == "hourly"
+        assert call_kwargs["start_time"] == "2024-01-15T00:00:00Z"
+        assert call_kwargs["end_time"] == "2024-01-15T23:59:59Z"
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_shows_pagination_hint(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test usage list shows pagination hint when more results available."""
+        from zae_limiter.models import UsageSnapshot
+
+        mock_snapshots = [
+            UsageSnapshot(
+                entity_id="test-entity",
+                resource="gpt-4",
+                window_start="2024-01-15T10:00:00Z",
+                window_end="2024-01-15T10:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 1000},
+                total_events=5,
+            ),
+        ]
+        # Return a next_key to indicate more results
+        next_key = {"PK": {"S": "ENTITY#test"}, "SK": {"S": "#USAGE#..."}}
+
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, next_key))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "-l", "1"])
+
+        assert result.exit_code == 0
+        assert "more snapshots exist" in result.output.lower()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_summary_empty(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage summary with no data."""
+        from zae_limiter.models import UsageSummary
+
+        mock_summary = UsageSummary(
+            snapshot_count=0,
+            total={},
+            average={},
+            min_window_start=None,
+            max_window_start=None,
+        )
+
+        mock_repo = Mock()
+        mock_repo.get_usage_summary = AsyncMock(return_value=mock_summary)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        assert "No usage data found" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_summary_with_data(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage summary displays aggregated data."""
+        from zae_limiter.models import UsageSummary
+
+        mock_summary = UsageSummary(
+            snapshot_count=10,
+            total={"tpm": 15000, "rpm": 75},
+            average={"tpm": 1500.0, "rpm": 7.5},
+            min_window_start="2024-01-15T10:00:00Z",
+            max_window_start="2024-01-15T19:00:00Z",
+        )
+
+        mock_repo = Mock()
+        mock_repo.get_usage_summary = AsyncMock(return_value=mock_summary)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        assert "Usage Summary" in result.output
+        assert "Snapshots:" in result.output
+        assert "10" in result.output
+        assert "Time Range:" in result.output
+        assert "tpm" in result.output
+        assert "rpm" in result.output
+        assert "15000" in result.output or "15,000" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_summary_by_resource(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage summary by resource."""
+        from zae_limiter.models import UsageSummary
+
+        mock_summary = UsageSummary(
+            snapshot_count=5,
+            total={"tpm": 5000},
+            average={"tpm": 1000.0},
+            min_window_start="2024-01-15T10:00:00Z",
+            max_window_start="2024-01-15T14:00:00Z",
+        )
+
+        mock_repo = Mock()
+        mock_repo.get_usage_summary = AsyncMock(return_value=mock_summary)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "summary", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        mock_repo.get_usage_summary.assert_called_once()
+        call_kwargs = mock_repo.get_usage_summary.call_args.kwargs
+        assert call_kwargs["resource"] == "gpt-4"
+
+    def test_usage_list_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test usage list rejects names with underscores."""
+        result = runner.invoke(cli, ["usage", "list", "--name", "rate_limits", "-e", "test"])
+        assert result.exit_code != 0
+        assert "underscore" in result.output.lower() or "hyphen" in result.output.lower()
+
+    def test_usage_summary_invalid_name_with_underscore(self, runner: CliRunner) -> None:
+        """Test usage summary rejects names with underscores."""
+        result = runner.invoke(cli, ["usage", "summary", "--name", "rate_limits", "-e", "test"])
+        assert result.exit_code != 0
+        assert "underscore" in result.output.lower() or "hyphen" in result.output.lower()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_truncates_long_entity_id(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test usage list truncates long entity IDs for display."""
+        from zae_limiter.models import UsageSnapshot
+
+        # Create a snapshot with very long entity_id (>18 chars)
+        mock_snapshots = [
+            UsageSnapshot(
+                entity_id="very-long-entity-identifier-that-exceeds-display-width",
+                resource="gpt-4",
+                window_start="2024-01-15T10:00:00Z",
+                window_end="2024-01-15T10:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 1000},
+                total_events=5,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "long-entity"])
+
+        assert result.exit_code == 0
+        # Entity should be truncated with "..."
+        assert "very-long-entity..." in result.output or "..." in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_truncates_long_resource_name(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test usage list truncates long resource names for display."""
+        from zae_limiter.models import UsageSnapshot
+
+        # Create a snapshot with very long resource (>14 chars)
+        mock_snapshots = [
+            UsageSnapshot(
+                entity_id="user-123",
+                resource="very-long-resource-name-that-exceeds-width",
+                window_start="2024-01-15T10:00:00Z",
+                window_end="2024-01-15T10:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 1000},
+                total_events=5,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "user-123"])
+
+        assert result.exit_code == 0
+        # Resource should be truncated with "..."
+        assert "very-long-r..." in result.output or "..." in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage list handles ValueError from repository."""
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(side_effect=ValueError("Invalid input"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
+
+        assert result.exit_code != 0
+        assert "Invalid input" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_generic_exception(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage list handles generic exceptions from repository."""
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(side_effect=RuntimeError("Connection failed"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
+
+        assert result.exit_code != 0
+        assert "Failed to list usage snapshots" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_summary_with_window_filter(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test usage summary displays window filter info."""
+        from zae_limiter.models import UsageSummary
+
+        mock_summary = UsageSummary(
+            snapshot_count=5,
+            total={"tpm": 5000},
+            average={"tpm": 1000.0},
+            min_window_start="2024-01-15T10:00:00Z",
+            max_window_start="2024-01-15T14:00:00Z",
+        )
+
+        mock_repo = Mock()
+        mock_repo.get_usage_summary = AsyncMock(return_value=mock_summary)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity", "-w", "hourly"])
+
+        assert result.exit_code == 0
+        assert "Window:" in result.output
+        assert "hourly" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_summary_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage summary handles ValueError from repository."""
+        mock_repo = Mock()
+        mock_repo.get_usage_summary = AsyncMock(side_effect=ValueError("Bad date format"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity"])
+
+        assert result.exit_code != 0
+        assert "Bad date format" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_summary_generic_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test usage summary handles generic exceptions."""
+        mock_repo = Mock()
+        mock_repo.get_usage_summary = AsyncMock(side_effect=RuntimeError("Network timeout"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity"])
+
+        assert result.exit_code != 0
+        assert "Failed to get usage summary" in result.output
