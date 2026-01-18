@@ -242,15 +242,40 @@ fields @timestamp
 
 ## X-Ray Tracing
 
-!!! info "Future Enhancement"
-    X-Ray tracing integration is planned for a future release. Track progress in [Issue #107](https://github.com/zeroae/zae-limiter/issues/107).
+AWS X-Ray tracing is available for the Lambda aggregator function. When enabled, traces are automatically captured for Lambda invocations, providing visibility into stream processing performance.
 
-Planned capabilities include:
+### Enabling X-Ray
 
-- **Lambda Active Tracing** - End-to-end request visibility
-- **DynamoDB SDK Instrumentation** - Database call traces
-- **Custom Subsegments** - Business logic timing (acquire/release operations)
-- **Trace Header Propagation** - Cross-service correlation
+X-Ray tracing is opt-in to avoid unexpected costs:
+
+```bash
+# Enable tracing via CLI
+zae-limiter deploy --name my-app --enable-tracing
+
+# Or programmatically
+from zae_limiter import RateLimiter, StackOptions
+
+limiter = RateLimiter(
+    name="my-app",
+    region="us-east-1",
+    stack_options=StackOptions(
+        enable_tracing=True,
+    ),
+)
+```
+
+### What's Traced (Phase 1)
+
+- **Lambda Active Tracing** - End-to-end request visibility for aggregator invocations
+- **Automatic segments** - AWS SDK calls (DynamoDB, S3) are automatically instrumented
+
+### Future Enhancements
+
+Track progress on additional X-Ray features in [Issue #107](https://github.com/zeroae/zae-limiter/issues/107):
+
+- DynamoDB SDK instrumentation for client-side operations
+- Custom subsegments for acquire/release operations
+- Trace header propagation for cross-service correlation
 
 ## Dashboard Templates
 
