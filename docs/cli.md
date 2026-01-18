@@ -538,18 +538,29 @@ Total: 3 snapshots
 **Plot Output (`--plot` flag):**
 
 ```
-TPM Usage Over Time
+Usage Plot: gpt-4 (hourly)
+Entity: user-123
 ================================================================================
-16,000 ┤       ╭─
-13,600 ┤      ╭╯
-11,200 ┤    ╭─╯
- 8,800 ┤   ╭╯
- 6,400 ┤  ╭╯
- 9,000 ┼─╯
+
+RPM                             TPM
+----------------------------    -------------------------------
+32  ┤      ╭                    16,000  ┤      ╭
+28  ┤     ╭╯                    14,000  ┤     ╭╯
+25  ┤    ╭╯                     12,500  ┤    ╭╯
+21  ┤   ╭╯                      11,000  ┤   ╭╯
+18  ┼───╯                        9,000  ┼───╯
 
 Time range: 2024-01-15T12:00:00Z to 2024-01-15T14:00:00Z
 Data points: 3
+
+Total: 3 snapshots
 ```
+
+The plot shows counters side-by-side (2 per row) with:
+
+- **Header**: Resource name, window type, and entity ID
+- **Y-axis**: Right-aligned labels with thousands separators
+- **Downsampling**: Large datasets (>60 points) are automatically downsampled with a note
 
 ---
 
