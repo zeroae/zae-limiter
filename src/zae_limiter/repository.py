@@ -1103,6 +1103,7 @@ class Repository:
                 else:
                     end_dt = dt.replace(month=dt.month + 1, day=1) - timedelta(seconds=1)
             else:
+                # Unknown window type - return window_start as window_end
                 end_dt = dt
 
             return end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
