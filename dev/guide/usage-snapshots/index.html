@@ -12,13 +12,13 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/guide/hierarchical/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/guide/usage-snapshots/">
       
       
-        <link rel="prev" href="../basic-usage/">
+        <link rel="prev" href="../llm-integration/">
       
       
-        <link rel="next" href="../llm-integration/">
+        <link rel="next" href="../unavailability/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Hierarchical Limits - zae-limiter</title>
+        <title>Usage Snapshots - zae-limiter</title>
       
     
     
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#hierarchical-limits" class="md-skip">
+        <a href="#usage-snapshots" class="md-skip">
           Skip to content
         </a>
       
@@ -122,7 +122,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Hierarchical Limits
+              Usage Snapshots
             
           </span>
         </div>
@@ -432,37 +432,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Hierarchical Limits
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../hierarchical/" class="md-nav__link">
         
   
   
@@ -478,170 +451,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#creating-a-hierarchy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Creating a Hierarchy
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cascade-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cascade Mode
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#different-limits-per-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Different Limits Per Level
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#understanding-cascade-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Understanding Cascade Behavior
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Understanding Cascade Behavior">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#without-cascade" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Without Cascade
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#with-cascade" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        With Cascade
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#error-handling-with-hierarchies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Error Handling with Hierarchies
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#use-cases" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Use Cases
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Use Cases">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#multi-tenant-saas" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Multi-Tenant SaaS
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#api-key-management" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        API Key Management
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#limitations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Limitations
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next Steps
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -679,10 +488,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../usage-snapshots/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage Snapshots
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -698,6 +534,181 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-are-usage-snapshots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Are Usage Snapshots?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-use-usage-snapshots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to Use Usage Snapshots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#querying-snapshots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Querying Snapshots
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Querying Snapshots">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#python-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python API
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pagination" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pagination
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#usage-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Usage Summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cli-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Commands
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#snapshot-data-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Snapshot Data Model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#query-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Query Modes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Query Modes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#entity-scoped-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Entity-Scoped Queries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resource-scoped-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resource-Scoped Queries
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relationship-to-other-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship to Other Features
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#best-practices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Best Practices
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1511,10 +1522,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#creating-a-hierarchy" class="md-nav__link">
+  <a href="#what-are-usage-snapshots" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Creating a Hierarchy
+        What Are Usage Snapshots?
       
     </span>
   </a>
@@ -1522,10 +1533,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cascade-mode" class="md-nav__link">
+  <a href="#when-to-use-usage-snapshots" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Cascade Mode
+        When to Use Usage Snapshots
       
     </span>
   </a>
@@ -1533,33 +1544,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#different-limits-per-level" class="md-nav__link">
+  <a href="#querying-snapshots" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Different Limits Per Level
+        Querying Snapshots
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#understanding-cascade-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Understanding Cascade Behavior
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Understanding Cascade Behavior">
+    <nav class="md-nav" aria-label="Querying Snapshots">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#without-cascade" class="md-nav__link">
+  <a href="#python-api" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Without Cascade
+        Python API
       
     </span>
   </a>
@@ -1567,10 +1567,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#with-cascade" class="md-nav__link">
+  <a href="#pagination" class="md-nav__link">
     <span class="md-ellipsis">
       
-        With Cascade
+        Pagination
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#usage-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Usage Summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cli-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Commands
       
     </span>
   </a>
@@ -1583,10 +1605,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#error-handling-with-hierarchies" class="md-nav__link">
+  <a href="#snapshot-data-model" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Error Handling with Hierarchies
+        Snapshot Data Model
       
     </span>
   </a>
@@ -1594,22 +1616,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#use-cases" class="md-nav__link">
+  <a href="#query-modes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Use Cases
+        Query Modes
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Use Cases">
+    <nav class="md-nav" aria-label="Query Modes">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi-tenant-saas" class="md-nav__link">
+  <a href="#entity-scoped-queries" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Multi-Tenant SaaS
+        Entity-Scoped Queries
       
     </span>
   </a>
@@ -1617,10 +1639,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#api-key-management" class="md-nav__link">
+  <a href="#resource-scoped-queries" class="md-nav__link">
     <span class="md-ellipsis">
       
-        API Key Management
+        Resource-Scoped Queries
       
     </span>
   </a>
@@ -1633,10 +1655,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#limitations" class="md-nav__link">
+  <a href="#relationship-to-other-features" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Limitations
+        Relationship to Other Features
       
     </span>
   </a>
@@ -1644,10 +1666,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
+  <a href="#best-practices" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Next Steps
+        Best Practices
       
     </span>
   </a>
@@ -1671,7 +1693,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/guide/hierarchical.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/guide/usage-snapshots.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1679,183 +1701,241 @@
   
 
 
-<h1 id="hierarchical-limits">Hierarchical Limits<a class="headerlink" href="#hierarchical-limits" title="Permanent link">&para;</a></h1>
-<div class="admonition warning">
-<p class="admonition-title">API Changes Planned</p>
-<p>The cascade API is being redesigned. The <code>cascade</code> parameter will move from <code>acquire()</code> to <code>create_entity()</code>, making cascade behavior a property of the entity rather than each call site. This prevents accidental bypass when multiple libraries share a limiter. See <a href="https://github.com/zeroae/zae-limiter/issues/116">issue #116</a> for details.</p>
-</div>
-<p>zae-limiter supports two-level hierarchies for rate limiting, enabling patterns like:</p>
+<h1 id="usage-snapshots">Usage Snapshots<a class="headerlink" href="#usage-snapshots" title="Permanent link">&para;</a></h1>
+<p>Usage snapshots provide historical consumption data for billing, reporting, and capacity planning. This guide explains how to query and use snapshot data.</p>
+<h2 id="what-are-usage-snapshots">What Are Usage Snapshots?<a class="headerlink" href="#what-are-usage-snapshots" title="Permanent link">&para;</a></h2>
+<p>Usage snapshots are time-aggregated consumption records created by the Lambda aggregator from DynamoDB stream events. When you call <code>acquire()</code> and consume tokens, the aggregator automatically records this consumption into hourly and daily snapshots.</p>
+<p><strong>Key characteristics:</strong></p>
 <ul>
-<li><strong>Project → API Keys</strong>: Limit total project usage while also limiting individual keys</li>
-<li><strong>Organization → Users</strong>: Organization-wide limits with per-user quotas</li>
-<li><strong>Tenant → Services</strong>: Multi-tenant limits with service-level controls</li>
+<li><strong>Automatic</strong>: Created by the Lambda aggregator without additional API calls</li>
+<li><strong>Aggregated</strong>: Consumption is summed within time windows (hourly, daily)</li>
+<li><strong>Retroactive</strong>: Data is available after the Lambda processes stream events</li>
+<li><strong>Queryable</strong>: Access via API or CLI for reporting and analysis</li>
 </ul>
-<h2 id="creating-a-hierarchy">Creating a Hierarchy<a class="headerlink" href="#creating-a-hierarchy" title="Permanent link">&para;</a></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Create parent entity (project)</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Production Project&quot;</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># Create child entities (API keys)</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Web Application Key&quot;</span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-xyz&quot;</span><span class="p">,</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Mobile App Key&quot;</span><span class="p">,</span>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="p">)</span>
-</span></code></pre></div>
-<h2 id="cascade-mode">Cascade Mode<a class="headerlink" href="#cascade-mode" title="Permanent link">&para;</a></h2>
-<p>Use <code>cascade=True</code> to apply rate limits to both the child and parent:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">),</span>  <span class="c1"># Per-key limit</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="p">],</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Also applies to parent (project-1)</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    <span class="k">await</span> <span class="n">call_api</span><span class="p">()</span>
-</span></code></pre></div>
+<h2 id="when-to-use-usage-snapshots">When to Use Usage Snapshots<a class="headerlink" href="#when-to-use-usage-snapshots" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Use Case</th>
+<th>Feature</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Billing reports</strong></td>
+<td>Query consumption by entity/resource for a billing period</td>
+</tr>
+<tr>
+<td><strong>Usage dashboards</strong></td>
+<td>Display consumption trends over time</td>
+</tr>
+<tr>
+<td><strong>Capacity planning</strong></td>
+<td>Analyze usage patterns to inform limit adjustments</td>
+</tr>
+<tr>
+<td><strong>Audit compliance</strong></td>
+<td>Historical record of resource consumption</td>
+</tr>
+</tbody>
+</table>
 <div class="admonition note">
-<p class="admonition-title">Performance Impact</p>
-<p>Cascade mode adds overhead: +1 GetEntity + parent bucket operations. Only enable when hierarchical enforcement is needed. See <a href="../../performance/#cascade-optimization">Batch Operation Patterns</a> for optimization strategies.</p>
+<p class="admonition-title">Snapshots vs Real-time Limits</p>
+<p>Use <code>get_usage_snapshots()</code> for historical analysis. For real-time limit status, use <code>get_status()</code> or check the <code>LimitStatus</code> returned by <code>acquire()</code>.</p>
 </div>
-<p><strong>What happens:</strong></p>
-<ol>
-<li>Check if <code>key-abc</code> has capacity (10k tpm)</li>
-<li>Check if <code>project-1</code> has capacity (uses same limits)</li>
-<li>If both pass, consume from both atomically</li>
-<li>If either fails, reject with details about which limit was exceeded</li>
-</ol>
-<h2 id="different-limits-per-level">Different Limits Per Level<a class="headerlink" href="#different-limits-per-level" title="Permanent link">&para;</a></h2>
-<p>Set different limits for parents and children:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Set project-level limits (higher)</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>  <span class="c1"># 100k for entire project</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="p">],</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">)</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="c1"># Set key-level limits (lower)</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">),</span>   <span class="c1"># 10k per key</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="p">],</span>
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="p">)</span>
-</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>
-</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="c1"># Use stored limits with cascade</span>
-</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">5_000</span><span class="p">)],</span>  <span class="c1"># Default</span>
-</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>    <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Uses stored limits for both levels</span>
-</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>    <span class="k">await</span> <span class="n">call_api</span><span class="p">()</span>
+<h2 id="querying-snapshots">Querying Snapshots<a class="headerlink" href="#querying-snapshots" title="Permanent link">&para;</a></h2>
+<h3 id="python-api">Python API<a class="headerlink" href="#python-api" title="Permanent link">&para;</a></h3>
+<p>Query snapshots for an entity:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># Get hourly snapshots for a user</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">snapshots</span><span class="p">,</span> <span class="n">next_key</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_usage_snapshots</span><span class="p">(</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">window_type</span><span class="o">=</span><span class="s2">&quot;hourly&quot;</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">start_time</span><span class="o">=</span><span class="n">datetime</span><span class="p">(</span><span class="mi">2024</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">end_time</span><span class="o">=</span><span class="n">datetime</span><span class="p">(</span><span class="mi">2024</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">31</span><span class="p">),</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="k">for</span> <span class="n">snap</span> <span class="ow">in</span> <span class="n">snapshots</span><span class="p">:</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">snap</span><span class="o">.</span><span class="n">window_start</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">snap</span><span class="o">.</span><span class="n">counters</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<h2 id="understanding-cascade-behavior">Understanding Cascade Behavior<a class="headerlink" href="#understanding-cascade-behavior" title="Permanent link">&para;</a></h2>
-<h3 id="without-cascade">Without Cascade<a class="headerlink" href="#without-cascade" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Only checks/consumes from key-abc</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>  <span class="c1"># Default</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="o">...</span>
+<p>Query snapshots across all entities for a resource:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Get all consumption for gpt-4 across all users</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">snapshots</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_usage_snapshots</span><span class="p">(</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">window_type</span><span class="o">=</span><span class="s2">&quot;daily&quot;</span><span class="p">,</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">)</span>
 </span></code></pre></div>
-<h3 id="with-cascade">With Cascade<a class="headerlink" href="#with-cascade" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Checks/consumes from BOTH key-abc AND project-1</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="o">...</span>
+<h3 id="pagination">Pagination<a class="headerlink" href="#pagination" title="Permanent link">&para;</a></h3>
+<p>For large result sets, use the <code>next_key</code> cursor:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">all_snapshots</span> <span class="o">=</span> <span class="p">[]</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">next_key</span> <span class="o">=</span> <span class="kc">None</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">snapshots</span><span class="p">,</span> <span class="n">next_key</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_usage_snapshots</span><span class="p">(</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="n">next_key</span><span class="o">=</span><span class="n">next_key</span><span class="p">,</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="p">)</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">all_snapshots</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">snapshots</span><span class="p">)</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="k">if</span> <span class="n">next_key</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>        <span class="k">break</span>
 </span></code></pre></div>
-<h2 id="error-handling-with-hierarchies">Error Handling with Hierarchies<a class="headerlink" href="#error-handling-with-hierarchies" title="Permanent link">&para;</a></h2>
-<p>When using cascade mode, <code>RateLimitExceeded</code> includes statuses for all entities:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">try</span><span class="p">:</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>        <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="o">...</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="p">):</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>        <span class="o">...</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="k">for</span> <span class="n">status</span> <span class="ow">in</span> <span class="n">e</span><span class="o">.</span><span class="n">statuses</span><span class="p">:</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Entity: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">entity_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Limit: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">limit_name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Available: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">available</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Exceeded: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">exceeded</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<div class="admonition warning">
+<p class="admonition-title">Pagination Behavior</p>
+<p>The <code>limit</code> parameter controls the DynamoDB query batch size, not the guaranteed result count. Client-side filters (<code>window_type</code>, <code>start_time</code>, <code>end_time</code>) are applied after fetching, so the returned count may be less than <code>limit</code>. Always use <code>next_key</code> to ensure you retrieve all matching results.</p>
+</div>
+<h3 id="usage-summary">Usage Summary<a class="headerlink" href="#usage-summary" title="Permanent link">&para;</a></h3>
+<p>For aggregated statistics, use <code>get_usage_summary()</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">summary</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_usage_summary</span><span class="p">(</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">window_type</span><span class="o">=</span><span class="s2">&quot;hourly&quot;</span><span class="p">,</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">start_time</span><span class="o">=</span><span class="n">datetime</span><span class="p">(</span><span class="mi">2024</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">end_time</span><span class="o">=</span><span class="n">datetime</span><span class="p">(</span><span class="mi">2024</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">31</span><span class="p">),</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">)</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Total snapshots: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">snapshot_count</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Total tokens: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">total</span><span class="p">[</span><span class="s1">&#39;tpm&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Average per hour: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">average</span><span class="p">[</span><span class="s1">&#39;tpm&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Time range: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">min_window_start</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">max_window_start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<h2 id="use-cases">Use Cases<a class="headerlink" href="#use-cases" title="Permanent link">&para;</a></h2>
-<h3 id="multi-tenant-saas">Multi-Tenant SaaS<a class="headerlink" href="#multi-tenant-saas" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Tenant has 1M tokens/day</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;tenant-acme&quot;</span><span class="p">,</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_day</span><span class="p">(</span><span class="s2">&quot;tpd&quot;</span><span class="p">,</span> <span class="mi">1_000_000</span><span class="p">)],</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="p">)</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># Each user gets 100k tokens/day</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_day</span><span class="p">(</span><span class="s2">&quot;tpd&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">)],</span>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="p">)</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="c1"># Rate limit user, cascade to tenant</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>    <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>    <span class="o">...</span>
-</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a><span class="p">):</span>
-</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>    <span class="o">...</span>
+<h3 id="cli-commands">CLI Commands<a class="headerlink" href="#cli-commands" title="Permanent link">&para;</a></h3>
+<p>List snapshots:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Query by entity</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Query by resource across all entities</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--window-type<span class="w"> </span>hourly
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># Filter by time range</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span>--start-time<span class="w"> </span><span class="m">2024</span>-01-01T00:00:00Z<span class="w"> </span>--end-time<span class="w"> </span><span class="m">2024</span>-01-31T23:59:59Z
 </span></code></pre></div>
-<h3 id="api-key-management">API Key Management<a class="headerlink" href="#api-key-management" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Project limit: 10k RPM</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;project-prod&quot;</span><span class="p">,</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
+<p>Get summary:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span></code></pre></div>
+<h2 id="snapshot-data-model">Snapshot Data Model<a class="headerlink" href="#snapshot-data-model" title="Permanent link">&para;</a></h2>
+<p>Each snapshot contains:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>entity_id</code></td>
+<td>The entity that consumed tokens</td>
+</tr>
+<tr>
+<td><code>resource</code></td>
+<td>The resource being rate limited</td>
+</tr>
+<tr>
+<td><code>window_start</code></td>
+<td>Start of the time window (ISO timestamp)</td>
+</tr>
+<tr>
+<td><code>window_end</code></td>
+<td>End of the time window (ISO timestamp)</td>
+</tr>
+<tr>
+<td><code>window_type</code></td>
+<td>"hourly" or "daily"</td>
+</tr>
+<tr>
+<td><code>counters</code></td>
+<td>Dict of limit_name → total consumption</td>
+</tr>
+<tr>
+<td><code>total_events</code></td>
+<td>Number of rate limit events in the window</td>
+</tr>
+</tbody>
+</table>
+<p>Example snapshot:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">UsageSnapshot</span><span class="p">(</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">window_start</span><span class="o">=</span><span class="s2">&quot;2024-01-15T10:00:00Z&quot;</span><span class="p">,</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">window_end</span><span class="o">=</span><span class="s2">&quot;2024-01-15T10:59:59.999999Z&quot;</span><span class="p">,</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">window_type</span><span class="o">=</span><span class="s2">&quot;hourly&quot;</span><span class="p">,</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="n">counters</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">5000</span><span class="p">,</span> <span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">25</span><span class="p">},</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="n">total_events</span><span class="o">=</span><span class="mi">25</span><span class="p">,</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="p">)</span>
+</span></code></pre></div>
+<h2 id="query-modes">Query Modes<a class="headerlink" href="#query-modes" title="Permanent link">&para;</a></h2>
+<h3 id="entity-scoped-queries">Entity-Scoped Queries<a class="headerlink" href="#entity-scoped-queries" title="Permanent link">&para;</a></h3>
+<p>Provide <code>entity_id</code> to query snapshots for a specific entity:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Uses primary key (PK) - most efficient</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">snapshots</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_usage_snapshots</span><span class="p">(</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>  <span class="c1"># Optional: filter by resource</span>
 </span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Production key: 5k RPM (half of project)</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-prod&quot;</span><span class="p">,</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">5_000</span><span class="p">)],</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="p">)</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="c1"># Staging key: 1k RPM</span>
-</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-staging&quot;</span><span class="p">,</span>
-</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1_000</span><span class="p">)],</span>
-</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="p">)</span>
 </span></code></pre></div>
-<h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
+<h3 id="resource-scoped-queries">Resource-Scoped Queries<a class="headerlink" href="#resource-scoped-queries" title="Permanent link">&para;</a></h3>
+<p>Provide only <code>resource</code> to query across all entities:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Uses GSI2 - aggregates across entities</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">snapshots</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_usage_snapshots</span><span class="p">(</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>This is useful for:</p>
 <ul>
-<li><strong>Two levels only</strong>: Parent → Child (no grandparents)</li>
-<li><strong>Single parent</strong>: Each entity can have at most one parent</li>
-<li><strong>Cascade is optional</strong>: Must be explicitly enabled per call</li>
+<li>Total consumption reports per resource</li>
+<li>Comparing usage across users/projects</li>
+<li>Capacity planning at the resource level</li>
 </ul>
-<h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="../llm-integration/">LLM Integration</a> - Token estimation patterns</li>
-<li><a href="../unavailability/">Unavailability Handling</a> - Handling service outages</li>
-<li><a href="../../api/limiter/">API Reference</a> - Complete API documentation</li>
-</ul>
+<h2 id="relationship-to-other-features">Relationship to Other Features<a class="headerlink" href="#relationship-to-other-features" title="Permanent link">&para;</a></h2>
+<div class="mermaid">flowchart LR
+    A[acquire] --&gt;|stream| B[DynamoDB Stream]
+    B --&gt;|triggers| C[Lambda Aggregator]
+    C --&gt;|creates| D[Usage Snapshots]
+    D --&gt;|query| E[get_usage_snapshots]
+    D --&gt;|aggregate| F[get_usage_summary]</div>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Purpose</th>
+<th>Data</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>acquire()</code></td>
+<td>Real-time rate limiting</td>
+<td>Current token state</td>
+</tr>
+<tr>
+<td><code>get_status()</code></td>
+<td>Check current limits</td>
+<td>Live bucket state</td>
+</tr>
+<tr>
+<td><code>get_audit_events()</code></td>
+<td>Security audit trail</td>
+<td>Who changed what</td>
+</tr>
+<tr>
+<td><code>get_usage_snapshots()</code></td>
+<td>Historical consumption</td>
+<td>Aggregated usage over time</td>
+</tr>
+</tbody>
+</table>
+<h2 id="best-practices">Best Practices<a class="headerlink" href="#best-practices" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Use window_type filtering</strong>: Query hourly vs daily based on your reporting needs</li>
+<li><strong>Paginate large queries</strong>: Always handle <code>next_key</code> for complete results</li>
+<li><strong>Use summary for totals</strong>: <code>get_usage_summary()</code> is more efficient than summing snapshots client-side</li>
+<li><strong>Consider time ranges</strong>: Narrow your queries with <code>start_time</code>/<code>end_time</code> for better performance</li>
+</ol>
 
 
 
@@ -1891,7 +1971,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../basic-usage/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Basic Usage">
+          <a href="../llm-integration/" class="md-footer__link md-footer__link--prev" aria-label="Previous: LLM Integration">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -1901,20 +1981,20 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                Basic Usage
+                LLM Integration
               </div>
             </div>
           </a>
         
         
           
-          <a href="../llm-integration/" class="md-footer__link md-footer__link--next" aria-label="Next: LLM Integration">
+          <a href="../unavailability/" class="md-footer__link md-footer__link--next" aria-label="Next: Unavailability Handling">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                LLM Integration
+                Unavailability Handling
               </div>
             </div>
             <div class="md-footer__button md-icon">

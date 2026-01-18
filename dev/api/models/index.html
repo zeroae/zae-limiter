@@ -491,6 +491,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/usage-snapshots/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage Snapshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/unavailability/" class="md-nav__link">
         
   
@@ -1444,6 +1472,62 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#usagesnapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UsageSnapshot
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="UsageSnapshot">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.UsageSnapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;UsageSnapshot
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usagesummary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UsageSummary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="UsageSummary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.UsageSummary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;UsageSummary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2097,6 +2181,62 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;AuditAction
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usagesnapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UsageSnapshot
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="UsageSnapshot">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.UsageSnapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;UsageSnapshot
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usagesummary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UsageSummary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="UsageSummary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.UsageSummary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;UsageSummary
       
     </span>
   </a>
@@ -3086,6 +3226,285 @@ methods) before calling this method.</p>
 
         <p>Audit action type constants.</p>
 
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="usagesnapshot">UsageSnapshot<a class="headerlink" href="#usagesnapshot" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="zae_limiter.models.UsageSnapshot" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">UsageSnapshot</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#zae_limiter.models.UsageSnapshot" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">UsageSnapshot</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">window_start</span><span class="p">,</span> <span class="n">window_end</span><span class="p">,</span> <span class="n">window_type</span><span class="p">,</span> <span class="n">counters</span><span class="p">,</span> <span class="n">total_events</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>Aggregated usage for a time window.</p>
+<p>Created by the aggregator Lambda from DynamoDB stream events.
+Tracks token consumption per limit type within a time window.</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSnapshot.entity_id">entity_id</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity that consumed tokens</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSnapshot.resource">resource</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource being rate-limited (e.g., "gpt-4")</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSnapshot.window_start">window_start</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>ISO timestamp of window start (e.g., "2024-01-01T14:00:00Z")</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSnapshot.window_end">window_end</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>ISO timestamp of window end</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSnapshot.window_type">window_type</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Window granularity ("hourly", "daily")</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSnapshot.counters">counters</span></code></td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Consumption by limit name (e.g., {"tpm": 5000, "rpm": 10})</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSnapshot.total_events">total_events</span></code></td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of consumption events in this window</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="usagesummary">UsageSummary<a class="headerlink" href="#usagesummary" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="zae_limiter.models.UsageSummary" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">UsageSummary</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#zae_limiter.models.UsageSummary" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">UsageSummary</span><span class="p">(</span><span class="n">snapshot_count</span><span class="p">,</span> <span class="n">total</span><span class="p">,</span> <span class="n">average</span><span class="p">,</span> <span class="n">min_window_start</span><span class="p">,</span> <span class="n">max_window_start</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>Aggregated usage summary across multiple snapshots.</p>
+<p>Returned by <code>RateLimiter.get_usage_summary()</code> to provide
+total and average consumption statistics over a time range.</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSummary.snapshot_count">snapshot_count</span></code></td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of snapshots aggregated</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSummary.total">total</span></code></td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Sum of consumption by limit name (e.g., {"tpm": 50000, "rpm": 100})</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSummary.average">average</span></code></td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="float">float</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Average consumption per snapshot by limit name</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSummary.min_window_start">min_window_start</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Earliest snapshot window start (ISO timestamp)</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.UsageSummary.max_window_start">max_window_start</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Latest snapshot window start (ISO timestamp)</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>summary = await limiter.get_usage_summary(
+    entity_id="user-123",
+    resource="gpt-4",
+    window_type="hourly",
+)
+print(f"Total tokens: {summary.total.get('tpm', 0)}")
+print(f"Average per hour: {summary.average.get('tpm', 0.0):.1f}")</p>
+</details>
 
 
 

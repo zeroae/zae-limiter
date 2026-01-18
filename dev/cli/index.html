@@ -491,6 +491,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../guide/usage-snapshots/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage Snapshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/unavailability/" class="md-nav__link">
         
   
@@ -1045,6 +1073,28 @@
     <span class="md-ellipsis">
       
         audit list
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        usage list
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        usage summary
       
     </span>
   </a>
@@ -1619,6 +1669,28 @@
     <span class="md-ellipsis">
       
         audit list
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        usage list
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        usage summary
       
     </span>
   </a>
@@ -2208,6 +2280,197 @@ This action cannot be undone.</p>
 </span><span id="__span-24-8"><a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a>
 </span><span id="__span-24-9"><a id="__codelineno-24-9" name="__codelineno-24-9" href="#__codelineno-24-9"></a>Total: 2 events
 </span></code></pre></div>
+<hr />
+<h2 id="usage-list">usage list<a class="headerlink" href="#usage-list" title="Permanent link">&para;</a></h2>
+<p>List usage snapshots for historical consumption data.</p>
+<p>Usage snapshots are created by the Lambda aggregator from DynamoDB stream events.
+They track token consumption per entity/resource within time windows (hourly, daily).</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span><span class="o">[</span>OPTIONS<span class="o">]</span>
+</span></code></pre></div>
+<p><strong>Options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--name</code>, <code>-n</code></td>
+<td>Resource identifier (ZAEL-{name})</td>
+<td><code>limiter</code></td>
+</tr>
+<tr>
+<td><code>--region</code></td>
+<td>AWS region</td>
+<td>boto3 default</td>
+</tr>
+<tr>
+<td><code>--endpoint-url</code></td>
+<td>Custom AWS endpoint</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>--entity-id</code>, <code>-e</code></td>
+<td>Entity ID to query</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>--resource</code>, <code>-r</code></td>
+<td>Resource name filter</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>--window</code>, <code>-w</code></td>
+<td>Window type (<code>hourly</code>, <code>daily</code>)</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>--start</code></td>
+<td>Start time (ISO format)</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>--end</code></td>
+<td>End time (ISO format)</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>--limit</code>, <code>-l</code></td>
+<td>Maximum snapshots to return</td>
+<td><code>100</code></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Either <code>--entity-id</code> or <code>--resource</code> must be provided.</p>
+</div>
+<p><strong>Examples:</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="c1"># List all snapshots for an entity</span>
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>user-123
+</span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a>
+</span><span id="__span-26-4"><a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="c1"># Filter by resource and window type</span>
+</span><span id="__span-26-5"><a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--window<span class="w"> </span>hourly
+</span><span id="__span-26-6"><a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a>
+</span><span id="__span-26-7"><a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a><span class="c1"># Query by resource across all entities</span>
+</span><span id="__span-26-8"><a id="__codelineno-26-8" name="__codelineno-26-8" href="#__codelineno-26-8"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--window<span class="w"> </span>daily
+</span><span id="__span-26-9"><a id="__codelineno-26-9" name="__codelineno-26-9" href="#__codelineno-26-9"></a>
+</span><span id="__span-26-10"><a id="__codelineno-26-10" name="__codelineno-26-10" href="#__codelineno-26-10"></a><span class="c1"># Filter by time range</span>
+</span><span id="__span-26-11"><a id="__codelineno-26-11" name="__codelineno-26-11" href="#__codelineno-26-11"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-26-12"><a id="__codelineno-26-12" name="__codelineno-26-12" href="#__codelineno-26-12"></a><span class="w">    </span>--start<span class="w"> </span><span class="m">2024</span>-01-01T00:00:00Z<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-26-13"><a id="__codelineno-26-13" name="__codelineno-26-13" href="#__codelineno-26-13"></a><span class="w">    </span>--end<span class="w"> </span><span class="m">2024</span>-01-31T23:59:59Z
+</span><span id="__span-26-14"><a id="__codelineno-26-14" name="__codelineno-26-14" href="#__codelineno-26-14"></a>
+</span><span id="__span-26-15"><a id="__codelineno-26-15" name="__codelineno-26-15" href="#__codelineno-26-15"></a><span class="c1"># Limit results</span>
+</span><span id="__span-26-16"><a id="__codelineno-26-16" name="__codelineno-26-16" href="#__codelineno-26-16"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span>--limit<span class="w"> </span><span class="m">10</span>
+</span></code></pre></div>
+<p><strong>Output:</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>Usage Snapshots
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>====================================================================================================
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a>Window Start           Type     Resource         Entity               Events Counters
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>----------------------------------------------------------------------------------------------------
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a>2024-01-15T14:00:00Z   hourly   gpt-4            user-123                 25 rpm=25, tpm=12,500
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a>2024-01-15T13:00:00Z   hourly   gpt-4            user-123                 18 rpm=18, tpm=9,000
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a>2024-01-15T12:00:00Z   hourly   gpt-4            user-123                 32 rpm=32, tpm=16,000
+</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a>
+</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a>Total: 3 snapshots
+</span></code></pre></div>
+<hr />
+<h2 id="usage-summary">usage summary<a class="headerlink" href="#usage-summary" title="Permanent link">&para;</a></h2>
+<p>Show aggregated usage summary across multiple snapshots.</p>
+<p>Computes total and average consumption statistics over matching snapshots.
+Useful for billing, reporting, and capacity planning.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span><span class="o">[</span>OPTIONS<span class="o">]</span>
+</span></code></pre></div>
+<p><strong>Options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--name</code>, <code>-n</code></td>
+<td>Resource identifier (ZAEL-{name})</td>
+<td><code>limiter</code></td>
+</tr>
+<tr>
+<td><code>--region</code></td>
+<td>AWS region</td>
+<td>boto3 default</td>
+</tr>
+<tr>
+<td><code>--endpoint-url</code></td>
+<td>Custom AWS endpoint</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>--entity-id</code>, <code>-e</code></td>
+<td>Entity ID to query</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>--resource</code>, <code>-r</code></td>
+<td>Resource name filter</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>--window</code>, <code>-w</code></td>
+<td>Window type (<code>hourly</code>, <code>daily</code>)</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>--start</code></td>
+<td>Start time (ISO format)</td>
+<td>None</td>
+</tr>
+<tr>
+<td><code>--end</code></td>
+<td>End time (ISO format)</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Either <code>--entity-id</code> or <code>--resource</code> must be provided.</p>
+</div>
+<p><strong>Examples:</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># Get summary for an entity</span>
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span>--entity-id<span class="w"> </span>user-123
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>
+</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a><span class="c1"># Summary for a specific resource</span>
+</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>
+</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="c1"># Summary for a time range</span>
+</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a><span class="w">    </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a><span class="w">    </span>--window<span class="w"> </span>hourly<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a><span class="w">    </span>--start<span class="w"> </span><span class="m">2024</span>-01-01T00:00:00Z<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a><span class="w">    </span>--end<span class="w"> </span><span class="m">2024</span>-01-31T23:59:59Z
+</span></code></pre></div>
+<p><strong>Output:</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>Usage Summary
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>============================================================
+</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>
+</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a>Entity:     user-123
+</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>Resource:   gpt-4
+</span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>Window:     hourly
+</span><span id="__span-30-7"><a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a>Snapshots:  720
+</span><span id="__span-30-8"><a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>Time Range: 2024-01-01T00:00:00Z to 2024-01-31T23:00:00Z
+</span><span id="__span-30-9"><a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a>
+</span><span id="__span-30-10"><a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a>Limit                   Total         Average
+</span><span id="__span-30-11"><a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a>------------------------------------------------------------
+</span><span id="__span-30-12"><a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a>rpm                     18,000           25.00
+</span><span id="__span-30-13"><a id="__codelineno-30-13" name="__codelineno-30-13" href="#__codelineno-30-13"></a>tpm                  9,000,000       12,500.00
+</span></code></pre></div>
+<hr />
 <h2 id="environment-variables">Environment Variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
 <p>The CLI respects standard AWS environment variables:</p>
 <table>
