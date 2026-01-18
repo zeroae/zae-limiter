@@ -1309,10 +1309,10 @@ class TestAuditCommands:
         assert "Total: 2 events" in result.output
 
     @patch("zae_limiter.repository.Repository")
-    def test_audit_list_truncates_long_principal(
+    def test_audit_list_shows_long_principal_in_full(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test audit list truncates long principal values."""
+        """Test audit list shows long principal in full (auto-sized columns)."""
         from zae_limiter.models import AuditEvent
 
         long_principal = "arn:aws:iam::123456789012:user/very-long-username-that-exceeds-limit"
@@ -1335,10 +1335,10 @@ class TestAuditCommands:
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
 
         assert result.exit_code == 0
-        # Principal should be truncated
-        assert "..." in result.output
-        # But not the full ARN
-        assert long_principal not in result.output
+        # Full principal shown in auto-sized table
+        assert long_principal in result.output
+        # Box-drawing table format
+        assert "+-" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_audit_list_shows_pagination_hint(
@@ -1752,16 +1752,16 @@ class TestUsageCommands:
         assert "underscore" in result.output.lower() or "hyphen" in result.output.lower()
 
     @patch("zae_limiter.repository.Repository")
-    def test_usage_list_truncates_long_entity_id(
+    def test_usage_list_shows_long_entity_id_in_full(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test usage list truncates long entity IDs for display."""
+        """Test usage list shows long entity IDs in full (auto-sized columns)."""
         from zae_limiter.models import UsageSnapshot
 
-        # Create a snapshot with very long entity_id (>18 chars)
+        long_entity_id = "very-long-entity-identifier-that-exceeds-display-width"
         mock_snapshots = [
             UsageSnapshot(
-                entity_id="very-long-entity-identifier-that-exceeds-display-width",
+                entity_id=long_entity_id,
                 resource="gpt-4",
                 window_start="2024-01-15T10:00:00Z",
                 window_end="2024-01-15T10:59:59Z",
@@ -1779,21 +1779,23 @@ class TestUsageCommands:
         result = runner.invoke(cli, ["usage", "list", "-e", "long-entity"])
 
         assert result.exit_code == 0
-        # Entity should be truncated with "..."
-        assert "very-long-entity..." in result.output or "..." in result.output
+        # Full entity shown in auto-sized table
+        assert long_entity_id in result.output
+        # Box-drawing table format
+        assert "+-" in result.output
 
     @patch("zae_limiter.repository.Repository")
-    def test_usage_list_truncates_long_resource_name(
+    def test_usage_list_shows_long_resource_name_in_full(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test usage list truncates long resource names for display."""
+        """Test usage list shows long resource names in full (auto-sized columns)."""
         from zae_limiter.models import UsageSnapshot
 
-        # Create a snapshot with very long resource (>14 chars)
+        long_resource = "very-long-resource-name-that-exceeds-width"
         mock_snapshots = [
             UsageSnapshot(
                 entity_id="user-123",
-                resource="very-long-resource-name-that-exceeds-width",
+                resource=long_resource,
                 window_start="2024-01-15T10:00:00Z",
                 window_end="2024-01-15T10:59:59Z",
                 window_type="hourly",
@@ -1810,8 +1812,10 @@ class TestUsageCommands:
         result = runner.invoke(cli, ["usage", "list", "-e", "user-123"])
 
         assert result.exit_code == 0
-        # Resource should be truncated with "..."
-        assert "very-long-r..." in result.output or "..." in result.output
+        # Full resource shown in auto-sized table
+        assert long_resource in result.output
+        # Box-drawing table format
+        assert "+-" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_usage_list_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -1959,17 +1963,20 @@ class TestListCommand:
         assert "Rate Limiter Instances" in result.output
         assert "my-app" in result.output
         assert "other-app" in result.output
+        # Full status shown in rich table format
         assert "CREATE_COMPLETE" in result.output
         assert "UPDATE_COMPLETE" in result.output
         assert "0.5.0" in result.output
-        assert "1.0.0" in result.output
         assert "Total: 2 instance(s)" in result.output
+        # Box-drawing table borders
+        assert "+-" in result.output
+        assert "| Name" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_shows_healthy_indicator(
+    def test_list_shows_healthy_status(
         self, mock_discovery_class: Mock, runner: CliRunner
     ) -> None:
-        """Test list command shows healthy indicator for healthy stacks."""
+        """Test list command shows healthy status in table."""
         from zae_limiter.models import LimiterInfo
 
         mock_limiters = [
@@ -1991,13 +1998,16 @@ class TestListCommand:
         result = runner.invoke(cli, ["list"])
 
         assert result.exit_code == 0
-        assert "✓" in result.output
+        assert "CREATE_COMPLETE" in result.output
+        # No problem summary for healthy stacks
+        assert "failed" not in result.output
+        assert "in progress" not in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_shows_in_progress_indicator(
+    def test_list_shows_in_progress_summary(
         self, mock_discovery_class: Mock, runner: CliRunner
     ) -> None:
-        """Test list command shows in-progress indicator."""
+        """Test list command shows in-progress summary."""
         from zae_limiter.models import LimiterInfo
 
         mock_limiters = [
@@ -2019,13 +2029,14 @@ class TestListCommand:
         result = runner.invoke(cli, ["list"])
 
         assert result.exit_code == 0
-        assert "⏳" in result.output
+        assert "UPDATE_IN_PROGRESS" in result.output
+        assert "1 in progress" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_shows_failed_indicator(
+    def test_list_shows_failed_summary(
         self, mock_discovery_class: Mock, runner: CliRunner
     ) -> None:
-        """Test list command shows failed indicator."""
+        """Test list command shows failed summary."""
         from zae_limiter.models import LimiterInfo
 
         mock_limiters = [
@@ -2047,14 +2058,14 @@ class TestListCommand:
         result = runner.invoke(cli, ["list"])
 
         assert result.exit_code == 0
-        assert "✗" in result.output
-        assert "1 instance(s) need attention" in result.output
+        assert "CREATE_FAILED" in result.output
+        assert "1 failed" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_truncates_long_values(
+    def test_list_shows_full_names(
         self, mock_discovery_class: Mock, runner: CliRunner
     ) -> None:
-        """Test list command truncates long values for display."""
+        """Test list command shows full names for copy/paste usability."""
         from zae_limiter.models import LimiterInfo
 
         mock_limiters = [
@@ -2077,8 +2088,10 @@ class TestListCommand:
         result = runner.invoke(cli, ["list"])
 
         assert result.exit_code == 0
-        # Values should be truncated
-        assert "..." in result.output
+        # Full name shown in rich table format
+        assert "very-long-name-exceeding-limit" in result.output
+        # Full status shown
+        assert "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
     def test_list_with_region(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
@@ -2164,7 +2177,8 @@ class TestListCommand:
         result = runner.invoke(cli, ["list"])
 
         assert result.exit_code == 0
-        assert "N/A" in result.output
+        # Missing versions shown as "-" for compact display
+        assert "no-tags" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
     def test_list_formats_creation_date(
@@ -2307,13 +2321,15 @@ class TestListCommand:
 
         assert result.exit_code == 0
         assert "Total: 3 instance(s)" in result.output
-        assert "2 instance(s) need attention" in result.output
+        # New format shows separate counts
+        assert "1 failed" in result.output
+        assert "1 in progress" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
     def test_list_handles_unknown_status(
         self, mock_discovery_class: Mock, runner: CliRunner
     ) -> None:
-        """Test list command shows blank indicator for unknown status."""
+        """Test list command handles unknown status gracefully."""
         from zae_limiter.models import LimiterInfo
 
         mock_limiters = [
@@ -2338,62 +2354,3 @@ class TestListCommand:
         # Should not show problem count for IMPORT_COMPLETE
         assert "instance(s) need attention" not in result.output
 
-    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_truncates_long_lambda_version(
-        self, mock_discovery_class: Mock, runner: CliRunner
-    ) -> None:
-        """Test list command truncates long lambda version."""
-        from zae_limiter.models import LimiterInfo
-
-        mock_limiters = [
-            LimiterInfo(
-                stack_name="ZAEL-test",
-                user_name="test",
-                region="us-east-1",
-                stack_status="CREATE_COMPLETE",
-                creation_time="2024-01-15T10:30:00Z",
-                lambda_version="1.2.3-beta.4567890123",  # > 10 chars
-            ),
-        ]
-
-        mock_discovery = Mock()
-        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
-        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
-        mock_discovery_class.return_value = mock_discovery
-
-        result = runner.invoke(cli, ["list"])
-
-        assert result.exit_code == 0
-        # Lambda version should be truncated
-        assert "1.2.3-b..." in result.output
-
-    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_truncates_long_schema_version(
-        self, mock_discovery_class: Mock, runner: CliRunner
-    ) -> None:
-        """Test list command truncates long schema version."""
-        from zae_limiter.models import LimiterInfo
-
-        mock_limiters = [
-            LimiterInfo(
-                stack_name="ZAEL-test",
-                user_name="test",
-                region="us-east-1",
-                stack_status="CREATE_COMPLETE",
-                creation_time="2024-01-15T10:30:00Z",
-                schema_version="1.0.0-beta.123",  # > 8 chars
-            ),
-        ]
-
-        mock_discovery = Mock()
-        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
-        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
-        mock_discovery_class.return_value = mock_discovery
-
-        result = runner.invoke(cli, ["list"])
-
-        assert result.exit_code == 0
-        # Schema version should be truncated
-        assert "1.0.0..." in result.output

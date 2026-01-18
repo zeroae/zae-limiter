@@ -320,21 +320,18 @@ class TestE2ELocalStackCLIWorkflow:
             )
             assert result.exit_code == 0, f"List failed: {result.output}"
 
-            # Step 3: Verify table format output contains expected data
-            # Table header
+            # Step 3: Verify rich table format output
             assert "Rate Limiter Instances" in result.output
-            assert "Name" in result.output
-            assert "Status" in result.output
-            assert "Version" in result.output
-            assert "Lambda" in result.output
-            assert "Schema" in result.output
-            assert "Created" in result.output
+            # Box-drawing table headers
+            assert "| Name" in result.output
+            assert "| Status" in result.output
+            assert "| Version" in result.output
+            assert "| Created" in result.output
+            assert "+-" in result.output  # Table border
 
-            # Deployed stack should appear in list
-            # Note: Long names may be truncated in table output, so check prefix
-            name_prefix = unique_name[:15] if len(unique_name) > 18 else unique_name
-            assert name_prefix in result.output, f"Stack {unique_name} (prefix: {name_prefix}) not in list"
-            assert "CREATE_COMPLETE" in result.output, "Stack should be healthy"
+            # Deployed stack should appear in list (full name shown for copy/paste)
+            assert unique_name in result.output, f"Stack {unique_name} not in list"
+            assert "CREATE_COMPLETE" in result.output, "Stack should show full status"
             assert "Total:" in result.output, "Should show total count"
 
         finally:
