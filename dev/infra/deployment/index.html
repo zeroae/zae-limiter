@@ -1876,7 +1876,8 @@
 <ul>
 <li><strong>DynamoDB Table</strong> - Stores rate limit state, entities, and usage data</li>
 <li><strong>DynamoDB Streams</strong> - Captures changes for usage aggregation</li>
-<li><strong>Lambda Function</strong> - Aggregates usage into hourly/daily snapshots</li>
+<li><strong>Lambda Function</strong> - Aggregates usage into hourly/daily snapshots and archives audit events</li>
+<li><strong>S3 Bucket</strong> - Archives expired audit events (when audit archival is enabled)</li>
 <li><strong>IAM Roles</strong> - Least-privilege access for Lambda</li>
 <li><strong>CloudWatch Logs</strong> - Lambda function logs</li>
 </ul>
@@ -1931,6 +1932,16 @@
 <td><code>--pitr-recovery-days</code></td>
 <td>Point-in-time recovery (1-35 days)</td>
 <td>None (disabled)</td>
+</tr>
+<tr>
+<td><code>--enable-audit-archival/--no-audit-archival</code></td>
+<td>Archive expired audit events to S3</td>
+<td><code>true</code></td>
+</tr>
+<tr>
+<td><code>--audit-archive-glacier-days</code></td>
+<td>Days before Glacier IR transition</td>
+<td><code>90</code></td>
 </tr>
 </tbody>
 </table>
