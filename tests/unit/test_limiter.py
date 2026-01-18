@@ -1942,3 +1942,138 @@ class TestRateLimiterListDeployed:
             # Should work without creating an instance
             result = await RateLimiter.list_deployed(region="us-east-1")
             assert isinstance(result, list)
+
+    @pytest.mark.asyncio
+    async def test_get_version_tags_empty_stacks_response(self):
+        """_get_version_tags handles empty Stacks list in response."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            # describe_stacks returns empty Stacks list
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": []})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            # Should still return limiter with None versions
+            assert len(limiters) == 1
+            assert limiters[0].version is None
+            assert limiters[0].lambda_version is None
+            assert limiters[0].schema_version is None
+
+    @pytest.mark.asyncio
+    async def test_discovery_close_with_client_exception(self):
+        """close() handles exceptions during client cleanup gracefully."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={"StackSummaries": [], "NextToken": None}
+            )
+            # Simulate exception during cleanup
+            mock_client.__aexit__ = AsyncMock(side_effect=Exception("Cleanup failed"))
+            mock_get_client.return_value = mock_client
+
+            discovery = InfrastructureDiscovery(region="us-east-1")
+            async with discovery:
+                # Force client creation
+                await discovery.list_limiters()
+
+            # Should have cleaned up despite exception
+            assert discovery._client is None
+            assert discovery._session is None
+
+    @pytest.mark.asyncio
+    async def test_discovery_close_without_client(self):
+        """close() handles case when no client was ever created."""
+        discovery = InfrastructureDiscovery(region="us-east-1")
+        # close() should not raise when no client exists
+        await discovery.close()
+        assert discovery._client is None
+        assert discovery._session is None
+
+    @pytest.mark.asyncio
+    async def test_get_client_caches_client(self):
+        """_get_client caches the client for subsequent calls."""
+        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+            mock_session = MagicMock()
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock()
+            mock_session.client.return_value = mock_client
+            mock_aioboto3.Session.return_value = mock_session
+
+            discovery = InfrastructureDiscovery(region="us-east-1")
+
+            # First call creates client
+            client1 = await discovery._get_client()
+            # Second call should return cached client
+            client2 = await discovery._get_client()
+
+            assert client1 is client2
+            # Session should only be created once
+            mock_aioboto3.Session.assert_called_once()
+
+            # Clean up
+            await discovery.close()
+
+    @pytest.mark.asyncio
+    async def test_get_client_passes_region_and_endpoint(self):
+        """_get_client passes region and endpoint_url to boto3."""
+        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+            mock_session = MagicMock()
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock()
+            mock_session.client.return_value = mock_client
+            mock_aioboto3.Session.return_value = mock_session
+
+            discovery = InfrastructureDiscovery(
+                region="eu-west-1", endpoint_url="http://localhost:4566"
+            )
+
+            await discovery._get_client()
+
+            # Check session.client was called with correct kwargs
+            mock_session.client.assert_called_once_with(
+                "cloudformation",
+                region_name="eu-west-1",
+                endpoint_url="http://localhost:4566",
+            )
+
+            await discovery.close()
+
+    @pytest.mark.asyncio
+    async def test_get_client_without_region_or_endpoint(self):
+        """_get_client works without region or endpoint_url."""
+        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+            mock_session = MagicMock()
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock()
+            mock_session.client.return_value = mock_client
+            mock_aioboto3.Session.return_value = mock_session
+
+            discovery = InfrastructureDiscovery()
+
+            await discovery._get_client()
+
+            # Should be called with just "cloudformation" and no kwargs
+            mock_session.client.assert_called_once_with("cloudformation")
+
+            await discovery.close()
