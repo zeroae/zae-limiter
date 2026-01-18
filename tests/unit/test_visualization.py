@@ -158,9 +158,7 @@ class TestPlotFormatter:
         result = formatter.format([])
         assert result == ""
 
-    def test_format_snapshots_generates_charts(
-        self, sample_snapshots: list[UsageSnapshot]
-    ) -> None:
+    def test_format_snapshots_generates_charts(self, sample_snapshots: list[UsageSnapshot]) -> None:
         """Test that format generates ASCII charts."""
         pytest.importorskip("asciichartpy")
         formatter = PlotFormatter(height=5)
@@ -311,9 +309,7 @@ class TestPlotFormatter:
         # Should NOT show downsampling note
         assert "downsampled" not in result
 
-    def test_format_with_custom_height(
-        self, single_snapshot: list[UsageSnapshot]
-    ) -> None:
+    def test_format_with_custom_height(self, single_snapshot: list[UsageSnapshot]) -> None:
         """Test that custom height is respected."""
         pytest.importorskip("asciichartpy")
         formatter = PlotFormatter(height=3)

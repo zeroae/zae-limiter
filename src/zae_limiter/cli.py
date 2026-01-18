@@ -1261,9 +1261,7 @@ def usage_list(
                 from .visualization import UsageFormatter, format_usage_snapshots
 
                 try:
-                    output = format_usage_snapshots(
-                        snapshots, formatter=UsageFormatter.PLOT
-                    )
+                    output = format_usage_snapshots(snapshots, formatter=UsageFormatter.PLOT)
                     click.echo(output)
                 except ImportError as e:
                     # Graceful fallback for missing asciichartpy
@@ -1282,9 +1280,7 @@ def usage_list(
                 headers = ["Window Start", "Type", "Resource", "Entity", "Events", "Counters"]
                 rows: list[list[str]] = []
                 for snap in snapshots:
-                    counters_str = ", ".join(
-                        f"{k}={v:,}" for k, v in sorted(snap.counters.items())
-                    )
+                    counters_str = ", ".join(f"{k}={v:,}" for k, v in sorted(snap.counters.items()))
                     rows.append(
                         [
                             snap.window_start,

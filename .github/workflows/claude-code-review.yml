@@ -31,7 +31,8 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const requiredJobs = ['lint', 'typecheck', 'unit'];
+            // Job patterns to wait for (supports matrix jobs like "unit (3.11)")
+            const requiredPatterns = ['lint', 'typecheck', 'unit (3.11)', 'unit (3.12)'];
             const sha = context.payload.pull_request.head.sha;
             const maxAttempts = 60;  // 10 minutes max
             const pollInterval = 10000;  // 10 seconds
@@ -45,7 +46,7 @@ jobs:
 
               const jobStatuses = {};
               for (const run of checkRuns.check_runs) {
-                if (requiredJobs.includes(run.name)) {
+                if (requiredPatterns.includes(run.name)) {
                   jobStatuses[run.name] = {
                     status: run.status,
                     conclusion: run.conclusion
@@ -53,17 +54,17 @@ jobs:
                 }
               }
 
-              const allComplete = requiredJobs.every(job =>
+              const allComplete = requiredPatterns.every(job =>
                 jobStatuses[job]?.status === 'completed'
               );
 
               if (allComplete) {
-                const anyFailed = requiredJobs.some(job =>
+                const anyFailed = requiredPatterns.some(job =>
                   jobStatuses[job]?.conclusion !== 'success'
                 );
 
                 if (anyFailed) {
-                  const failures = requiredJobs
+                  const failures = requiredPatterns
                     .filter(job => jobStatuses[job]?.conclusion !== 'success')
                     .map(job => `${job}: ${jobStatuses[job]?.conclusion}`);
                   core.setFailed(`Core CI jobs failed: ${failures.join(', ')}`);
@@ -74,7 +75,7 @@ jobs:
                 return;
               }
 
-              const pending = requiredJobs.filter(job =>
+              const pending = requiredPatterns.filter(job =>
                 !jobStatuses[job] || jobStatuses[job].status !== 'completed'
               );
               console.log(`Waiting for jobs: ${pending.join(', ')} (attempt ${attempt + 1}/${maxAttempts})`);

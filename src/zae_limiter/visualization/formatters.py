@@ -182,9 +182,7 @@ class PlotFormatter:
         # Generate charts for each counter
         charts: list[tuple[str, list[str]]] = []
         for counter_name in sorted(counter_names):
-            values = [
-                float(snap.counters.get(counter_name, 0)) for snap in snapshots_chrono
-            ]
+            values = [float(snap.counters.get(counter_name, 0)) for snap in snapshots_chrono]
 
             # Downsample if needed
             if downsampled:
@@ -236,8 +234,7 @@ class PlotFormatter:
         # Show time range at the end
         lines.append("")
         lines.append(
-            f"Time range: {snapshots_chrono[0].window_start} "
-            f"to {snapshots_chrono[-1].window_start}"
+            f"Time range: {snapshots_chrono[0].window_start} to {snapshots_chrono[-1].window_start}"
         )
         lines.append(f"Data points: {len(snapshots_chrono)}")
 
