@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768698705804,
+  "lastUpdate": 1768747183033,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -5495,6 +5495,205 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.139678698657464",
             "extra": "mean: 195.4250197428613 msec\nrounds: 35"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ad9ce0ff84a3c0543adfef558f67d73f2876fd11",
+          "message": "✨ feat(aggregator): archive expired audit events to S3 (#77) (#192)\n\n* ✨ feat(aggregator): archive expired audit events to S3 (#77)\n\nThis PR implements S3 audit archival for compliance and long-term retention.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✨ feat(aggregator): archive expired audit events to S3\n\nImplements issue #77 - S3 audit archival feature that archives expired\naudit events to S3 when DynamoDB TTL deletes them. This enables long-term\nretention and compliance requirements.\n\nKey changes:\n- Add archiver.py module with gzip-compressed JSONL output\n- Extend Lambda handler to process REMOVE events for AUDIT# records\n- Add S3 bucket with lifecycle rules (Glacier IR after 90 days)\n- Add CLI flags: --enable-audit-archival, --audit-archive-glacier-days\n- Add StackOptions fields: enable_audit_archival, audit_archive_glacier_days\n- S3 bucket naming: zael-{name}-data (lowercase)\n- Hive-style partitioning: audit/year=YYYY/month=MM/day=DD/\n\nInfrastructure:\n- CloudFormation: S3 bucket, IAM permissions, lifecycle rules, outputs\n- docker-compose: Add S3 to LocalStack services\n- Add boto3-stubs and types-aiobotocore for type checking\n\nTests:\n- Unit tests for archiver module (test_archiver.py)\n- E2E tests for archival workflow (test_audit_archival.py)\n- S3 client fixture in e2e/conftest.py\n\nCloses #77\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🧪 test(aggregator): add unit tests for handler and archiver\n\nImproves patch coverage for the S3 audit archival feature:\n- Add test_handler.py with 5 tests covering:\n  - Basic record processing\n  - Archival when enabled\n  - Error aggregation from both processors\n  - Skip archival when disabled or no bucket\n- Add JSONL error handling test to test_archiver.py\n\nBoth archiver.py and handler.py now have 100% test coverage.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: update documentation for S3 audit archival feature\n\n- Add archiver.py to project structure in CLAUDE.md\n- Add missing CloudFormation parameters to cloudformation.md:\n  - BaseName, LambdaDurationThreshold, PermissionBoundary, RoleName\n- Add S3 service to LocalStack Docker examples\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(infra): convert CloudFormation diagram to Mermaid\n\nReplace ASCII art diagram with Mermaid flowchart for better\nrendering in MkDocs Material.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(infra): add S3 audit archive documentation\n\n- Update cloudformation.md with interactive Mermaid diagram\n- Add clickable nodes linking to relevant sections\n- Add S3 Audit Archive Bucket section with CloudFormation resource\n- Document object structure and lifecycle policy\n- Update production.md checklist with audit archival options\n- Add S3 costs to cost estimation table\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T09:33:24-05:00",
+          "tree_id": "ab34f05d8433ea89dc3eee7b0c4ece53e746e0c4",
+          "url": "https://github.com/zeroae/zae-limiter/commit/ad9ce0ff84a3c0543adfef558f67d73f2876fd11"
+        },
+        "date": 1768747182771,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 75.3113033804217,
+            "unit": "iter/sec",
+            "range": "stddev: 0.020886659901870337",
+            "extra": "mean: 13.278219272725599 msec\nrounds: 242"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 21.729777614635825,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0724963983400351",
+            "extra": "mean: 46.019799085585774 msec\nrounds: 222"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 29.319757925757102,
+            "unit": "iter/sec",
+            "range": "stddev: 0.15539392560332885",
+            "extra": "mean: 34.10669360000106 msec\nrounds: 90"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 1063.8220271800474,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00023738306624657127",
+            "extra": "mean: 940.0068568337269 usec\nrounds: 929"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 172.2756992794103,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00018562529101085327",
+            "extra": "mean: 5.804649199990308 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 69.62215415439968,
+            "unit": "iter/sec",
+            "range": "stddev: 0.021302285642120597",
+            "extra": "mean: 14.363244173432493 msec\nrounds: 271"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 30.525626922679226,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04049145429037861",
+            "extra": "mean: 32.75935994805214 msec\nrounds: 154"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 56.335794852128586,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05013669533157979",
+            "extra": "mean: 17.75070366229538 msec\nrounds: 305"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 21.05168597914687,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08429267259625779",
+            "extra": "mean: 47.50213360538288 msec\nrounds: 223"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 8.862639136307848,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1918873980230533",
+            "extra": "mean: 112.83320742500607 msec\nrounds: 80"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.45924768486914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007386956387506147",
+            "extra": "mean: 44.52508890908679 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.906537047613234,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005531338587324506",
+            "extra": "mean: 43.65566030000139 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.77070434214637,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003733493665947249",
+            "extra": "mean: 25.144136030305756 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 33.10667939644361,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0036741993527859822",
+            "extra": "mean: 30.20538508333222 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 27.28940546284426,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00501551372157572",
+            "extra": "mean: 36.64425747059769 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 230.58673789406782,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005950790625978251",
+            "extra": "mean: 4.33676285606418 msec\nrounds: 132"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 60.967232774870766,
+            "unit": "iter/sec",
+            "range": "stddev: 0.030838096226634436",
+            "extra": "mean: 16.402253382446055 msec\nrounds: 319"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 21.903104703343562,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07898068298819738",
+            "extra": "mean: 45.65562798260959 msec\nrounds: 230"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1105.2218157605942,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002040386916350147",
+            "extra": "mean: 904.7957484550896 usec\nrounds: 970"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 64.51604954982707,
+            "unit": "iter/sec",
+            "range": "stddev: 0.026545526861415755",
+            "extra": "mean: 15.500019095677573 msec\nrounds: 324"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 285.90244219637896,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002696147294855323",
+            "extra": "mean: 3.4976965999931053 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 31.35913753854939,
+            "unit": "iter/sec",
+            "range": "stddev: 0.037968592773771216",
+            "extra": "mean: 31.888632101910098 msec\nrounds: 157"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 28.505345859473348,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09991537158492296",
+            "extra": "mean: 35.08113898809841 msec\nrounds: 84"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 5.6008584889683295,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12035173433114636",
+            "extra": "mean: 178.54405748148062 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 5.485187122124796,
+            "unit": "iter/sec",
+            "range": "stddev: 0.17213043658761584",
+            "extra": "mean: 182.30918612902857 msec\nrounds: 31"
           }
         ]
       }
