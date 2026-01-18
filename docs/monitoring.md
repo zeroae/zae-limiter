@@ -24,6 +24,9 @@ zae-limiter provides built-in observability through:
 !!! tip "Compliance Requirements"
     For tracking who changed what and when, see the [Audit Logging Guide](infra/auditing.md).
 
+!!! tip "Usage Data"
+    For querying historical consumption data (billing, capacity planning), see the [Usage Snapshots Guide](guide/usage-snapshots.md).
+
 ## Structured Logging
 
 The Lambda aggregator uses structured JSON logging compatible with CloudWatch Logs Insights.

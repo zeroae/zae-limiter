@@ -2,24 +2,28 @@
   "permissions": {
     "allow": [
       "Bash(docker compose:*)",
+      "Bash(gh api:*)",
       "Bash(gh issue create:*)",
       "Bash(gh issue edit:*)",
       "Bash(gh issue list:*)",
       "Bash(gh issue status:*)",
       "Bash(gh issue view:*)",
+      "Bash(gh label list:*)",
       "Bash(gh pr checks:*)",
       "Bash(gh pr checkout:*)",
       "Bash(gh pr create:*)",
+      "Bash(gh pr edit:*)",
       "Bash(gh pr list:*)",
       "Bash(gh pr view:*)",
+      "Bash(gh run view:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git log:*)",
+      "Bash(git push)",
+      "Bash(git diff:*)",
       "Bash(uv run mypy:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uv run ruff:*)",
-      "Bash(gh api:*)",
-      "Bash(gh pr edit:*)"
+      "Bash(uv run ruff:*)"
     ],
     "ask": [
       "Bash(gh issue close:*)",

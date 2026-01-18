@@ -55,3 +55,21 @@ Data models for rate limit configuration and status.
       show_source: false
       members_order: source
       heading_level: 3
+
+## UsageSnapshot
+
+::: zae_limiter.models.UsageSnapshot
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
+## UsageSummary
+
+::: zae_limiter.models.UsageSummary
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3

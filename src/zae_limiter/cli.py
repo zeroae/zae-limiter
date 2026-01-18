@@ -1029,5 +1029,265 @@ def audit_list(
     asyncio.run(_list())
 
 
+# -------------------------------------------------------------------------
+# Usage commands
+# -------------------------------------------------------------------------
+
+
+@cli.group()
+def usage() -> None:
+    """Usage snapshot commands."""
+    pass
+
+
+@usage.command("list")
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+@click.option(
+    "--entity-id",
+    "-e",
+    help="Entity ID to query (required unless --resource is provided)",
+)
+@click.option(
+    "--resource",
+    "-r",
+    help="Resource name filter (required if --entity-id is not provided)",
+)
+@click.option(
+    "--window",
+    "-w",
+    type=click.Choice(["hourly", "daily"]),
+    help="Filter by window type",
+)
+@click.option(
+    "--start",
+    help="Start time (ISO format, e.g., 2024-01-01T00:00:00Z)",
+)
+@click.option(
+    "--end",
+    help="End time (ISO format, e.g., 2024-01-31T23:59:59Z)",
+)
+@click.option(
+    "--limit",
+    "-l",
+    default=100,
+    type=int,
+    help="Maximum number of snapshots to return (default: 100)",
+)
+def usage_list(
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    entity_id: str | None,
+    resource: str | None,
+    window: str | None,
+    start: str | None,
+    end: str | None,
+    limit: int,
+) -> None:
+    """List usage snapshots."""
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    if entity_id is None and resource is None:
+        click.echo("Error: Either --entity-id or --resource must be provided", err=True)
+        sys.exit(1)
+
+    async def _list() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            snapshots, next_key = await repo.get_usage_snapshots(
+                entity_id=entity_id,
+                resource=resource,
+                window_type=window,
+                start_time=start,
+                end_time=end,
+                limit=limit,
+            )
+
+            if not snapshots:
+                click.echo("No usage snapshots found")
+                return
+
+            # Table format
+            click.echo()
+            click.echo("Usage Snapshots")
+            click.echo("=" * 100)
+            click.echo()
+            click.echo(
+                f"{'Window Start':<22} {'Type':<8} {'Resource':<16} "
+                f"{'Entity':<20} {'Events':>8} Counters"
+            )
+            click.echo("-" * 100)
+            for snap in snapshots:
+                # Format counters as key=value pairs
+                counters_str = ", ".join(f"{k}={v:,}" for k, v in sorted(snap.counters.items()))
+                # Truncate long values
+                entity_display = snap.entity_id
+                if len(entity_display) > 18:
+                    entity_display = entity_display[:15] + "..."
+                resource_display = snap.resource
+                if len(resource_display) > 14:
+                    resource_display = resource_display[:11] + "..."
+                click.echo(
+                    f"{snap.window_start:<22} {snap.window_type:<8} {resource_display:<16} "
+                    f"{entity_display:<20} {snap.total_events:>8} {counters_str}"
+                )
+            click.echo()
+            click.echo(f"Total: {len(snapshots)} snapshots")
+
+            if next_key:
+                click.echo()
+                click.echo("More snapshots exist. Use pagination to see more.")
+
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to list usage snapshots: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_list())
+
+
+@usage.command("summary")
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+@click.option(
+    "--entity-id",
+    "-e",
+    help="Entity ID to query (required unless --resource is provided)",
+)
+@click.option(
+    "--resource",
+    "-r",
+    help="Resource name filter (required if --entity-id is not provided)",
+)
+@click.option(
+    "--window",
+    "-w",
+    type=click.Choice(["hourly", "daily"]),
+    help="Filter by window type",
+)
+@click.option(
+    "--start",
+    help="Start time (ISO format, e.g., 2024-01-01T00:00:00Z)",
+)
+@click.option(
+    "--end",
+    help="End time (ISO format, e.g., 2024-01-31T23:59:59Z)",
+)
+def usage_summary(
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    entity_id: str | None,
+    resource: str | None,
+    window: str | None,
+    start: str | None,
+    end: str | None,
+) -> None:
+    """Show aggregated usage summary."""
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    if entity_id is None and resource is None:
+        click.echo("Error: Either --entity-id or --resource must be provided", err=True)
+        sys.exit(1)
+
+    async def _summary() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            summary = await repo.get_usage_summary(
+                entity_id=entity_id,
+                resource=resource,
+                window_type=window,
+                start_time=start,
+                end_time=end,
+            )
+
+            if summary.snapshot_count == 0:
+                click.echo("No usage data found matching the criteria")
+                return
+
+            # Display summary
+            click.echo()
+            click.echo("Usage Summary")
+            click.echo("=" * 60)
+            click.echo()
+            if entity_id:
+                click.echo(f"Entity:     {entity_id}")
+            if resource:
+                click.echo(f"Resource:   {resource}")
+            if window:
+                click.echo(f"Window:     {window}")
+            click.echo(f"Snapshots:  {summary.snapshot_count}")
+            if summary.min_window_start and summary.max_window_start:
+                click.echo(f"Time Range: {summary.min_window_start} to {summary.max_window_start}")
+            click.echo()
+
+            # Table of counters
+            click.echo(f"{'Limit':<15} {'Total':>15} {'Average':>15}")
+            click.echo("-" * 60)
+            for limit_name in sorted(summary.total.keys()):
+                total = summary.total[limit_name]
+                avg = summary.average.get(limit_name, 0.0)
+                click.echo(f"{limit_name:<15} {total:>15,} {avg:>15,.2f}")
+            click.echo()
+
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to get usage summary: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_summary())
+
+
 if __name__ == "__main__":
     cli()

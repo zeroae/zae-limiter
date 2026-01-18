@@ -702,3 +702,387 @@ class TestRepositoryAuditLogging:
         # Should be cached
         assert repo._caller_identity_fetched is True
         assert repo._caller_identity_arn is None
+
+
+class TestRepositoryUsageSnapshots:
+    """Tests for usage snapshot queries."""
+
+    @pytest.fixture
+    async def repo_with_snapshots(self, repo):
+        """Repository pre-populated with test usage snapshots."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+
+        # Create snapshots for multiple entities, resources, and time windows
+        snapshots_data = [
+            # Entity 1, gpt-4, hourly snapshots
+            ("entity-1", "gpt-4", "hourly", "2024-01-15T10:00:00Z", {"tpm": 1000, "rpm": 5}),
+            ("entity-1", "gpt-4", "hourly", "2024-01-15T11:00:00Z", {"tpm": 2000, "rpm": 10}),
+            ("entity-1", "gpt-4", "hourly", "2024-01-15T12:00:00Z", {"tpm": 1500, "rpm": 8}),
+            # Entity 1, gpt-4, daily snapshot
+            ("entity-1", "gpt-4", "daily", "2024-01-15T00:00:00Z", {"tpm": 4500, "rpm": 23}),
+            # Entity 1, gpt-3.5, hourly
+            ("entity-1", "gpt-3.5", "hourly", "2024-01-15T10:00:00Z", {"tpm": 500, "rpm": 3}),
+            # Entity 2, gpt-4, hourly
+            ("entity-2", "gpt-4", "hourly", "2024-01-15T10:00:00Z", {"tpm": 3000, "rpm": 15}),
+            ("entity-2", "gpt-4", "hourly", "2024-01-15T11:00:00Z", {"tpm": 2500, "rpm": 12}),
+        ]
+
+        for entity_id, resource, window_type, window_start, counters in snapshots_data:
+            item = {
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_usage(resource, window_start)},
+                "entity_id": {"S": entity_id},
+                "resource": {"S": resource},
+                "window": {"S": window_type},
+                "window_start": {"S": window_start},
+                "total_events": {"N": str(sum(counters.values()))},
+                "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+                "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
+            }
+            # Add counters as top-level attributes
+            for name, value in counters.items():
+                item[name] = {"N": str(value)}
+
+            await client.put_item(TableName=repo.table_name, Item=item)
+
+        yield repo
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_by_entity(self, repo_with_snapshots):
+        """Query snapshots for a single entity."""
+        snapshots, next_key = await repo_with_snapshots.get_usage_snapshots(entity_id="entity-1")
+
+        # Entity 1 has 5 snapshots total
+        assert len(snapshots) == 5
+        assert all(s.entity_id == "entity-1" for s in snapshots)
+        assert next_key is None  # All results fit in one page
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_by_entity_and_resource(self, repo_with_snapshots):
+        """Query snapshots for entity + resource filter."""
+        snapshots, next_key = await repo_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            resource="gpt-4",
+        )
+
+        # Entity 1, gpt-4 has 4 snapshots (3 hourly + 1 daily)
+        assert len(snapshots) == 4
+        assert all(s.entity_id == "entity-1" for s in snapshots)
+        assert all(s.resource == "gpt-4" for s in snapshots)
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_by_resource_gsi2(self, repo_with_snapshots):
+        """Query snapshots for a resource across all entities (GSI2)."""
+        snapshots, next_key = await repo_with_snapshots.get_usage_snapshots(resource="gpt-4")
+
+        # gpt-4 has snapshots from entity-1 (4) and entity-2 (2) = 6 total
+        assert len(snapshots) == 6
+        assert all(s.resource == "gpt-4" for s in snapshots)
+        # Verify both entities are present
+        entity_ids = {s.entity_id for s in snapshots}
+        assert entity_ids == {"entity-1", "entity-2"}
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_filter_by_window_type(self, repo_with_snapshots):
+        """Filter snapshots by window type."""
+        snapshots, _ = await repo_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            resource="gpt-4",
+            window_type="hourly",
+        )
+
+        # Entity 1, gpt-4 has 3 hourly snapshots
+        assert len(snapshots) == 3
+        assert all(s.window_type == "hourly" for s in snapshots)
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_filter_by_time_range(self, repo_with_snapshots):
+        """Filter snapshots by start_time and end_time."""
+        snapshots, _ = await repo_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            resource="gpt-4",
+            start_time="2024-01-15T10:00:00Z",
+            end_time="2024-01-15T11:00:00Z",
+        )
+
+        # Should include 10:00 and 11:00 hourly snapshots (window_start <= end_time)
+        assert len(snapshots) == 2
+        window_starts = {s.window_start for s in snapshots}
+        assert "2024-01-15T10:00:00Z" in window_starts
+        assert "2024-01-15T11:00:00Z" in window_starts
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_empty_result(self, repo_with_snapshots):
+        """Query for nonexistent entity returns empty list."""
+        snapshots, next_key = await repo_with_snapshots.get_usage_snapshots(entity_id="nonexistent")
+
+        assert snapshots == []
+        assert next_key is None
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_requires_entity_or_resource(self, repo):
+        """Should raise ValueError if neither entity_id nor resource provided."""
+        with pytest.raises(ValueError, match="Either entity_id or resource"):
+            await repo.get_usage_snapshots()
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_pagination(self, repo_with_snapshots):
+        """Test pagination with limit parameter."""
+        # First page
+        snapshots1, next_key1 = await repo_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            limit=2,
+        )
+
+        assert len(snapshots1) == 2
+        assert next_key1 is not None  # More results available
+
+        # Second page
+        snapshots2, next_key2 = await repo_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            limit=2,
+            next_key=next_key1,
+        )
+
+        assert len(snapshots2) == 2
+        assert next_key2 is not None  # Still more results
+
+        # Third page (final)
+        snapshots3, next_key3 = await repo_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            limit=2,
+            next_key=next_key2,
+        )
+
+        assert len(snapshots3) == 1  # Only 1 remaining
+        assert next_key3 is None  # No more results
+
+        # Verify no duplicates (use resource+window_start as unique key)
+        all_keys = [(s.resource, s.window_start) for s in snapshots1 + snapshots2 + snapshots3]
+        assert len(all_keys) == len(set(all_keys))
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_counters_extracted(self, repo_with_snapshots):
+        """Verify counters are correctly extracted from flat schema."""
+        snapshots, _ = await repo_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            resource="gpt-4",
+            window_type="hourly",
+            start_time="2024-01-15T10:00:00Z",
+            end_time="2024-01-15T10:00:00Z",
+        )
+
+        assert len(snapshots) == 1
+        snapshot = snapshots[0]
+        assert snapshot.counters == {"tpm": 1000, "rpm": 5}
+        assert snapshot.total_events == 1005  # sum of counters
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_window_end_calculated(self, repo_with_snapshots):
+        """Verify window_end is correctly calculated."""
+        snapshots, _ = await repo_with_snapshots.get_usage_snapshots(
+            entity_id="entity-1",
+            resource="gpt-4",
+            window_type="hourly",
+            start_time="2024-01-15T10:00:00Z",
+            end_time="2024-01-15T10:00:00Z",
+        )
+
+        assert len(snapshots) == 1
+        snapshot = snapshots[0]
+        assert snapshot.window_start == "2024-01-15T10:00:00Z"
+        # Hourly window_end should be :59:59
+        assert "10:59:59" in snapshot.window_end
+
+    @pytest.mark.asyncio
+    async def test_get_usage_summary_aggregation(self, repo_with_snapshots):
+        """Test summary aggregation across snapshots."""
+        summary = await repo_with_snapshots.get_usage_summary(
+            entity_id="entity-1",
+            resource="gpt-4",
+            window_type="hourly",
+        )
+
+        # 3 hourly snapshots for entity-1, gpt-4
+        assert summary.snapshot_count == 3
+
+        # Total: 1000 + 2000 + 1500 = 4500 tpm, 5 + 10 + 8 = 23 rpm
+        assert summary.total["tpm"] == 4500
+        assert summary.total["rpm"] == 23
+
+        # Average: 4500/3 = 1500 tpm, 23/3 ≈ 7.67 rpm
+        assert summary.average["tpm"] == 1500.0
+        assert abs(summary.average["rpm"] - 7.666666666666667) < 0.001
+
+        # Time range
+        assert summary.min_window_start == "2024-01-15T10:00:00Z"
+        assert summary.max_window_start == "2024-01-15T12:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_get_usage_summary_empty(self, repo_with_snapshots):
+        """Summary for nonexistent entity returns zeros."""
+        summary = await repo_with_snapshots.get_usage_summary(entity_id="nonexistent")
+
+        assert summary.snapshot_count == 0
+        assert summary.total == {}
+        assert summary.average == {}
+        assert summary.min_window_start is None
+        assert summary.max_window_start is None
+
+    @pytest.mark.asyncio
+    async def test_get_usage_summary_requires_entity_or_resource(self, repo):
+        """Should raise ValueError if neither entity_id nor resource provided."""
+        with pytest.raises(ValueError, match="Either entity_id or resource"):
+            await repo.get_usage_summary()
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_skips_malformed_items(self, repo):
+        """Malformed snapshot items are skipped during deserialization."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+
+        # Item missing entity_id (malformed)
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("test-malformed")},
+                "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T10:00:00Z")},
+                # Missing entity_id, resource, window_start
+                "window": {"S": "hourly"},
+                "tpm": {"N": "100"},
+            },
+        )
+
+        # Item with valid data
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("test-malformed")},
+                "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T11:00:00Z")},
+                "entity_id": {"S": "test-malformed"},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": "hourly"},
+                "window_start": {"S": "2024-01-15T11:00:00Z"},
+                "tpm": {"N": "200"},
+                "total_events": {"N": "10"},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": "USAGE#2024-01-15T11:00:00Z#test-malformed"},
+            },
+        )
+
+        # Query should skip malformed item and return only valid one
+        snapshots, _ = await repo.get_usage_snapshots(entity_id="test-malformed")
+
+        assert len(snapshots) == 1
+        assert snapshots[0].entity_id == "test-malformed"
+        assert snapshots[0].window_start == "2024-01-15T11:00:00Z"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "window_type,window_start,expected_end_contains",
+        [
+            # Hourly window ends at :59:59
+            ("hourly", "2024-01-15T10:00:00Z", "10:59:59"),
+            # Daily window ends at 23:59:59
+            ("daily", "2024-01-15T00:00:00Z", "23:59:59"),
+            # Monthly window (January) ends on Jan 31
+            ("monthly", "2024-01-01T00:00:00Z", "2024-01-31"),
+            # Monthly window (December) - year rollover ends on Dec 31
+            ("monthly", "2024-12-01T00:00:00Z", "2024-12-31"),
+            # Monthly window (February leap year) ends on Feb 29
+            ("monthly", "2024-02-01T00:00:00Z", "2024-02-29"),
+            # Monthly window (February non-leap year) ends on Feb 28
+            ("monthly", "2023-02-01T00:00:00Z", "2023-02-28"),
+        ],
+    )
+    async def test_get_usage_snapshots_window_end_by_type(
+        self, repo, window_type, window_start, expected_end_contains
+    ):
+        """Test window_end calculation for all supported window types."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        entity_id = f"test-{window_type}-{window_start[:10]}"
+
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_usage("gpt-4", window_start)},
+                "entity_id": {"S": entity_id},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": window_type},
+                "window_start": {"S": window_start},
+                "tpm": {"N": "1000"},
+                "total_events": {"N": "10"},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
+            },
+        )
+
+        snapshots, _ = await repo.get_usage_snapshots(entity_id=entity_id)
+
+        assert len(snapshots) == 1
+        assert snapshots[0].window_type == window_type
+        assert expected_end_contains in snapshots[0].window_end
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_unknown_window_type(self, repo):
+        """Test window_end for unknown window type returns window_start."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("unknown-window")},
+                "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T10:00:00Z")},
+                "entity_id": {"S": "unknown-window"},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": "unknown"},  # Unknown window type
+                "window_start": {"S": "2024-01-15T10:00:00Z"},
+                "tpm": {"N": "100"},
+                "total_events": {"N": "5"},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": "USAGE#2024-01-15T10:00:00Z#unknown-window"},
+            },
+        )
+
+        snapshots, _ = await repo.get_usage_snapshots(entity_id="unknown-window")
+
+        assert len(snapshots) == 1
+        # Unknown window type should fall through to window_start
+        assert snapshots[0].window_end == "2024-01-15T10:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_invalid_window_start(self, repo):
+        """Test window_end for invalid window_start returns window_start."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("invalid-date")},
+                "SK": {"S": schema.sk_usage("gpt-4", "invalid-date")},
+                "entity_id": {"S": "invalid-date"},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": "hourly"},
+                "window_start": {"S": "invalid-date"},  # Invalid date format
+                "tpm": {"N": "100"},
+                "total_events": {"N": "5"},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": "USAGE#invalid-date#invalid-date"},
+            },
+        )
+
+        snapshots, _ = await repo.get_usage_snapshots(entity_id="invalid-date")
+
+        assert len(snapshots) == 1
+        # Invalid date should return original value
+        assert snapshots[0].window_end == "invalid-date"

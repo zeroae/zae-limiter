@@ -245,7 +245,7 @@ docker compose down
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction
+├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary
 ├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError
 ├── naming.py          # Resource name validation and ZAEL- prefix logic
 ├── bucket.py          # Token bucket math (integer arithmetic)
@@ -253,7 +253,7 @@ src/zae_limiter/
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
-├── cli.py             # CLI commands (deploy, delete, status, cfn-template, version, upgrade, check, audit)
+├── cli.py             # CLI commands (deploy, delete, status, cfn-template, version, upgrade, check, audit, usage)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
@@ -589,7 +589,8 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
-| Get usage snapshots | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
+| Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
+| Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
 
 ### Schema Design Notes
 

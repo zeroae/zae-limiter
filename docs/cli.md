@@ -383,6 +383,138 @@ Timestamp                Action             Principal            Resource
 Total: 2 events
 ```
 
+---
+
+## usage list
+
+List usage snapshots for historical consumption data.
+
+Usage snapshots are created by the Lambda aggregator from DynamoDB stream events.
+They track token consumption per entity/resource within time windows (hourly, daily).
+
+```bash
+zae-limiter usage list [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint | None |
+| `--entity-id`, `-e` | Entity ID to query | - |
+| `--resource`, `-r` | Resource name filter | - |
+| `--window`, `-w` | Window type (`hourly`, `daily`) | None |
+| `--start` | Start time (ISO format) | None |
+| `--end` | End time (ISO format) | None |
+| `--limit`, `-l` | Maximum snapshots to return | `100` |
+
+!!! note
+    Either `--entity-id` or `--resource` must be provided.
+
+**Examples:**
+
+```bash
+# List all snapshots for an entity
+zae-limiter usage list --entity-id user-123
+
+# Filter by resource and window type
+zae-limiter usage list --entity-id user-123 --resource gpt-4 --window hourly
+
+# Query by resource across all entities
+zae-limiter usage list --resource gpt-4 --window daily
+
+# Filter by time range
+zae-limiter usage list --entity-id user-123 \
+    --start 2024-01-01T00:00:00Z \
+    --end 2024-01-31T23:59:59Z
+
+# Limit results
+zae-limiter usage list --entity-id user-123 --limit 10
+```
+
+**Output:**
+
+```
+Usage Snapshots
+====================================================================================================
+
+Window Start           Type     Resource         Entity               Events Counters
+----------------------------------------------------------------------------------------------------
+2024-01-15T14:00:00Z   hourly   gpt-4            user-123                 25 rpm=25, tpm=12,500
+2024-01-15T13:00:00Z   hourly   gpt-4            user-123                 18 rpm=18, tpm=9,000
+2024-01-15T12:00:00Z   hourly   gpt-4            user-123                 32 rpm=32, tpm=16,000
+
+Total: 3 snapshots
+```
+
+---
+
+## usage summary
+
+Show aggregated usage summary across multiple snapshots.
+
+Computes total and average consumption statistics over matching snapshots.
+Useful for billing, reporting, and capacity planning.
+
+```bash
+zae-limiter usage summary [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint | None |
+| `--entity-id`, `-e` | Entity ID to query | - |
+| `--resource`, `-r` | Resource name filter | - |
+| `--window`, `-w` | Window type (`hourly`, `daily`) | None |
+| `--start` | Start time (ISO format) | None |
+| `--end` | End time (ISO format) | None |
+
+!!! note
+    Either `--entity-id` or `--resource` must be provided.
+
+**Examples:**
+
+```bash
+# Get summary for an entity
+zae-limiter usage summary --entity-id user-123
+
+# Summary for a specific resource
+zae-limiter usage summary --entity-id user-123 --resource gpt-4
+
+# Summary for a time range
+zae-limiter usage summary --entity-id user-123 \
+    --resource gpt-4 \
+    --window hourly \
+    --start 2024-01-01T00:00:00Z \
+    --end 2024-01-31T23:59:59Z
+```
+
+**Output:**
+
+```
+Usage Summary
+============================================================
+
+Entity:     user-123
+Resource:   gpt-4
+Window:     hourly
+Snapshots:  720
+Time Range: 2024-01-01T00:00:00Z to 2024-01-31T23:00:00Z
+
+Limit                   Total         Average
+------------------------------------------------------------
+rpm                     18,000           25.00
+tpm                  9,000,000       12,500.00
+```
+
+---
+
 ## Environment Variables
 
 The CLI respects standard AWS environment variables:
