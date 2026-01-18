@@ -12,6 +12,8 @@ Before deploying to production:
 | CloudWatch Alarms | `--enable-alarms` | Enabled | Keep enabled |
 | SNS Notifications | `--alarm-sns-topic ARN` | None | Configure for alerts |
 | Log Retention | `--log-retention-days N` | 30 | 90+ for compliance |
+| Audit Archival | `--enable-audit-archival` | Enabled | Keep enabled for compliance |
+| Glacier Transition | `--audit-archive-glacier-days N` | 90 | Adjust based on access patterns |
 | Permission Boundary | `--permission-boundary ARN` | None | Use in restricted IAM environments |
 
 ### Example Production Deployment
@@ -22,7 +24,9 @@ zae-limiter deploy \
     --region us-east-1 \
     --pitr-recovery-days 7 \
     --log-retention-days 90 \
-    --alarm-sns-topic arn:aws:sns:us-east-1:123456789012:alerts
+    --alarm-sns-topic arn:aws:sns:us-east-1:123456789012:alerts \
+    --enable-audit-archival \
+    --audit-archive-glacier-days 90
 ```
 
 ## Security Best Practices
@@ -54,7 +58,9 @@ zae-limiter deploy \
 
 - All entity and limit changes are automatically logged
 - Track who made changes with optional `principal` parameter
-- Events auto-expire after 90 days (configurable)
+- Events auto-expire after 90 days (configurable via `--audit-ttl-days`)
+- **Expired events are archived to S3** for long-term retention
+- Archives transition to Glacier IR after 90 days (configurable via `--audit-archive-glacier-days`)
 - For compliance requirements, see [Audit Logging Guide](auditing.md)
 
 ## Multi-Region Considerations
@@ -101,11 +107,16 @@ For dashboard templates and Logs Insights queries, see [Monitoring Guide](../mon
 
 Costs scale with request volume (us-east-1 pricing):
 
-| Volume | DynamoDB | Lambda | CloudWatch | Total |
-|--------|----------|--------|------------|-------|
-| 10K req/day | ~$0.50 | ~$0.20 | ~$0.10 | ~$1/month |
-| 100K req/day | ~$5 | ~$2 | ~$1 | ~$8/month |
-| 1M req/day | ~$45 | ~$12 | ~$5 | ~$62/month |
+| Volume | DynamoDB | Lambda | CloudWatch | S3 Archive | Total |
+|--------|----------|--------|------------|------------|-------|
+| 10K req/day | ~$0.50 | ~$0.20 | ~$0.10 | ~$0.01 | ~$1/month |
+| 100K req/day | ~$5 | ~$2 | ~$1 | ~$0.10 | ~$8/month |
+| 1M req/day | ~$45 | ~$12 | ~$5 | ~$1 | ~$63/month |
+
+S3 costs include:
+- **Standard storage**: First 90 days (or configured `--audit-archive-glacier-days`)
+- **Glacier IR storage**: After transition (~80% cheaper than Standard)
+- **PUT requests**: One per Lambda batch (~$0.005 per 1000 requests)
 
 For detailed capacity planning and optimization, see [Performance Guide](../performance.md).
 
