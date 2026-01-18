@@ -55,7 +55,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra plot
       - name: Run unit tests
         run: uv run pytest tests/unit/ --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
       - name: Upload coverage
@@ -103,7 +103,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra plot
       - name: Run integration tests
         run: uv run pytest -m integration -v --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:
@@ -156,7 +156,7 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra plot
       - name: Run E2E tests (LocalStack)
         run: uv run pytest -m e2e tests/e2e/test_localstack.py -v --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:

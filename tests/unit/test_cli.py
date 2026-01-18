@@ -1779,7 +1779,7 @@ class TestUsageCommands:
         result = runner.invoke(cli, ["usage", "list", "-e", "long-entity"])
 
         assert result.exit_code == 0
-        # Full entity shown in auto-sized table
+        # Full entity shown in auto-sized table (TableRenderer)
         assert long_entity_id in result.output
         # Box-drawing table format
         assert "+-" in result.output
@@ -1812,7 +1812,7 @@ class TestUsageCommands:
         result = runner.invoke(cli, ["usage", "list", "-e", "user-123"])
 
         assert result.exit_code == 0
-        # Full resource shown in auto-sized table
+        # Full resource shown in auto-sized table (TableRenderer)
         assert long_resource in result.output
         # Box-drawing table format
         assert "+-" in result.output

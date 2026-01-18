@@ -256,7 +256,7 @@ class TestPlotFormatter:
         # TPM should be on its own row
         lines = result.split("\n")
         # Find line with both COST and RPM (side by side header)
-        side_by_side_header = [l for l in lines if "COST" in l and "RPM" in l]
+        side_by_side_header = [line for line in lines if "COST" in line and "RPM" in line]
         assert len(side_by_side_header) == 1, "COST and RPM should be on same line"
 
     def test_format_downsamples_large_datasets(self) -> None:
@@ -433,3 +433,108 @@ class TestGetFormatter:
         # Create a mock formatter type that's not TABLE or PLOT
         with pytest.raises(ValueError, match="Unknown formatter type"):
             get_formatter("invalid")  # type: ignore[arg-type]
+
+
+class TestTableRenderer:
+    """Tests for TableRenderer class."""
+
+    def test_render_empty_headers(self) -> None:
+        """Test rendering with empty headers returns empty string."""
+        from zae_limiter.visualization import TableRenderer
+
+        renderer = TableRenderer()
+        result = renderer.render([], [])
+        assert result == ""
+
+    def test_render_headers_only(self) -> None:
+        """Test rendering headers with no data rows."""
+        from zae_limiter.visualization import TableRenderer
+
+        renderer = TableRenderer()
+        result = renderer.render(["Name", "Value"], [])
+
+        # Check table structure
+        assert "+------+-------+" in result
+        assert "| Name | Value |" in result
+        # Should have 4 lines: separator, header, separator, separator
+        lines = result.strip().split("\n")
+        assert len(lines) == 4
+
+    def test_render_with_data(self) -> None:
+        """Test rendering table with headers and data rows."""
+        from zae_limiter.visualization import TableRenderer
+
+        renderer = TableRenderer()
+        headers = ["Name", "Count", "Status"]
+        rows = [
+            ["item-1", "10", "active"],
+            ["item-2", "5", "paused"],
+        ]
+        result = renderer.render(headers, rows)
+
+        # Check structure
+        assert "| Name   | Count | Status |" in result
+        assert "| item-1 | 10    | active |" in result
+        assert "| item-2 | 5     | paused |" in result
+        # Separators
+        assert "+--------+-------+--------+" in result
+
+    def test_render_right_alignment(self) -> None:
+        """Test rendering with right-aligned columns."""
+        from zae_limiter.visualization import TableRenderer
+
+        renderer = TableRenderer(alignments=["l", "r", "r"])
+        headers = ["Limit", "Total", "Average"]
+        rows = [
+            ["tpm", "1,000", "500.00"],
+            ["rpm", "100", "50.00"],
+        ]
+        result = renderer.render(headers, rows)
+
+        # Right-aligned columns should have padding on the left
+        # Column widths: Limit=5, Total=5, Average=7
+        assert "| tpm   | 1,000 |  500.00 |" in result
+        assert "| rpm   |   100 |   50.00 |" in result
+
+    def test_render_center_alignment(self) -> None:
+        """Test rendering with center-aligned columns."""
+        from zae_limiter.visualization import TableRenderer
+
+        renderer = TableRenderer(alignments=["c"])
+        headers = ["Status"]
+        rows = [["OK"], ["FAIL"]]
+        result = renderer.render(headers, rows)
+
+        # Center aligned should center the text
+        assert "| Status |" in result
+        assert "|   OK   |" in result
+        assert "|  FAIL  |" in result
+
+    def test_render_wide_cells(self) -> None:
+        """Test that column widths adjust to content."""
+        from zae_limiter.visualization import TableRenderer
+
+        renderer = TableRenderer()
+        headers = ["ID", "Description"]
+        rows = [
+            ["1", "Short"],
+            ["2", "A much longer description text"],
+        ]
+        result = renderer.render(headers, rows)
+
+        # Column width should accommodate the longest content
+        assert "A much longer description text" in result
+        # Separator should be wide enough
+        assert "+----+--------------------------------+" in result
+
+    def test_render_mixed_alignments(self) -> None:
+        """Test rendering with mixed alignment settings."""
+        from zae_limiter.visualization import TableRenderer
+
+        renderer = TableRenderer(alignments=["l", "c", "r"])
+        headers = ["Left", "Center", "Right"]
+        rows = [["a", "b", "c"]]
+        result = renderer.render(headers, rows)
+
+        # Each column should have its alignment
+        assert "| a    |   b    |     c |" in result

@@ -18,6 +18,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from .table import TableRenderer
+
 if TYPE_CHECKING:
     from ..models import UsageSnapshot
 
@@ -65,4 +67,4 @@ def format_usage_snapshots(
     return formatter_instance.format(snapshots)
 
 
-__all__ = ["UsageFormatter", "format_usage_snapshots"]
+__all__ = ["UsageFormatter", "format_usage_snapshots", "TableRenderer"]

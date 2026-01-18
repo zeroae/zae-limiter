@@ -93,7 +93,7 @@ class PlotFormatter:
             ImportError: If asciichartpy is not installed
         """
         try:
-            import asciichartpy  # type: ignore[import-untyped]
+            import asciichartpy  # type: ignore[import-untyped,import-not-found,unused-ignore]
 
             self._plot = asciichartpy.plot
         except ImportError as e:

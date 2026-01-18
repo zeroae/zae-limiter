@@ -11,63 +11,6 @@ from .infra.stack_manager import StackManager
 from .models import StackOptions
 
 
-def _print_table(
-    headers: list[str],
-    rows: list[list[str]],
-    alignments: list[str] | None = None,
-) -> None:
-    """Print a formatted table with box-drawing borders.
-
-    Args:
-        headers: List of column header names
-        rows: List of rows, each row is a list of cell values
-        alignments: Optional list of alignments per column ('l', 'r', or 'c')
-                   Defaults to left-aligned for all columns
-    """
-    if not headers:
-        return
-
-    # Calculate column widths (max of header and all cell values)
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            if i < len(widths):
-                widths[i] = max(widths[i], len(cell))
-
-    # Default to left alignment
-    if alignments is None:
-        alignments = ["l"] * len(headers)
-
-    # Build separator line
-    separator = "+-" + "-+-".join("-" * w for w in widths) + "-+"
-
-    # Build header line
-    header_cells = []
-    for i, h in enumerate(headers):
-        header_cells.append(h.ljust(widths[i]))
-    header_line = "| " + " | ".join(header_cells) + " |"
-
-    # Print table
-    click.echo(separator)
-    click.echo(header_line)
-    click.echo(separator)
-
-    for row in rows:
-        cells = []
-        for i, cell in enumerate(row):
-            w = widths[i] if i < len(widths) else len(cell)
-            align = alignments[i] if i < len(alignments) else "l"
-            if align == "r":
-                cells.append(cell.rjust(w))
-            elif align == "c":
-                cells.append(cell.center(w))
-            else:
-                cells.append(cell.ljust(w))
-        click.echo("| " + " | ".join(cells) + " |")
-
-    click.echo(separator)
-
-
 @click.group()
 @click.version_option()
 def cli() -> None:
@@ -752,7 +695,10 @@ def list_limiters(region: str | None, endpoint_url: str | None) -> None:
                     ]
                 )
 
-            _print_table(headers, rows)
+            from .visualization import TableRenderer
+
+            renderer = TableRenderer()
+            click.echo(renderer.render(headers, rows))
 
             # Summary
             click.echo()
@@ -1182,7 +1128,10 @@ def audit_list(
                     ]
                 )
 
-            _print_table(headers, rows)
+            from .visualization import TableRenderer
+
+            renderer = TableRenderer()
+            click.echo(renderer.render(headers, rows))
             click.echo()
             click.echo(f"Total: {len(events)} events")
 
@@ -1306,20 +1255,50 @@ def usage_list(
                 click.echo("No usage snapshots found")
                 return
 
-            # Select formatter based on --plot flag
-            from .visualization import UsageFormatter, format_usage_snapshots
+            use_table = not plot
+            if plot:
+                # Use PlotFormatter for ASCII charts
+                from .visualization import UsageFormatter, format_usage_snapshots
 
-            formatter_type = UsageFormatter.PLOT if plot else UsageFormatter.TABLE
+                try:
+                    output = format_usage_snapshots(
+                        snapshots, formatter=UsageFormatter.PLOT
+                    )
+                    click.echo(output)
+                except ImportError as e:
+                    # Graceful fallback for missing asciichartpy
+                    click.echo(f"Warning: {e}", err=True)
+                    click.echo("Falling back to table format...", err=True)
+                    use_table = True
 
-            try:
-                output = format_usage_snapshots(snapshots, formatter=formatter_type)
-                click.echo(output)
-            except ImportError as e:
-                # Graceful fallback for missing asciichartpy
-                click.echo(f"Warning: {e}", err=True)
-                click.echo("Falling back to table format...", err=True)
-                output = format_usage_snapshots(snapshots, formatter=UsageFormatter.TABLE)
-                click.echo(output)
+            if use_table:
+                # Use TableRenderer for box-drawing table (auto-sized columns)
+                from .visualization import TableRenderer
+
+                click.echo()
+                click.echo("Usage Snapshots")
+                click.echo()
+
+                headers = ["Window Start", "Type", "Resource", "Entity", "Events", "Counters"]
+                rows: list[list[str]] = []
+                for snap in snapshots:
+                    counters_str = ", ".join(
+                        f"{k}={v:,}" for k, v in sorted(snap.counters.items())
+                    )
+                    rows.append(
+                        [
+                            snap.window_start,
+                            snap.window_type,
+                            snap.resource,
+                            snap.entity_id,
+                            str(snap.total_events),
+                            counters_str,
+                        ]
+                    )
+
+                renderer = TableRenderer()
+                click.echo(renderer.render(headers, rows))
+
             click.echo()
             click.echo(f"Total: {len(snapshots)} snapshots")
 
@@ -1442,7 +1421,10 @@ def usage_summary(
                 avg = summary.average.get(limit_name, 0.0)
                 rows.append([limit_name, f"{total:,}", f"{avg:,.2f}"])
 
-            _print_table(headers, rows, alignments=["l", "r", "r"])
+            from .visualization import TableRenderer
+
+            renderer = TableRenderer(alignments=["l", "r", "r"])
+            click.echo(renderer.render(headers, rows))
             click.echo()
 
         except ValueError as e:
