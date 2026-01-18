@@ -1528,6 +1528,84 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#limiterinfo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LimiterInfo
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="LimiterInfo">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;LimiterInfo
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" LimiterInfo">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo--discover-all-limiters-in-us-east-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discover all limiters in us-east-1
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo.is_healthy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_healthy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo.is_in_progress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_in_progress
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo.is_failed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_failed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2240,6 +2318,84 @@
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limiterinfo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LimiterInfo
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="LimiterInfo">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;LimiterInfo
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" LimiterInfo">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo--discover-all-limiters-in-us-east-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discover all limiters in us-east-1
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo.is_healthy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_healthy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo.is_in_progress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_in_progress
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.LimiterInfo.is_failed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_failed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -3522,6 +3678,255 @@ print(f"Average per hour: {summary.average.get('tpm', 0.0):.1f}")</p>
 
 
 
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="limiterinfo">LimiterInfo<a class="headerlink" href="#limiterinfo" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="zae_limiter.models.LimiterInfo" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">LimiterInfo</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#zae_limiter.models.LimiterInfo" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">LimiterInfo</span><span class="p">(</span><span class="n">stack_name</span><span class="p">,</span> <span class="n">user_name</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span> <span class="n">stack_status</span><span class="p">,</span> <span class="n">creation_time</span><span class="p">,</span> <span class="n">last_updated_time</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">schema_version</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>Information about a deployed rate limiter instance.</p>
+<p>Represents a CloudFormation stack discovered in a region via
+<code>RateLimiter.list_deployed()</code> or the <code>zae-limiter list</code> CLI command.
+This is a READ-ONLY model describing observed infrastructure state.</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <h4 id="zae_limiter.models.LimiterInfo--discover-all-limiters-in-us-east-1">Discover all limiters in us-east-1<a class="headerlink" href="#zae_limiter.models.LimiterInfo--discover-all-limiters-in-us-east-1" title="Permanent link">&para;</a></h4>
+<p>limiters = await RateLimiter.list_deployed(region="us-east-1")
+for limiter in limiters:
+    if limiter.is_failed:
+        print(f"⚠️  {limiter.user_name}: {limiter.stack_status}")</p>
+</details>
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.stack_name">stack_name</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Full CloudFormation stack name (e.g., "ZAEL-my-app")</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.user_name">user_name</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>User-friendly name without prefix (e.g., "my-app")</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.region">region</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>AWS region where the stack is deployed</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.stack_status">stack_status</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>CloudFormation stack status (e.g., "CREATE_COMPLETE")</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.creation_time">creation_time</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>ISO 8601 timestamp of stack creation</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.last_updated_time">last_updated_time</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>ISO 8601 timestamp of last update (None if never updated)</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.version">version</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Value of zae-limiter:version tag (client version at deployment)</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.lambda_version">lambda_version</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Value of zae-limiter:lambda-version tag</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.LimiterInfo.schema_version">schema_version</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Value of zae-limiter:schema-version tag</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.LimiterInfo.is_healthy" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">is_healthy</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.LimiterInfo.is_healthy" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">is_healthy</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Stack is in a stable, operational state.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.LimiterInfo.is_in_progress" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">is_in_progress</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.LimiterInfo.is_in_progress" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">is_in_progress</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Stack operation is in progress.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.LimiterInfo.is_failed" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">is_failed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.LimiterInfo.is_failed" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">is_failed</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Stack is in a failed or rollback state.</p>
+
+    </div>
+
+</div>
 
 
 

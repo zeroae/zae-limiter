@@ -1095,6 +1095,34 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.list_deployed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_deployed
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" list_deployed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.list_deployed--discover-all-limiters-in-us-east-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discover all limiters in us-east-1
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.close" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1568,6 +1596,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.SyncRateLimiter.list_deployed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_deployed
       
     </span>
   </a>
@@ -1955,6 +1994,34 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.list_deployed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_deployed
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" list_deployed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.list_deployed--discover-all-limiters-in-us-east-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discover all limiters in us-east-1
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.close" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2434,6 +2501,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.SyncRateLimiter.list_deployed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_deployed
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2725,6 +2803,158 @@ Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
 
 
 
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.limiter.RateLimiter.list_deployed" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">list_deployed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#zae_limiter.limiter.RateLimiter.list_deployed" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">list_deployed</span><span class="p">(</span><span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>List all deployed rate limiter instances in a region.</p>
+<p>This is a class method that discovers existing deployments without
+requiring an initialized RateLimiter instance. It queries CloudFormation
+for stacks with the ZAEL- prefix.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>region</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>AWS region (default: use boto3 defaults)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>endpoint_url</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>CloudFormation endpoint (for LocalStack)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            LimiterInfo
+
+
+  
+      dataclass
+   (zae_limiter.models.LimiterInfo)" href="../models/#zae_limiter.models.LimiterInfo">LimiterInfo</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of LimiterInfo objects describing deployed instances.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            LimiterInfo
+
+
+  
+      dataclass
+   (zae_limiter.models.LimiterInfo)" href="../models/#zae_limiter.models.LimiterInfo">LimiterInfo</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Sorted by user-friendly name. Excludes deleted stacks.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <h5 id="zae_limiter.limiter.RateLimiter.list_deployed--discover-all-limiters-in-us-east-1">Discover all limiters in us-east-1<a class="headerlink" href="#zae_limiter.limiter.RateLimiter.list_deployed--discover-all-limiters-in-us-east-1" title="Permanent link">&para;</a></h5>
+<p>limiters = await RateLimiter.list_deployed(region="us-east-1")
+for limiter in limiters:
+    if limiter.is_healthy:
+        print(f"✓ {limiter.user_name}: {limiter.version}")
+    elif limiter.is_failed:
+        print(f"✗ {limiter.user_name}: {limiter.stack_status}")</p>
+</details>
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ClientError">ClientError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If CloudFormation API call fails</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
 
 <div class="doc doc-object doc-function">
 
@@ -5531,6 +5761,116 @@ if status.available:
     print(f&quot;Schema: {status.schema_version}&quot;)
 else:
     print(&quot;DynamoDB is not reachable&quot;)
+</code></pre></div>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.limiter.SyncRateLimiter.list_deployed" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">list_deployed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+<a href="#zae_limiter.limiter.SyncRateLimiter.list_deployed" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">list_deployed</span><span class="p">(</span><span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>List all deployed rate limiter instances in a region.</p>
+<p>Synchronous wrapper for :meth:<code>RateLimiter.list_deployed</code>.
+See the async version for full documentation.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>region</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>AWS region to search. Defaults to boto3 session default.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>endpoint_url</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>AWS endpoint URL (e.g., LocalStack).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            LimiterInfo
+
+
+  
+      dataclass
+   (zae_limiter.models.LimiterInfo)" href="../models/#zae_limiter.models.LimiterInfo">LimiterInfo</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of LimiterInfo objects describing discovered stacks.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>Discover all limiters in a region::</p>
+<div class="language-text highlight"><pre><span></span><code>limiters = SyncRateLimiter.list_deployed(region=&quot;us-east-1&quot;)
+for limiter in limiters:
+    print(f&quot;{limiter.user_name}: {limiter.stack_status}&quot;)
 </code></pre></div>
 </details>
 
