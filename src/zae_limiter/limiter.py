@@ -1498,3 +1498,35 @@ class SyncRateLimiter:
                     print("DynamoDB is not reachable")
         """
         return self._run(self._limiter.get_status())
+
+    @staticmethod
+    def list_deployed(
+        region: str | None = None,
+        endpoint_url: str | None = None,
+    ) -> list[LimiterInfo]:
+        """List all deployed rate limiter instances in a region.
+
+        Synchronous wrapper for :meth:`RateLimiter.list_deployed`.
+        See the async version for full documentation.
+
+        Args:
+            region: AWS region to search. Defaults to boto3 session default.
+            endpoint_url: AWS endpoint URL (e.g., LocalStack).
+
+        Returns:
+            List of LimiterInfo objects describing discovered stacks.
+
+        Example:
+            Discover all limiters in a region::
+
+                limiters = SyncRateLimiter.list_deployed(region="us-east-1")
+                for limiter in limiters:
+                    print(f"{limiter.user_name}: {limiter.stack_status}")
+        """
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                RateLimiter.list_deployed(region=region, endpoint_url=endpoint_url)
+            )
+        finally:
+            loop.close()

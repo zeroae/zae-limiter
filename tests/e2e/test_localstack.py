@@ -278,6 +278,83 @@ class TestE2ELocalStackCLIWorkflow:
             )
             # Don't assert exit code - stack might not exist if deploy failed
 
+    def test_list_cli_workflow(self, cli_runner, localstack_endpoint, unique_name):
+        """
+        E2E workflow for list CLI command.
+
+        Steps:
+        1. Deploy stack via CLI
+        2. Run list CLI command
+        3. Verify table format output contains deployed stack
+        4. Delete stack via CLI
+        """
+        try:
+            # Step 1: Deploy stack via CLI
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "deploy",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--no-aggregator",
+                    "--no-alarms",
+                    "--wait",
+                ],
+            )
+            assert result.exit_code == 0, f"Deploy failed: {result.output}"
+
+            # Step 2: Run list CLI command
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "list",
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                ],
+            )
+            assert result.exit_code == 0, f"List failed: {result.output}"
+
+            # Step 3: Verify table format output contains expected data
+            # Table header
+            assert "Rate Limiter Instances" in result.output
+            assert "Name" in result.output
+            assert "Status" in result.output
+            assert "Version" in result.output
+            assert "Lambda" in result.output
+            assert "Schema" in result.output
+            assert "Created" in result.output
+
+            # Deployed stack should appear in list
+            # Note: Long names may be truncated in table output, so check prefix
+            name_prefix = unique_name[:15] if len(unique_name) > 18 else unique_name
+            assert name_prefix in result.output, f"Stack {unique_name} (prefix: {name_prefix}) not in list"
+            assert "CREATE_COMPLETE" in result.output, "Stack should be healthy"
+            assert "Total:" in result.output, "Should show total count"
+
+        finally:
+            # Step 4: Delete stack via CLI
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "delete",
+                    "--name",
+                    unique_name,
+                    "--region",
+                    "us-east-1",
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--yes",
+                    "--wait",
+                ],
+            )
+            # Don't assert exit code - stack might not exist if deploy failed
+
 
 class TestE2ELocalStackFullWorkflow:
     """E2E tests for full rate limiting workflow."""

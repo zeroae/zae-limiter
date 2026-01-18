@@ -294,6 +294,7 @@ src/zae_limiter/
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
     ├── lambda_builder.py   # Lambda deployment package builder
+    ├── discovery.py        # Multi-stack discovery and listing
     └── cfn_template.yaml   # CloudFormation template
 ```
 
