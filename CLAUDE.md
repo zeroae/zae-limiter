@@ -274,9 +274,10 @@ src/zae_limiter/
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
 │   └── v1_0_0.py      # Initial schema baseline
-├── aggregator/        # Lambda for usage snapshots
+├── aggregator/        # Lambda for usage snapshots and audit archival
 │   ├── handler.py     # Lambda entry point
-│   └── processor.py   # Stream processing logic
+│   ├── processor.py   # Stream processing logic for usage snapshots
+│   └── archiver.py    # S3 audit archival (gzip JSONL)
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
     ├── lambda_builder.py   # Lambda deployment package builder

@@ -45,16 +45,20 @@ The DynamoDB table name is automatically derived from the CloudFormation stack n
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
+| `BaseName` | String | _(stack name)_ | Base name for resources (defaults to stack name) |
 | `SnapshotWindows` | String | `hourly,daily` | Comma-separated list of snapshot windows |
 | `SnapshotRetentionDays` | Number | `90` | Days to retain usage snapshots (1-3650) |
 | `LambdaMemorySize` | Number | `256` | Memory for aggregator Lambda (128-3008 MB) |
 | `LambdaTimeout` | Number | `60` | Timeout for aggregator Lambda (1-900 seconds) |
+| `LambdaDurationThreshold` | Number | `54000` | Duration alarm threshold in ms (90% of timeout) |
 | `EnableAggregator` | String | `true` | Whether to deploy the aggregator Lambda |
 | `SchemaVersion` | String | `1.0.0` | Schema version for infrastructure |
 | `PITRRecoveryPeriodDays` | String | _(empty)_ | PITR period (1-35 days, empty for AWS default) |
 | `EnableAlarms` | String | `true` | Whether to deploy CloudWatch alarms |
 | `AlarmSNSTopicArn` | String | _(empty)_ | SNS topic ARN for alarm notifications |
 | `LogRetentionDays` | Number | `30` | CloudWatch log retention (standard periods) |
+| `PermissionBoundary` | String | _(empty)_ | IAM permission boundary (ARN or policy name) |
+| `RoleName` | String | _(empty)_ | Custom IAM role name (use `{}` as placeholder for base name) |
 | `EnableAuditArchival` | String | `true` | Archive expired audit events to S3 |
 | `AuditArchiveGlacierDays` | Number | `90` | Days before Glacier IR transition (1-3650) |
 
