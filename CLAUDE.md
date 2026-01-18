@@ -145,6 +145,12 @@ zae-limiter deploy --name my-app \
   --permission-boundary arn:aws:iam::aws:policy/PowerUserAccess \
   --role-name-format "pb-{}-PowerUser"
 
+# Deploy with audit archival to S3 (enabled by default)
+zae-limiter deploy --name my-app --audit-archive-glacier-days 180
+
+# Disable audit archival
+zae-limiter deploy --name my-app --no-audit-archival
+
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
 
@@ -206,6 +212,16 @@ limiter = RateLimiter(
         role_name_format="pb-{}-PowerUser",
     ),
 )
+
+# With audit archival to S3 (enabled by default, 90-day Glacier transition)
+limiter = RateLimiter(
+    name="my-app",
+    region="us-east-1",
+    stack_options=StackOptions(
+        enable_audit_archival=True,  # Default
+        audit_archive_glacier_days=180,  # Custom Glacier transition
+    ),
+)
 ```
 
 **When to use `StackOptions` vs CLI:**
@@ -258,9 +274,10 @@ src/zae_limiter/
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
 │   └── v1_0_0.py      # Initial schema baseline
-├── aggregator/        # Lambda for usage snapshots
+├── aggregator/        # Lambda for usage snapshots and audit archival
 │   ├── handler.py     # Lambda entry point
-│   └── processor.py   # Stream processing logic
+│   ├── processor.py   # Stream processing logic for usage snapshots
+│   └── archiver.py    # S3 audit archival (gzip JSONL)
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
     ├── lambda_builder.py   # Lambda deployment package builder

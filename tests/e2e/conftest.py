@@ -191,6 +191,15 @@ def lambda_client(localstack_endpoint):
     return boto3.client("lambda", **kwargs)
 
 
+@pytest.fixture
+def s3_client(localstack_endpoint):
+    """S3 client for archive verification."""
+    kwargs = {"region_name": "us-east-1"}
+    if localstack_endpoint:
+        kwargs["endpoint_url"] = localstack_endpoint
+    return boto3.client("s3", **kwargs)
+
+
 # Polling helpers for E2E tests
 
 

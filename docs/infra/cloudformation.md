@@ -6,27 +6,44 @@ This guide covers the CloudFormation template used by zae-limiter and how to cus
 
 The template creates:
 
-```
-┌─────────────────────────────────────────────────────┐
-│                CloudFormation Stack                  │
-├─────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌─────────────┐                 │
-│  │  DynamoDB   │───▶│   Stream    │                 │
-│  │   Table     │    │             │                 │
-│  └─────────────┘    └──────┬──────┘                 │
-│                            │                         │
-│                            ▼                         │
-│                    ┌─────────────┐                  │
-│                    │   Lambda    │                  │
-│                    │ Aggregator  │                  │
-│                    └──────┬──────┘                  │
-│                            │                         │
-│                            ▼                         │
-│                    ┌─────────────┐                  │
-│                    │ CloudWatch  │                  │
-│                    │    Logs     │                  │
-│                    └─────────────┘                  │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph stack[CloudFormation Stack]
+        subgraph data[Data Layer]
+            table[(DynamoDB Table)]
+            stream([DynamoDB Stream])
+            s3[(S3 Bucket<br/>audit archive)]
+        end
+
+        subgraph compute[Compute Layer]
+            role[IAM Role]
+            lambda[[Lambda Aggregator]]
+        end
+
+        subgraph observe[Observability]
+            logs[(CloudWatch Logs)]
+            alarms([CloudWatch Alarms])
+            dlq([Dead Letter Queue])
+        end
+    end
+
+    table --> stream
+    stream --> lambda
+    lambda --> table
+    lambda --> s3
+    role --> lambda
+    lambda --> logs
+    lambda -.->|on failure| dlq
+    alarms -.-> lambda
+    alarms -.-> dlq
+
+    click table "#dynamodb-table"
+    click stream "#stream-configuration"
+    click s3 "#s3-audit-archive-bucket"
+    click lambda "#lambda-aggregator"
+    click role "#iam-permissions"
+    click dlq "#add-dead-letter-queue"
+    click alarms "#add-cloudwatch-alarms"
 ```
 
 ## Export Template
@@ -45,16 +62,22 @@ The DynamoDB table name is automatically derived from the CloudFormation stack n
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
+| `BaseName` | String | _(stack name)_ | Base name for resources (defaults to stack name) |
 | `SnapshotWindows` | String | `hourly,daily` | Comma-separated list of snapshot windows |
 | `SnapshotRetentionDays` | Number | `90` | Days to retain usage snapshots (1-3650) |
 | `LambdaMemorySize` | Number | `256` | Memory for aggregator Lambda (128-3008 MB) |
 | `LambdaTimeout` | Number | `60` | Timeout for aggregator Lambda (1-900 seconds) |
+| `LambdaDurationThreshold` | Number | `54000` | Duration alarm threshold in ms (90% of timeout) |
 | `EnableAggregator` | String | `true` | Whether to deploy the aggregator Lambda |
 | `SchemaVersion` | String | `1.0.0` | Schema version for infrastructure |
 | `PITRRecoveryPeriodDays` | String | _(empty)_ | PITR period (1-35 days, empty for AWS default) |
 | `EnableAlarms` | String | `true` | Whether to deploy CloudWatch alarms |
 | `AlarmSNSTopicArn` | String | _(empty)_ | SNS topic ARN for alarm notifications |
 | `LogRetentionDays` | Number | `30` | CloudWatch log retention (standard periods) |
+| `PermissionBoundary` | String | _(empty)_ | IAM permission boundary (ARN or policy name) |
+| `RoleName` | String | _(empty)_ | Custom IAM role name (use `{}` as placeholder for base name) |
+| `EnableAuditArchival` | String | `true` | Archive expired audit events to S3 |
+| `AuditArchiveGlacierDays` | Number | `90` | Days before Glacier IR transition (1-3650) |
 
 ## DynamoDB Table
 
@@ -114,9 +137,55 @@ StreamSpecification:
   StreamViewType: NEW_AND_OLD_IMAGES
 ```
 
+## S3 Audit Archive Bucket
+
+When `EnableAuditArchival` is `true`, the template creates an S3 bucket to store expired audit events.
+
+```yaml
+AuditArchiveBucket:
+  Type: AWS::S3::Bucket
+  Condition: DeployAuditArchive
+  Properties:
+    BucketName: !Sub "zael-${BaseName}-data"
+    BucketEncryption:
+      ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: true
+      BlockPublicPolicy: true
+      IgnorePublicAcls: true
+      RestrictPublicBuckets: true
+    LifecycleConfiguration:
+      Rules:
+        - Id: GlacierTransition
+          Status: Enabled
+          Prefix: audit/
+          Transitions:
+            - StorageClass: GLACIER_IR
+              TransitionInDays: !Ref AuditArchiveGlacierDays
+```
+
+### Object Structure
+
+Archived audit events are stored as gzip-compressed JSONL files:
+
+```
+s3://zael-{name}-data/
+  audit/
+    year=2024/
+      month=01/
+        day=15/
+          audit-{request_id}-{timestamp}.jsonl.gz
+```
+
+### Lifecycle Policy
+
+Objects transition to Glacier Instant Retrieval after `AuditArchiveGlacierDays` (default: 90 days) for cost-effective long-term storage while maintaining millisecond retrieval times.
+
 ## Lambda Aggregator
 
-The aggregator Lambda processes DynamoDB Stream events to maintain usage snapshots.
+The aggregator Lambda processes DynamoDB Stream events to maintain usage snapshots and archive expired audit events.
 
 !!! tip "Performance Tuning"
     For guidance on memory tuning, concurrency management, and error handling configuration, see the [Performance Tuning Guide](../performance.md#2-lambda-concurrency-settings).
@@ -136,6 +205,9 @@ AggregatorFunction:
         TABLE_NAME: !Ref AWS::StackName
         SNAPSHOT_WINDOWS: !Ref SnapshotWindows
         SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
+        # When audit archival is enabled:
+        ENABLE_ARCHIVAL: "true"
+        ARCHIVE_BUCKET_NAME: !Ref AuditArchiveBucket
 ```
 
 ### Event Source Mapping
@@ -183,6 +255,11 @@ AggregatorRole:
                 - dynamodb:DescribeStream
                 - dynamodb:ListStreams
               Resource: !Sub "${Table.Arn}/stream/*"
+            # When audit archival is enabled:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "${AuditArchiveBucket.Arn}/*"
 ```
 
 ## Customization
@@ -311,6 +388,8 @@ The template exports:
 | `TableArn` | DynamoDB table ARN |
 | `StreamArn` | DynamoDB stream ARN |
 | `FunctionArn` | Lambda function ARN |
+| `AuditArchiveBucketName` | S3 bucket for audit archives (when enabled) |
+| `AuditArchiveBucketArn` | S3 bucket ARN (when enabled) |
 
 Access outputs:
 

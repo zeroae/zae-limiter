@@ -126,6 +126,9 @@ class StackManager:
             "lambda_duration_threshold": "LambdaDurationThreshold",
             "permission_boundary": "PermissionBoundary",
             "role_name": "RoleName",
+            "enable_audit_archival": "EnableAuditArchival",
+            "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
+            "base_name": "BaseName",
         }
 
         for key, value in parameters.items():

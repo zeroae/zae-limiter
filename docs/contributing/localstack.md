@@ -30,7 +30,7 @@ LocalStack provides a local AWS environment for development and testing. This gu
     docker run -d \
       --name localstack \
       -p 4566:4566 \
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs \
+      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3 \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
       localstack/localstack
@@ -187,7 +187,7 @@ docker logs localstack 2>&1 | grep -i lambda
 Ensure the Lambda service is enabled:
 
 ```bash
-docker run -e SERVICES=dynamodb,dynamodbstreams,lambda,...
+docker run -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3 ...
 ```
 
 ### Slow Performance

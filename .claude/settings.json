@@ -23,7 +23,8 @@
       "Bash(git diff:*)",
       "Bash(uv run mypy:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uv run ruff:*)"
+      "Bash(uv run ruff:*)",
+      "Bash(uv run cfn-lint:*)"
     ],
     "ask": [
       "Bash(gh issue close:*)",

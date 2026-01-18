@@ -23,7 +23,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
+      - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3
       - DEBUG=0
     volumes:
       # Docker socket required for Lambda execution

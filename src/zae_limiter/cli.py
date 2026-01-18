@@ -138,6 +138,17 @@ def cli() -> None:
         "Example: 'app-{}' produces 'app-mytable-aggregator-role'."
     ),
 )
+@click.option(
+    "--enable-audit-archival/--no-audit-archival",
+    default=True,
+    help="Archive expired audit events to S3 (default: enabled)",
+)
+@click.option(
+    "--audit-archive-glacier-days",
+    type=click.IntRange(1, 3650),
+    default=90,
+    help="Days before transitioning audit archives to Glacier Instant Retrieval (default: 90)",
+)
 def deploy(
     name: str,
     region: str | None,
@@ -155,6 +166,8 @@ def deploy(
     wait: bool,
     permission_boundary: str | None,
     role_name_format: str | None,
+    enable_audit_archival: bool,
+    audit_archive_glacier_days: int,
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
     from .exceptions import ValidationError
@@ -181,6 +194,8 @@ def deploy(
                 lambda_duration_threshold_pct=lambda_duration_threshold_pct,
                 permission_boundary=permission_boundary,
                 role_name_format=role_name_format,
+                enable_audit_archival=enable_audit_archival,
+                audit_archive_glacier_days=audit_archive_glacier_days,
             )
 
             click.echo(f"Deploying stack: {manager.stack_name}")
@@ -197,6 +212,13 @@ def deploy(
             click.echo(f"  Alarms: {'enabled' if stack_options.enable_alarms else 'disabled'}")
             if stack_options.enable_alarms and stack_options.alarm_sns_topic:
                 click.echo(f"  Alarm SNS topic: {stack_options.alarm_sns_topic}")
+            if stack_options.enable_aggregator:
+                archival_status = "enabled" if stack_options.enable_audit_archival else "disabled"
+                click.echo(f"  Audit archival: {archival_status}")
+                if stack_options.enable_audit_archival:
+                    click.echo(
+                        f"  Glacier transition: {stack_options.audit_archive_glacier_days} days"
+                    )
             click.echo()
 
             try:

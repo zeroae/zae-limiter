@@ -188,10 +188,122 @@ DynamoDB TTL handles deletion automatically:
 
 - Events are marked with an expiration timestamp
 - DynamoDB deletes expired items within 48 hours of TTL
-- No manual cleanup required
+- Expired events are automatically archived to S3 (when enabled)
 
-!!! tip "Long-term Retention"
-    For compliance requirements beyond 90 days, see [Planned Capabilities](#planned-capabilities) for S3 archival.
+## S3 Archival
+
+When audit archival is enabled (default), expired audit events are automatically archived to S3 before being deleted from DynamoDB. This enables long-term retention for compliance requirements.
+
+### How It Works
+
+1. **TTL Expiration**: DynamoDB marks audit events for deletion after 90 days
+2. **Stream Trigger**: The Lambda aggregator receives TTL deletion events via DynamoDB Streams
+3. **Archive to S3**: Events are written to S3 in compressed JSONL format
+4. **Glacier Transition**: After configurable days (default: 90), archives transition to Glacier Instant Retrieval
+
+### Configuration
+
+#### CLI Deployment
+
+```bash
+# Default: archival enabled, 90-day Glacier transition
+zae-limiter deploy --name limiter --region us-east-1
+
+# Custom Glacier transition period
+zae-limiter deploy --name limiter --audit-archive-glacier-days 180
+
+# Disable archival entirely
+zae-limiter deploy --name limiter --no-audit-archival
+```
+
+#### Programmatic Deployment
+
+```python
+from zae_limiter import RateLimiter, StackOptions
+
+# With custom archival settings
+limiter = RateLimiter(
+    name="limiter",
+    region="us-east-1",
+    stack_options=StackOptions(
+        enable_audit_archival=True,  # Default
+        audit_archive_glacier_days=180,  # Custom transition period
+    ),
+)
+```
+
+### S3 Bucket Structure
+
+Archives are stored in an S3 bucket named `zael-{name}-data` (where `{name}` is your rate limiter name in lowercase) with date-based partitioning for efficient querying. The bucket name is also available in the CloudFormation stack outputs (`AuditArchiveBucketName`).
+
+```
+s3://zael-{name}-data/
+  audit/
+    year=YYYY/
+      month=MM/
+        day=DD/
+          audit-{request_id}-{timestamp}.jsonl.gz
+```
+
+Each file contains newline-delimited JSON records (gzip compressed):
+
+```json
+{"event_id": "01HQXYZ...", "action": "limits_set", "entity_id": "api-key-123", ...}
+{"event_id": "01HQXYZ...", "action": "entity_created", "entity_id": "api-key-456", ...}
+```
+
+### S3 Bucket Security
+
+The archive bucket is created with security best practices:
+
+- **Server-side encryption**: AES256 (S3-managed keys)
+- **Public access blocked**: All public access settings disabled
+- **Lifecycle policy**: Automatic transition to Glacier Instant Retrieval
+
+### Querying Archived Events
+
+Use Amazon Athena to query archived audit events:
+
+```sql
+-- Create external table (one-time setup)
+CREATE EXTERNAL TABLE audit_archive (
+    event_id STRING,
+    timestamp STRING,
+    action STRING,
+    entity_id STRING,
+    principal STRING,
+    resource STRING,
+    details STRING
+)
+PARTITIONED BY (year STRING, month STRING, day STRING)
+ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
+LOCATION 's3://ZAEL-limiter-audit-archive/audit/'
+TBLPROPERTIES ('compressionType'='gzip');
+
+-- Load partitions
+MSCK REPAIR TABLE audit_archive;
+
+-- Query audit events
+SELECT * FROM audit_archive
+WHERE year = '2024' AND month = '01'
+AND action = 'limits_set';
+```
+
+### CloudFormation Resources
+
+When audit archival is enabled, the following resources are created:
+
+| Resource | Name Pattern | Purpose |
+|----------|--------------|---------|
+| S3 Bucket | `{stack-name}-audit-archive` | Archive storage |
+| IAM Policy | (inline) | Lambda S3:PutObject permission |
+
+### CloudFormation Outputs
+
+| Output | Description |
+|--------|-------------|
+| `AuditArchiveBucketName` | S3 bucket name for archives |
+| `AuditArchiveBucketArn` | S3 bucket ARN |
 
 ## DynamoDB Access Patterns
 
@@ -292,17 +404,6 @@ deletions = [
 for event in deletions:
     print(f"Deleted at {event.timestamp} by {event.principal}")
 ```
-
-## Planned Capabilities
-
-### S3 Archival
-
-[Issue #77](https://github.com/zeroae/zae-limiter/issues/77) - Archive expired audit events to S3 for long-term retention:
-
-- Lambda automatically archives TTL-deleted records
-- S3 storage with date partitioning (`/audit/year=YYYY/month=MM/`)
-- Query with Athena for historical analysis
-- Target: v1.1.0
 
 ## Next Steps
 

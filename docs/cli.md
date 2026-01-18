@@ -46,6 +46,8 @@ zae-limiter deploy [OPTIONS]
 | `--alarm-sns-topic` | SNS topic ARN for notifications | None |
 | `--permission-boundary` | IAM permission boundary | None |
 | `--role-name-format` | Lambda role name format | None |
+| `--enable-audit-archival/--no-audit-archival` | Archive expired audit events to S3 | `true` |
+| `--audit-archive-glacier-days` | Days before Glacier IR transition (1-3650) | `90` |
 | `--wait/--no-wait` | Wait for stack creation | `true` |
 
 **Examples:**
@@ -72,6 +74,18 @@ zae-limiter deploy \
     --name limiter \
     --region us-east-1 \
     --no-aggregator
+
+# With custom audit archival settings
+zae-limiter deploy \
+    --name limiter \
+    --region us-east-1 \
+    --audit-archive-glacier-days 180
+
+# Disable audit archival
+zae-limiter deploy \
+    --name limiter \
+    --region us-east-1 \
+    --no-audit-archival
 ```
 
 ---

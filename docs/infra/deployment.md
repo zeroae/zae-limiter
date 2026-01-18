@@ -8,7 +8,8 @@ zae-limiter uses CloudFormation to deploy:
 
 - **DynamoDB Table** - Stores rate limit state, entities, and usage data
 - **DynamoDB Streams** - Captures changes for usage aggregation
-- **Lambda Function** - Aggregates usage into hourly/daily snapshots
+- **Lambda Function** - Aggregates usage into hourly/daily snapshots and archives audit events
+- **S3 Bucket** - Archives expired audit events (when audit archival is enabled)
 - **IAM Roles** - Least-privilege access for Lambda
 - **CloudWatch Logs** - Lambda function logs
 
@@ -38,6 +39,8 @@ zae-limiter deploy \
 | `--enable-aggregator/--no-aggregator` | Deploy Lambda aggregator | `true` |
 | `--log-retention-days` | CloudWatch log retention | `30` |
 | `--pitr-recovery-days` | Point-in-time recovery (1-35 days) | None (disabled) |
+| `--enable-audit-archival/--no-audit-archival` | Archive expired audit events to S3 | `true` |
+| `--audit-archive-glacier-days` | Days before Glacier IR transition | `90` |
 
 For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
