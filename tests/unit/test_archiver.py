@@ -2,7 +2,7 @@
 
 import gzip
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from zae_limiter.aggregator.archiver import (
     _deserialize_map,
@@ -581,6 +581,33 @@ class TestArchiveAuditEvents:
         call_kwargs = s3_client.put_object.call_args.kwargs
         assert call_kwargs["ContentType"] == "application/x-ndjson"
         assert call_kwargs["ContentEncoding"] == "gzip"
+
+    def test_archive_handles_jsonl_creation_error(self) -> None:
+        """Archive returns error when JSONL creation fails."""
+        records = [self._make_audit_record()]
+        s3_client = MagicMock()
+
+        # Mock create_jsonl_gzip to raise an exception
+        with patch(
+            "zae_limiter.aggregator.archiver.create_jsonl_gzip",
+            side_effect=ValueError("Serialization failed"),
+        ):
+            result = archive_audit_events(
+                records=records,
+                bucket_name="test-bucket",
+                s3_client=s3_client,
+                request_id="req-123",
+            )
+
+        # Should return error result, not raise
+        assert result.events_archived == 0
+        assert result.s3_objects_created == 0
+        assert len(result.errors) == 1
+        assert "Error creating JSONL" in result.errors[0]
+        assert "Serialization failed" in result.errors[0]
+
+        # S3 should not have been called
+        s3_client.put_object.assert_not_called()
 
     def _make_audit_record(
         self,
