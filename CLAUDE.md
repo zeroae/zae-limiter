@@ -32,6 +32,9 @@ uv run mypy src/zae_limiter
 # Lint
 uv run ruff check --fix .
 uv run ruff format .
+
+# Lint CloudFormation template (after modifying cfn_template.yaml)
+uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 ```
 
 ### Using conda
@@ -151,6 +154,9 @@ zae-limiter deploy --name my-app --audit-archive-glacier-days 180
 # Disable audit archival
 zae-limiter deploy --name my-app --no-audit-archival
 
+# Deploy with AWS X-Ray tracing enabled
+zae-limiter deploy --name my-app --enable-tracing
+
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
 
@@ -213,6 +219,7 @@ limiter = RateLimiter(
     ),
 )
 
+<<<<<<< HEAD
 # With audit archival to S3 (enabled by default, 90-day Glacier transition)
 limiter = RateLimiter(
     name="my-app",
@@ -221,6 +228,13 @@ limiter = RateLimiter(
         enable_audit_archival=True,  # Default
         audit_archive_glacier_days=180,  # Custom Glacier transition
     ),
+=======
+# With AWS X-Ray tracing enabled for debugging
+limiter = RateLimiter(
+    name="my-app",
+    region="us-east-1",
+    stack_options=StackOptions(enable_tracing=True),
+>>>>>>> aba0753 (✨ feat(infra): add AWS X-Ray tracing support for Lambda aggregator)
 )
 ```
 

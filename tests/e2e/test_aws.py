@@ -596,3 +596,309 @@ class TestE2EAWSRateLimiting:
         # But with refill, we can only reliably check they're both under the limit
         assert gpt35_available["rpm"] <= 95, "gpt-3.5-turbo should have consumed at least 5 tokens"
         assert gpt4_available["rpm"] <= 90, "gpt-4 should have consumed at least 10 tokens"
+
+
+class TestE2EAWSXRayTracing:
+    """Tests for X-Ray tracing configuration and verification."""
+
+    @pytest.fixture
+    def aws_xray_client(self):
+        """X-Ray client for real AWS."""
+        import boto3
+
+        return boto3.client("xray", region_name="us-east-1")
+
+    @pytest.fixture
+    async def aws_limiter_with_tracing(self, unique_name):
+        """Create RateLimiter with X-Ray tracing enabled."""
+        stack_options = StackOptions(
+            enable_aggregator=True,
+            enable_tracing=True,
+            enable_alarms=False,  # Faster for tracing tests
+            retention_days=1,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
+        )
+
+        limiter = RateLimiter(
+            name=unique_name,
+            region="us-east-1",
+            stack_options=stack_options,
+        )
+
+        async with limiter:
+            yield limiter
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.fixture
+    async def aws_limiter_without_tracing(self, unique_name):
+        """Create RateLimiter with X-Ray tracing disabled (default)."""
+        stack_options = StackOptions(
+            enable_aggregator=True,
+            enable_tracing=False,  # Explicitly disabled
+            enable_alarms=False,
+            retention_days=1,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
+        )
+
+        limiter = RateLimiter(
+            name=unique_name,
+            region="us-east-1",
+            stack_options=stack_options,
+        )
+
+        async with limiter:
+            yield limiter
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.mark.asyncio
+    async def test_lambda_tracing_enabled(
+        self, aws_limiter_with_tracing, aws_lambda_client, unique_name
+    ):
+        """
+        Verify Lambda function has Active tracing when enabled.
+
+        Checks:
+        - TracingConfig.Mode is 'Active'
+        """
+        function_name = f"ZAEL-{unique_name}-aggregator"
+
+        response = aws_lambda_client.get_function_configuration(FunctionName=function_name)
+
+        assert response["TracingConfig"]["Mode"] == "Active", (
+            f"Expected TracingConfig.Mode='Active', got '{response['TracingConfig']['Mode']}'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_lambda_tracing_disabled(
+        self, aws_limiter_without_tracing, aws_lambda_client, unique_name
+    ):
+        """
+        Verify Lambda function has PassThrough tracing when disabled.
+
+        Checks:
+        - TracingConfig.Mode is 'PassThrough'
+        """
+        function_name = f"ZAEL-{unique_name}-aggregator"
+
+        response = aws_lambda_client.get_function_configuration(FunctionName=function_name)
+
+        assert response["TracingConfig"]["Mode"] == "PassThrough", (
+            f"Expected TracingConfig.Mode='PassThrough', got '{response['TracingConfig']['Mode']}'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_iam_role_has_xray_permissions(self, aws_limiter_with_tracing, unique_name):
+        """
+        Verify IAM role has X-Ray permissions when tracing is enabled.
+
+        Checks:
+        - XRayAccess policy exists
+        - xray:PutTraceSegments permission exists
+        - xray:PutTelemetryRecords permission exists
+        """
+        import boto3
+
+        iam = boto3.client("iam", region_name="us-east-1")
+        role_name = f"PowerUserPB-ZAEL-{unique_name}-aggregator-role"
+
+        # Get inline policies
+        response = iam.list_role_policies(RoleName=role_name)
+        policy_names = response.get("PolicyNames", [])
+
+        assert "XRayAccess" in policy_names, (
+            f"XRayAccess policy not found. Found policies: {policy_names}"
+        )
+
+        # Get policy document
+        policy_response = iam.get_role_policy(RoleName=role_name, PolicyName="XRayAccess")
+        policy_doc = policy_response["PolicyDocument"]
+        statements = policy_doc["Statement"]
+
+        assert len(statements) > 0, "XRayAccess policy should have statements"
+
+        # Verify X-Ray policy structure
+        xray_statement = statements[0]
+        assert xray_statement.get("Effect") == "Allow", "XRayAccess should have Effect=Allow"
+        assert xray_statement.get("Resource") == "*", "X-Ray requires Resource='*'"
+
+        # Verify X-Ray actions
+        actions = xray_statement.get("Action", [])
+        assert "xray:PutTraceSegments" in actions, "Missing xray:PutTraceSegments"
+        assert "xray:PutTelemetryRecords" in actions, "Missing xray:PutTelemetryRecords"
+
+    @pytest.mark.asyncio
+    async def test_iam_role_no_xray_permissions_when_disabled(
+        self, aws_limiter_without_tracing, unique_name
+    ):
+        """
+        Verify IAM role does NOT have X-Ray permissions when tracing is disabled.
+
+        Checks:
+        - XRayAccess policy does NOT exist
+        """
+        import boto3
+
+        iam = boto3.client("iam", region_name="us-east-1")
+        role_name = f"PowerUserPB-ZAEL-{unique_name}-aggregator-role"
+
+        # Get inline policies
+        response = iam.list_role_policies(RoleName=role_name)
+        policy_names = response.get("PolicyNames", [])
+
+        assert "XRayAccess" not in policy_names, (
+            f"XRayAccess policy should NOT exist when tracing disabled. Found: {policy_names}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.slow
+    @pytest.mark.xfail(
+        reason="Requires X-Ray SDK instrumentation in Lambda (see #194)",
+        strict=False,
+    )
+    async def test_xray_traces_created(
+        self, aws_limiter_with_tracing, aws_lambda_client, aws_xray_client, unique_name
+    ):
+        """
+        Verify X-Ray traces are created when Lambda is invoked.
+
+        Steps:
+        1. Generate rate limiting traffic (triggers Lambda via DynamoDB stream)
+        2. Poll X-Ray service for trace data (with retry)
+        3. Verify trace structure includes Lambda segment and DynamoDB subsegments
+
+        Note: This test is marked xfail because DynamoDB subsegments require
+        aws-xray-sdk instrumentation in the Lambda handler. See issue #194.
+        """
+        import json
+        import uuid
+        from datetime import timedelta
+
+        from tests.e2e.conftest import wait_for_event_source_mapping
+
+        function_name = f"ZAEL-{unique_name}-aggregator"
+
+        # Wait for Event Source Mapping to be enabled
+        esm_enabled = await wait_for_event_source_mapping(
+            aws_lambda_client, function_name, max_seconds=60
+        )
+        assert esm_enabled, f"ESM for {function_name} did not become enabled"
+
+        # Generate traffic to trigger Lambda
+        entity_id = f"xray-test-{uuid.uuid4().hex[:8]}"
+        await aws_limiter_with_tracing.create_entity(entity_id)
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Phase 1: Create buckets (INSERT events - not captured by ESM filter)
+        async with aws_limiter_with_tracing.acquire(
+            entity_id=entity_id,
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        await asyncio.sleep(5)  # Wait for stream to stabilize
+
+        # Phase 2: Generate MODIFY events (captured by ESM filter, triggers Lambda)
+        for _ in range(3):
+            async with aws_limiter_with_tracing.acquire(
+                entity_id=entity_id,
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        # Poll for X-Ray traces with exponential backoff
+        # X-Ray traces can take 30-120 seconds to become queryable
+        trace_summaries = []
+        max_attempts = 12  # 12 attempts * 15s = 180s max wait
+        for _attempt in range(max_attempts):
+            await asyncio.sleep(15)
+
+            end_time = datetime.now(UTC)
+            start_time = end_time - timedelta(minutes=5)
+
+            filter_expr = f'service(id(name: "{function_name}", type: "AWS::Lambda::Function"))'
+            response = aws_xray_client.get_trace_summaries(
+                StartTime=start_time,
+                EndTime=end_time,
+                FilterExpression=filter_expr,
+            )
+
+            trace_summaries = response.get("TraceSummaries", [])
+            if trace_summaries:
+                break
+
+        assert len(trace_summaries) > 0, (
+            f"No X-Ray traces found for {function_name} after {max_attempts * 15}s. "
+            "Ensure Lambda was invoked and X-Ray is properly configured."
+        )
+
+        # Get detailed trace data for the first trace
+        trace_id = trace_summaries[0]["Id"]
+        trace_response = aws_xray_client.batch_get_traces(TraceIds=[trace_id])
+        traces = trace_response.get("Traces", [])
+
+        assert len(traces) > 0, f"No trace data for trace ID {trace_id}"
+
+        # Verify trace structure
+        trace = traces[0]
+        segments = trace.get("Segments", [])
+        assert len(segments) > 0, "Trace has no segments"
+
+        # Parse segment documents (they're JSON strings)
+        segment_docs = [json.loads(seg["Document"]) for seg in segments]
+
+        # Verify we have a Lambda segment
+        lambda_segments = [
+            seg for seg in segment_docs if seg.get("origin") == "AWS::Lambda::Function"
+        ]
+        assert len(lambda_segments) > 0, "No Lambda segment found in trace"
+
+        # Verify Lambda segment has our function name
+        lambda_seg = lambda_segments[0]
+        assert function_name in lambda_seg.get("name", ""), (
+            f"Lambda segment name doesn't match function: {lambda_seg.get('name')}"
+        )
+
+        # Collect all subsegments (including nested ones)
+        def collect_subsegments(segment):
+            """Recursively collect all subsegments."""
+            subsegments = []
+            for sub in segment.get("subsegments", []):
+                subsegments.append(sub)
+                subsegments.extend(collect_subsegments(sub))
+            return subsegments
+
+        all_subsegments = []
+        for seg in segment_docs:
+            all_subsegments.extend(collect_subsegments(seg))
+
+        # Verify we have AWS SDK subsegments
+        aws_subsegments = [sub for sub in all_subsegments if sub.get("namespace") == "aws"]
+        assert len(aws_subsegments) > 0, (
+            "No AWS SDK subsegments found - DynamoDB calls should be traced"
+        )
+
+        # Verify DynamoDB-specific subsegments exist
+        dynamodb_subsegments = [
+            sub
+            for sub in aws_subsegments
+            if "DynamoDB" in sub.get("name", "") or "dynamodb" in sub.get("name", "").lower()
+        ]
+        subsegment_names = [s.get("name") for s in aws_subsegments]
+        assert len(dynamodb_subsegments) > 0, (
+            f"No DynamoDB subsegments found. AWS subsegments: {subsegment_names}"
+        )

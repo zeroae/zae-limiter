@@ -48,6 +48,7 @@ zae-limiter deploy [OPTIONS]
 | `--role-name-format` | Lambda role name format | None |
 | `--enable-audit-archival/--no-audit-archival` | Archive expired audit events to S3 | `true` |
 | `--audit-archive-glacier-days` | Days before Glacier IR transition (1-3650) | `90` |
+| `--enable-tracing/--no-tracing` | Enable AWS X-Ray tracing | `false` |
 | `--wait/--no-wait` | Wait for stack creation | `true` |
 
 **Examples:**
@@ -86,6 +87,12 @@ zae-limiter deploy \
     --name limiter \
     --region us-east-1 \
     --no-audit-archival
+
+# With X-Ray tracing enabled
+zae-limiter deploy \
+    --name limiter \
+    --region us-east-1 \
+    --enable-tracing
 ```
 
 ---

@@ -129,6 +129,7 @@ class StackManager:
             "enable_audit_archival": "EnableAuditArchival",
             "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
             "base_name": "BaseName",
+            "enable_tracing": "EnableTracing",
         }
 
         for key, value in parameters.items():

@@ -228,6 +228,67 @@ The Lambda function has minimal permissions:
 - dynamodb:Query
 ```
 
+When X-Ray tracing is enabled, additional permissions are granted:
+
+```yaml
+- xray:PutTraceSegments
+- xray:PutTelemetryRecords
+```
+
+## AWS X-Ray Tracing
+
+Enable X-Ray tracing to gain visibility into Lambda aggregator performance and troubleshoot issues.
+
+### Enabling Tracing
+
+=== "CLI"
+
+    ```bash
+    zae-limiter deploy --name limiter --region us-east-1 --enable-tracing
+    ```
+
+=== "Programmatic"
+
+    ```python
+    from zae_limiter import RateLimiter, StackOptions
+
+    limiter = RateLimiter(
+        name="limiter",
+        region="us-east-1",
+        stack_options=StackOptions(enable_tracing=True),
+    )
+    ```
+
+### Key Details
+
+| Aspect | Value |
+|--------|-------|
+| Default | Disabled (opt-in) |
+| Tracing Mode | Active |
+| IAM | Conditional (only when enabled) |
+
+**Why Active Mode?**
+
+The Lambda aggregator uses Active tracing mode rather than PassThrough because DynamoDB Streams do not propagate X-Ray trace context. Active mode ensures traces are always generated for Lambda invocations regardless of upstream trace headers.
+
+### What You Get
+
+With X-Ray tracing enabled, you can:
+
+- **Trace Lambda cold starts** - Identify initialization latency
+- **Monitor DynamoDB operations** - See query and update times
+- **Debug failures** - Trace errors through the processing pipeline
+- **Analyze performance** - Find bottlenecks in stream processing
+
+### Cost Considerations
+
+X-Ray charges based on traces recorded and retrieved. For typical usage:
+
+- First 100,000 traces/month are free
+- After free tier: $5.00 per million traces recorded
+
+For high-volume deployments, consider sampling strategies or enabling tracing only for troubleshooting.
+
 ## Next Steps
 
 - [Production](production.md) - Production checklist, security, cost estimation

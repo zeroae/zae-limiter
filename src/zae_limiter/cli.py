@@ -149,6 +149,11 @@ def cli() -> None:
     default=90,
     help="Days before transitioning audit archives to Glacier Instant Retrieval (default: 90)",
 )
+@click.option(
+    "--enable-tracing/--no-tracing",
+    default=False,
+    help="Enable AWS X-Ray tracing for Lambda aggregator (default: disabled)",
+)
 def deploy(
     name: str,
     region: str | None,
@@ -168,6 +173,7 @@ def deploy(
     role_name_format: str | None,
     enable_audit_archival: bool,
     audit_archive_glacier_days: int,
+    enable_tracing: bool,
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
     from .exceptions import ValidationError
@@ -196,6 +202,7 @@ def deploy(
                 role_name_format=role_name_format,
                 enable_audit_archival=enable_audit_archival,
                 audit_archive_glacier_days=audit_archive_glacier_days,
+                enable_tracing=enable_tracing,
             )
 
             click.echo(f"Deploying stack: {manager.stack_name}")
@@ -209,6 +216,9 @@ def deploy(
             if stack_options.enable_aggregator:
                 click.echo(f"  Lambda timeout: {stack_options.lambda_timeout}s")
                 click.echo(f"  Lambda memory: {stack_options.lambda_memory}MB")
+                click.echo(
+                    f"  X-Ray tracing: {'enabled' if stack_options.enable_tracing else 'disabled'}"
+                )
             click.echo(f"  Alarms: {'enabled' if stack_options.enable_alarms else 'disabled'}")
             if stack_options.enable_alarms and stack_options.alarm_sns_topic:
                 click.echo(f"  Alarm SNS topic: {stack_options.alarm_sns_topic}")
