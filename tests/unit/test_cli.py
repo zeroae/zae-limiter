@@ -1309,10 +1309,10 @@ class TestAuditCommands:
         assert "Total: 2 events" in result.output
 
     @patch("zae_limiter.repository.Repository")
-    def test_audit_list_truncates_long_principal(
+    def test_audit_list_shows_long_principal_in_full(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test audit list truncates long principal values."""
+        """Test audit list shows long principal in full (auto-sized columns)."""
         from zae_limiter.models import AuditEvent
 
         long_principal = "arn:aws:iam::123456789012:user/very-long-username-that-exceeds-limit"
@@ -1335,10 +1335,10 @@ class TestAuditCommands:
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
 
         assert result.exit_code == 0
-        # Principal should be truncated
-        assert "..." in result.output
-        # But not the full ARN
-        assert long_principal not in result.output
+        # Full principal shown in auto-sized table
+        assert long_principal in result.output
+        # Box-drawing table format
+        assert "+-" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_audit_list_shows_pagination_hint(
@@ -1752,16 +1752,16 @@ class TestUsageCommands:
         assert "underscore" in result.output.lower() or "hyphen" in result.output.lower()
 
     @patch("zae_limiter.repository.Repository")
-    def test_usage_list_truncates_long_entity_id(
+    def test_usage_list_shows_long_entity_id_in_full(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test usage list truncates long entity IDs for display."""
+        """Test usage list shows long entity IDs in full (auto-sized columns)."""
         from zae_limiter.models import UsageSnapshot
 
-        # Create a snapshot with very long entity_id (>18 chars)
+        long_entity_id = "very-long-entity-identifier-that-exceeds-display-width"
         mock_snapshots = [
             UsageSnapshot(
-                entity_id="very-long-entity-identifier-that-exceeds-display-width",
+                entity_id=long_entity_id,
                 resource="gpt-4",
                 window_start="2024-01-15T10:00:00Z",
                 window_end="2024-01-15T10:59:59Z",
@@ -1779,21 +1779,23 @@ class TestUsageCommands:
         result = runner.invoke(cli, ["usage", "list", "-e", "long-entity"])
 
         assert result.exit_code == 0
-        # Entity should be truncated with "..."
-        assert "very-long-entity..." in result.output or "..." in result.output
+        # Full entity shown in auto-sized table
+        assert long_entity_id in result.output
+        # Box-drawing table format
+        assert "+-" in result.output
 
     @patch("zae_limiter.repository.Repository")
-    def test_usage_list_truncates_long_resource_name(
+    def test_usage_list_shows_long_resource_name_in_full(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test usage list truncates long resource names for display."""
+        """Test usage list shows long resource names in full (auto-sized columns)."""
         from zae_limiter.models import UsageSnapshot
 
-        # Create a snapshot with very long resource (>14 chars)
+        long_resource = "very-long-resource-name-that-exceeds-width"
         mock_snapshots = [
             UsageSnapshot(
                 entity_id="user-123",
-                resource="very-long-resource-name-that-exceeds-width",
+                resource=long_resource,
                 window_start="2024-01-15T10:00:00Z",
                 window_end="2024-01-15T10:59:59Z",
                 window_type="hourly",
@@ -1810,8 +1812,10 @@ class TestUsageCommands:
         result = runner.invoke(cli, ["usage", "list", "-e", "user-123"])
 
         assert result.exit_code == 0
-        # Resource should be truncated with "..."
-        assert "very-long-r..." in result.output or "..." in result.output
+        # Full resource shown in auto-sized table
+        assert long_resource in result.output
+        # Box-drawing table format
+        assert "+-" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_usage_list_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -1892,3 +1896,444 @@ class TestUsageCommands:
 
         assert result.exit_code != 0
         assert "Failed to get usage summary" in result.output
+
+
+class TestListCommand:
+    """Test list CLI command."""
+
+    def test_list_help(self, runner: CliRunner) -> None:
+        """Test list command help."""
+        result = runner.invoke(cli, ["list", "--help"])
+        assert result.exit_code == 0
+        assert "List all deployed rate limiter instances" in result.output
+        assert "--region" in result.output
+        assert "--endpoint-url" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_empty_result(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command when no stacks exist."""
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=[])
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "No rate limiter instances found in region" in result.output
+        assert "zae-limiter deploy --name my-app" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_with_instances(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command displays instances in table format."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-my-app",
+                user_name="my-app",
+                region="us-east-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="2024-01-15T10:30:00Z",
+                version="0.5.0",
+                lambda_version="0.5.0",
+                schema_version="1.0.0",
+            ),
+            LimiterInfo(
+                stack_name="ZAEL-other-app",
+                user_name="other-app",
+                region="us-east-1",
+                stack_status="UPDATE_COMPLETE",
+                creation_time="2024-01-14T09:00:00Z",
+                last_updated_time="2024-01-16T14:00:00Z",
+                version="0.4.0",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "Rate Limiter Instances" in result.output
+        assert "my-app" in result.output
+        assert "other-app" in result.output
+        # Full status shown in rich table format
+        assert "CREATE_COMPLETE" in result.output
+        assert "UPDATE_COMPLETE" in result.output
+        assert "0.5.0" in result.output
+        assert "Total: 2 instance(s)" in result.output
+        # Box-drawing table borders
+        assert "+-" in result.output
+        assert "| Name" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_shows_healthy_status(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command shows healthy status in table."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-healthy",
+                user_name="healthy",
+                region="us-east-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "CREATE_COMPLETE" in result.output
+        # No problem summary for healthy stacks
+        assert "failed" not in result.output
+        assert "in progress" not in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_shows_in_progress_summary(
+        self, mock_discovery_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test list command shows in-progress summary."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-updating",
+                user_name="updating",
+                region="us-east-1",
+                stack_status="UPDATE_IN_PROGRESS",
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "UPDATE_IN_PROGRESS" in result.output
+        assert "1 in progress" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_shows_failed_summary(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command shows failed summary."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-failed",
+                user_name="failed",
+                region="us-east-1",
+                stack_status="CREATE_FAILED",
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "CREATE_FAILED" in result.output
+        assert "1 failed" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_shows_full_names(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command shows full names for copy/paste usability."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-very-long-name-exceeding-limit",
+                user_name="very-long-name-exceeding-limit",
+                region="us-east-1",
+                stack_status="UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS",
+                creation_time="2024-01-15T10:30:00Z",
+                version="1.2.3-beta.4567890",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        # Full name shown in rich table format
+        assert "very-long-name-exceeding-limit" in result.output
+        # Full status shown
+        assert "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_with_region(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command with --region option."""
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=[])
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list", "--region", "eu-west-1"])
+
+        assert result.exit_code == 0
+        mock_discovery_class.assert_called_once_with(region="eu-west-1", endpoint_url=None)
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_with_endpoint_url(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command with --endpoint-url for LocalStack."""
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=[])
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(
+            cli,
+            ["list", "--endpoint-url", "http://localhost:4566", "--region", "us-east-1"],
+        )
+
+        assert result.exit_code == 0
+        mock_discovery_class.assert_called_once_with(
+            region="us-east-1", endpoint_url="http://localhost:4566"
+        )
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_handles_exception(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command handles exceptions gracefully."""
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(side_effect=Exception("CloudFormation API error"))
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 1
+        assert "Failed to list limiters" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_shows_na_for_missing_versions(
+        self, mock_discovery_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test list command shows N/A for missing version info."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-no-tags",
+                user_name="no-tags",
+                region="us-east-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="2024-01-15T10:30:00Z",
+                version=None,
+                lambda_version=None,
+                schema_version=None,
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        # Missing versions shown as "-" for compact display
+        assert "no-tags" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_formats_creation_date(
+        self, mock_discovery_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test list command formats creation date correctly."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-test",
+                user_name="test",
+                region="us-east-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="2024-01-15T10:30:00+00:00",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "2024-01-15" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_handles_invalid_creation_time(
+        self, mock_discovery_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test list command handles invalid creation time format."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-test",
+                user_name="test",
+                region="us-east-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="invalid-date-format",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "unknown" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_shows_region_in_header(
+        self, mock_discovery_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test list command shows region in header."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-test",
+                user_name="test",
+                region="ap-northeast-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list", "--region", "ap-northeast-1"])
+
+        assert result.exit_code == 0
+        assert "ap-northeast-1" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_shows_default_region_when_not_specified(
+        self, mock_discovery_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test list command shows 'default' when region not specified."""
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=[])
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "default" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_counts_problems(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
+        """Test list command counts failed and in-progress stacks."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-healthy",
+                user_name="healthy",
+                region="us-east-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+            LimiterInfo(
+                stack_name="ZAEL-failed",
+                user_name="failed",
+                region="us-east-1",
+                stack_status="CREATE_FAILED",
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+            LimiterInfo(
+                stack_name="ZAEL-updating",
+                user_name="updating",
+                region="us-east-1",
+                stack_status="UPDATE_IN_PROGRESS",
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        assert "Total: 3 instance(s)" in result.output
+        # New format shows separate counts
+        assert "1 failed" in result.output
+        assert "1 in progress" in result.output
+
+    @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
+    def test_list_handles_unknown_status(
+        self, mock_discovery_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test list command handles unknown status gracefully."""
+        from zae_limiter.models import LimiterInfo
+
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-unknown",
+                user_name="unknown",
+                region="us-east-1",
+                stack_status="IMPORT_COMPLETE",  # Not healthy, not in_progress, not failed
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+        ]
+
+        mock_discovery = Mock()
+        mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery_class.return_value = mock_discovery
+
+        result = runner.invoke(cli, ["list"])
+
+        assert result.exit_code == 0
+        # Should not show problem count for IMPORT_COMPLETE
+        assert "instance(s) need attention" not in result.output

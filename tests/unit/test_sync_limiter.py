@@ -349,3 +349,79 @@ class TestSyncRateLimiterUsageSnapshots:
         """Should raise ValueError if neither entity_id nor resource provided."""
         with pytest.raises(ValueError, match="Either entity_id or resource"):
             sync_limiter_with_snapshots.get_usage_summary()
+
+
+class TestSyncRateLimiterListDeployed:
+    """Tests for SyncRateLimiter.list_deployed()."""
+
+    def test_list_deployed_returns_list(self):
+        """Test that list_deployed returns a list of LimiterInfo."""
+        from unittest.mock import AsyncMock, patch
+
+        from zae_limiter import LimiterInfo, SyncRateLimiter
+
+        # Mock the async RateLimiter.list_deployed to return test data
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-test-app",
+                user_name="test-app",
+                region="us-east-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="2024-01-15T10:00:00Z",
+                version="0.5.0",
+                lambda_version="0.5.0",
+                schema_version="1.0.0",
+            ),
+        ]
+
+        with patch(
+            "zae_limiter.limiter.RateLimiter.list_deployed",
+            new_callable=AsyncMock,
+            return_value=mock_limiters,
+        ):
+            # Call sync wrapper
+            result = SyncRateLimiter.list_deployed(region="us-east-1")
+
+        # Verify result
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0].user_name == "test-app"
+        assert result[0].stack_status == "CREATE_COMPLETE"
+
+    def test_list_deployed_passes_parameters(self):
+        """Test that parameters are passed through to async version."""
+        from unittest.mock import AsyncMock, patch
+
+        from zae_limiter import SyncRateLimiter
+
+        with patch(
+            "zae_limiter.limiter.RateLimiter.list_deployed",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_list:
+            # Call with specific parameters
+            SyncRateLimiter.list_deployed(
+                region="eu-west-1",
+                endpoint_url="http://localhost:4566",
+            )
+
+            # Verify parameters were passed
+            mock_list.assert_called_once_with(
+                region="eu-west-1",
+                endpoint_url="http://localhost:4566",
+            )
+
+    def test_list_deployed_empty_result(self):
+        """Test that empty result is handled correctly."""
+        from unittest.mock import AsyncMock, patch
+
+        from zae_limiter import SyncRateLimiter
+
+        with patch(
+            "zae_limiter.limiter.RateLimiter.list_deployed",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            result = SyncRateLimiter.list_deployed()
+
+        assert result == []

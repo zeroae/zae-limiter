@@ -11,6 +11,63 @@ from .infra.stack_manager import StackManager
 from .models import StackOptions
 
 
+def _print_table(
+    headers: list[str],
+    rows: list[list[str]],
+    alignments: list[str] | None = None,
+) -> None:
+    """Print a formatted table with box-drawing borders.
+
+    Args:
+        headers: List of column header names
+        rows: List of rows, each row is a list of cell values
+        alignments: Optional list of alignments per column ('l', 'r', or 'c')
+                   Defaults to left-aligned for all columns
+    """
+    if not headers:
+        return
+
+    # Calculate column widths (max of header and all cell values)
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(cell))
+
+    # Default to left alignment
+    if alignments is None:
+        alignments = ["l"] * len(headers)
+
+    # Build separator line
+    separator = "+-" + "-+-".join("-" * w for w in widths) + "-+"
+
+    # Build header line
+    header_cells = []
+    for i, h in enumerate(headers):
+        header_cells.append(h.ljust(widths[i]))
+    header_line = "| " + " | ".join(header_cells) + " |"
+
+    # Print table
+    click.echo(separator)
+    click.echo(header_line)
+    click.echo(separator)
+
+    for row in rows:
+        cells = []
+        for i, cell in enumerate(row):
+            w = widths[i] if i < len(widths) else len(cell)
+            align = alignments[i] if i < len(alignments) else "l"
+            if align == "r":
+                cells.append(cell.rjust(w))
+            elif align == "c":
+                cells.append(cell.center(w))
+            else:
+                cells.append(cell.ljust(w))
+        click.echo("| " + " | ".join(cells) + " |")
+
+    click.echo(separator)
+
+
 @click.group()
 @click.version_option()
 def cli() -> None:
@@ -636,6 +693,87 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
     asyncio.run(_status())
 
 
+@cli.command("list")
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+def list_limiters(region: str | None, endpoint_url: str | None) -> None:
+    """List all deployed rate limiter instances in the region."""
+    from datetime import datetime
+
+    from .infra.discovery import InfrastructureDiscovery
+
+    async def _list() -> None:
+        try:
+            async with InfrastructureDiscovery(
+                region=region, endpoint_url=endpoint_url
+            ) as discovery:
+                limiters = await discovery.list_limiters()
+
+            if not limiters:
+                click.echo()
+                click.echo("No rate limiter instances found in region.")
+                click.echo(f"  Region: {region or 'default'}")
+                click.echo()
+                click.echo("Deploy a new instance with:")
+                click.echo("  zae-limiter deploy --name my-app")
+                return
+
+            # Build table data
+            click.echo()
+            region_display = region or "default"
+            click.echo(f"Rate Limiter Instances ({region_display})")
+            click.echo()
+
+            headers = ["Name", "Status", "Version", "Created"]
+            rows: list[list[str]] = []
+            for limiter in limiters:
+                # Parse and format creation time (ISO 8601 -> readable)
+                try:
+                    created = datetime.fromisoformat(limiter.creation_time)
+                    created_display = created.strftime("%Y-%m-%d")
+                except Exception:
+                    created_display = "unknown"
+
+                rows.append(
+                    [
+                        limiter.user_name,
+                        limiter.stack_status,
+                        limiter.version or "-",
+                        created_display,
+                    ]
+                )
+
+            _print_table(headers, rows)
+
+            # Summary
+            click.echo()
+            click.echo(f"Total: {len(limiters)} instance(s)")
+
+            # Show problem summary if any
+            failed = [lim for lim in limiters if lim.is_failed]
+            in_progress = [lim for lim in limiters if lim.is_in_progress]
+            if failed:
+                click.echo(f"  {len(failed)} failed")
+            if in_progress:
+                click.echo(f"  {len(in_progress)} in progress")
+            click.echo()
+
+        except Exception as e:
+            click.echo(f"✗ Failed to list limiters: {e}", err=True)
+            sys.exit(1)
+
+    asyncio.run(_list())
+
+
 @cli.command("version")
 @click.option(
     "--name",
@@ -1027,24 +1165,24 @@ def audit_list(
                 click.echo(f"No audit events found for entity: {entity_id}")
                 return
 
-            # Table format
+            # Build table data
             click.echo()
             click.echo(f"Audit Events for: {entity_id}")
-            click.echo("=" * 100)
             click.echo()
-            click.echo(f"{'Timestamp':<24} {'Action':<18} {'Principal':<40} {'Resource':<15}")
-            click.echo("-" * 100)
+
+            headers = ["Timestamp", "Action", "Principal", "Resource"]
+            rows: list[list[str]] = []
             for event in events:
-                principal = event.principal or "-"
-                resource = event.resource or "-"
-                # Truncate long values
-                if len(principal) > 38:
-                    principal = principal[:35] + "..."
-                if len(resource) > 13:
-                    resource = resource[:10] + "..."
-                click.echo(
-                    f"{event.timestamp:<24} {event.action:<18} {principal:<40} {resource:<15}"
+                rows.append(
+                    [
+                        event.timestamp,
+                        event.action,
+                        event.principal or "-",
+                        event.resource or "-",
+                    ]
                 )
+
+            _print_table(headers, rows)
             click.echo()
             click.echo(f"Total: {len(events)} events")
 
@@ -1161,30 +1299,28 @@ def usage_list(
                 click.echo("No usage snapshots found")
                 return
 
-            # Table format
+            # Build table data
             click.echo()
             click.echo("Usage Snapshots")
-            click.echo("=" * 100)
             click.echo()
-            click.echo(
-                f"{'Window Start':<22} {'Type':<8} {'Resource':<16} "
-                f"{'Entity':<20} {'Events':>8} Counters"
-            )
-            click.echo("-" * 100)
+
+            headers = ["Window Start", "Type", "Resource", "Entity", "Events", "Counters"]
+            rows: list[list[str]] = []
             for snap in snapshots:
                 # Format counters as key=value pairs
                 counters_str = ", ".join(f"{k}={v:,}" for k, v in sorted(snap.counters.items()))
-                # Truncate long values
-                entity_display = snap.entity_id
-                if len(entity_display) > 18:
-                    entity_display = entity_display[:15] + "..."
-                resource_display = snap.resource
-                if len(resource_display) > 14:
-                    resource_display = resource_display[:11] + "..."
-                click.echo(
-                    f"{snap.window_start:<22} {snap.window_type:<8} {resource_display:<16} "
-                    f"{entity_display:<20} {snap.total_events:>8} {counters_str}"
+                rows.append(
+                    [
+                        snap.window_start,
+                        snap.window_type,
+                        snap.resource,
+                        snap.entity_id,
+                        str(snap.total_events),
+                        counters_str,
+                    ]
                 )
+
+            _print_table(headers, rows, alignments=["l", "l", "l", "l", "r", "l"])
             click.echo()
             click.echo(f"Total: {len(snapshots)} snapshots")
 
@@ -1284,10 +1420,9 @@ def usage_summary(
                 click.echo("No usage data found matching the criteria")
                 return
 
-            # Display summary
+            # Display summary header
             click.echo()
             click.echo("Usage Summary")
-            click.echo("=" * 60)
             click.echo()
             if entity_id:
                 click.echo(f"Entity:     {entity_id}")
@@ -1301,12 +1436,14 @@ def usage_summary(
             click.echo()
 
             # Table of counters
-            click.echo(f"{'Limit':<15} {'Total':>15} {'Average':>15}")
-            click.echo("-" * 60)
+            headers = ["Limit", "Total", "Average"]
+            rows: list[list[str]] = []
             for limit_name in sorted(summary.total.keys()):
                 total = summary.total[limit_name]
                 avg = summary.average.get(limit_name, 0.0)
-                click.echo(f"{limit_name:<15} {total:>15,} {avg:>15,.2f}")
+                rows.append([limit_name, f"{total:,}", f"{avg:,.2f}"])
+
+            _print_table(headers, rows, alignments=["l", "r", "r"])
             click.echo()
 
         except ValueError as e:

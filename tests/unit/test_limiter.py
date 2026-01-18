@@ -1,18 +1,22 @@
 """Tests for RateLimiter."""
 
 import asyncio
-from datetime import UTC
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import (
     Limit,
+    LimiterInfo,
     OnUnavailable,
+    RateLimiter,
     RateLimiterUnavailable,
     RateLimitExceeded,
 )
 from zae_limiter.exceptions import InvalidIdentifierError, InvalidNameError
+from zae_limiter.infra.discovery import InfrastructureDiscovery
 
 
 class TestRateLimiterEntities:
@@ -1359,3 +1363,689 @@ class TestRateLimiterUsageSnapshots:
         """Should raise ValueError if neither entity_id nor resource provided."""
         with pytest.raises(ValueError, match="Either entity_id or resource"):
             await limiter_with_snapshots.get_usage_summary()
+
+
+class TestInfrastructureDiscovery:
+    """Tests for InfrastructureDiscovery class."""
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_empty(self):
+        """list_limiters returns empty list when no ZAEL- stacks exist."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={"StackSummaries": [], "NextToken": None}
+            )
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert limiters == []
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_filters_by_prefix(self):
+        """list_limiters only returns stacks with ZAEL- prefix."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                        {
+                            "StackName": "other-stack",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                        {
+                            "StackName": "ZAEL-another",
+                            "StackStatus": "UPDATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 14, 9, 0, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            # Should only include ZAEL- prefixed stacks
+            assert len(limiters) == 2
+            stack_names = {lim.stack_name for lim in limiters}
+            assert "ZAEL-my-app" in stack_names
+            assert "ZAEL-another" in stack_names
+            assert "other-stack" not in stack_names
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_extracts_user_name(self):
+        """list_limiters correctly strips ZAEL- prefix for user_name."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert len(limiters) == 1
+            assert limiters[0].stack_name == "ZAEL-my-app"
+            assert limiters[0].user_name == "my-app"
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_with_version_tags(self):
+        """list_limiters extracts version info from tags."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": [
+                                {"Key": "zae-limiter:version", "Value": "0.5.0"},
+                                {"Key": "zae-limiter:lambda-version", "Value": "0.5.0"},
+                                {"Key": "zae-limiter:schema-version", "Value": "1.0.0"},
+                            ]
+                        }
+                    ]
+                }
+            )
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert len(limiters) == 1
+            assert limiters[0].version == "0.5.0"
+            assert limiters[0].lambda_version == "0.5.0"
+            assert limiters[0].schema_version == "1.0.0"
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_missing_tags(self):
+        """list_limiters handles missing version tags gracefully."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            # Return no tags
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert len(limiters) == 1
+            assert limiters[0].version is None
+            assert limiters[0].lambda_version is None
+            assert limiters[0].schema_version is None
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_handles_describe_stacks_error(self):
+        """list_limiters handles describe_stacks errors (e.g., stack deleted between calls)."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            # describe_stacks fails (race condition - stack deleted)
+            mock_client.describe_stacks = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "ValidationError", "Message": "Stack not found"}},
+                    "DescribeStacks",
+                )
+            )
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            # Should still return the limiter, just with None versions
+            assert len(limiters) == 1
+            assert limiters[0].version is None
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_with_last_updated_time(self):
+        """list_limiters includes last_updated_time when present."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "UPDATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                            "LastUpdatedTime": datetime(2024, 1, 16, 14, 0, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert len(limiters) == 1
+            assert limiters[0].creation_time == "2024-01-15T10:30:00"
+            assert limiters[0].last_updated_time == "2024-01-16T14:00:00"
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_various_statuses(self):
+        """list_limiters correctly reports various stack statuses."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-healthy",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                        {
+                            "StackName": "ZAEL-in-progress",
+                            "StackStatus": "UPDATE_IN_PROGRESS",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                        {
+                            "StackName": "ZAEL-failed",
+                            "StackStatus": "CREATE_FAILED",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert len(limiters) == 3
+
+            # Find by user_name
+            limiter_map = {lim.user_name: lim for lim in limiters}
+
+            # Check statuses and properties
+            assert limiter_map["healthy"].is_healthy is True
+            assert limiter_map["healthy"].is_in_progress is False
+            assert limiter_map["healthy"].is_failed is False
+
+            assert limiter_map["in-progress"].is_healthy is False
+            assert limiter_map["in-progress"].is_in_progress is True
+            assert limiter_map["in-progress"].is_failed is False
+
+            assert limiter_map["failed"].is_healthy is False
+            assert limiter_map["failed"].is_in_progress is False
+            assert limiter_map["failed"].is_failed is True
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_sorted_by_user_name(self):
+        """list_limiters returns results sorted by user_name."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-zebra",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                        {
+                            "StackName": "ZAEL-apple",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                        {
+                            "StackName": "ZAEL-banana",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            user_names = [lim.user_name for lim in limiters]
+            assert user_names == ["apple", "banana", "zebra"]
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_pagination(self):
+        """list_limiters handles pagination correctly."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            # First page
+            mock_client.list_stacks = AsyncMock(
+                side_effect=[
+                    {
+                        "StackSummaries": [
+                            {
+                                "StackName": "ZAEL-first",
+                                "StackStatus": "CREATE_COMPLETE",
+                                "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                            },
+                        ],
+                        "NextToken": "page2token",
+                    },
+                    {
+                        "StackSummaries": [
+                            {
+                                "StackName": "ZAEL-second",
+                                "StackStatus": "CREATE_COMPLETE",
+                                "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                            },
+                        ],
+                        "NextToken": None,
+                    },
+                ]
+            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert len(limiters) == 2
+            user_names = {lim.user_name for lim in limiters}
+            assert "first" in user_names
+            assert "second" in user_names
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_includes_region(self):
+        """list_limiters includes region in LimiterInfo."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="eu-west-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert len(limiters) == 1
+            assert limiters[0].region == "eu-west-1"
+
+    @pytest.mark.asyncio
+    async def test_list_limiters_default_region(self):
+        """list_limiters uses 'default' for region display when not specified."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region=None) as discovery:
+                limiters = await discovery.list_limiters()
+
+            assert len(limiters) == 1
+            assert limiters[0].region == "default"
+
+    @pytest.mark.asyncio
+    async def test_context_manager_cleanup(self):
+        """Context manager properly cleans up resources."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={"StackSummaries": [], "NextToken": None}
+            )
+            mock_client.__aexit__ = AsyncMock()
+            mock_get_client.return_value = mock_client
+
+            discovery = InfrastructureDiscovery(region="us-east-1")
+            async with discovery:
+                await discovery.list_limiters()
+
+            # Verify close was called
+            assert discovery._client is None
+            assert discovery._session is None
+
+
+class TestRateLimiterListDeployed:
+    """Tests for RateLimiter.list_deployed() class method."""
+
+    @pytest.mark.asyncio
+    async def test_list_deployed_returns_limiter_info_list(self):
+        """list_deployed returns a list of LimiterInfo objects."""
+        mock_limiters = [
+            LimiterInfo(
+                stack_name="ZAEL-app1",
+                user_name="app1",
+                region="us-east-1",
+                stack_status="CREATE_COMPLETE",
+                creation_time="2024-01-15T10:30:00Z",
+            ),
+            LimiterInfo(
+                stack_name="ZAEL-app2",
+                user_name="app2",
+                region="us-east-1",
+                stack_status="UPDATE_COMPLETE",
+                creation_time="2024-01-14T09:00:00Z",
+            ),
+        ]
+
+        with patch("zae_limiter.infra.discovery.InfrastructureDiscovery") as mock_discovery_class:
+            mock_discovery = MagicMock()
+            mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
+            mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+            mock_discovery.__aexit__ = AsyncMock()
+            mock_discovery_class.return_value = mock_discovery
+
+            result = await RateLimiter.list_deployed(region="us-east-1")
+
+            assert result == mock_limiters
+            mock_discovery_class.assert_called_once_with(region="us-east-1", endpoint_url=None)
+
+    @pytest.mark.asyncio
+    async def test_list_deployed_passes_endpoint_url(self):
+        """list_deployed passes endpoint_url to InfrastructureDiscovery."""
+        with patch("zae_limiter.infra.discovery.InfrastructureDiscovery") as mock_discovery_class:
+            mock_discovery = MagicMock()
+            mock_discovery.list_limiters = AsyncMock(return_value=[])
+            mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+            mock_discovery.__aexit__ = AsyncMock()
+            mock_discovery_class.return_value = mock_discovery
+
+            await RateLimiter.list_deployed(
+                region="us-east-1",
+                endpoint_url="http://localhost:4566",
+            )
+
+            mock_discovery_class.assert_called_once_with(
+                region="us-east-1", endpoint_url="http://localhost:4566"
+            )
+
+    @pytest.mark.asyncio
+    async def test_list_deployed_empty_result(self):
+        """list_deployed returns empty list when no stacks exist."""
+        with patch("zae_limiter.infra.discovery.InfrastructureDiscovery") as mock_discovery_class:
+            mock_discovery = MagicMock()
+            mock_discovery.list_limiters = AsyncMock(return_value=[])
+            mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+            mock_discovery.__aexit__ = AsyncMock()
+            mock_discovery_class.return_value = mock_discovery
+
+            result = await RateLimiter.list_deployed(region="us-east-1")
+
+            assert result == []
+
+    @pytest.mark.asyncio
+    async def test_list_deployed_propagates_client_error(self):
+        """list_deployed propagates ClientError from CloudFormation."""
+        # Patch at the discovery module level to catch the fresh import
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "AccessDenied", "Message": "Not authorized"}},
+                    "ListStacks",
+                )
+            )
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ClientError) as exc_info:
+                await RateLimiter.list_deployed(region="us-east-1")
+
+            assert "AccessDenied" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_list_deployed_is_class_method(self):
+        """list_deployed is a class method, not an instance method."""
+        # Verify it can be called on the class without an instance
+        assert hasattr(RateLimiter, "list_deployed")
+        assert callable(RateLimiter.list_deployed)
+
+        # Verify it's a classmethod (or staticmethod - it's implemented as classmethod)
+        # We can check by seeing if we can call it without self
+        with patch("zae_limiter.infra.discovery.InfrastructureDiscovery") as mock_discovery_class:
+            mock_discovery = MagicMock()
+            mock_discovery.list_limiters = AsyncMock(return_value=[])
+            mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+            mock_discovery.__aexit__ = AsyncMock()
+            mock_discovery_class.return_value = mock_discovery
+
+            # Should work without creating an instance
+            result = await RateLimiter.list_deployed(region="us-east-1")
+            assert isinstance(result, list)
+
+    @pytest.mark.asyncio
+    async def test_get_version_tags_empty_stacks_response(self):
+        """_get_version_tags handles empty Stacks list in response."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={
+                    "StackSummaries": [
+                        {
+                            "StackName": "ZAEL-my-app",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "CreationTime": datetime(2024, 1, 15, 10, 30, 0),
+                        },
+                    ],
+                    "NextToken": None,
+                }
+            )
+            # describe_stacks returns empty Stacks list
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": []})
+            mock_get_client.return_value = mock_client
+
+            async with InfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = await discovery.list_limiters()
+
+            # Should still return limiter with None versions
+            assert len(limiters) == 1
+            assert limiters[0].version is None
+            assert limiters[0].lambda_version is None
+            assert limiters[0].schema_version is None
+
+    @pytest.mark.asyncio
+    async def test_discovery_close_with_client_exception(self):
+        """close() handles exceptions during client cleanup gracefully."""
+        with patch.object(
+            InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
+        ) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.list_stacks = AsyncMock(
+                return_value={"StackSummaries": [], "NextToken": None}
+            )
+            # Simulate exception during cleanup
+            mock_client.__aexit__ = AsyncMock(side_effect=Exception("Cleanup failed"))
+            mock_get_client.return_value = mock_client
+
+            discovery = InfrastructureDiscovery(region="us-east-1")
+            async with discovery:
+                # Force client creation
+                await discovery.list_limiters()
+
+            # Should have cleaned up despite exception
+            assert discovery._client is None
+            assert discovery._session is None
+
+    @pytest.mark.asyncio
+    async def test_discovery_close_without_client(self):
+        """close() handles case when no client was ever created."""
+        discovery = InfrastructureDiscovery(region="us-east-1")
+        # close() should not raise when no client exists
+        await discovery.close()
+        assert discovery._client is None
+        assert discovery._session is None
+
+    @pytest.mark.asyncio
+    async def test_get_client_caches_client(self):
+        """_get_client caches the client for subsequent calls."""
+        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+            mock_session = MagicMock()
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock()
+            mock_session.client.return_value = mock_client
+            mock_aioboto3.Session.return_value = mock_session
+
+            discovery = InfrastructureDiscovery(region="us-east-1")
+
+            # First call creates client
+            client1 = await discovery._get_client()
+            # Second call should return cached client
+            client2 = await discovery._get_client()
+
+            assert client1 is client2
+            # Session should only be created once
+            mock_aioboto3.Session.assert_called_once()
+
+            # Clean up
+            await discovery.close()
+
+    @pytest.mark.asyncio
+    async def test_get_client_passes_region_and_endpoint(self):
+        """_get_client passes region and endpoint_url to boto3."""
+        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+            mock_session = MagicMock()
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock()
+            mock_session.client.return_value = mock_client
+            mock_aioboto3.Session.return_value = mock_session
+
+            discovery = InfrastructureDiscovery(
+                region="eu-west-1", endpoint_url="http://localhost:4566"
+            )
+
+            await discovery._get_client()
+
+            # Check session.client was called with correct kwargs
+            mock_session.client.assert_called_once_with(
+                "cloudformation",
+                region_name="eu-west-1",
+                endpoint_url="http://localhost:4566",
+            )
+
+            await discovery.close()
+
+    @pytest.mark.asyncio
+    async def test_get_client_without_region_or_endpoint(self):
+        """_get_client works without region or endpoint_url."""
+        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+            mock_session = MagicMock()
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock()
+            mock_session.client.return_value = mock_client
+            mock_aioboto3.Session.return_value = mock_session
+
+            discovery = InfrastructureDiscovery()
+
+            await discovery._get_client()
+
+            # Should be called with just "cloudformation" and no kwargs
+            mock_session.client.assert_called_once_with("cloudformation")
+
+            await discovery.close()

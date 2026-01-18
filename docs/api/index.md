@@ -118,6 +118,7 @@ from zae_limiter import (
 
     # Models
     Limit,
+    LimiterInfo,
     Entity,
     LimitStatus,
     BucketState,

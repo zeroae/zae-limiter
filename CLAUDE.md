@@ -274,7 +274,7 @@ docker compose down
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary
+├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo
 ├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError
 ├── naming.py          # Resource name validation and ZAEL- prefix logic
 ├── bucket.py          # Token bucket math (integer arithmetic)
@@ -282,7 +282,7 @@ src/zae_limiter/
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
-├── cli.py             # CLI commands (deploy, delete, status, cfn-template, version, upgrade, check, audit, usage)
+├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, version, upgrade, check, audit, usage)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
@@ -294,6 +294,7 @@ src/zae_limiter/
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
     ├── lambda_builder.py   # Lambda deployment package builder
+    ├── discovery.py        # Multi-stack discovery and listing
     └── cfn_template.yaml   # CloudFormation template
 ```
 
