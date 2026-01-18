@@ -219,7 +219,6 @@ limiter = RateLimiter(
     ),
 )
 
-<<<<<<< HEAD
 # With audit archival to S3 (enabled by default, 90-day Glacier transition)
 limiter = RateLimiter(
     name="my-app",
@@ -228,13 +227,13 @@ limiter = RateLimiter(
         enable_audit_archival=True,  # Default
         audit_archive_glacier_days=180,  # Custom Glacier transition
     ),
-=======
+)
+
 # With AWS X-Ray tracing enabled for debugging
 limiter = RateLimiter(
     name="my-app",
     region="us-east-1",
     stack_options=StackOptions(enable_tracing=True),
->>>>>>> aba0753 (✨ feat(infra): add AWS X-Ray tracing support for Lambda aggregator)
 )
 ```
 
