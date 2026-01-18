@@ -27,6 +27,7 @@
       "Bash(uv run pytest:*)",
       "Bash(uv run python:*)",
       "Bash(uv run ruff:*)",
+      "Bash(uv run mkdocs:*)",
       "Bash(uv run zae-limiter:*)"
     ],
     "ask": [
