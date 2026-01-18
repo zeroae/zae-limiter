@@ -29,6 +29,8 @@ jobs:
         run: uv run ruff check .
       - name: Check formatting
         run: uv run ruff format --check .
+      - name: Lint CloudFormation template
+        run: uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 
   typecheck:
     runs-on: ubuntu-latest

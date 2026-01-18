@@ -521,6 +521,7 @@ class StackOptions:
         role_name_format: Format template for role name, {} = default role name
         enable_audit_archival: Archive expired audit events to S3 via TTL
         audit_archive_glacier_days: Days before transitioning archives to Glacier IR (1-3650)
+        enable_tracing: Enable AWS X-Ray tracing for Lambda aggregator
     """
 
     snapshot_windows: str = "hourly,daily"
@@ -537,6 +538,7 @@ class StackOptions:
     role_name_format: str | None = None
     enable_audit_archival: bool = True
     audit_archive_glacier_days: int = 90
+    enable_tracing: bool = False
 
     def __post_init__(self) -> None:
         """Validate options."""
@@ -611,6 +613,7 @@ class StackOptions:
             "lambda_memory_size": str(self.lambda_memory),
             "enable_alarms": "true" if self.enable_alarms else "false",
             "lambda_duration_threshold": str(lambda_duration_threshold_ms),
+            "enable_tracing": "true" if self.enable_tracing else "false",
         }
         if self.pitr_recovery_days is not None:
             params["pitr_recovery_days"] = str(self.pitr_recovery_days)

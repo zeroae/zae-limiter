@@ -136,6 +136,14 @@ Parameters:
     AllowedPattern: ^[a-z][a-z0-9-]*$
     ConstraintDescription: Must be lowercase, start with letter, contain only a-z, 0-9, and hyphens
 
+  EnableTracing:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Whether to enable AWS X-Ray tracing for the aggregator Lambda
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
   UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
@@ -152,6 +160,9 @@ Conditions:
   DeployAuditArchive: !And
     - !Condition DeployAggregator
     - !Equals [!Ref EnableAuditArchival, 'true']
+  TracingEnabled: !And
+    - !Condition DeployAggregator
+    - !Equals [!Ref EnableTracing, 'true']
 
 Resources:
   # -------------------------------------------------------------------------
@@ -361,6 +372,19 @@ Resources:
                     - !Sub ${AuditArchiveBucket.Arn}/*
           - !Ref AWS::NoValue
 
+        - !If
+          - TracingEnabled
+          - PolicyName: XRayAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - xray:PutTraceSegments
+                    - xray:PutTelemetryRecords
+                  Resource: '*'
+          - !Ref AWS::NoValue
+
   AggregatorFunction:
     Type: AWS::Lambda::Function
     Condition: DeployAggregator
@@ -373,6 +397,9 @@ Resources:
       MemorySize: !Ref LambdaMemorySize
       Timeout: !Ref LambdaTimeout
       Role: !GetAtt AggregatorRole.Arn
+
+      TracingConfig:
+        Mode: !If [TracingEnabled, Active, PassThrough]
 
       Environment:
         Variables:

@@ -15,6 +15,7 @@ Before deploying to production:
 | Audit Archival | `--enable-audit-archival` | Enabled | Keep enabled for compliance |
 | Glacier Transition | `--audit-archive-glacier-days N` | 90 | Adjust based on access patterns |
 | Permission Boundary | `--permission-boundary ARN` | None | Use in restricted IAM environments |
+| X-Ray Tracing | `--enable-tracing` | Disabled | Enable for debugging/performance analysis |
 
 ### Example Production Deployment
 
