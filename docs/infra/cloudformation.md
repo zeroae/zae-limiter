@@ -6,27 +6,14 @@ This guide covers the CloudFormation template used by zae-limiter and how to cus
 
 The template creates:
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    CloudFormation Stack                       │
-├──────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌─────────────┐                          │
-│  │  DynamoDB   │───▶│   Stream    │                          │
-│  │   Table     │    │             │                          │
-│  └─────────────┘    └──────┬──────┘                          │
-│                            │                                  │
-│                            ▼                                  │
-│                    ┌─────────────┐    ┌─────────────────┐    │
-│                    │   Lambda    │───▶│   S3 Bucket     │    │
-│                    │ Aggregator  │    │ (audit archive) │    │
-│                    └──────┬──────┘    └─────────────────┘    │
-│                            │                                  │
-│                            ▼                                  │
-│                    ┌─────────────┐                           │
-│                    │ CloudWatch  │                           │
-│                    │    Logs     │                           │
-│                    └─────────────┘                           │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph stack[CloudFormation Stack]
+        table[DynamoDB Table] --> stream[DynamoDB Stream]
+        stream --> lambda[Lambda Aggregator]
+        lambda --> s3[S3 Bucket<br/>audit archive]
+        lambda --> logs[CloudWatch Logs]
+    end
 ```
 
 ## Export Template
