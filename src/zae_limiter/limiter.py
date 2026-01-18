@@ -179,9 +179,7 @@ class RateLimiter:
         """
         from .infra.discovery import InfrastructureDiscovery
 
-        async with InfrastructureDiscovery(
-            region=region, endpoint_url=endpoint_url
-        ) as discovery:
+        async with InfrastructureDiscovery(region=region, endpoint_url=endpoint_url) as discovery:
             return await discovery.list_limiters()
 
     async def _ensure_initialized(self) -> None:

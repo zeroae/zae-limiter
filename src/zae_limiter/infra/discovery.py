@@ -168,9 +168,7 @@ class InfrastructureDiscovery:
         limiters.sort(key=lambda x: x.user_name)
         return limiters
 
-    async def _get_version_tags(
-        self, client: Any, stack_name: str
-    ) -> dict[str, str | None]:
+    async def _get_version_tags(self, client: Any, stack_name: str) -> dict[str, str | None]:
         """
         Extract version information from stack tags.
 

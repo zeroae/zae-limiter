@@ -1414,9 +1414,7 @@ class TestInfrastructureDiscovery:
                     "NextToken": None,
                 }
             )
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region="us-east-1") as discovery:
@@ -1448,9 +1446,7 @@ class TestInfrastructureDiscovery:
                     "NextToken": None,
                 }
             )
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region="us-east-1") as discovery:
@@ -1522,9 +1518,7 @@ class TestInfrastructureDiscovery:
                 }
             )
             # Return no tags
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region="us-east-1") as discovery:
@@ -1590,9 +1584,7 @@ class TestInfrastructureDiscovery:
                     "NextToken": None,
                 }
             )
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region="us-east-1") as discovery:
@@ -1631,9 +1623,7 @@ class TestInfrastructureDiscovery:
                     "NextToken": None,
                 }
             )
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region="us-east-1") as discovery:
@@ -1686,9 +1676,7 @@ class TestInfrastructureDiscovery:
                     "NextToken": None,
                 }
             )
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region="us-east-1") as discovery:
@@ -1729,9 +1717,7 @@ class TestInfrastructureDiscovery:
                     },
                 ]
             )
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region="us-east-1") as discovery:
@@ -1761,9 +1747,7 @@ class TestInfrastructureDiscovery:
                     "NextToken": None,
                 }
             )
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region="eu-west-1") as discovery:
@@ -1791,9 +1775,7 @@ class TestInfrastructureDiscovery:
                     "NextToken": None,
                 }
             )
-            mock_client.describe_stacks = AsyncMock(
-                return_value={"Stacks": [{"Tags": []}]}
-            )
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": [{"Tags": []}]})
             mock_get_client.return_value = mock_client
 
             async with InfrastructureDiscovery(region=None) as discovery:
@@ -1847,9 +1829,7 @@ class TestRateLimiterListDeployed:
             ),
         ]
 
-        with patch(
-            "zae_limiter.infra.discovery.InfrastructureDiscovery"
-        ) as mock_discovery_class:
+        with patch("zae_limiter.infra.discovery.InfrastructureDiscovery") as mock_discovery_class:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
             mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
@@ -1859,16 +1839,12 @@ class TestRateLimiterListDeployed:
             result = await RateLimiter.list_deployed(region="us-east-1")
 
             assert result == mock_limiters
-            mock_discovery_class.assert_called_once_with(
-                region="us-east-1", endpoint_url=None
-            )
+            mock_discovery_class.assert_called_once_with(region="us-east-1", endpoint_url=None)
 
     @pytest.mark.asyncio
     async def test_list_deployed_passes_endpoint_url(self):
         """list_deployed passes endpoint_url to InfrastructureDiscovery."""
-        with patch(
-            "zae_limiter.infra.discovery.InfrastructureDiscovery"
-        ) as mock_discovery_class:
+        with patch("zae_limiter.infra.discovery.InfrastructureDiscovery") as mock_discovery_class:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = AsyncMock(return_value=[])
             mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
@@ -1887,9 +1863,7 @@ class TestRateLimiterListDeployed:
     @pytest.mark.asyncio
     async def test_list_deployed_empty_result(self):
         """list_deployed returns empty list when no stacks exist."""
-        with patch(
-            "zae_limiter.infra.discovery.InfrastructureDiscovery"
-        ) as mock_discovery_class:
+        with patch("zae_limiter.infra.discovery.InfrastructureDiscovery") as mock_discovery_class:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = AsyncMock(return_value=[])
             mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
@@ -1930,9 +1904,7 @@ class TestRateLimiterListDeployed:
 
         # Verify it's a classmethod (or staticmethod - it's implemented as classmethod)
         # We can check by seeing if we can call it without self
-        with patch(
-            "zae_limiter.infra.discovery.InfrastructureDiscovery"
-        ) as mock_discovery_class:
+        with patch("zae_limiter.infra.discovery.InfrastructureDiscovery") as mock_discovery_class:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = AsyncMock(return_value=[])
             mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)

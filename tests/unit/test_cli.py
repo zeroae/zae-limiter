@@ -1973,9 +1973,7 @@ class TestListCommand:
         assert "| Name" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_shows_healthy_status(
-        self, mock_discovery_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_list_shows_healthy_status(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
         """Test list command shows healthy status in table."""
         from zae_limiter.models import LimiterInfo
 
@@ -2033,9 +2031,7 @@ class TestListCommand:
         assert "1 in progress" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_shows_failed_summary(
-        self, mock_discovery_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_list_shows_failed_summary(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
         """Test list command shows failed summary."""
         from zae_limiter.models import LimiterInfo
 
@@ -2062,9 +2058,7 @@ class TestListCommand:
         assert "1 failed" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_shows_full_names(
-        self, mock_discovery_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_list_shows_full_names(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
         """Test list command shows full names for copy/paste usability."""
         from zae_limiter.models import LimiterInfo
 
@@ -2105,14 +2099,10 @@ class TestListCommand:
         result = runner.invoke(cli, ["list", "--region", "eu-west-1"])
 
         assert result.exit_code == 0
-        mock_discovery_class.assert_called_once_with(
-            region="eu-west-1", endpoint_url=None
-        )
+        mock_discovery_class.assert_called_once_with(region="eu-west-1", endpoint_url=None)
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_with_endpoint_url(
-        self, mock_discovery_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_list_with_endpoint_url(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
         """Test list command with --endpoint-url for LocalStack."""
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=[])
@@ -2131,14 +2121,10 @@ class TestListCommand:
         )
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_handles_exception(
-        self, mock_discovery_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_list_handles_exception(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
         """Test list command handles exceptions gracefully."""
         mock_discovery = Mock()
-        mock_discovery.list_limiters = AsyncMock(
-            side_effect=Exception("CloudFormation API error")
-        )
+        mock_discovery.list_limiters = AsyncMock(side_effect=Exception("CloudFormation API error"))
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
         mock_discovery.__aexit__ = AsyncMock()
         mock_discovery_class.return_value = mock_discovery
@@ -2281,9 +2267,7 @@ class TestListCommand:
         assert "default" in result.output
 
     @patch("zae_limiter.infra.discovery.InfrastructureDiscovery")
-    def test_list_counts_problems(
-        self, mock_discovery_class: Mock, runner: CliRunner
-    ) -> None:
+    def test_list_counts_problems(self, mock_discovery_class: Mock, runner: CliRunner) -> None:
         """Test list command counts failed and in-progress stacks."""
         from zae_limiter.models import LimiterInfo
 
@@ -2353,4 +2337,3 @@ class TestListCommand:
         assert result.exit_code == 0
         # Should not show problem count for IMPORT_COMPLETE
         assert "instance(s) need attention" not in result.output
-

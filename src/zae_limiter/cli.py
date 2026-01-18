@@ -743,12 +743,14 @@ def list_limiters(region: str | None, endpoint_url: str | None) -> None:
                 except Exception:
                     created_display = "unknown"
 
-                rows.append([
-                    limiter.user_name,
-                    limiter.stack_status,
-                    limiter.version or "-",
-                    created_display,
-                ])
+                rows.append(
+                    [
+                        limiter.user_name,
+                        limiter.stack_status,
+                        limiter.version or "-",
+                        created_display,
+                    ]
+                )
 
             _print_table(headers, rows)
 
@@ -1171,12 +1173,14 @@ def audit_list(
             headers = ["Timestamp", "Action", "Principal", "Resource"]
             rows: list[list[str]] = []
             for event in events:
-                rows.append([
-                    event.timestamp,
-                    event.action,
-                    event.principal or "-",
-                    event.resource or "-",
-                ])
+                rows.append(
+                    [
+                        event.timestamp,
+                        event.action,
+                        event.principal or "-",
+                        event.resource or "-",
+                    ]
+                )
 
             _print_table(headers, rows)
             click.echo()
@@ -1305,14 +1309,16 @@ def usage_list(
             for snap in snapshots:
                 # Format counters as key=value pairs
                 counters_str = ", ".join(f"{k}={v:,}" for k, v in sorted(snap.counters.items()))
-                rows.append([
-                    snap.window_start,
-                    snap.window_type,
-                    snap.resource,
-                    snap.entity_id,
-                    str(snap.total_events),
-                    counters_str,
-                ])
+                rows.append(
+                    [
+                        snap.window_start,
+                        snap.window_type,
+                        snap.resource,
+                        snap.entity_id,
+                        str(snap.total_events),
+                        counters_str,
+                    ]
+                )
 
             _print_table(headers, rows, alignments=["l", "l", "l", "l", "r", "l"])
             click.echo()
