@@ -616,7 +616,7 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 1. **Lease commits only on success**: If any exception occurs in the context, changes are rolled back
 2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
 3. **Cascade is optional**: Parent is only checked if `cascade=True`
-4. **Stored limits override defaults**: When `use_stored_limits=True`
+4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
 5. **Transactions are atomic**: Multi-entity updates succeed or fail together
 
 ## DynamoDB Access Patterns
@@ -631,6 +631,53 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
 | Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
+| Get system config | `PK=SYSTEM#, SK begins_with #LIMIT#` |
+| Get resource config | `PK=RESOURCE#{name}, SK begins_with #LIMIT#` |
+| Get entity config | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+
+### Centralized Configuration (v0.5.0+)
+
+Config uses a three-level hierarchy with precedence: **Entity > Resource > System > Constructor defaults**.
+
+Config fields are stored alongside limits in existing `#LIMIT#` records using **flat schema** (no nested `data.M`):
+
+| Level | PK | SK | Purpose |
+|-------|----|----|---------|
+| System | `SYSTEM#` | `#LIMIT#{resource}#{limit_name}` | Global defaults |
+| Resource | `RESOURCE#{resource}` | `#LIMIT#{resource}#{limit_name}` | Resource-specific |
+| Entity | `ENTITY#{id}` | `#LIMIT#{resource}#{limit_name}` | Entity-specific (existing) |
+
+**Config record structure (FLAT):**
+```python
+{
+    "PK": "RESOURCE#gpt-4",
+    "SK": "#LIMIT#gpt-4#tpm",
+    "resource": "gpt-4",
+    "limit_name": "tpm",
+    # Limit fields (flat)
+    "capacity": 10000,
+    "burst": 10000,
+    "refill_amount": 10000,
+    "refill_period_seconds": 60,
+    # Config fields (flat)
+    "on_unavailable": "block",
+    "auto_update": True,
+    "strict_version": False,
+    "config_version": 1,  # Flat for atomic ADD
+}
+```
+
+**Config fields:**
+- `config_version` (int): Atomic counter for cache invalidation
+- `on_unavailable` (string): "allow" or "block"
+- `auto_update` (bool): Auto-update Lambda on version mismatch
+- `strict_version` (bool): Fail on version mismatch
+
+**Caching:** 60s TTL in-memory cache per RateLimiter instance. Use `invalidate_config_cache()` for immediate refresh. Negative caching for entities without custom config.
+
+**Cost impact:** 3 RCU per cache miss (one per level). With caching and negative caching, ~2.1 RCU per request for typical deployments (20K users, 5% with custom limits).
+
+See [ADR-001](docs/adr/001-centralized-config.md) for full design details.
 
 ### Schema Design Notes
 
@@ -638,6 +685,13 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 - Entity metadata: `data: {name, parent_id, metadata, created_at}`
 - Bucket state: `data: {resource, limit_name, tokens_milli, ...}`
 - Audit events: `data: {action, principal, details, ...}`
+
+**Config records (v0.5.0+) use FLAT schema:**
+- Centralized config at System/Resource/Entity levels uses flat schema
+- Enables atomic `config_version` counter increments
+- See Centralized Configuration section above
+
+**v0.6.0 recommendation:** Flatten all existing record types (entities, limits, audit, version) for consistency. See ADR-001 and issue #180.
 
 **Bucket records have a hybrid schema:** Most fields are nested in `data.M`, but
 `total_consumed_milli` is stored as a **flat top-level attribute** to enable

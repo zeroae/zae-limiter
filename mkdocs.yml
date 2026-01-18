@@ -122,3 +122,5 @@ nav:
       - LocalStack: contributing/localstack.md
       - Testing: contributing/testing.md
       - Architecture: contributing/architecture.md
+  - ADRs:
+      - ADR-001 Centralized Config: adr/001-centralized-config.md
