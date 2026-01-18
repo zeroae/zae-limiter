@@ -896,6 +896,67 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#aws-x-ray-tracing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AWS X-Ray Tracing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="AWS X-Ray Tracing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enabling-tracing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enabling Tracing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Details
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-you-get" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What You Get
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cost-considerations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost Considerations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#next-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1834,6 +1895,67 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#aws-x-ray-tracing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AWS X-Ray Tracing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="AWS X-Ray Tracing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enabling-tracing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enabling Tracing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Details
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-you-get" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What You Get
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cost-considerations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost Considerations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#next-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2148,6 +2270,71 @@ use CLI deployment or CloudFormation template export. See the
 </span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:UpdateItem</span>
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamodb:Query</span>
 </span></code></pre></div>
+<p>When X-Ray tracing is enabled, additional permissions are granted:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">xray:PutTraceSegments</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">xray:PutTelemetryRecords</span>
+</span></code></pre></div>
+<h2 id="aws-x-ray-tracing">AWS X-Ray Tracing<a class="headerlink" href="#aws-x-ray-tracing" title="Permanent link">&para;</a></h2>
+<p>Enable X-Ray tracing to gain visibility into Lambda aggregator performance and troubleshoot issues.</p>
+<h3 id="enabling-tracing">Enabling Tracing<a class="headerlink" href="#enabling-tracing" title="Permanent link">&para;</a></h3>
+<div class="tabbed-set tabbed-alternate" data-tabs="2:2"><input checked="checked" id="__tabbed_2_1" name="__tabbed_2" type="radio" /><input id="__tabbed_2_2" name="__tabbed_2" type="radio" /><div class="tabbed-labels"><label for="__tabbed_2_1">CLI</label><label for="__tabbed_2_2">Programmatic</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--name<span class="w"> </span>limiter<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w"> </span>--enable-tracing
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">StackOptions</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;limiter&quot;</span><span class="p">,</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">stack_options</span><span class="o">=</span><span class="n">StackOptions</span><span class="p">(</span><span class="n">enable_tracing</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="p">)</span>
+</span></code></pre></div>
+</div>
+</div>
+</div>
+<h3 id="key-details">Key Details<a class="headerlink" href="#key-details" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default</td>
+<td>Disabled (opt-in)</td>
+</tr>
+<tr>
+<td>Tracing Mode</td>
+<td>Active</td>
+</tr>
+<tr>
+<td>IAM</td>
+<td>Conditional (only when enabled)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why Active Mode?</strong></p>
+<p>The Lambda aggregator uses Active tracing mode rather than PassThrough because DynamoDB Streams do not propagate X-Ray trace context. Active mode ensures traces are always generated for Lambda invocations regardless of upstream trace headers.</p>
+<h3 id="what-you-get">What You Get<a class="headerlink" href="#what-you-get" title="Permanent link">&para;</a></h3>
+<p>With X-Ray tracing enabled, you can:</p>
+<ul>
+<li><strong>Trace Lambda cold starts</strong> - Identify initialization latency</li>
+<li><strong>Monitor DynamoDB operations</strong> - See query and update times</li>
+<li><strong>Debug failures</strong> - Trace errors through the processing pipeline</li>
+<li><strong>Analyze performance</strong> - Find bottlenecks in stream processing</li>
+</ul>
+<h3 id="cost-considerations">Cost Considerations<a class="headerlink" href="#cost-considerations" title="Permanent link">&para;</a></h3>
+<p>X-Ray charges based on traces recorded and retrieved. For typical usage:</p>
+<ul>
+<li>First 100,000 traces/month are free</li>
+<li>After free tier: $5.00 per million traces recorded</li>
+</ul>
+<p>For high-volume deployments, consider sampling strategies or enabling tracing only for troubleshooting.</p>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../production/">Production</a> - Production checklist, security, cost estimation</li>
