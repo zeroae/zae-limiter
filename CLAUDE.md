@@ -475,6 +475,11 @@ open htmlcov/index.html
 
 The project uses **MkDocs Material** for documentation. Configuration is in `mkdocs.yml`.
 
+```bash
+# Preview docs locally (--livereload required due to Click 8.3.x bug)
+uv run mkdocs serve --livereload --dirty
+```
+
 ### Diagrams
 
 Use **Mermaid** for all diagrams. MkDocs Material has built-in Mermaid support.
