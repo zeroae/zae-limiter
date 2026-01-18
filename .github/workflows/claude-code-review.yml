@@ -24,8 +24,65 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
+      checks: read  # Required to read check run status
 
     steps:
+      - name: Wait for core CI jobs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const requiredJobs = ['lint', 'typecheck', 'unit'];
+            const sha = context.payload.pull_request.head.sha;
+            const maxAttempts = 60;  // 10 minutes max
+            const pollInterval = 10000;  // 10 seconds
+
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+              const { data: checkRuns } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: sha,
+              });
+
+              const jobStatuses = {};
+              for (const run of checkRuns.check_runs) {
+                if (requiredJobs.includes(run.name)) {
+                  jobStatuses[run.name] = {
+                    status: run.status,
+                    conclusion: run.conclusion
+                  };
+                }
+              }
+
+              const allComplete = requiredJobs.every(job =>
+                jobStatuses[job]?.status === 'completed'
+              );
+
+              if (allComplete) {
+                const anyFailed = requiredJobs.some(job =>
+                  jobStatuses[job]?.conclusion !== 'success'
+                );
+
+                if (anyFailed) {
+                  const failures = requiredJobs
+                    .filter(job => jobStatuses[job]?.conclusion !== 'success')
+                    .map(job => `${job}: ${jobStatuses[job]?.conclusion}`);
+                  core.setFailed(`Core CI jobs failed: ${failures.join(', ')}`);
+                  return;
+                }
+
+                console.log('All core CI jobs passed!');
+                return;
+              }
+
+              const pending = requiredJobs.filter(job =>
+                !jobStatuses[job] || jobStatuses[job].status !== 'completed'
+              );
+              console.log(`Waiting for jobs: ${pending.join(', ')} (attempt ${attempt + 1}/${maxAttempts})`);
+              await new Promise(r => setTimeout(r, pollInterval));
+            }
+
+            core.setFailed('Timeout waiting for core CI jobs');
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
@@ -41,4 +98,3 @@ jobs:
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-
