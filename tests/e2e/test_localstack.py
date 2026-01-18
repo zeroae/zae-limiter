@@ -352,6 +352,148 @@ class TestE2ELocalStackCLIWorkflow:
             )
             # Don't assert exit code - stack might not exist if deploy failed
 
+    def test_usage_list_plot_cli_workflow(self, cli_runner, localstack_endpoint, unique_name):
+        """
+        E2E workflow for usage list --plot CLI command.
+
+        Steps:
+        1. Deploy stack via CLI
+        2. Insert sample usage snapshots directly into DynamoDB
+        3. Run usage list --plot CLI command
+        4. Verify ASCII chart output
+        5. Delete stack via CLI
+        """
+        import boto3
+
+        stack_name = f"ZAEL-{unique_name}"
+        table_name = stack_name
+
+        try:
+            # Step 1: Deploy stack via CLI
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "deploy",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--no-aggregator",
+                    "--no-alarms",
+                    "--wait",
+                ],
+            )
+            assert result.exit_code == 0, f"Deploy failed: {result.output}"
+
+            # Step 2: Insert sample usage snapshots directly into DynamoDB
+            dynamodb = boto3.client(
+                "dynamodb",
+                endpoint_url=localstack_endpoint,
+                region_name="us-east-1",
+            )
+
+            # Create snapshots with varying values for interesting chart
+            from datetime import datetime, timedelta
+
+            base_time = datetime(2024, 1, 15, 0, 0, 0)
+            for i in range(5):
+                window_start = base_time + timedelta(hours=i)
+                window_key = window_start.strftime("%Y-%m-%dT%H:00:00Z")
+
+                # Vary the values
+                tpm_value = 1000 + (i * 500)
+                rpm_value = 10 + (i * 2)
+
+                item = {
+                    "PK": {"S": "ENTITY#plot-test-user"},
+                    "SK": {"S": f"#USAGE#gpt-4#{window_key}"},
+                    "entity_id": {"S": "plot-test-user"},
+                    "resource": {"S": "gpt-4"},
+                    "window": {"S": "hourly"},
+                    "window_start": {"S": window_key},
+                    "tpm": {"N": str(tpm_value)},
+                    "rpm": {"N": str(rpm_value)},
+                    "total_events": {"N": str(5 + i)},
+                    "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                    "GSI2SK": {"S": f"USAGE#{window_key}#plot-test-user"},
+                }
+                dynamodb.put_item(TableName=table_name, Item=item)
+
+            # Step 3: Run usage list --plot CLI command
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "usage",
+                    "list",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--entity-id",
+                    "plot-test-user",
+                    "--plot",
+                ],
+            )
+            assert result.exit_code == 0, f"Usage list --plot failed: {result.output}"
+
+            # Step 4: Verify ASCII chart output
+            # Should have header with entity/resource context
+            assert "Usage Plot: gpt-4 (hourly)" in result.output, "Should have resource header"
+            assert "Entity: plot-test-user" in result.output, "Should have entity header"
+            # Counter labels
+            assert "TPM" in result.output, "Should have TPM counter"
+            assert "RPM" in result.output, "Should have RPM counter"
+
+            # Should have time range info
+            assert "Time range:" in result.output, "Should show time range"
+            assert "Data points: 5" in result.output, "Should show 5 data points"
+
+            # Should have total count
+            assert "Total: 5 snapshots" in result.output, "Should show total count"
+
+            # Step 5: Also test normal table output (without --plot)
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "usage",
+                    "list",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--entity-id",
+                    "plot-test-user",
+                ],
+            )
+            assert result.exit_code == 0, f"Usage list failed: {result.output}"
+            assert "Usage Snapshots" in result.output, "Should have table header"
+            assert "Window Start" in result.output, "Should have column headers"
+            assert "gpt-4" in result.output, "Should show resource"
+
+        finally:
+            # Step 6: Delete stack via CLI
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "delete",
+                    "--name",
+                    stack_name,
+                    "--region",
+                    "us-east-1",
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--yes",
+                    "--wait",
+                ],
+            )
+            # Don't assert exit code - stack might not exist if deploy failed
+
 
 class TestE2ELocalStackFullWorkflow:
     """E2E tests for full rate limiting workflow."""

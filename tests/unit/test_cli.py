@@ -1897,6 +1897,115 @@ class TestUsageCommands:
         assert result.exit_code != 0
         assert "Failed to get usage summary" in result.output
 
+    def test_usage_list_plot_help(self, runner: CliRunner) -> None:
+        """Test usage list --plot option is in help."""
+        result = runner.invoke(cli, ["usage", "list", "--help"])
+        assert result.exit_code == 0
+        assert "--plot" in result.output
+        assert "ascii charts" in result.output.lower()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_with_plot(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage list with --plot flag generates ASCII charts."""
+        from zae_limiter.models import UsageSnapshot
+
+        mock_snapshots = [
+            UsageSnapshot(
+                entity_id="test-entity",
+                resource="gpt-4",
+                window_start="2024-01-15T11:00:00Z",
+                window_end="2024-01-15T11:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 2000, "rpm": 10},
+                total_events=10,
+            ),
+            UsageSnapshot(
+                entity_id="test-entity",
+                resource="gpt-4",
+                window_start="2024-01-15T10:00:00Z",
+                window_end="2024-01-15T10:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 1000, "rpm": 5},
+                total_events=5,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "--plot"])
+
+        assert result.exit_code == 0
+        # Plot output should have header with entity/resource context
+        assert "Usage Plot: gpt-4 (hourly)" in result.output
+        assert "Entity: test-entity" in result.output
+        # Counter labels
+        assert "TPM" in result.output
+        assert "RPM" in result.output
+        # Should have time range
+        assert "Time range:" in result.output
+        assert "Data points: 2" in result.output
+        # Should still show total
+        assert "Total: 2 snapshots" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_plot_shows_table_on_no_snapshots(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test usage list --plot with no snapshots shows empty message."""
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "--plot"])
+
+        assert result.exit_code == 0
+        assert "No usage snapshots found" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.visualization.factory.PlotFormatter")
+    def test_usage_list_plot_falls_back_to_table(
+        self, mock_plot_formatter: Mock, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test usage list --plot falls back to table if asciichartpy not installed."""
+        from zae_limiter.models import UsageSnapshot
+
+        mock_snapshots = [
+            UsageSnapshot(
+                entity_id="test-entity",
+                resource="gpt-4",
+                window_start="2024-01-15T10:00:00Z",
+                window_end="2024-01-15T10:59:59Z",
+                window_type="hourly",
+                counters={"tpm": 1000},
+                total_events=5,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        # Simulate asciichartpy not installed
+        mock_plot_formatter.side_effect = ImportError(
+            "asciichartpy is required for plot format. "
+            "Install with: pip install 'zae-limiter[plot]'"
+        )
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "--plot"])
+
+        assert result.exit_code == 0
+        # Should show warning and fallback message
+        assert "Warning:" in result.output
+        assert "Falling back to table format" in result.output
+        # Should show table output
+        assert "Usage Snapshots" in result.output
+        assert "Window Start" in result.output
+
 
 class TestListCommand:
     """Test list CLI command."""

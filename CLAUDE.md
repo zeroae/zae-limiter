@@ -291,6 +291,10 @@ src/zae_limiter/
 │   ├── handler.py     # Lambda entry point
 │   ├── processor.py   # Stream processing logic for usage snapshots
 │   └── archiver.py    # S3 audit archival (gzip JSONL)
+├── visualization/     # Usage snapshot formatting and display
+│   ├── __init__.py    # UsageFormatter enum, format_usage_snapshots()
+│   ├── factory.py     # Formatter factory
+│   └── formatters.py  # TableFormatter, PlotFormatter (ASCII charts)
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
     ├── lambda_builder.py   # Lambda deployment package builder
@@ -680,9 +684,16 @@ to enable single-call atomic updates. See: https://github.com/zeroae/zae-limiter
 
 ## Dependencies
 
+**Required:**
 - `aioboto3`: Async DynamoDB client
 - `boto3`: Sync DynamoDB (for Lambda aggregator)
-- `moto`: DynamoDB mocking for tests
+
+**Optional extras:**
+- `[plot]`: `asciichartpy` for ASCII chart visualization of usage snapshots
+- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy)
+- `[docs]`: MkDocs documentation generation
+- `[cdk]`: AWS CDK constructs
+- `[lambda]`: Lambda Powertools
 
 ## Releasing
 

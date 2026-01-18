@@ -122,6 +122,36 @@ Get summary:
 zae-limiter usage summary --name my-app --entity-id user-123 --resource gpt-4
 ```
 
+### ASCII Chart Visualization
+
+Display usage trends as ASCII charts with the `--plot` flag:
+
+```bash
+# Install the plot extra
+pip install 'zae-limiter[plot]'
+
+# Display usage as ASCII charts
+zae-limiter usage list --entity-id user-123 --plot
+```
+
+Example output:
+
+```
+TPM Usage Over Time
+================================================================================
+5,500 ┤       ╭─
+4,682 ┤      ╭╯
+3,864 ┤    ╭─╯
+3,045 ┤   ╭╯
+2,227 ┤ ╭╯
+1,000 ┼╯
+
+Time range: 2024-01-15T00:00:00Z to 2024-01-15T09:00:00Z
+Data points: 10
+```
+
+This is useful for quickly spotting usage trends and patterns directly in the terminal.
+
 ## Snapshot Data Model
 
 Each snapshot contains:

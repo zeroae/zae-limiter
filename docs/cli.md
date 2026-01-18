@@ -485,9 +485,16 @@ zae-limiter usage list [OPTIONS]
 | `--start` | Start time (ISO format) | None |
 | `--end` | End time (ISO format) | None |
 | `--limit`, `-l` | Maximum snapshots to return | `100` |
+| `--plot`, `-p` | Display as ASCII charts instead of table | `false` |
 
 !!! note
     Either `--entity-id` or `--resource` must be provided.
+
+!!! tip "ASCII Charts"
+    The `--plot` flag requires the optional `plot` extra. Install with:
+    ```bash
+    pip install 'zae-limiter[plot]'
+    ```
 
 **Examples:**
 
@@ -508,9 +515,12 @@ zae-limiter usage list --entity-id user-123 \
 
 # Limit results
 zae-limiter usage list --entity-id user-123 --limit 10
+
+# Display as ASCII chart (requires: pip install 'zae-limiter[plot]')
+zae-limiter usage list --entity-id user-123 --plot
 ```
 
-**Output:**
+**Table Output (default):**
 
 ```
 Usage Snapshots
@@ -523,6 +533,22 @@ Window Start           Type     Resource         Entity               Events Cou
 2024-01-15T12:00:00Z   hourly   gpt-4            user-123                 32 rpm=32, tpm=16,000
 
 Total: 3 snapshots
+```
+
+**Plot Output (`--plot` flag):**
+
+```
+TPM Usage Over Time
+================================================================================
+16,000 ┤       ╭─
+13,600 ┤      ╭╯
+11,200 ┤    ╭─╯
+ 8,800 ┤   ╭╯
+ 6,400 ┤  ╭╯
+ 9,000 ┼─╯
+
+Time range: 2024-01-15T12:00:00Z to 2024-01-15T14:00:00Z
+Data points: 3
 ```
 
 ---

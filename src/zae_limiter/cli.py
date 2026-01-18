@@ -1259,6 +1259,12 @@ def usage() -> None:
     type=int,
     help="Maximum number of snapshots to return (default: 100)",
 )
+@click.option(
+    "--plot",
+    "-p",
+    is_flag=True,
+    help="Display as ASCII charts instead of table (requires: pip install 'zae-limiter[plot]')",
+)
 def usage_list(
     name: str,
     region: str | None,
@@ -1269,6 +1275,7 @@ def usage_list(
     start: str | None,
     end: str | None,
     limit: int,
+    plot: bool,
 ) -> None:
     """List usage snapshots."""
     from .exceptions import ValidationError
@@ -1299,28 +1306,20 @@ def usage_list(
                 click.echo("No usage snapshots found")
                 return
 
-            # Build table data
-            click.echo()
-            click.echo("Usage Snapshots")
-            click.echo()
+            # Select formatter based on --plot flag
+            from .visualization import UsageFormatter, format_usage_snapshots
 
-            headers = ["Window Start", "Type", "Resource", "Entity", "Events", "Counters"]
-            rows: list[list[str]] = []
-            for snap in snapshots:
-                # Format counters as key=value pairs
-                counters_str = ", ".join(f"{k}={v:,}" for k, v in sorted(snap.counters.items()))
-                rows.append(
-                    [
-                        snap.window_start,
-                        snap.window_type,
-                        snap.resource,
-                        snap.entity_id,
-                        str(snap.total_events),
-                        counters_str,
-                    ]
-                )
+            formatter_type = UsageFormatter.PLOT if plot else UsageFormatter.TABLE
 
-            _print_table(headers, rows, alignments=["l", "l", "l", "l", "r", "l"])
+            try:
+                output = format_usage_snapshots(snapshots, formatter=formatter_type)
+                click.echo(output)
+            except ImportError as e:
+                # Graceful fallback for missing asciichartpy
+                click.echo(f"Warning: {e}", err=True)
+                click.echo("Falling back to table format...", err=True)
+                output = format_usage_snapshots(snapshots, formatter=UsageFormatter.TABLE)
+                click.echo(output)
             click.echo()
             click.echo(f"Total: {len(snapshots)} snapshots")
 
