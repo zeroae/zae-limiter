@@ -936,3 +936,153 @@ class TestRepositoryUsageSnapshots:
         """Should raise ValueError if neither entity_id nor resource provided."""
         with pytest.raises(ValueError, match="Either entity_id or resource"):
             await repo.get_usage_summary()
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_skips_malformed_items(self, repo):
+        """Malformed snapshot items are skipped during deserialization."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+
+        # Item missing entity_id (malformed)
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("test-malformed")},
+                "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T10:00:00Z")},
+                # Missing entity_id, resource, window_start
+                "window": {"S": "hourly"},
+                "tpm": {"N": "100"},
+            },
+        )
+
+        # Item with valid data
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("test-malformed")},
+                "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T11:00:00Z")},
+                "entity_id": {"S": "test-malformed"},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": "hourly"},
+                "window_start": {"S": "2024-01-15T11:00:00Z"},
+                "tpm": {"N": "200"},
+                "total_events": {"N": "10"},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": "USAGE#2024-01-15T11:00:00Z#test-malformed"},
+            },
+        )
+
+        # Query should skip malformed item and return only valid one
+        snapshots, _ = await repo.get_usage_snapshots(entity_id="test-malformed")
+
+        assert len(snapshots) == 1
+        assert snapshots[0].entity_id == "test-malformed"
+        assert snapshots[0].window_start == "2024-01-15T11:00:00Z"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "window_type,window_start,expected_end_contains",
+        [
+            # Hourly window ends at :59:59
+            ("hourly", "2024-01-15T10:00:00Z", "10:59:59"),
+            # Daily window ends at 23:59:59
+            ("daily", "2024-01-15T00:00:00Z", "23:59:59"),
+            # Monthly window (January) ends on Jan 31
+            ("monthly", "2024-01-01T00:00:00Z", "2024-01-31"),
+            # Monthly window (December) - year rollover ends on Dec 31
+            ("monthly", "2024-12-01T00:00:00Z", "2024-12-31"),
+            # Monthly window (February leap year) ends on Feb 29
+            ("monthly", "2024-02-01T00:00:00Z", "2024-02-29"),
+            # Monthly window (February non-leap year) ends on Feb 28
+            ("monthly", "2023-02-01T00:00:00Z", "2023-02-28"),
+        ],
+    )
+    async def test_get_usage_snapshots_window_end_by_type(
+        self, repo, window_type, window_start, expected_end_contains
+    ):
+        """Test window_end calculation for all supported window types."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        entity_id = f"test-{window_type}-{window_start[:10]}"
+
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_usage("gpt-4", window_start)},
+                "entity_id": {"S": entity_id},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": window_type},
+                "window_start": {"S": window_start},
+                "tpm": {"N": "1000"},
+                "total_events": {"N": "10"},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
+            },
+        )
+
+        snapshots, _ = await repo.get_usage_snapshots(entity_id=entity_id)
+
+        assert len(snapshots) == 1
+        assert snapshots[0].window_type == window_type
+        assert expected_end_contains in snapshots[0].window_end
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_unknown_window_type(self, repo):
+        """Test window_end for unknown window type returns window_start."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("unknown-window")},
+                "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T10:00:00Z")},
+                "entity_id": {"S": "unknown-window"},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": "unknown"},  # Unknown window type
+                "window_start": {"S": "2024-01-15T10:00:00Z"},
+                "tpm": {"N": "100"},
+                "total_events": {"N": "5"},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": "USAGE#2024-01-15T10:00:00Z#unknown-window"},
+            },
+        )
+
+        snapshots, _ = await repo.get_usage_snapshots(entity_id="unknown-window")
+
+        assert len(snapshots) == 1
+        # Unknown window type should fall through to window_start
+        assert snapshots[0].window_end == "2024-01-15T10:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_get_usage_snapshots_invalid_window_start(self, repo):
+        """Test window_end for invalid window_start returns window_start."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("invalid-date")},
+                "SK": {"S": schema.sk_usage("gpt-4", "invalid-date")},
+                "entity_id": {"S": "invalid-date"},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": "hourly"},
+                "window_start": {"S": "invalid-date"},  # Invalid date format
+                "tpm": {"N": "100"},
+                "total_events": {"N": "5"},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": "USAGE#invalid-date#invalid-date"},
+            },
+        )
+
+        snapshots, _ = await repo.get_usage_snapshots(entity_id="invalid-date")
+
+        assert len(snapshots) == 1
+        # Invalid date should return original value
+        assert snapshots[0].window_end == "invalid-date"
