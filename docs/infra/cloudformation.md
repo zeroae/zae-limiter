@@ -7,26 +7,26 @@ This guide covers the CloudFormation template used by zae-limiter and how to cus
 The template creates:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                CloudFormation Stack                  │
-├─────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌─────────────┐                 │
-│  │  DynamoDB   │───▶│   Stream    │                 │
-│  │   Table     │    │             │                 │
-│  └─────────────┘    └──────┬──────┘                 │
-│                            │                         │
-│                            ▼                         │
-│                    ┌─────────────┐                  │
-│                    │   Lambda    │                  │
-│                    │ Aggregator  │                  │
-│                    └──────┬──────┘                  │
-│                            │                         │
-│                            ▼                         │
-│                    ┌─────────────┐                  │
-│                    │ CloudWatch  │                  │
-│                    │    Logs     │                  │
-│                    └─────────────┘                  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    CloudFormation Stack                       │
+├──────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐    ┌─────────────┐                          │
+│  │  DynamoDB   │───▶│   Stream    │                          │
+│  │   Table     │    │             │                          │
+│  └─────────────┘    └──────┬──────┘                          │
+│                            │                                  │
+│                            ▼                                  │
+│                    ┌─────────────┐    ┌─────────────────┐    │
+│                    │   Lambda    │───▶│   S3 Bucket     │    │
+│                    │ Aggregator  │    │ (audit archive) │    │
+│                    └──────┬──────┘    └─────────────────┘    │
+│                            │                                  │
+│                            ▼                                  │
+│                    ┌─────────────┐                           │
+│                    │ CloudWatch  │                           │
+│                    │    Logs     │                           │
+│                    └─────────────┘                           │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Export Template
@@ -55,6 +55,8 @@ The DynamoDB table name is automatically derived from the CloudFormation stack n
 | `EnableAlarms` | String | `true` | Whether to deploy CloudWatch alarms |
 | `AlarmSNSTopicArn` | String | _(empty)_ | SNS topic ARN for alarm notifications |
 | `LogRetentionDays` | Number | `30` | CloudWatch log retention (standard periods) |
+| `EnableAuditArchival` | String | `true` | Archive expired audit events to S3 |
+| `AuditArchiveGlacierDays` | Number | `90` | Days before Glacier IR transition (1-3650) |
 
 ## DynamoDB Table
 
@@ -136,6 +138,9 @@ AggregatorFunction:
         TABLE_NAME: !Ref AWS::StackName
         SNAPSHOT_WINDOWS: !Ref SnapshotWindows
         SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
+        # When audit archival is enabled:
+        ENABLE_ARCHIVAL: "true"
+        ARCHIVE_BUCKET_NAME: !Ref AuditArchiveBucket
 ```
 
 ### Event Source Mapping
@@ -183,6 +188,11 @@ AggregatorRole:
                 - dynamodb:DescribeStream
                 - dynamodb:ListStreams
               Resource: !Sub "${Table.Arn}/stream/*"
+            # When audit archival is enabled:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "${AuditArchiveBucket.Arn}/*"
 ```
 
 ## Customization
@@ -311,6 +321,8 @@ The template exports:
 | `TableArn` | DynamoDB table ARN |
 | `StreamArn` | DynamoDB stream ARN |
 | `FunctionArn` | Lambda function ARN |
+| `AuditArchiveBucketName` | S3 bucket for audit archives (when enabled) |
+| `AuditArchiveBucketArn` | S3 bucket ARN (when enabled) |
 
 Access outputs:
 

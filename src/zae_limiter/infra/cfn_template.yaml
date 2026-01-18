@@ -113,6 +113,29 @@ Parameters:
       (Optional) Custom name for the Lambda execution role.
       If empty, uses default: {stack_name}-aggregator-role.
 
+  EnableAuditArchival:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Archive expired audit events to S3 via TTL deletion
+
+  AuditArchiveGlacierTransitionDays:
+    Type: Number
+    Default: 90
+    Description: Days before transitioning audit archives to Glacier Instant Retrieval
+    MinValue: 1
+    MaxValue: 3650
+
+  BaseName:
+    Type: String
+    Description: >
+      Base resource name (without ZAEL- prefix), used for S3 bucket naming.
+      Must be lowercase alphanumeric with hyphens.
+    AllowedPattern: ^[a-z][a-z0-9-]*$
+    ConstraintDescription: Must be lowercase, start with letter, contain only a-z, 0-9, and hyphens
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
   UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
@@ -126,6 +149,9 @@ Conditions:
   PermissionBoundaryIsArn: !Equals
     - !Select [0, !Split [':', !Ref PermissionBoundary]]
     - 'arn'
+  DeployAuditArchive: !And
+    - !Condition DeployAggregator
+    - !Equals [!Ref EnableAuditArchival, 'true']
 
 Resources:
   # -------------------------------------------------------------------------
@@ -190,6 +216,36 @@ Resources:
           - !Ref PITRRecoveryPeriodDays
           - !Ref AWS::NoValue
 
+      Tags:
+        - Key: Application
+          Value: zae-limiter
+
+  # -------------------------------------------------------------------------
+  # Audit Archive S3 Bucket
+  # -------------------------------------------------------------------------
+  AuditArchiveBucket:
+    Type: AWS::S3::Bucket
+    Condition: DeployAuditArchive
+    Properties:
+      # Bucket name format: zael-{base_name}-data
+      # Uses lowercase prefix to comply with S3 naming rules
+      BucketName: !Sub zael-${BaseName}-data
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: !Ref AuditArchiveGlacierTransitionDays
+                StorageClass: GLACIER_IR
       Tags:
         - Key: Application
           Value: zae-limiter
@@ -292,6 +348,19 @@ Resources:
                 Resource:
                   - !GetAtt AggregatorDLQ.Arn
 
+        - !If
+          - DeployAuditArchive
+          - PolicyName: S3ArchiveAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:PutObject
+                  Resource:
+                    - !Sub ${AuditArchiveBucket.Arn}/*
+          - !Ref AWS::NoValue
+
   AggregatorFunction:
     Type: AWS::Lambda::Function
     Condition: DeployAggregator
@@ -311,6 +380,11 @@ Resources:
           SNAPSHOT_WINDOWS: !Ref SnapshotWindows
           SNAPSHOT_TTL_DAYS: !Ref SnapshotRetentionDays
           ZAE_LIMITER_SCHEMA_VERSION: !Ref SchemaVersion
+          ENABLE_ARCHIVAL: !Ref EnableAuditArchival
+          ARCHIVE_BUCKET_NAME: !If
+            - DeployAuditArchive
+            - !Ref AuditArchiveBucket
+            - ''
 
       # Note: Code must be deployed separately via SAM, CDK, or manual upload
       # This is a placeholder that will need to be replaced
@@ -342,9 +416,12 @@ Resources:
         OnFailure:
           Destination: !GetAtt AggregatorDLQ.Arn
 
-      # Filter to only process MODIFY events on BUCKET records
+      # Filter to process:
+      # 1. MODIFY events on BUCKET records (for usage snapshots)
+      # 2. REMOVE events on AUDIT records (for S3 archival)
       FilterCriteria:
         Filters:
+          # Usage snapshots: bucket modifications
           - Pattern: >-
               {
                 "eventName": ["MODIFY"],
@@ -352,6 +429,18 @@ Resources:
                   "NewImage": {
                     "SK": {
                       "S": [{"prefix": "#BUCKET#"}]
+                    }
+                  }
+                }
+              }
+          # Audit archival: TTL-deleted audit events
+          - Pattern: >-
+              {
+                "eventName": ["REMOVE"],
+                "dynamodb": {
+                  "OldImage": {
+                    "PK": {
+                      "S": [{"prefix": "AUDIT#"}]
                     }
                   }
                 }
@@ -558,3 +647,17 @@ Outputs:
     Value: !Ref StreamIteratorAgeAlarm
     Export:
       Name: !Sub ${AWS::StackName}-StreamIteratorAgeAlarmName
+
+  AuditArchiveBucketName:
+    Condition: DeployAuditArchive
+    Description: S3 bucket name for audit event archives
+    Value: !Ref AuditArchiveBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-AuditArchiveBucketName
+
+  AuditArchiveBucketArn:
+    Condition: DeployAuditArchive
+    Description: S3 bucket ARN for audit event archives
+    Value: !GetAtt AuditArchiveBucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-AuditArchiveBucketArn

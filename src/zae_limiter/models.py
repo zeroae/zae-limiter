@@ -519,6 +519,8 @@ class StackOptions:
         lambda_duration_threshold_pct: Duration alarm threshold as percentage of timeout (1-100)
         permission_boundary: IAM permission boundary (policy name or full ARN)
         role_name_format: Format template for role name, {} = default role name
+        enable_audit_archival: Archive expired audit events to S3 via TTL
+        audit_archive_glacier_days: Days before transitioning archives to Glacier IR (1-3650)
     """
 
     snapshot_windows: str = "hourly,daily"
@@ -533,6 +535,8 @@ class StackOptions:
     lambda_duration_threshold_pct: int = 80
     permission_boundary: str | None = None
     role_name_format: str | None = None
+    enable_audit_archival: bool = True
+    audit_archive_glacier_days: int = 90
 
     def __post_init__(self) -> None:
         """Validate options."""
@@ -566,6 +570,9 @@ class StackOptions:
                     "role_name_format template is too long, resulting role name "
                     "may exceed IAM 64 character limit"
                 )
+        # Validate audit archival options
+        if not (1 <= self.audit_archive_glacier_days <= 3650):
+            raise ValueError("audit_archive_glacier_days must be between 1 and 3650")
 
     def get_role_name(self, stack_name: str) -> str | None:
         """
@@ -615,6 +622,15 @@ class StackOptions:
             role_name = self.get_role_name(stack_name)
             if role_name:
                 params["role_name"] = role_name
+        # Audit archival parameters
+        params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
+        params["audit_archive_glacier_days"] = str(self.audit_archive_glacier_days)
+        # Extract base name (without ZAEL- prefix) for S3 bucket naming
+        # S3 bucket names must be lowercase, so we derive from the stack name
+        if stack_name:
+            # Stack name format: ZAEL-{base_name}
+            base_name = stack_name.replace("ZAEL-", "").lower()
+            params["base_name"] = base_name
         return params
 
 
