@@ -636,6 +636,115 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
     asyncio.run(_status())
 
 
+@cli.command("list")
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help=(
+        "AWS endpoint URL "
+        "(e.g., http://localhost:4566 for LocalStack, or other AWS-compatible services)"
+    ),
+)
+def list_limiters(region: str | None, endpoint_url: str | None) -> None:
+    """List all deployed rate limiter instances in the region."""
+    from datetime import datetime
+
+    from .infra.discovery import InfrastructureDiscovery
+
+    async def _list() -> None:
+        try:
+            async with InfrastructureDiscovery(
+                region=region, endpoint_url=endpoint_url
+            ) as discovery:
+                limiters = await discovery.list_limiters()
+
+            if not limiters:
+                click.echo()
+                click.echo("No rate limiter instances found in region.")
+                click.echo(f"  Region: {region or 'default'}")
+                click.echo()
+                click.echo("Deploy a new instance with:")
+                click.echo("  zae-limiter deploy --name my-app")
+                return
+
+            # Table header
+            click.echo()
+            region_display = region or "default"
+            click.echo(f"Rate Limiter Instances ({region_display})")
+            click.echo("=" * 91)
+            click.echo()
+            click.echo(
+                f"{'Name':<20} {'Status':<25} {'Version':<12} "
+                f"{'Lambda':<12} {'Schema':<10} {'Created':<12}"
+            )
+            click.echo("-" * 91)
+
+            # Table rows
+            for limiter in limiters:
+                # Status with visual indicator
+                status = limiter.stack_status
+                if limiter.is_healthy:
+                    indicator = "✓"
+                elif limiter.is_in_progress:
+                    indicator = "⏳"
+                elif limiter.is_failed:
+                    indicator = "✗"
+                else:
+                    indicator = " "
+
+                # Truncate status if too long (max 21 chars to fit 25-char column with indicator)
+                if len(status) > 21:
+                    status = status[:18] + "..."
+                status_display = f"{indicator} {status}"
+
+                # Truncate long values
+                name = limiter.user_name
+                if len(name) > 18:
+                    name = name[:15] + "..."
+
+                version = limiter.version or "N/A"
+                if len(version) > 10:
+                    version = version[:7] + "..."
+
+                lambda_ver = limiter.lambda_version or "N/A"
+                if len(lambda_ver) > 10:
+                    lambda_ver = lambda_ver[:7] + "..."
+
+                schema_ver = limiter.schema_version or "N/A"
+                if len(schema_ver) > 8:
+                    schema_ver = schema_ver[:5] + "..."
+
+                # Parse and format creation time (ISO 8601 -> readable)
+                try:
+                    created = datetime.fromisoformat(limiter.creation_time)
+                    created_display = created.strftime("%Y-%m-%d")
+                except Exception:
+                    created_display = "unknown"
+
+                click.echo(
+                    f"{name:<20} {status_display:<25} {version:<12} "
+                    f"{lambda_ver:<12} {schema_ver:<10} {created_display:<12}"
+                )
+
+            click.echo()
+            click.echo(f"Total: {len(limiters)} instance(s)")
+
+            # Show problem summary if any
+            problem_count = sum(1 for lim in limiters if lim.is_failed or lim.is_in_progress)
+            if problem_count > 0:
+                click.echo(f"⚠️  {problem_count} instance(s) need attention")
+            click.echo()
+
+        except Exception as e:
+            click.echo(f"✗ Failed to list limiters: {e}", err=True)
+            sys.exit(1)
+
+    asyncio.run(_list())
+
+
 @cli.command("version")
 @click.option(
     "--name",

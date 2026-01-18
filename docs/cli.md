@@ -97,6 +97,61 @@ zae-limiter deploy \
 
 ---
 
+### list
+
+List all deployed rate limiter instances in a region.
+
+```bash
+zae-limiter list [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+
+**Examples:**
+
+```bash
+# List all limiters in us-east-1
+zae-limiter list --region us-east-1
+
+# List limiters using default region
+zae-limiter list
+
+# List limiters in LocalStack
+zae-limiter list --endpoint-url http://localhost:4566 --region us-east-1
+```
+
+**Output:**
+
+```
+Rate Limiter Instances (us-east-1)
+===========================================================================================
+
+Name                 Status                    Version      Lambda       Schema     Created
+-------------------------------------------------------------------------------------------
+prod-api             CREATE_COMPLETE           0.2.0        0.2.0        1.0.0      2024-01-15
+staging              CREATE_COMPLETE           0.2.0        0.2.0        1.0.0      2024-01-10
+dev-test             UPDATE_IN_PROGRESS        0.1.0        0.1.0        1.0.0      2023-12-01
+
+Total: 3 instance(s)
+  1 instance(s) need attention
+```
+
+The output includes:
+
+- **Name**: User-friendly name (without ZAEL- prefix)
+- **Status**: CloudFormation stack status with visual indicator
+- **Version**: Client version at deployment (from stack tag)
+- **Lambda**: Lambda aggregator version
+- **Schema**: DynamoDB schema version
+- **Created**: Stack creation date
+
+---
+
 ### status
 
 Check the status of a deployed CloudFormation stack.

@@ -76,6 +76,7 @@ from .models import (
     Entity,
     EntityCapacity,
     Limit,
+    LimiterInfo,
     LimitName,
     LimitStatus,
     ResourceCapacity,
@@ -109,6 +110,7 @@ __all__ = [
     "StackManager",
     # Models
     "Limit",
+    "LimiterInfo",
     "LimitName",
     "Entity",
     "LimitStatus",

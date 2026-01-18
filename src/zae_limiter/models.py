@@ -435,6 +435,65 @@ class UsageSummary:
     max_window_start: str | None  # Latest window (ISO timestamp)
 
 
+@dataclass(frozen=True)
+class LimiterInfo:
+    """
+    Information about a deployed rate limiter instance.
+
+    Represents a CloudFormation stack discovered in a region via
+    ``RateLimiter.list_deployed()`` or the ``zae-limiter list`` CLI command.
+    This is a READ-ONLY model describing observed infrastructure state.
+
+    Example:
+        # Discover all limiters in us-east-1
+        limiters = await RateLimiter.list_deployed(region="us-east-1")
+        for limiter in limiters:
+            if limiter.is_failed:
+                print(f"⚠️  {limiter.user_name}: {limiter.stack_status}")
+
+    Attributes:
+        stack_name: Full CloudFormation stack name (e.g., "ZAEL-my-app")
+        user_name: User-friendly name without prefix (e.g., "my-app")
+        region: AWS region where the stack is deployed
+        stack_status: CloudFormation stack status (e.g., "CREATE_COMPLETE")
+        creation_time: ISO 8601 timestamp of stack creation
+        last_updated_time: ISO 8601 timestamp of last update (None if never updated)
+        version: Value of zae-limiter:version tag (client version at deployment)
+        lambda_version: Value of zae-limiter:lambda-version tag
+        schema_version: Value of zae-limiter:schema-version tag
+    """
+
+    # Identity
+    stack_name: str
+    user_name: str
+    region: str
+
+    # Status
+    stack_status: str
+    creation_time: str
+    last_updated_time: str | None = None
+
+    # Version info from CloudFormation tags
+    version: str | None = None
+    lambda_version: str | None = None
+    schema_version: str | None = None
+
+    @property
+    def is_healthy(self) -> bool:
+        """Stack is in a stable, operational state."""
+        return self.stack_status in ("CREATE_COMPLETE", "UPDATE_COMPLETE")
+
+    @property
+    def is_in_progress(self) -> bool:
+        """Stack operation is in progress."""
+        return "IN_PROGRESS" in self.stack_status
+
+    @property
+    def is_failed(self) -> bool:
+        """Stack is in a failed or rollback state."""
+        return any(x in self.stack_status for x in ("FAILED", "ROLLBACK"))
+
+
 @dataclass
 class ResourceCapacity:
     """Aggregated capacity info for a resource across entities."""

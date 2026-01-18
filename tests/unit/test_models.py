@@ -9,6 +9,7 @@ from zae_limiter import (
     InvalidIdentifierError,
     InvalidNameError,
     Limit,
+    LimiterInfo,
     LimitName,
     StackOptions,
     ValidationError,
@@ -869,3 +870,284 @@ class TestAuditAction:
         assert AuditAction.ENTITY_DELETED == "entity_deleted"
         assert AuditAction.LIMITS_SET == "limits_set"
         assert AuditAction.LIMITS_DELETED == "limits_deleted"
+
+
+class TestLimiterInfo:
+    """Tests for LimiterInfo model."""
+
+    def test_basic_construction(self):
+        """Test basic LimiterInfo construction."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.stack_name == "ZAEL-my-app"
+        assert info.user_name == "my-app"
+        assert info.region == "us-east-1"
+        assert info.stack_status == "CREATE_COMPLETE"
+        assert info.creation_time == "2024-01-15T10:30:00Z"
+        assert info.last_updated_time is None
+        assert info.version is None
+        assert info.lambda_version is None
+        assert info.schema_version is None
+
+    def test_construction_with_all_fields(self):
+        """Test LimiterInfo with all optional fields."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="UPDATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+            last_updated_time="2024-01-16T14:00:00Z",
+            version="0.5.0",
+            lambda_version="0.5.0",
+            schema_version="1.0.0",
+        )
+        assert info.last_updated_time == "2024-01-16T14:00:00Z"
+        assert info.version == "0.5.0"
+        assert info.lambda_version == "0.5.0"
+        assert info.schema_version == "1.0.0"
+
+    def test_is_healthy_create_complete(self):
+        """Test is_healthy returns True for CREATE_COMPLETE."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_healthy is True
+
+    def test_is_healthy_update_complete(self):
+        """Test is_healthy returns True for UPDATE_COMPLETE."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="UPDATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_healthy is True
+
+    def test_is_healthy_false_for_in_progress(self):
+        """Test is_healthy returns False for in-progress states."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_IN_PROGRESS",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_healthy is False
+
+    def test_is_healthy_false_for_failed(self):
+        """Test is_healthy returns False for failed states."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_FAILED",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_healthy is False
+
+    def test_is_in_progress_create(self):
+        """Test is_in_progress for CREATE_IN_PROGRESS."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_IN_PROGRESS",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_in_progress is True
+
+    def test_is_in_progress_update(self):
+        """Test is_in_progress for UPDATE_IN_PROGRESS."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="UPDATE_IN_PROGRESS",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_in_progress is True
+
+    def test_is_in_progress_delete(self):
+        """Test is_in_progress for DELETE_IN_PROGRESS."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="DELETE_IN_PROGRESS",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_in_progress is True
+
+    def test_is_in_progress_rollback(self):
+        """Test is_in_progress for ROLLBACK_IN_PROGRESS."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="UPDATE_ROLLBACK_IN_PROGRESS",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_in_progress is True
+
+    def test_is_in_progress_false_for_complete(self):
+        """Test is_in_progress returns False for complete states."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_in_progress is False
+
+    def test_is_failed_create_failed(self):
+        """Test is_failed for CREATE_FAILED."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_FAILED",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_failed is True
+
+    def test_is_failed_update_failed(self):
+        """Test is_failed for UPDATE_FAILED."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="UPDATE_FAILED",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_failed is True
+
+    def test_is_failed_rollback_complete(self):
+        """Test is_failed for ROLLBACK_COMPLETE."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="ROLLBACK_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_failed is True
+
+    def test_is_failed_update_rollback_complete(self):
+        """Test is_failed for UPDATE_ROLLBACK_COMPLETE."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="UPDATE_ROLLBACK_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_failed is True
+
+    def test_is_failed_rollback_failed(self):
+        """Test is_failed for ROLLBACK_FAILED."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="ROLLBACK_FAILED",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_failed is True
+
+    def test_is_failed_false_for_complete(self):
+        """Test is_failed returns False for healthy complete states."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_failed is False
+
+    def test_is_failed_false_for_in_progress(self):
+        """Test is_failed returns False for in-progress states."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_IN_PROGRESS",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_failed is False
+
+    def test_frozen(self):
+        """Test that LimiterInfo is immutable."""
+        info = LimiterInfo(
+            stack_name="ZAEL-my-app",
+            user_name="my-app",
+            region="us-east-1",
+            stack_status="CREATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        with pytest.raises(AttributeError):
+            info.stack_name = "ZAEL-other"
+
+    def test_states_are_mutually_exclusive(self):
+        """Test that at most one of is_healthy/is_in_progress/is_failed is True."""
+        # Healthy state
+        healthy = LimiterInfo(
+            stack_name="ZAEL-test",
+            user_name="test",
+            region="us-east-1",
+            stack_status="CREATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert healthy.is_healthy is True
+        assert healthy.is_in_progress is False
+        assert healthy.is_failed is False
+
+        # In-progress state
+        in_progress = LimiterInfo(
+            stack_name="ZAEL-test",
+            user_name="test",
+            region="us-east-1",
+            stack_status="UPDATE_IN_PROGRESS",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert in_progress.is_healthy is False
+        assert in_progress.is_in_progress is True
+        assert in_progress.is_failed is False
+
+        # Failed state
+        failed = LimiterInfo(
+            stack_name="ZAEL-test",
+            user_name="test",
+            region="us-east-1",
+            stack_status="CREATE_FAILED",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert failed.is_healthy is False
+        assert failed.is_in_progress is False
+        assert failed.is_failed is True
+
+    def test_rollback_in_progress_is_both_in_progress_and_failed(self):
+        """Test ROLLBACK_IN_PROGRESS matches both is_in_progress and is_failed."""
+        # This is a special case: rollback is both in-progress AND indicates failure
+        info = LimiterInfo(
+            stack_name="ZAEL-test",
+            user_name="test",
+            region="us-east-1",
+            stack_status="ROLLBACK_IN_PROGRESS",
+            creation_time="2024-01-15T10:30:00Z",
+        )
+        assert info.is_healthy is False
+        assert info.is_in_progress is True
+        assert info.is_failed is True  # ROLLBACK contains "ROLLBACK"

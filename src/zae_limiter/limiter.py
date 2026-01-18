@@ -27,6 +27,7 @@ from .models import (
     Entity,
     EntityCapacity,
     Limit,
+    LimiterInfo,
     LimitStatus,
     ResourceCapacity,
     StackOptions,
@@ -142,6 +143,46 @@ class RateLimiter:
         else:
             # Assume naive datetime is UTC
             return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @classmethod
+    async def list_deployed(
+        cls,
+        region: str | None = None,
+        endpoint_url: str | None = None,
+    ) -> list[LimiterInfo]:
+        """
+        List all deployed rate limiter instances in a region.
+
+        This is a class method that discovers existing deployments without
+        requiring an initialized RateLimiter instance. It queries CloudFormation
+        for stacks with the ZAEL- prefix.
+
+        Args:
+            region: AWS region (default: use boto3 defaults)
+            endpoint_url: CloudFormation endpoint (for LocalStack)
+
+        Returns:
+            List of LimiterInfo objects describing deployed instances.
+            Sorted by user-friendly name. Excludes deleted stacks.
+
+        Example:
+            # Discover all limiters in us-east-1
+            limiters = await RateLimiter.list_deployed(region="us-east-1")
+            for limiter in limiters:
+                if limiter.is_healthy:
+                    print(f"✓ {limiter.user_name}: {limiter.version}")
+                elif limiter.is_failed:
+                    print(f"✗ {limiter.user_name}: {limiter.stack_status}")
+
+        Raises:
+            ClientError: If CloudFormation API call fails
+        """
+        from .infra.discovery import InfrastructureDiscovery
+
+        async with InfrastructureDiscovery(
+            region=region, endpoint_url=endpoint_url
+        ) as discovery:
+            return await discovery.list_limiters()
 
     async def _ensure_initialized(self) -> None:
         """Ensure infrastructure exists and version is compatible."""

@@ -71,6 +71,55 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
         print(f"Operation in progress: {status.stack_status}")
     ```
 
+### Discover Deployed Instances
+
+List all zae-limiter stacks in a region:
+
+=== "CLI"
+
+    ```bash
+    zae-limiter list --region us-east-1
+    ```
+
+    Output:
+    ```
+    Rate Limiter Instances (us-east-1)
+    ===========================================================================================
+
+    Name                 Status                    Version      Lambda       Schema     Created
+    -------------------------------------------------------------------------------------------
+    prod-api             ✓ CREATE_COMPLETE         0.2.0        0.2.0        1.0.0      2024-01-15
+    staging              ✓ CREATE_COMPLETE         0.2.0        0.2.0        1.0.0      2024-01-10
+    dev-test             ⏳ UPDATE_IN_PROGRESS     0.1.0        0.1.0        1.0.0      2023-12-01
+
+    Total: 3 instance(s)
+    ⚠️  1 instance(s) need attention
+    ```
+
+=== "Programmatic"
+
+    ```python
+    from zae_limiter import RateLimiter, LimiterInfo
+
+    # List all deployed limiters in a region
+    limiters = await RateLimiter.list_deployed(region="us-east-1")
+
+    for limiter in limiters:
+        if limiter.is_healthy:
+            print(f"✓ {limiter.user_name}: {limiter.version}")
+        elif limiter.is_failed:
+            print(f"✗ {limiter.user_name}: {limiter.stack_status}")
+        elif limiter.is_in_progress:
+            print(f"⏳ {limiter.user_name}: {limiter.stack_status}")
+    ```
+
+The `LimiterInfo` object provides:
+
+- `stack_name` / `user_name` - Full and user-friendly names
+- `stack_status` - CloudFormation status
+- `version` / `lambda_version` / `schema_version` - Version info from tags
+- `is_healthy` / `is_in_progress` / `is_failed` - Status helpers
+
 ### Delete Stack
 
 ```bash
