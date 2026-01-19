@@ -633,48 +633,55 @@ class TestE2ELocalStackFullWorkflow:
     @pytest.mark.asyncio(loop_scope="class")
     async def test_stored_limits_workflow(self, e2e_limiter):
         """
-        Test stored limits (premium vs default tiers).
+        Test stored limits with three-tier hierarchy (premium vs default tiers).
 
         Workflow:
         1. Create premium and free tier users
-        2. Set stored limits for premium user
-        3. Verify premium user has higher limits
+        2. Set entity-level limits for premium user (overrides resource/system)
+        3. Set resource-level limits as fallback for free users
+        4. Verify premium user has higher limits via entity config
+        5. Verify free user falls back to resource config
         """
         await e2e_limiter.create_entity("premium-user")
         await e2e_limiter.create_entity("free-user")
 
-        # Set premium limits
+        # Set premium limits at entity level for "api" resource
         premium_limits = [
             Limit.per_minute("rpm", 1000),
             Limit.per_minute("tpm", 100000),
         ]
-        await e2e_limiter.set_limits("premium-user", premium_limits)
+        await e2e_limiter.set_limits("premium-user", premium_limits, resource="api")
 
-        # Default limits for fallback
+        # Set resource-level defaults as fallback (for free users)
         default_limits = [
             Limit.per_minute("rpm", 10),
             Limit.per_minute("tpm", 1000),
         ]
+        await e2e_limiter.set_resource_defaults("api", default_limits)
 
-        # Premium user uses stored limits
+        # Premium user uses entity-level limits (auto-resolved, no use_stored_limits needed)
         async with e2e_limiter.acquire(
             entity_id="premium-user",
             resource="api",
-            limits=default_limits,
+            limits=None,  # Let hierarchy resolve limits
             consume={"rpm": 1},
-            use_stored_limits=True,
         ) as lease:
             # Consumed includes all limit types, even if 0
             assert lease.consumed["rpm"] == 1
 
-        # Verify premium capacity
+        # Verify premium capacity uses entity-level limits
         premium_available = await e2e_limiter.available(
             entity_id="premium-user",
             resource="api",
-            limits=default_limits,
-            use_stored_limits=True,
         )
-        assert premium_available["rpm"] > 900  # High limit
+        assert premium_available["rpm"] > 900  # High limit (1000 - 1 = 999)
+
+        # Free user falls back to resource-level defaults
+        free_available = await e2e_limiter.available(
+            entity_id="free-user",
+            resource="api",
+        )
+        assert free_available["rpm"] == 10  # Default limit
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_lease_adjustment_workflow(self, e2e_limiter):

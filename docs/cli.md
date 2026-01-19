@@ -628,6 +628,388 @@ tpm                  9,000,000       12,500.00
 
 ---
 
+## resource
+
+Manage resource-level limit configurations. These limits apply to a specific resource and override system-level defaults.
+
+### resource set-defaults
+
+Set default limits for a resource.
+
+```bash
+zae-limiter resource set-defaults <RESOURCE_NAME> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `RESOURCE_NAME` | The resource to configure (e.g., 'gpt-4', 'claude-3') |
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+| `--limit`, `-l` | Limit specification (required, repeatable) | - |
+
+**Limit format:** `name:capacity[:burst]`
+
+- `name` - Limit name (e.g., `tpm`, `rpm`)
+- `capacity` - Maximum tokens per period
+- `burst` - Optional burst capacity (defaults to capacity)
+
+**Examples:**
+
+```bash
+# Set TPM and RPM defaults for gpt-4
+zae-limiter resource set-defaults gpt-4 -l tpm:100000 -l rpm:1000
+
+# Set defaults with burst capacity
+zae-limiter resource set-defaults claude-3 -l tpm:50000:75000 -l rpm:500:750
+
+# Use a specific limiter instance
+zae-limiter resource set-defaults gpt-4 --name prod -l tpm:100000
+```
+
+---
+
+### resource get-defaults
+
+Get default limits for a resource.
+
+```bash
+zae-limiter resource get-defaults <RESOURCE_NAME> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `RESOURCE_NAME` | The resource to query (e.g., 'gpt-4', 'claude-3') |
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+
+**Examples:**
+
+```bash
+# Get defaults for gpt-4
+zae-limiter resource get-defaults gpt-4
+
+# Query from a specific instance
+zae-limiter resource get-defaults gpt-4 --name prod --region us-west-2
+```
+
+**Output:**
+
+```
+Defaults for resource 'gpt-4':
+  tpm: 100,000/min (burst: 100,000)
+  rpm: 1,000/min (burst: 1,000)
+```
+
+---
+
+### resource delete-defaults
+
+Delete default limits for a resource.
+
+```bash
+zae-limiter resource delete-defaults <RESOURCE_NAME> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `RESOURCE_NAME` | The resource to delete defaults from |
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+| `--yes`, `-y` | Skip confirmation prompt | `false` |
+
+**Examples:**
+
+```bash
+# Delete with confirmation
+zae-limiter resource delete-defaults gpt-4
+
+# Skip confirmation
+zae-limiter resource delete-defaults gpt-4 --yes
+```
+
+---
+
+### resource list
+
+List all resources with configured defaults.
+
+```bash
+zae-limiter resource list [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+
+**Examples:**
+
+```bash
+# List all resources with defaults
+zae-limiter resource list
+
+# List from a specific instance
+zae-limiter resource list --name prod
+```
+
+**Output:**
+
+```
+Resources with configured defaults:
+  claude-3
+  gpt-4
+  gpt-4-turbo
+```
+
+---
+
+## system
+
+Manage system-wide default limit configurations. These are global defaults that apply to **all resources** unless overridden at the resource or entity level.
+
+### system set-defaults
+
+Set system-wide default limits (applies to all resources).
+
+```bash
+zae-limiter system set-defaults [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+| `--limit`, `-l` | Limit specification (required, repeatable) | - |
+| `--on-unavailable` | Behavior when DynamoDB unavailable (`allow` or `block`) | None |
+
+**Limit format:** `name:capacity[:burst]`
+
+**Examples:**
+
+```bash
+# Set system-wide defaults (applies to ALL resources)
+zae-limiter system set-defaults -l tpm:10000 -l rpm:100
+
+# Set defaults with on_unavailable behavior
+zae-limiter system set-defaults -l tpm:10000 -l rpm:100 --on-unavailable allow
+
+# Set defaults with burst
+zae-limiter system set-defaults -l tpm:5000:7500 -l rpm:50:75
+```
+
+---
+
+### system get-defaults
+
+Get system-wide default limits.
+
+```bash
+zae-limiter system get-defaults [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+
+**Examples:**
+
+```bash
+# Get system-wide defaults
+zae-limiter system get-defaults
+```
+
+**Output:**
+
+```
+System-wide defaults:
+  tpm: 10,000/min (burst: 10,000)
+  rpm: 100/min (burst: 100)
+  on_unavailable: allow
+```
+
+---
+
+### system delete-defaults
+
+Delete system-wide default limits.
+
+```bash
+zae-limiter system delete-defaults [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+| `--yes`, `-y` | Skip confirmation prompt | `false` |
+
+**Examples:**
+
+```bash
+# Delete with confirmation
+zae-limiter system delete-defaults
+
+# Skip confirmation
+zae-limiter system delete-defaults --yes
+```
+
+---
+
+## entity
+
+Manage entity-level limit configurations. These limits apply to a specific entity and resource combination, overriding both system and resource defaults.
+
+### entity set-limits
+
+Set limits for a specific entity and resource.
+
+```bash
+zae-limiter entity set-limits <ENTITY_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `ENTITY_ID` | The entity to configure (e.g., 'user-123', 'api-key-abc') |
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--resource`, `-r` | Resource name (required) | - |
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+| `--limit`, `-l` | Limit specification (required, repeatable) | - |
+
+**Limit format:** `name:capacity[:burst]`
+
+**Examples:**
+
+```bash
+# Set premium user limits for gpt-4
+zae-limiter entity set-limits user-premium --resource gpt-4 -l tpm:100000 -l rpm:1000
+
+# Set API key limits with burst
+zae-limiter entity set-limits api-key-123 --resource claude-3 -l tpm:50000:75000
+```
+
+---
+
+### entity get-limits
+
+Get limits for a specific entity and resource.
+
+```bash
+zae-limiter entity get-limits <ENTITY_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `ENTITY_ID` | The entity to query |
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--resource`, `-r` | Resource name (required) | - |
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+
+**Examples:**
+
+```bash
+# Get entity limits for gpt-4
+zae-limiter entity get-limits user-premium --resource gpt-4
+```
+
+**Output:**
+
+```
+Limits for entity 'user-premium' on resource 'gpt-4':
+  tpm: 100,000/min (burst: 100,000)
+  rpm: 1,000/min (burst: 1,000)
+```
+
+---
+
+### entity delete-limits
+
+Delete limits for a specific entity and resource.
+
+```bash
+zae-limiter entity delete-limits <ENTITY_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `ENTITY_ID` | The entity to delete limits from |
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--resource`, `-r` | Resource name (required) | - |
+| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+| `--yes`, `-y` | Skip confirmation prompt | `false` |
+
+**Examples:**
+
+```bash
+# Delete with confirmation
+zae-limiter entity delete-limits user-premium --resource gpt-4
+
+# Skip confirmation
+zae-limiter entity delete-limits user-premium --resource gpt-4 --yes
+```
+
+---
+
 ## Environment Variables
 
 The CLI respects standard AWS environment variables:

@@ -126,6 +126,71 @@ The `LimiterInfo` object provides:
 zae-limiter delete --name limiter --region us-east-1 --yes
 ```
 
+## Admin vs Application Workflow
+
+zae-limiter supports separation of concerns between infrastructure administrators and application developers.
+
+### Admin Workflow (Infrastructure & Config)
+
+Admins deploy infrastructure and configure rate limits centrally:
+
+```bash
+# 1. Deploy infrastructure
+zae-limiter deploy --name prod --region us-east-1
+
+# 2. Configure system-wide defaults
+zae-limiter system set-defaults -l rpm:100 -l tpm:10000 --on-unavailable block
+
+# 3. Configure resource-specific limits
+zae-limiter resource set-defaults gpt-4 -l rpm:50 -l tpm:100000
+zae-limiter resource set-defaults gpt-3.5-turbo -l rpm:200 -l tpm:500000
+
+# 4. Configure premium user tiers
+zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:500 -l tpm:500000
+```
+
+### Application Workflow (Connect Only)
+
+Application code connects to existing infrastructure without managing it:
+
+```python
+from zae_limiter import RateLimiter
+
+# Connect only - no stack_options means no infrastructure changes
+limiter = RateLimiter(
+    name="prod",
+    region="us-east-1",
+    # No stack_options = connect only, no create/update
+)
+
+# Limits are automatically resolved from stored config
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="gpt-4",
+    limits=None,  # Auto-resolves: Entity > Resource > System
+    consume={"rpm": 1},
+) as lease:
+    await call_api()
+```
+
+### Benefits
+
+| Concern | Admin | Application |
+|---------|-------|-------------|
+| Infrastructure | ✓ Deploy, update, delete stacks | Connect only |
+| Rate limits | ✓ Configure at all levels | Auto-resolved |
+| Credentials | Full AWS access | DynamoDB read/write only |
+| Changes | Through CLI/IaC | None |
+
+This separation allows:
+
+- **Centralized control** - Admins manage limits without code changes
+- **Simplified apps** - No hardcoded limits, automatic resolution
+- **Audit trail** - All config changes logged to DynamoDB
+- **Dynamic updates** - Change limits without redeploying apps
+
+See [Configuration Hierarchy](../guide/config-hierarchy.md) for limit resolution details.
+
 ## Stack Lifecycle Management
 
 ### Programmatic Cleanup

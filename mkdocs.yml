@@ -97,6 +97,7 @@ nav:
       - Getting Started: getting-started.md
       - Token Bucket Algorithm: guide/token-bucket.md
       - Basic Usage: guide/basic-usage.md
+      - Configuration Hierarchy: guide/config-hierarchy.md
       - Hierarchical Limits: guide/hierarchical.md
       - LLM Integration: guide/llm-integration.md
       - Usage Snapshots: guide/usage-snapshots.md
@@ -130,3 +131,4 @@ nav:
       - ADR-103 Config Caching: adr/103-config-caching.md
       - ADR-104 Stored Limits Default: adr/104-stored-limits-default.md
       - ADR-105 Eventual Consistency: adr/105-eventual-consistency.md
+      - ADR-106 Audit Entity IDs: adr/106-audit-entity-ids-for-config.md

@@ -51,15 +51,22 @@ git log --oneline origin/<base-branch>..HEAD
 
 ### 3. Determine PR Type and Scope
 
-If issue number provided:
+If issue number provided, extract metadata:
 ```bash
-gh issue view <number> --json title,labels,milestone
+# Get title and type emoji
+TITLE=$(gh issue view <number> --json title --jq '.title')
+
+# Get labels as comma-separated string for --label flag
+LABELS=$(gh issue view <number> --json labels --jq '[.labels[].name] | join(",")')
+
+# Get milestone title (may be empty if no milestone)
+MILESTONE=$(gh issue view <number> --json milestone --jq '.milestone.title // empty')
 ```
 
 Extract:
 - **Type**: From issue title emoji (✨=feat, 🐛=fix, 📋=docs, 🔧=chore)
-- **Labels**: Inherit from issue
-- **Milestone**: Inherit from issue
+- **Labels**: Inherit from issue (comma-separated for `--label` flag)
+- **Milestone**: Inherit from issue (single value for `--milestone` flag)
 
 If no issue, infer from branch name or ask.
 
@@ -85,16 +92,28 @@ Closes #<issue-number>
 
 ### 6. Create the PR
 
+**All PRs are created in draft mode.**
+
+Build the `gh pr create` command with conditional flags:
 ```bash
-gh pr create \
-  --base "<base-branch>" \
-  --title "<emoji> <type>(scope): description" \
-  --body "<body>" \
-  --label "<inherited-labels>" \
-  --milestone "<inherited-milestone>"
+# Start with required flags
+CMD="gh pr create --draft --base '<base-branch>' --title '<title>' --body '<body>'"
+
+# Add labels if present (comma-separated)
+if [ -n "$LABELS" ]; then
+  CMD="$CMD --label '$LABELS'"
+fi
+
+# Add milestone if present
+if [ -n "$MILESTONE" ]; then
+  CMD="$CMD --milestone '$MILESTONE'"
+fi
+
+# Execute
+eval $CMD
 ```
 
-**Note:** Use `--base release/<version>` when targeting a release branch.
+**Important**: The `--label` flag accepts comma-separated values (e.g., `--label "area/cli,area/limiter"`). The `--milestone` flag takes a single milestone title.
 
 ### 7. Push if Needed
 

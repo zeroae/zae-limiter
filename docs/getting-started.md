@@ -281,9 +281,54 @@ except RateLimitExceeded as e:
     )
 ```
 
+## Centralized Configuration (v0.5.0+)
+
+zae-limiter supports storing rate limit configurations in DynamoDB, eliminating the need to hardcode limits in application code.
+
+### Setting Up Defaults
+
+Configure limits at system and resource levels (typically done by admins during deployment):
+
+```bash
+# Set system-wide defaults (applies to ALL resources)
+zae-limiter system set-defaults -l rpm:100 -l tpm:10000
+
+# Set resource-specific defaults (override system for this resource)
+zae-limiter resource set-defaults gpt-4 -l rpm:50 -l tpm:100000
+zae-limiter resource set-defaults gpt-3.5-turbo -l rpm:200 -l tpm:500000
+
+# Set entity-specific limits (premium users)
+zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:500 -l tpm:500000
+```
+
+### Automatic Resolution
+
+With limits configured, application code becomes simpler—no need to pass limits:
+
+```python
+# Limits are resolved automatically from stored config
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="gpt-4",
+    limits=None,  # Auto-resolves: Entity > Resource > System
+    consume={"rpm": 1},
+) as lease:
+    await call_api()
+```
+
+**Resolution order (highest to lowest precedence):**
+
+1. **Entity level** - Specific limits for entity+resource
+2. **Resource level** - Default limits for a resource
+3. **System level** - Global defaults for all resources
+4. **Override parameter** - Fallback if no stored config
+
+See [Configuration Hierarchy](guide/config-hierarchy.md) for full details.
+
 ## Next Steps
 
 - [Basic Usage](guide/basic-usage.md) - Multiple limits, adjustments, capacity queries
+- [Configuration Hierarchy](guide/config-hierarchy.md) - Three-tier limit resolution
 - [Hierarchical Limits](guide/hierarchical.md) - Parent/child entities, cascade mode
 - [LLM Integration](guide/llm-integration.md) - Token estimation and reconciliation
 - [Deployment Guide](infra/deployment.md) - Production deployment options

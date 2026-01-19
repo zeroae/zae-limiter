@@ -22,6 +22,7 @@ SK_RESOURCE = "#RESOURCE#"
 SK_USAGE = "#USAGE#"
 SK_VERSION = "#VERSION"
 SK_AUDIT = "#AUDIT#"
+SK_CONFIG = "#CONFIG"
 
 # Partition key prefix for audit logs
 AUDIT_PREFIX = "AUDIT#"
@@ -40,6 +41,11 @@ def pk_system() -> str:
     return SYSTEM_PREFIX
 
 
+def pk_resource(resource: str) -> str:
+    """Build partition key for resource config records."""
+    return f"{RESOURCE_PREFIX}{resource}"
+
+
 def sk_version() -> str:
     """Build sort key for version record."""
     return SK_VERSION
@@ -56,13 +62,38 @@ def sk_bucket(resource: str, limit_name: str) -> str:
 
 
 def sk_limit(resource: str, limit_name: str) -> str:
-    """Build sort key for a limit config."""
+    """Build sort key for an entity limit config (includes resource)."""
     return f"{SK_LIMIT}{resource}#{limit_name}"
 
 
 def sk_limit_prefix(resource: str) -> str:
-    """Build sort key prefix for querying limits by resource."""
+    """Build sort key prefix for querying entity limits by resource."""
     return f"{SK_LIMIT}{resource}#"
+
+
+def sk_system_limit(limit_name: str) -> str:
+    """Build sort key for a system-level limit (no resource)."""
+    return f"{SK_LIMIT}{limit_name}"
+
+
+def sk_system_limit_prefix() -> str:
+    """Build sort key prefix for querying all system limits."""
+    return SK_LIMIT
+
+
+def sk_resource_limit(limit_name: str) -> str:
+    """Build sort key for a resource-level limit (no resource in SK)."""
+    return f"{SK_LIMIT}{limit_name}"
+
+
+def sk_resource_limit_prefix() -> str:
+    """Build sort key prefix for querying all resource limits."""
+    return SK_LIMIT
+
+
+def sk_config() -> str:
+    """Build sort key for system config record (on_unavailable, etc.)."""
+    return SK_CONFIG
 
 
 def sk_resource(resource: str) -> str:

@@ -21,14 +21,18 @@ This skill operates in three modes based on context:
 
 ## Supported Issue Types
 
-| Type | Emoji | GitHub Type | Use For |
-|------|-------|-------------|---------|
-| Bug | 🐛 | Bug | Defects, unexpected behavior |
-| Feature | ✨ | Feature | New functionality, enhancements |
-| Task | 📋 | Task | Documentation, testing, specific work items |
-| Chore | 🔧 | Chore | Maintenance: refactor, deps, ci, cleanup |
-| Epic | 🎯 | Epic | Major feature spanning multiple issues |
-| Theme | 🎨 | Theme | Strategic initiative spanning epics |
+GitHub supports 5 issue types. The title emoji can be any gitmoji - it doesn't have to match the canonical type emoji:
+
+| GitHub Type | Canonical Emoji | Alternative Emojis | Use For |
+|-------------|-----------------|-------------------|---------|
+| Bug | 🐛 | 🔒 (security) | Defects, unexpected behavior |
+| Feature | ✨ | ⚡ (perf), 💥 (breaking) | New functionality, enhancements |
+| Task | 📋 | 📝 (docs), ✅ (test) | Documentation, testing, specific work items |
+| Chore | 🔧 | ♻️ (refactor), ⬆️ (deps), 👷 (ci), 🔥 (remove) | Maintenance: refactor, deps, ci, cleanup |
+| Epic | 🎯 | - | Major feature spanning multiple issues |
+| Theme | 🎨 | - | Strategic initiative spanning epics |
+
+See [conventions.md](conventions.md) for full gitmoji-to-type mapping.
 
 > **Note:** For release preparation, use `/pr release <version>` to create a Release Prep PR.
 
@@ -38,17 +42,28 @@ Before asking questions, analyze the conversation to infer:
 
 ### Type Inference (Create mode)
 
-| Context Clues | Inferred Type |
-|---------------|---------------|
-| "bug", "broken", "error", "fix", "crash", "fails", "doesn't work" | Bug 🐛 |
-| "add", "new", "feature", "implement", "support", "enable" | Feature ✨ |
-| "docs", "documentation", "readme", "write docs" | Task 📋 |
-| "test", "coverage", "add tests" | Task 📋 |
-| "refactor", "cleanup", "upgrade", "deps", "ci", "chore" | Chore 🔧 |
-| "epic", "major feature", "multi-issue", "spanning" | Epic 🎯 |
-| "theme", "strategic", "initiative", "long-term" | Theme 🎨 |
+Infer both the GitHub type AND the most specific gitmoji:
+
+| Context Clues | Emoji | GitHub Type |
+|---------------|-------|-------------|
+| "bug", "broken", "error", "fix", "crash", "fails", "doesn't work" | 🐛 | Bug |
+| "security", "vulnerability", "CVE", "exploit", "auth bypass" | 🔒 | Bug |
+| "add", "new", "feature", "implement", "support", "enable" | ✨ | Feature |
+| "performance", "optimize", "faster", "slow", "latency" | ⚡ | Feature |
+| "breaking change", "deprecate", "remove API" | 💥 | Feature |
+| "docs", "documentation", "readme", "write docs" | 📝 | Task |
+| "test", "coverage", "add tests", "unit test", "e2e" | ✅ | Task |
+| "refactor", "cleanup", "simplify", "restructure" | ♻️ | Chore |
+| "upgrade", "deps", "dependencies", "bump", "update package" | ⬆️ | Chore |
+| "ci", "workflow", "actions", "pipeline", "build system" | 👷 | Chore |
+| "config", "settings", "configuration" | 🔧 | Chore |
+| "remove", "delete", "drop", "prune" | 🔥 | Chore |
+| "epic", "major feature", "multi-issue", "spanning" | 🎯 | Epic |
+| "theme", "strategic", "initiative", "long-term" | 🎨 | Theme |
 
 > **Tip:** If user mentions "release", "cut release", or "release prep", redirect to `/pr release <version>`.
+
+**IMPORTANT:** Type and milestone are MANDATORY. Never create an issue without both.
 
 ### Issue Number Inference (Update/Progress modes)
 
