@@ -402,6 +402,11 @@ Resources:
   AppRole:
     Type: AWS::IAM::Role
     Condition: DeployIAMRoles
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       RoleName: !If
         - HasCustomRoleName
@@ -444,6 +449,11 @@ Resources:
   AdminRole:
     Type: AWS::IAM::Role
     Condition: DeployIAMRoles
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       RoleName: !If
         - HasCustomRoleName
