@@ -2,7 +2,7 @@
 
 Templates derived from `.github/ISSUE_TEMPLATE/` files. Use the appropriate template based on issue type.
 
-## Bug 🐛
+## Bug 🐛 / 🔒
 
 ```markdown
 ## Description
@@ -25,7 +25,7 @@ Templates derived from `.github/ISSUE_TEMPLATE/` files. Use the appropriate temp
 **Required fields:** Description, Steps to Reproduce
 **Optional fields:** Environment
 
-## Feature ✨
+## Feature ✨ / ⚡ / 💥
 
 ```markdown
 ## Problem or Use Case
@@ -50,7 +50,7 @@ result = limiter.new_feature()
 **Required fields:** Problem or Use Case
 **Optional fields:** Proposed Solution, Alternatives Considered
 
-## Task 📋
+## Task 📋 / 📝 / ✅
 
 ```markdown
 ## Description
@@ -66,7 +66,7 @@ result = limiter.new_feature()
 **Required fields:** Description
 **Optional fields:** Acceptance Criteria
 
-## Chore 🔧
+## Chore 🔧 / ♻️ / ⬆️ / 👷 / 🔥
 
 ```markdown
 ## Description

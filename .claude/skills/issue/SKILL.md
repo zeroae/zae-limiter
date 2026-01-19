@@ -42,17 +42,28 @@ Before asking questions, analyze the conversation to infer:
 
 ### Type Inference (Create mode)
 
-| Context Clues | Inferred Type |
-|---------------|---------------|
-| "bug", "broken", "error", "fix", "crash", "fails", "doesn't work" | Bug 🐛 |
-| "add", "new", "feature", "implement", "support", "enable" | Feature ✨ |
-| "docs", "documentation", "readme", "write docs" | Task 📋 |
-| "test", "coverage", "add tests" | Task 📋 |
-| "refactor", "cleanup", "upgrade", "deps", "ci", "chore" | Chore 🔧 |
-| "epic", "major feature", "multi-issue", "spanning" | Epic 🎯 |
-| "theme", "strategic", "initiative", "long-term" | Theme 🎨 |
+Infer both the GitHub type AND the most specific gitmoji:
+
+| Context Clues | Emoji | GitHub Type |
+|---------------|-------|-------------|
+| "bug", "broken", "error", "fix", "crash", "fails", "doesn't work" | 🐛 | Bug |
+| "security", "vulnerability", "CVE", "exploit", "auth bypass" | 🔒 | Bug |
+| "add", "new", "feature", "implement", "support", "enable" | ✨ | Feature |
+| "performance", "optimize", "faster", "slow", "latency" | ⚡ | Feature |
+| "breaking change", "deprecate", "remove API" | 💥 | Feature |
+| "docs", "documentation", "readme", "write docs" | 📝 | Task |
+| "test", "coverage", "add tests", "unit test", "e2e" | ✅ | Task |
+| "refactor", "cleanup", "simplify", "restructure" | ♻️ | Chore |
+| "upgrade", "deps", "dependencies", "bump", "update package" | ⬆️ | Chore |
+| "ci", "workflow", "actions", "pipeline", "build system" | 👷 | Chore |
+| "config", "settings", "configuration" | 🔧 | Chore |
+| "remove", "delete", "drop", "prune" | 🔥 | Chore |
+| "epic", "major feature", "multi-issue", "spanning" | 🎯 | Epic |
+| "theme", "strategic", "initiative", "long-term" | 🎨 | Theme |
 
 > **Tip:** If user mentions "release", "cut release", or "release prep", redirect to `/pr release <version>`.
+
+**IMPORTANT:** Type and milestone are MANDATORY. Never create an issue without both.
 
 ### Issue Number Inference (Update/Progress modes)
 
