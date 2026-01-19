@@ -1,0 +1,47 @@
+# git-cliff configuration for ZeroAE projects
+# Handles emoji-based commits: <emoji> <type>(<scope>): <description>
+
+[changelog]
+header = """
+# Changelog\n
+All notable changes to this project will be documented in this file.\n
+"""
+body = """
+{% if version %}\
+    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+    ## [unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | upper_first }}
+    {% for commit in commits %}
+        - {% if commit.scope %}**{{commit.scope}}**: {% endif %}{{ commit.message | upper_first }} ([{{ commit.id | truncate(length=7, end="") }}]({{ commit.id }}))\
+    {% endfor %}
+{% endfor %}\n
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+commit_preprocessors = [
+  # Strip emoji prefix and normalize to conventional commit format
+  # Uses [^a-zA-Z]* instead of [^\w\s]+ because Rust regex doesn't reliably match Unicode emojis
+  { pattern = '^[^a-zA-Z]*(feat|fix|docs|refactor|test|perf|chore|revert|style|ci)(\([^)]*\))?!?:\s*', replace = "${1}${2}: " },
+  # Convert GitHub auto-generated revert format: Revert "type(scope): msg" -> revert: msg
+  { pattern = '^Revert "([^"]+)"', replace = "revert: ${1}" },
+]
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactoring" },
+  { message = "^style", group = "Styling" },
+  { message = "^test", group = "Testing" },
+  { message = "^ci", group = "CI" },
+  { message = "^chore", group = "Miscellaneous Tasks" },
+  { message = "^revert", group = "Revert" },
+]
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
