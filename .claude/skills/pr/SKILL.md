@@ -1,6 +1,6 @@
 ---
 name: pr
-description: Create and edit pull requests following project conventions. Use `/pr <issue-number>` to create, `/pr edit [pr-number]` to update, or `/pr release <version>` for release prep.
+description: Create and edit pull requests following project conventions. Invoke with "open pr", "create pr", "update pr", or use `/pr <issue-number>` to create, `/pr edit [pr-number]` to update, `/pr release <version>` for release prep.
 allowed-tools: Bash(gh:*), Bash(git:*), Read, Grep, Glob, AskUserQuestion, Task(Explore)
 user-invocable: true
 ---
