@@ -28,6 +28,8 @@ services:
       - ~/.ssh:/home/agent/.ssh:ro
       # Claude credentials (OAuth tokens from Max Plan)
       - ~/.claude:/home/agent/.claude
+      # Docker socket for LocalStack Lambda execution
+      - /var/run/docker.sock:/var/run/docker.sock
     stdin_open: true
     tty: true
     # Default: run the refactor agent
