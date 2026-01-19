@@ -16,7 +16,6 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 
 ```bash
 # Setup (one-time)
-git submodule update --init --recursive
 uv sync --all-extras
 
 # Deploy infrastructure (CloudFormation)
@@ -41,7 +40,6 @@ uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 
 ```bash
 # Setup (one-time)
-git submodule update --init --recursive
 conda create -n zae-limiter python=3.12
 conda activate zae-limiter
 pip install -e ".[dev]"
@@ -86,7 +84,7 @@ All changes to the codebase must go through pull requests. Direct commits to the
 
 ### Release Planning
 
-See `.claude/rules/zeroae/github.md` for issue types, labels, milestone queries, and workflow.
+See `.claude/skills/issue/conventions.md` for issue types, labels, and milestone conventions.
 
 **Milestone assignment:** Every issue MUST be assigned to a milestone. Before assigning, query milestone descriptions to find the best thematic fit:
 
