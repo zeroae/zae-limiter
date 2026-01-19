@@ -122,6 +122,54 @@ Get summary:
 zae-limiter usage summary --name my-app --entity-id user-123 --resource gpt-4
 ```
 
+### ASCII Chart Visualization
+
+Display usage trends as ASCII charts with the `--plot` flag:
+
+```bash
+# Install the plot extra
+pip install 'zae-limiter[plot]'
+
+# Display usage as ASCII charts
+zae-limiter usage list --entity-id user-123 --plot
+
+# With resource filter
+zae-limiter usage list --entity-id user-123 --resource gpt-4 --plot
+```
+
+Example output:
+
+```
+Usage Plot: gpt-4 (hourly)
+Entity: user-123
+================================================================================
+
+RPM                             TPM
+----------------------------    -------------------------------
+51  ┤        ╭─╮                5,141  ┤        ╭╮
+47  ┤        │ ╰╮               4,719  ┤        │╰─╮
+43  ┤        │  ╰─────╮         4,297  ┤       ╭╯  ╰─────╮
+38  ┤       ╭╯        ╰╮        3,875  ┤       │         ╰╮
+34  ┤       │          │        3,453  ┤       │          │
+30  ┤      ╭╯          ╰╮       3,031  ┤      ╭╯          ╰╮
+26  ┤     ╭╯            ╰──     2,610  ┤     ╭╯            ╰──
+ 5  ┼─────╯                       500  ┼─────╯
+
+Time range: 2024-01-15T00:00:00Z to 2024-01-15T23:00:00Z
+Data points: 24
+
+Total: 24 snapshots
+```
+
+**Features:**
+
+- **Side-by-side layout**: Multiple counters displayed in pairs for compact viewing
+- **Context header**: Shows resource, window type, and entity ID
+- **Auto-downsampling**: Large datasets (>60 points) are automatically averaged to fit terminal width
+- **Right-aligned Y-axis**: Proper alignment for values with thousands separators
+
+This is useful for quickly spotting usage trends and patterns directly in the terminal.
+
 ## Snapshot Data Model
 
 Each snapshot contains:

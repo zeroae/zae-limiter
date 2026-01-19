@@ -46,6 +46,9 @@ dev = [
 lambda = [
     "aws-lambda-powertools>=2.0.0",
 ]
+plot = [
+    "asciichartpy>=1.5.25",
+]
 cdk = [
     "aws-cdk-lib>=2.0.0",
     "constructs>=10.0.0",
