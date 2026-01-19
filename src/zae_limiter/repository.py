@@ -37,10 +37,19 @@ class Repository:
             with 'ZAEL-' to form stack_name and table_name.
         region: AWS region (e.g., "us-east-1").
         endpoint_url: Custom endpoint URL (e.g., LocalStack).
+        stack_options: Configuration for CloudFormation infrastructure.
+            Pass StackOptions to enable declarative infrastructure management.
 
     Example:
+        # Basic usage
         repo = Repository(name="my-app", region="us-east-1")
-        # Creates stack_name="ZAEL-my-app", table_name="ZAEL-my-app"
+
+        # With infrastructure management (ADR-108)
+        repo = Repository(
+            name="my-app",
+            region="us-east-1",
+            stack_options=StackOptions(lambda_memory=512, enable_alarms=True),
+        )
     """
 
     def __init__(
@@ -48,6 +57,7 @@ class Repository:
         name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
+        stack_options: StackOptions | None = None,
     ) -> None:
         # Validate and normalize name (adds ZAEL- prefix)
         self.stack_name = normalize_stack_name(name)
@@ -55,6 +65,7 @@ class Repository:
         self.table_name = self.stack_name
         self.region = region
         self.endpoint_url = endpoint_url
+        self._stack_options = stack_options
         self._session: aioboto3.Session | None = None
         self._client: Any = None
         self._caller_identity_arn: str | None = None
@@ -158,16 +169,20 @@ class Repository:
         Create DynamoDB infrastructure via CloudFormation.
 
         Args:
-            stack_options: Configuration for CloudFormation stack
+            stack_options: Configuration for CloudFormation stack.
+                If None, uses the stack_options passed to the constructor.
 
         Raises:
             StackCreationError: If CloudFormation stack creation fails
         """
         from .infra.stack_manager import StackManager
 
+        # Use constructor-provided options if none specified
+        options = stack_options if stack_options is not None else self._stack_options
+
         async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             await manager.create_stack(
-                stack_options=stack_options,
+                stack_options=options,
             )
 
     # -------------------------------------------------------------------------

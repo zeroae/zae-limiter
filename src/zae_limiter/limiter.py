@@ -155,6 +155,7 @@ class RateLimiter:
                 name=self._name,
                 region=region,
                 endpoint_url=endpoint_url,
+                stack_options=stack_options,
             )
         else:
             # Default: silent backward compatibility
