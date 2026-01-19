@@ -1356,24 +1356,31 @@ class RateLimiter:
             pass  # Stack status unavailable
 
         # Ping DynamoDB and measure latency
+        # Note: _get_client is DynamoDB-specific, use hasattr for protocol compliance
         try:
             start_time = time.time()
-            client = await self._repository._get_client()
+            if hasattr(self._repository, "_get_client"):
+                client = await self._repository._get_client()
 
-            # Use DescribeTable to check connectivity and get table info
-            response = await client.describe_table(TableName=self.table_name)
-            latency_ms = (time.time() - start_time) * 1000
-            available = True
+                # Use DescribeTable to check connectivity and get table info
+                response = await client.describe_table(TableName=self.table_name)
+                latency_ms = (time.time() - start_time) * 1000
+                available = True
 
-            # Extract table information
-            table = response.get("Table", {})
-            table_status = table.get("TableStatus")
-            table_item_count = table.get("ItemCount")
-            table_size_bytes = table.get("TableSizeInBytes")
+                # Extract table information
+                table = response.get("Table", {})
+                table_status = table.get("TableStatus")
+                table_item_count = table.get("ItemCount")
+                table_size_bytes = table.get("TableSizeInBytes")
 
-            # Check if aggregator is enabled by looking for stream specification
-            stream_spec = table.get("StreamSpecification", {})
-            aggregator_enabled = stream_spec.get("StreamEnabled", False)
+                # Check if aggregator is enabled by looking for stream specification
+                stream_spec = table.get("StreamSpecification", {})
+                aggregator_enabled = stream_spec.get("StreamEnabled", False)
+            else:
+                # Non-DynamoDB backend: use ping() for availability check
+                available = await self._repository.ping()
+                if available:
+                    latency_ms = (time.time() - start_time) * 1000
 
         except Exception:
             pass  # DynamoDB unavailable
