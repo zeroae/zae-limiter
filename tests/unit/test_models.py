@@ -163,6 +163,7 @@ class TestStackOptions:
         assert opts.lambda_duration_threshold_pct == 80
         assert opts.permission_boundary is None
         assert opts.role_name_format is None
+        assert opts.create_iam_roles is True
 
     def test_custom_values(self):
         """Test custom values are preserved."""
@@ -355,6 +356,32 @@ class TestStackOptions:
         opts = StackOptions()
         params = opts.to_parameters(stack_name="ZAEL-mytable")
         assert "role_name" not in params
+
+    # -------------------------------------------------------------------------
+    # IAM Roles Tests (Issue #132)
+    # -------------------------------------------------------------------------
+
+    def test_create_iam_roles_default_true(self):
+        """Test create_iam_roles defaults to True."""
+        opts = StackOptions()
+        assert opts.create_iam_roles is True
+
+    def test_create_iam_roles_can_be_disabled(self):
+        """Test create_iam_roles can be set to False."""
+        opts = StackOptions(create_iam_roles=False)
+        assert opts.create_iam_roles is False
+
+    def test_create_iam_roles_in_to_parameters_enabled(self):
+        """Test enable_iam_roles is in params when create_iam_roles is True."""
+        opts = StackOptions(create_iam_roles=True)
+        params = opts.to_parameters()
+        assert params["enable_iam_roles"] == "true"
+
+    def test_create_iam_roles_in_to_parameters_disabled(self):
+        """Test enable_iam_roles is in params when create_iam_roles is False."""
+        opts = StackOptions(create_iam_roles=False)
+        params = opts.to_parameters()
+        assert params["enable_iam_roles"] == "false"
 
 
 class TestInputValidation:

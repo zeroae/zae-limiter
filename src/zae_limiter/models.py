@@ -581,6 +581,7 @@ class StackOptions:
         enable_audit_archival: Archive expired audit events to S3 via TTL
         audit_archive_glacier_days: Days before transitioning archives to Glacier IR (1-3650)
         enable_tracing: Enable AWS X-Ray tracing for Lambda aggregator
+        create_iam_roles: Create App/Admin/ReadOnly IAM roles for application access
     """
 
     snapshot_windows: str = "hourly,daily"
@@ -598,6 +599,7 @@ class StackOptions:
     enable_audit_archival: bool = True
     audit_archive_glacier_days: int = 90
     enable_tracing: bool = False
+    create_iam_roles: bool = True
 
     def __post_init__(self) -> None:
         """Validate options."""
@@ -673,6 +675,7 @@ class StackOptions:
             "enable_alarms": "true" if self.enable_alarms else "false",
             "lambda_duration_threshold": str(lambda_duration_threshold_ms),
             "enable_tracing": "true" if self.enable_tracing else "false",
+            "enable_iam_roles": "true" if self.create_iam_roles else "false",
         }
         if self.pitr_recovery_days is not None:
             params["pitr_recovery_days"] = str(self.pitr_recovery_days)
@@ -727,6 +730,9 @@ class Status:
         client_version: Current client library version
         table_item_count: Approximate item count in table
         table_size_bytes: Approximate table size in bytes
+        app_role_arn: IAM role ARN for applications (None if roles disabled)
+        admin_role_arn: IAM role ARN for administrators (None if roles disabled)
+        readonly_role_arn: IAM role ARN for read-only access (None if roles disabled)
     """
 
     # Connectivity
@@ -750,6 +756,11 @@ class Status:
     # Table metrics
     table_item_count: int | None
     table_size_bytes: int | None
+
+    # IAM Roles (Issue #132)
+    app_role_arn: str | None = None
+    admin_role_arn: str | None = None
+    readonly_role_arn: str | None = None
 
 
 class AuditAction:

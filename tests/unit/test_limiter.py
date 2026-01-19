@@ -1251,6 +1251,123 @@ class TestRateLimiterGetStatus:
 
             await limiter.close()
 
+    @pytest.mark.asyncio
+    async def test_get_status_includes_iam_role_arns(self, mock_dynamodb):
+        """get_status should include IAM role ARNs when available in stack outputs."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-iam-roles-status",
+                region="us-east-1",
+            )
+
+            # Create table first
+            await limiter._repository.create_table()
+
+            # Mock StackManager to return stack status and outputs
+            mock_cfn_client = MagicMock()
+            mock_cfn_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "StackName": "ZAEL-test-iam-roles-status",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "Outputs": [
+                                {
+                                    "OutputKey": "AppRoleArn",
+                                    "OutputValue": "arn:aws:iam::123456789012:role/app-role",
+                                },
+                                {
+                                    "OutputKey": "AdminRoleArn",
+                                    "OutputValue": "arn:aws:iam::123456789012:role/admin-role",
+                                },
+                                {
+                                    "OutputKey": "ReadOnlyRoleArn",
+                                    "OutputValue": "arn:aws:iam::123456789012:role/readonly-role",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+            mock_manager._get_client = AsyncMock(return_value=mock_cfn_client)
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_status()
+
+            assert status.app_role_arn == "arn:aws:iam::123456789012:role/app-role"
+            assert status.admin_role_arn == "arn:aws:iam::123456789012:role/admin-role"
+            assert status.readonly_role_arn == "arn:aws:iam::123456789012:role/readonly-role"
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_status_role_arns_none_when_roles_disabled(self, mock_dynamodb):
+        """get_status should return None for role ARNs when IAM roles are disabled."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-no-iam-roles-status",
+                region="us-east-1",
+            )
+
+            # Create table first
+            await limiter._repository.create_table()
+
+            # Mock StackManager with no role outputs (roles disabled)
+            mock_cfn_client = MagicMock()
+            mock_cfn_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "StackName": "ZAEL-test-no-iam-roles-status",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "Outputs": [
+                                {
+                                    "OutputKey": "TableName",
+                                    "OutputValue": "ZAEL-test-no-iam-roles-status",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+            mock_manager._get_client = AsyncMock(return_value=mock_cfn_client)
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_status()
+
+            # Role ARNs should be None when not in outputs
+            assert status.app_role_arn is None
+            assert status.admin_role_arn is None
+            assert status.readonly_role_arn is None
+
+            await limiter.close()
+
 
 class TestSyncRateLimiterGetStatus:
     """Tests for SyncRateLimiter.get_status method."""
@@ -1282,6 +1399,10 @@ class TestSyncRateLimiterGetStatus:
         assert hasattr(status, "client_version")
         assert hasattr(status, "table_item_count")
         assert hasattr(status, "table_size_bytes")
+        # IAM role ARN fields (Issue #132)
+        assert hasattr(status, "app_role_arn")
+        assert hasattr(status, "admin_role_arn")
+        assert hasattr(status, "readonly_role_arn")
 
 
 class TestRateLimiterInputValidation:

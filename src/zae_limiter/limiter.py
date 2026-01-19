@@ -1238,6 +1238,7 @@ class RateLimiter:
             - Identity: name, region
             - Versions: schema_version, lambda_version, client_version
             - Table metrics: table_item_count, table_size_bytes
+            - IAM Roles: app_role_arn, admin_role_arn, readonly_role_arn
 
         Example:
             Check infrastructure health::
@@ -1268,13 +1269,34 @@ class RateLimiter:
         lambda_version: str | None = None
         table_item_count: int | None = None
         table_size_bytes: int | None = None
+        app_role_arn: str | None = None
+        admin_role_arn: str | None = None
+        readonly_role_arn: str | None = None
 
-        # Get CloudFormation stack status (does not require table to exist)
+        # Get CloudFormation stack status and outputs (does not require table to exist)
         try:
             async with StackManager(
                 self.stack_name, self._repository.region, self._repository.endpoint_url
             ) as manager:
                 cfn_status = await manager.get_stack_status(self.stack_name)
+                # Get stack outputs for role ARNs if stack exists and is complete
+                if cfn_status and "COMPLETE" in cfn_status:
+                    try:
+                        client = await manager._get_client()
+                        response = await client.describe_stacks(StackName=self.stack_name)
+                        if response.get("Stacks"):
+                            outputs = response["Stacks"][0].get("Outputs", [])
+                            for output in outputs:
+                                key = output.get("OutputKey", "")
+                                value = output.get("OutputValue", "")
+                                if key == "AppRoleArn":
+                                    app_role_arn = value
+                                elif key == "AdminRoleArn":
+                                    admin_role_arn = value
+                                elif key == "ReadOnlyRoleArn":
+                                    readonly_role_arn = value
+                    except Exception:
+                        pass  # Stack outputs unavailable
         except Exception:
             pass  # Stack status unavailable
 
@@ -1324,6 +1346,9 @@ class RateLimiter:
             client_version=__version__,
             table_item_count=table_item_count,
             table_size_bytes=table_size_bytes,
+            app_role_arn=app_role_arn,
+            admin_role_arn=admin_role_arn,
+            readonly_role_arn=readonly_role_arn,
         )
 
 
