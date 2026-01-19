@@ -125,10 +125,23 @@ nav:
       - Testing: contributing/testing.md
       - Architecture: contributing/architecture.md
   - ADRs:
-      - ADR-100 Centralized Config: adr/100-centralized-config.md
-      - ADR-101 Flat Schema: adr/101-flat-schema-config.md
-      - ADR-102 Config Hierarchy: adr/102-config-hierarchy.md
-      - ADR-103 Config Caching: adr/103-config-caching.md
-      - ADR-104 Stored Limits Default: adr/104-stored-limits-default.md
-      - ADR-105 Eventual Consistency: adr/105-eventual-consistency.md
-      - ADR-106 Audit Entity IDs: adr/106-audit-entity-ids-for-config.md
+      - Foundational (v0.1.0-v0.4.0):
+          - ADR-001 Single-Table DynamoDB: adr/001-single-table-dynamodb.md
+          - ADR-002 Integer Arithmetic: adr/002-integer-arithmetic-millitokens.md
+          - ADR-003 CloudFormation Infra: adr/003-cloudformation-infrastructure.md
+          - ADR-004 StackOptions: adr/004-declarative-stack-options.md
+          - ADR-005 Exception Hierarchy: adr/005-exception-hierarchy.md
+          - ADR-006 Flat Schema Snapshots: adr/006-flat-schema-snapshots.md
+          - ADR-007 Input Validation: adr/007-input-validation.md
+          - ADR-008 Audit Logging: adr/008-security-audit-logging.md
+          - ADR-009 Version Migration: adr/009-version-migration-system.md
+          - ADR-010 Consumed Counter: adr/010-total-consumed-counter.md
+          - ADR-011 API/CLI Parity: adr/011-api-cli-parity.md
+      - Centralized Config (v0.5.0):
+          - ADR-100 Overview: adr/100-centralized-config.md
+          - ADR-101 Flat Schema: adr/101-flat-schema-config.md
+          - ADR-102 Config Hierarchy: adr/102-config-hierarchy.md
+          - ADR-103 Config Caching: adr/103-config-caching.md
+          - ADR-104 Stored Limits Default: adr/104-stored-limits-default.md
+          - ADR-105 Eventual Consistency: adr/105-eventual-consistency.md
+          - ADR-106 Audit Entity IDs: adr/106-audit-entity-ids-for-config.md
