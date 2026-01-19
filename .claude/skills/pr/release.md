@@ -40,14 +40,15 @@ Extract:
 - Open/closed issue counts
 - URL
 
-### 3. Get Commits Since Last Release
+### 3. Analyze Release Changes
 
-```bash
-# Find previous tag
-git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "v0.0.0"
+Use an Explore agent to analyze commits since the last release:
 
-# Get commits since then
-git log --oneline <previous-tag>..HEAD
+```
+Task(Explore): Analyze commits since the last release tag and:
+- Categorize by type (features, fixes, docs, chores)
+- Identify breaking changes (BREAKING CHANGE:, !, 💥)
+- Summarize what each change does for the changelog
 ```
 
 ### 4. Check for Open Issues
@@ -56,29 +57,21 @@ git log --oneline <previous-tag>..HEAD
 gh issue list --milestone "v<version>" --state open --json number,title
 ```
 
-### 5. Check for Breaking Changes
+### 5. Generate PR
 
-Scan commits for:
-- `BREAKING CHANGE:` in commit bodies
-- `!` after type (e.g., `feat(api)!:`)
-- `💥` emoji
+Use template from [release-template.md](release-template.md).
 
-```bash
-git log --format="%B" <previous-tag>..HEAD | grep -E "(BREAKING CHANGE:|^[a-z]+\([^)]*\)!:)"
-```
-
-### 6. Generate PR
-
-Use template from [release-prep-template.md](release-prep-template.md).
+**Release PRs must be created in draft mode** to allow for verification before merging.
 
 ```bash
 gh pr create \
+  --draft \
   --title "chore: release prep v<version>" \
   --body "<generated-body>" \
   --milestone "v<version>"
 ```
 
-### 7. Invoke Release-Prep Skill
+### 6. Invoke Release-Prep Skill
 
 After creating the PR, suggest running the `release-prep` skill for full verification:
 

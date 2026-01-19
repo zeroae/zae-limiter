@@ -20,33 +20,46 @@ gh pr view --json number,title,body,labels,milestone,url
 gh pr view <number> --json number,title,body,labels,milestone,url
 ```
 
-### 2. Analyze Commits
+### 2. Get Base Branch
 
 ```bash
-# Get all commits in PR
-git log --oneline origin/main..HEAD
-
-# Group by type (feat, fix, docs, chore, etc.)
-git log --oneline origin/main..HEAD --format="%s"
+# Get the PR's base branch
+gh pr view <number> --json baseRefName --jq '.baseRefName'
 ```
 
-### 3. Detect Changed Areas
+Use the base branch for commit comparisons (may be `main` or `release/<version>`).
 
-Scan commits and changed files to identify:
+### 3. Analyze Commits
+
+```bash
+# Get all commits in PR (use actual base branch)
+git log --oneline origin/<base-branch>..HEAD
+
+# Group by type (feat, fix, docs, chore, etc.)
+git log --oneline origin/<base-branch>..HEAD --format="%s"
+```
+
+### 4. Detect Changed Areas
+
+Use an Explore agent to analyze the changed files and categorize them:
+
+```
+Task(Explore): Analyze the files changed in this PR and categorize them by:
 - New features added
-- Skills added (`.claude/skills/`)
-- Documentation changes (`docs/`)
-- Configuration changes (`.claude/settings.json`, `mkdocs.yml`)
+- Skills added (.claude/skills/)
+- Documentation changes (docs/)
+- Configuration changes
 - Infrastructure changes
+```
 
-### 4. Get Linked Issue (if any)
+### 5. Get Linked Issue (if any)
 
 ```bash
 # Check PR body for "Closes #N" or "Fixes #N"
 gh pr view --json body --jq '.body' | grep -oE '(Closes|Fixes) #[0-9]+'
 ```
 
-### 5. Generate Updated Body
+### 6. Generate Updated Body
 
 ```markdown
 ## Summary
@@ -74,7 +87,7 @@ Closes #<issue-number>
 - Add sections for major additions (new skills, new docs, etc.)
 - Preserve any "Closes #N" references from original body
 
-### 6. Update the PR
+### 7. Update the PR
 
 ```bash
 gh pr edit <number> --body "$(cat <<'EOF'
@@ -83,7 +96,7 @@ EOF
 )"
 ```
 
-### 7. Verify Update
+### 8. Verify Update
 
 ```bash
 gh pr view <number> --json body --jq '.body' | head -20

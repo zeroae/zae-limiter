@@ -19,7 +19,37 @@ git status
 
 If no commits, ask user to commit first.
 
-### 2. Determine PR Type and Scope
+### 2. Determine Base Branch
+
+PRs should target the release branch that matches the issue's milestone.
+
+**Step 1: Get milestone from issue (if provided) or infer from branch:**
+```bash
+# If issue number provided
+gh issue view <number> --json milestone --jq '.milestone.title'
+# Returns e.g., "v0.5.0" or "0.5.0"
+```
+
+**Step 2: Check if release branch exists:**
+```bash
+# Try both formats: release/0.5.0 and release/v0.5.0
+git ls-remote --heads origin "release/${version}" "release/v${version}"
+```
+
+**Step 3: Determine base branch:**
+- If release branch exists → use `release/<version>` as base
+- If release branch does NOT exist → ask user:
+  - "Create release branch from main?" → create `release/<version>` from main
+  - "Target main directly?" → use `main` as base
+  - "Cancel?" → abort PR creation
+
+**Step 4: Update comparison commands:**
+```bash
+# Use the determined base branch instead of main
+git log --oneline origin/<base-branch>..HEAD
+```
+
+### 3. Determine PR Type and Scope
 
 If issue number provided:
 ```bash
@@ -33,23 +63,13 @@ Extract:
 
 If no issue, infer from branch name or ask.
 
-### 3. Generate PR Title
+### 4. Generate PR Title
 
-PR titles follow conventional commits format with gitmoji (lowercase after emoji):
+PR titles follow the project's commit message conventions.
 
-| Issue Type | PR Title Format |
-|------------|-----------------|
-| ✨ Feature | `✨ feat(scope): description` |
-| 🐛 Bug | `🐛 fix(scope): description` |
-| 📋 Task | `📝 docs: description` or `✅ test: description` |
-| 🔧 Chore | `🔧 chore(scope): description` |
-| 🔥 Remove | `🔥 chore: description` (for removals) |
-| ⚡ Perf | `⚡ perf(scope): description` |
-| ♻️ Refactor | `♻️ refactor(scope): description` |
+Scope comes from `area/` label (e.g., `area/cli` → `cli`). If no label, use an Explore agent to infer scope from changed files.
 
-Scope comes from `area/` label (e.g., `area/cli` → `cli`).
-
-### 4. Generate PR Body
+### 5. Generate PR Body
 
 ```markdown
 ## Summary
@@ -63,17 +83,20 @@ Closes #<issue-number>
 🤖 Generated with [Claude Code](https://claude.ai/code)
 ```
 
-### 5. Create the PR
+### 6. Create the PR
 
 ```bash
 gh pr create \
+  --base "<base-branch>" \
   --title "<emoji> <type>(scope): description" \
   --body "<body>" \
   --label "<inherited-labels>" \
   --milestone "<inherited-milestone>"
 ```
 
-### 6. Push if Needed
+**Note:** Use `--base release/<version>` when targeting a release branch.
+
+### 7. Push if Needed
 
 ```bash
 git push -u origin <branch-name>

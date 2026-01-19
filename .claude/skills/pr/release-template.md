@@ -5,7 +5,7 @@ Full template for release preparation pull requests.
 ## PR Title
 
 ```
-chore: release prep v<version>
+🔧 chore: release prep v<version>
 ```
 
 ## PR Body
