@@ -25,6 +25,50 @@
          <lastmod>2026-01-19</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/001-single-table-dynamodb/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/002-integer-arithmetic-millitokens/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/003-cloudformation-infrastructure/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/004-declarative-stack-options/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/005-exception-hierarchy/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/006-flat-schema-snapshots/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/007-input-validation/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/008-security-audit-logging/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/009-version-migration-system/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/010-total-consumed-counter/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/011-api-cli-parity/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/100-centralized-config/</loc>
          <lastmod>2026-01-19</lastmod>
     </url>
