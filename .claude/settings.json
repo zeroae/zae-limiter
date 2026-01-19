@@ -26,11 +26,14 @@
       "Bash(uv run ruff:*)",
       "Bash(uv run cfn-lint:*)",
       "Bash(export AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1:*)",
-      "Bash(uv run zae-limiter deploy:*)"
+      "Bash(uv run zae-limiter:*)",
+      "Bash(uv run python:*)"
     ],
     "ask": [
       "Bash(gh issue close:*)",
-      "Bash(gh pr merge:*)"
+      "Bash(gh pr merge:*)",
+      "Bash(AWS_PROFILE=* uv run zae-limiter deploy:*)",
+      "Bash(AWS_PROFILE=* uv run zae-limiter delete:*)"
     ]
   },
   "hooks": {
