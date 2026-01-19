@@ -12,6 +12,7 @@ from .exceptions import EntityExistsError
 from .models import (
     AuditAction,
     AuditEvent,
+    BackendCapabilities,
     BucketState,
     Entity,
     Limit,
@@ -51,6 +52,19 @@ class Repository:
         self._client: Any = None
         self._caller_identity_arn: str | None = None
         self._caller_identity_fetched = False
+
+        # DynamoDB supports all extended features
+        self._capabilities = BackendCapabilities(
+            supports_audit_logging=True,
+            supports_usage_snapshots=True,
+            supports_infrastructure_management=True,
+            supports_change_streams=True,
+        )
+
+    @property
+    def capabilities(self) -> BackendCapabilities:
+        """Declare which extended features this backend supports."""
+        return self._capabilities
 
     async def _get_client(self) -> Any:
         """Get or create the DynamoDB client."""
@@ -365,6 +379,51 @@ class Repository:
         )
 
         return [self._deserialize_bucket(item) for item in response.get("Items", [])]
+
+    async def get_or_create_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limit: Limit,
+    ) -> BucketState:
+        """
+        Get an existing bucket or create a new one with the given limit.
+
+        If the bucket exists, it is returned. If not, a new bucket is created
+        with capacity set to the limit's capacity.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name (e.g., "gpt-4")
+            limit: Limit configuration for the bucket
+
+        Returns:
+            Existing or newly created BucketState
+        """
+        existing = await self.get_bucket(entity_id, resource, limit.name)
+        if existing is not None:
+            return existing
+
+        # Create new bucket at full capacity
+        now_ms = self._now_ms()
+        state = BucketState(
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=limit.name,
+            tokens_milli=limit.capacity * 1000,
+            last_refill_ms=now_ms,
+            capacity_milli=limit.capacity * 1000,
+            burst_milli=limit.burst * 1000,
+            refill_amount_milli=limit.refill_amount * 1000,
+            refill_period_ms=limit.refill_period_seconds * 1000,
+            total_consumed_milli=0,
+        )
+
+        # Write bucket to DynamoDB
+        put_item = self.build_bucket_put_item(state)
+        await self.transact_write([put_item])
+
+        return state
 
     def build_bucket_put_item(
         self,

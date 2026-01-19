@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from .models import (
         AuditEvent,
+        BackendCapabilities,
         BucketState,
         Entity,
         Limit,
@@ -75,6 +76,20 @@ class RepositoryProtocol(Protocol):
     @property
     def table_name(self) -> str:
         """DynamoDB table name (same as stack_name)."""
+        ...
+
+    @property
+    def capabilities(self) -> "BackendCapabilities":
+        """
+        Declare which extended features this backend supports.
+
+        Returns:
+            BackendCapabilities instance with feature flags.
+
+        Example:
+            if repo.capabilities.supports_audit_logging:
+                events = await repo.get_audit_events(entity_id)
+        """
         ...
 
     # -------------------------------------------------------------------------
@@ -206,6 +221,46 @@ class RepositoryProtocol(Protocol):
 
         Returns:
             BucketState if found, None otherwise
+        """
+        ...
+
+    async def get_buckets(
+        self,
+        entity_id: str,
+        resource: str,
+    ) -> "list[BucketState]":
+        """
+        Get all token buckets for an entity/resource pair.
+
+        Args:
+            entity_id: Entity owning the buckets
+            resource: Resource name (e.g., "gpt-4")
+
+        Returns:
+            List of bucket states for all limits on this resource
+        """
+        ...
+
+    async def get_or_create_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limit: "Limit",
+    ) -> "BucketState":
+        """
+        Get an existing bucket or create a new one with the given limit.
+
+        This is the primary method for initializing token buckets. If a bucket
+        exists, it is returned. If not, a new bucket is created with capacity
+        set to the limit's capacity.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name (e.g., "gpt-4")
+            limit: Limit configuration for the bucket
+
+        Returns:
+            Existing or newly created BucketState
         """
         ...
 

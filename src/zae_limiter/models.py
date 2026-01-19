@@ -95,6 +95,41 @@ def validate_name(value: str, field_name: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Backend Capabilities
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BackendCapabilities:
+    """
+    Declares which extended features a backend supports.
+
+    Used by RateLimiter to gracefully degrade when features are unavailable.
+    Backend implementations should return an instance from their `capabilities`
+    property.
+
+    See ADR-109 for the capability matrix across backends.
+    """
+
+    supports_audit_logging: bool = False
+    """Whether the backend supports audit event storage and retrieval."""
+
+    supports_usage_snapshots: bool = False
+    """Whether the backend supports usage snapshot aggregation."""
+
+    supports_infrastructure_management: bool = False
+    """Whether the backend supports declarative infrastructure (e.g., CloudFormation)."""
+
+    supports_change_streams: bool = False
+    """Whether the backend supports real-time change notifications."""
+
+
+# ---------------------------------------------------------------------------
+# Limit Configuration
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class Limit:
     """

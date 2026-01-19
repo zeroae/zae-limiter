@@ -18,7 +18,7 @@ If a test fails:
 2. Fix YOUR code, not the test
 3. If stuck after 3 attempts, escalate to human
 
-**2. All ADRs must be followed.**
+**2. All ADRs must be followed. ADRs are READ-ONLY.**
 
 After EVERY phase, run ADR compliance check:
 ```bash
@@ -29,6 +29,12 @@ This validates your changes against ALL Architecture Decision Records in `docs/a
 1. Read the specific ADR that was violated
 2. Adjust your implementation to comply
 3. Re-run `/adr enforce` until it passes
+
+**CRITICAL: You MUST NOT modify ADR files.** Treat ADRs exactly like test files - they are correct, your implementation is wrong. If your implementation conflicts with an ADR:
+- The ADR is correct. Your implementation is wrong.
+- You MUST change your implementation to match the ADR
+- You MUST NOT edit, update, or "fix" the ADR to match your implementation
+- If you believe an ADR is incorrect, escalate to human - do not modify it yourself
 
 Key ADRs for this refactor:
 - ADR-108: Repository Protocol Design (defines the protocol structure)
@@ -227,5 +233,6 @@ If stuck:
 
 Do NOT:
 - Modify existing test files
+- Modify ADR files in `docs/adr/`
 - Skip validation steps
 - Proceed if tests are failing

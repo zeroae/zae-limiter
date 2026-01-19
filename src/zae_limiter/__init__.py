@@ -81,6 +81,7 @@ from .lease import Lease, SyncLease
 from .models import (
     AuditAction,
     AuditEvent,
+    BackendCapabilities,
     BucketState,
     Entity,
     EntityCapacity,
@@ -133,6 +134,7 @@ __all__ = [
     "ResourceCapacity",
     "EntityCapacity",
     "StackOptions",
+    "BackendCapabilities",
     "Status",
     # Audit
     "AuditEvent",

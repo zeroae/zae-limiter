@@ -1,6 +1,6 @@
 ---
 description: Create and review Architecture Decision Records. Use `/adr create <title>` to create a new ADR, `/adr review` to check an existing one, `/adr enforce` to validate changes against ADRs in docs/adr/, `/adr list` to show all ADRs, `/adr accept <number>` to mark as accepted, or `/adr supersede <old> <new>` to mark an ADR as superseded.
-argument-hint: create <title> | review [file] | enforce | list | accept <number> | supersede <old> <new>
+argument-hint: create <title> | review [file] | enforce [--base <branch>] | list | accept <number> | supersede <old> <new>
 allowed-tools: Glob, Grep, Read, Write, Edit, Bash, AskUserQuestion
 ---
 
@@ -15,7 +15,7 @@ Create, review, and enforce Architecture Decision Records.
 - `$ARGUMENTS`: One of:
   - `create <title>` - Create a new ADR
   - `review [file]` - Review an existing ADR
-  - `enforce` - Validate current changes against all ADRs
+  - `enforce [--base <branch>]` - Validate current changes against all ADRs
   - `list` - List all ADRs with status and title
   - `accept <number>` - Transition ADR status to Accepted
   - `supersede <old> <new>` - Mark old ADR as superseded by new one
@@ -89,22 +89,43 @@ When arguments start with `review`:
 
 ## Enforce Mode
 
-When arguments are `enforce` (or empty and invoked proactively):
+When arguments are `enforce` or `enforce --base <branch>`:
 
-1. Run `git diff HEAD` to identify changed files and understand the current changes
-2. Read all ADRs from `docs/adr/` (glob `*.md`)
-3. For each ADR, extract:
+### Step 1: Determine the base branch
+
+Use this priority order to find the correct base branch for comparison:
+
+1. **Explicit argument**: If `--base <branch>` is provided, use it
+2. **PR context**: Run `gh pr view --json baseRefName -q .baseRefName` - if successful, use the PR's base branch
+3. **GitHub Actions env**: If `GITHUB_BASE_REF` environment variable is set, use it
+4. **Repository default**: Run `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` to get the default branch
+
+Report which detection method was used: "Base branch: `<branch>` (detected from: <method>)"
+
+### Step 2: Get the diff
+
+Run `git diff origin/<base>...HEAD` to identify changed files and understand the current changes.
+
+If the base branch doesn't exist locally, fetch it first: `git fetch origin <base>`
+
+### Step 3: Read and analyze ADRs
+
+1. Read all ADRs from `docs/adr/` (glob `*.md`)
+2. For each ADR, extract:
    - Title and number
    - The **Context** (what problem it addresses)
    - The **Decision** (the constraint to enforce)
-4. Compare each ADR's context against the changes from `git diff`
-5. For ADRs whose context is relevant, check if the proposed approach aligns with the Decision
-6. Report findings:
+3. Compare each ADR's context against the changes from `git diff`
+4. For ADRs whose context is relevant, check if the proposed approach aligns with the Decision
+
+### Step 4: Report findings
 
 **Output format:**
 
 ```
 ## ADR Enforcement Check
+
+**Base branch:** `<branch>` (detected from: <method>)
 
 ### Relevant ADRs for this change:
 - ADR-NNN: <title> - ✅ Compliant | ⚠️ Review needed | ❌ Violation
@@ -116,7 +137,9 @@ When arguments are `enforce` (or empty and invoked proactively):
 <List ADRs checked but not relevant to this change>
 ```
 
-7. If a change appears to violate an ADR, ask the user if they want to:
+### Step 5: Handle violations
+
+If a change appears to violate an ADR, ask the user if they want to:
    - Adjust the implementation to comply
    - Create a new ADR to supersede the old decision
 
