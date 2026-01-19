@@ -280,7 +280,7 @@ src/zae_limiter/
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
-├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, version, upgrade, check, audit, usage)
+├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, version, upgrade, check, audit, usage, resource, system)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
@@ -629,13 +629,47 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
 | Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
-| Get system config | `PK=SYSTEM#, SK begins_with #LIMIT#` |
-| Get resource config | `PK=RESOURCE#{name}, SK begins_with #LIMIT#` |
-| Get entity config | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+| Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#{resource}#` |
+| Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#{resource}#` |
+| Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+
+**Key builders for config records:**
+- `pk_system()` - Returns `SYSTEM#`
+- `pk_resource(resource)` - Returns `RESOURCE#{resource}`
+- `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
+- `sk_limit(resource, limit_name)` - Returns `#LIMIT#{resource}#{limit_name}`
+
+**Audit entity IDs for config levels** (ADR-106):
+- System config: Audit events use `$SYSTEM` as entity_id
+- Resource config: Audit events use `$RESOURCE:{resource_name}` (e.g., `$RESOURCE:gpt-4`)
 
 ### Centralized Configuration (v0.5.0+)
 
-Config uses a three-level hierarchy with precedence: **Entity > Resource > System > Constructor defaults**.
+Limit configs use a three-level hierarchy with precedence: **Entity > Resource > System > Constructor defaults**.
+
+**API methods for managing stored limits:**
+
+| Level | Set | Get | Delete | List |
+|-------|-----|-----|--------|------|
+| System | `set_system_limits(resource, limits)` | `get_system_limits(resource)` | `delete_system_limits(resource)` | `list_system_resources_with_limits()` |
+| Resource | `set_resource_limits(resource, limits)` | `get_resource_limits(resource)` | `delete_resource_limits(resource)` | `list_resources_with_limits()` |
+| Entity | `set_limits(entity_id, limits, resource)` | `get_limits(entity_id, resource)` | `delete_limits(entity_id, resource)` | - |
+
+**CLI commands for managing stored limits:**
+
+```bash
+# System-level defaults (apply to all entities unless overridden)
+zae-limiter system set-defaults gpt-4 -l tpm:100000 -l rpm:1000
+zae-limiter system get-defaults gpt-4
+zae-limiter system delete-defaults gpt-4 --yes
+zae-limiter system list-resources
+
+# Resource-level limits (apply to specific resource)
+zae-limiter resource set gpt-4 -l tpm:50000 -l rpm:500
+zae-limiter resource get gpt-4
+zae-limiter resource delete gpt-4 --yes
+zae-limiter resource list
+```
 
 Config fields are stored alongside limits in existing `#LIMIT#` records using **flat schema** (no nested `data.M`):
 
