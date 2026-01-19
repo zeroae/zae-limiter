@@ -155,6 +155,17 @@ zae-limiter deploy --name my-app --no-audit-archival
 # Deploy with AWS X-Ray tracing enabled
 zae-limiter deploy --name my-app --enable-tracing
 
+# Deploy without IAM roles (for custom IAM)
+zae-limiter deploy --name my-app --no-iam-roles
+
+# Status shows IAM role ARNs when enabled
+zae-limiter status --name my-app
+# Output includes:
+# IAM Roles
+#   App:           arn:aws:iam::123456789012:role/ZAEL-my-app-app-role
+#   Admin:         arn:aws:iam::123456789012:role/ZAEL-my-app-admin-role
+#   ReadOnly:      arn:aws:iam::123456789012:role/ZAEL-my-app-readonly-role
+
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
 
@@ -232,6 +243,13 @@ limiter = RateLimiter(
     name="my-app",
     region="us-east-1",
     stack_options=StackOptions(enable_tracing=True),
+)
+
+# Disable IAM role creation (for custom IAM policies)
+limiter = RateLimiter(
+    name="my-app",
+    region="us-east-1",
+    stack_options=StackOptions(create_iam_roles=False),
 )
 ```
 

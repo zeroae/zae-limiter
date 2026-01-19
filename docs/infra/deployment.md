@@ -10,7 +10,7 @@ zae-limiter uses CloudFormation to deploy:
 - **DynamoDB Streams** - Captures changes for usage aggregation
 - **Lambda Function** - Aggregates usage into hourly/daily snapshots and archives audit events
 - **S3 Bucket** - Archives expired audit events (when audit archival is enabled)
-- **IAM Roles** - Least-privilege access for Lambda
+- **IAM Roles** - Least-privilege access for Lambda and application access (App/Admin/ReadOnly)
 - **CloudWatch Logs** - Lambda function logs
 
 ## CLI Deployment (Recommended)
@@ -41,6 +41,7 @@ zae-limiter deploy \
 | `--pitr-recovery-days` | Point-in-time recovery (1-35 days) | None (disabled) |
 | `--enable-audit-archival/--no-audit-archival` | Archive expired audit events to S3 | `true` |
 | `--audit-archive-glacier-days` | Days before Glacier IR transition | `90` |
+| `--enable-iam-roles/--no-iam-roles` | Create App/Admin/ReadOnly IAM roles | `true` |
 
 For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
@@ -179,7 +180,7 @@ async with limiter.acquire(
 |---------|-------|-------------|
 | Infrastructure | ✓ Deploy, update, delete stacks | Connect only |
 | Rate limits | ✓ Configure at all levels | Auto-resolved |
-| Credentials | Full AWS access | DynamoDB read/write only |
+| Credentials | Full AWS access (or AdminRole) | DynamoDB read/write only (or AppRole) |
 | Changes | Through CLI/IaC | None |
 
 This separation allows:
@@ -402,6 +403,75 @@ X-Ray charges based on traces recorded and retrieved. For typical usage:
 - After free tier: $5.00 per million traces recorded
 
 For high-volume deployments, consider sampling strategies or enabling tracing only for troubleshooting.
+
+## Application IAM Roles
+
+The stack creates three optional IAM roles for different access patterns. These are enabled by default and provide least-privilege access for applications, administrators, and monitoring systems.
+
+### Enabling/Disabling Roles
+
+=== "CLI"
+
+    ```bash
+    # Deploy with IAM roles (default)
+    zae-limiter deploy --name limiter --region us-east-1
+
+    # Deploy without IAM roles (for custom IAM)
+    zae-limiter deploy --name limiter --region us-east-1 --no-iam-roles
+    ```
+
+=== "Programmatic"
+
+    ```python
+    from zae_limiter import RateLimiter, StackOptions
+
+    # With IAM roles (default)
+    limiter = RateLimiter(
+        name="limiter",
+        region="us-east-1",
+        stack_options=StackOptions(),  # create_iam_roles=True by default
+    )
+
+    # Without IAM roles
+    limiter = RateLimiter(
+        name="limiter",
+        region="us-east-1",
+        stack_options=StackOptions(create_iam_roles=False),
+    )
+    ```
+
+### Role Summary
+
+| Role | Use Case | DynamoDB Permissions |
+|------|----------|---------------------|
+| `AppRole` | Applications calling `acquire()` | GetItem, Query, TransactWriteItems |
+| `AdminRole` | Ops teams managing config | App + PutItem, DeleteItem, UpdateItem, BatchWriteItem |
+| `ReadOnlyRole` | Monitoring and dashboards | GetItem, Query, Scan, DescribeTable |
+
+### Viewing Role ARNs
+
+The `status` command shows IAM role ARNs when roles are enabled:
+
+```bash
+zae-limiter status --name limiter --region us-east-1
+```
+
+Output includes:
+```
+IAM Roles
+  App:           arn:aws:iam::123456789012:role/ZAEL-limiter-app-role
+  Admin:         arn:aws:iam::123456789012:role/ZAEL-limiter-admin-role
+  ReadOnly:      arn:aws:iam::123456789012:role/ZAEL-limiter-readonly-role
+```
+
+### Role Naming
+
+- Default: `${StackName}-{app,admin,readonly}-role` (e.g., `ZAEL-limiter-app-role`)
+- With `--role-name-format`: Custom naming pattern applied to all roles
+
+Roles respect `--permission-boundary` if configured.
+
+For detailed IAM role configuration and usage examples, see [CloudFormation - Application IAM Roles](cloudformation.md#application-iam-roles).
 
 ## Next Steps
 
