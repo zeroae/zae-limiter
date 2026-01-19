@@ -1480,17 +1480,17 @@ def _format_limit(limit: Limit) -> str:
 
 @cli.group()
 def resource() -> None:
-    """Resource-level limit configuration commands."""
+    """Resource-level default limit configuration commands."""
     pass
 
 
-@resource.command("set")
+@resource.command("set-defaults")
 @click.argument("resource_name")
 @click.option(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -1508,16 +1508,17 @@ def resource() -> None:
     required=True,
     help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
 )
-def resource_set(
+def resource_set_defaults(
     resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
     limits: tuple[str, ...],
 ) -> None:
-    """Set limits for a resource.
+    """Set default limits for a resource.
 
     RESOURCE_NAME is the resource to configure (e.g., 'gpt-4', 'claude-3').
+    Resource defaults override system defaults for this specific resource.
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
@@ -1540,15 +1541,15 @@ def resource_set(
             sys.exit(1)
 
         try:
-            await repo.set_resource_limits(resource_name, parsed_limits)
-            click.echo(f"Set {len(parsed_limits)} limit(s) for resource '{resource_name}':")
+            await repo.set_resource_defaults(resource_name, parsed_limits)
+            click.echo(f"Set {len(parsed_limits)} default(s) for resource '{resource_name}':")
             for limit in parsed_limits:
                 click.echo(f"  {_format_limit(limit)}")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
         except Exception as e:
-            click.echo(f"Error: Failed to set resource limits: {e}", err=True)
+            click.echo(f"Error: Failed to set resource defaults: {e}", err=True)
             sys.exit(1)
         finally:
             await repo.close()
@@ -1556,13 +1557,13 @@ def resource_set(
     asyncio.run(_set())
 
 
-@resource.command("get")
+@resource.command("get-defaults")
 @click.argument("resource_name")
 @click.option(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -1572,13 +1573,13 @@ def resource_set(
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
-def resource_get(
+def resource_get_defaults(
     resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """Get limits for a resource.
+    """Get default limits for a resource.
 
     RESOURCE_NAME is the resource to query (e.g., 'gpt-4', 'claude-3').
     """
@@ -1593,19 +1594,19 @@ def resource_get(
             sys.exit(1)
 
         try:
-            limits = await repo.get_resource_limits(resource_name)
+            limits = await repo.get_resource_defaults(resource_name)
             if not limits:
-                click.echo(f"No limits configured for resource '{resource_name}'")
+                click.echo(f"No defaults configured for resource '{resource_name}'")
                 return
 
-            click.echo(f"Limits for resource '{resource_name}':")
+            click.echo(f"Defaults for resource '{resource_name}':")
             for limit in limits:
                 click.echo(f"  {_format_limit(limit)}")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
         except Exception as e:
-            click.echo(f"Error: Failed to get resource limits: {e}", err=True)
+            click.echo(f"Error: Failed to get resource defaults: {e}", err=True)
             sys.exit(1)
         finally:
             await repo.close()
@@ -1613,13 +1614,13 @@ def resource_get(
     asyncio.run(_get())
 
 
-@resource.command("delete")
+@resource.command("delete-defaults")
 @click.argument("resource_name")
 @click.option(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -1635,22 +1636,22 @@ def resource_get(
     is_flag=True,
     help="Skip confirmation prompt",
 )
-def resource_delete(
+def resource_delete_defaults(
     resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
     yes: bool,
 ) -> None:
-    """Delete limits for a resource.
+    """Delete default limits for a resource.
 
-    RESOURCE_NAME is the resource to delete limits from (e.g., 'gpt-4', 'claude-3').
+    RESOURCE_NAME is the resource to delete defaults from (e.g., 'gpt-4', 'claude-3').
     """
     from .exceptions import ValidationError
     from .repository import Repository
 
     if not yes:
-        if not click.confirm(f"Delete all limits for resource '{resource_name}'?"):
+        if not click.confirm(f"Delete all defaults for resource '{resource_name}'?"):
             click.echo("Cancelled")
             return
 
@@ -1662,13 +1663,13 @@ def resource_delete(
             sys.exit(1)
 
         try:
-            await repo.delete_resource_limits(resource_name)
-            click.echo(f"Deleted limits for resource '{resource_name}'")
+            await repo.delete_resource_defaults(resource_name)
+            click.echo(f"Deleted defaults for resource '{resource_name}'")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
         except Exception as e:
-            click.echo(f"Error: Failed to delete resource limits: {e}", err=True)
+            click.echo(f"Error: Failed to delete resource defaults: {e}", err=True)
             sys.exit(1)
         finally:
             await repo.close()
@@ -1681,7 +1682,7 @@ def resource_delete(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -1696,7 +1697,7 @@ def resource_list(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """List all resources with configured limits."""
+    """List all resources with configured defaults."""
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1708,12 +1709,12 @@ def resource_list(
             sys.exit(1)
 
         try:
-            resources = await repo.list_resources_with_limits()
+            resources = await repo.list_resources_with_defaults()
             if not resources:
-                click.echo("No resources with configured limits")
+                click.echo("No resources with configured defaults")
                 return
 
-            click.echo("Resources with configured limits:")
+            click.echo("Resources with configured defaults:")
             for res in resources:
                 click.echo(f"  {res}")
         except Exception as e:
@@ -1732,17 +1733,16 @@ def resource_list(
 
 @cli.group()
 def system() -> None:
-    """System-level limit configuration commands."""
+    """System-level default limit configuration commands."""
     pass
 
 
 @system.command("set-defaults")
-@click.argument("resource_name")
 @click.option(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -1760,17 +1760,21 @@ def system() -> None:
     required=True,
     help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
 )
+@click.option(
+    "--on-unavailable",
+    type=click.Choice(["allow", "block"]),
+    help="Behavior when DynamoDB is unavailable",
+)
 def system_set_defaults(
-    resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
     limits: tuple[str, ...],
+    on_unavailable: str | None,
 ) -> None:
-    """Set system-level default limits for a resource.
+    """Set system-wide default limits.
 
-    RESOURCE_NAME is the resource to configure defaults for (e.g., 'gpt-4', 'claude-3').
-    These defaults apply to all entities unless overridden at resource or entity level.
+    System defaults apply to ALL resources unless overridden at resource or entity level.
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
@@ -1793,11 +1797,15 @@ def system_set_defaults(
             sys.exit(1)
 
         try:
-            await repo.set_system_limits(resource_name, parsed_limits)
+            await repo.set_system_defaults(
+                parsed_limits, on_unavailable=on_unavailable
+            )
             n_limits = len(parsed_limits)
-            click.echo(f"Set {n_limits} system default(s) for resource '{resource_name}':")
+            click.echo(f"Set {n_limits} system-wide default(s):")
             for limit in parsed_limits:
                 click.echo(f"  {_format_limit(limit)}")
+            if on_unavailable:
+                click.echo(f"  on_unavailable: {on_unavailable}")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -1811,12 +1819,11 @@ def system_set_defaults(
 
 
 @system.command("get-defaults")
-@click.argument("resource_name")
 @click.option(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -1827,15 +1834,11 @@ def system_set_defaults(
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
 def system_get_defaults(
-    resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """Get system-level default limits for a resource.
-
-    RESOURCE_NAME is the resource to query defaults for (e.g., 'gpt-4', 'claude-3').
-    """
+    """Get system-wide default limits and config."""
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1847,14 +1850,18 @@ def system_get_defaults(
             sys.exit(1)
 
         try:
-            limits = await repo.get_system_limits(resource_name)
-            if not limits:
-                click.echo(f"No system defaults configured for resource '{resource_name}'")
+            limits, on_unavailable = await repo.get_system_defaults()
+            if not limits and not on_unavailable:
+                click.echo("No system defaults configured")
                 return
 
-            click.echo(f"System defaults for resource '{resource_name}':")
-            for limit in limits:
-                click.echo(f"  {_format_limit(limit)}")
+            click.echo("System-wide defaults:")
+            if limits:
+                click.echo("  Limits:")
+                for limit in limits:
+                    click.echo(f"    {_format_limit(limit)}")
+            if on_unavailable:
+                click.echo(f"  on_unavailable: {on_unavailable}")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -1868,12 +1875,11 @@ def system_get_defaults(
 
 
 @system.command("delete-defaults")
-@click.argument("resource_name")
 @click.option(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -1890,21 +1896,17 @@ def system_get_defaults(
     help="Skip confirmation prompt",
 )
 def system_delete_defaults(
-    resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
     yes: bool,
 ) -> None:
-    """Delete system-level default limits for a resource.
-
-    RESOURCE_NAME is the resource to delete defaults from (e.g., 'gpt-4', 'claude-3').
-    """
+    """Delete all system-wide default limits and config."""
     from .exceptions import ValidationError
     from .repository import Repository
 
     if not yes:
-        if not click.confirm(f"Delete system defaults for resource '{resource_name}'?"):
+        if not click.confirm("Delete all system-wide defaults?"):
             click.echo("Cancelled")
             return
 
@@ -1916,8 +1918,8 @@ def system_delete_defaults(
             sys.exit(1)
 
         try:
-            await repo.delete_system_limits(resource_name)
-            click.echo(f"Deleted system defaults for resource '{resource_name}'")
+            await repo.delete_system_defaults()
+            click.echo("Deleted all system-wide defaults")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -1930,12 +1932,31 @@ def system_delete_defaults(
     asyncio.run(_delete())
 
 
-@system.command("list-resources")
+# -------------------------------------------------------------------------
+# Entity config commands
+# -------------------------------------------------------------------------
+
+
+@cli.group()
+def entity() -> None:
+    """Entity-level limit configuration commands."""
+    pass
+
+
+@entity.command("set-limits")
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    "-r",
+    "resource_name",
+    required=True,
+    help="Resource name (e.g., 'gpt-4', 'claude-3')",
+)
 @click.option(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
 )
 @click.option(
     "--region",
@@ -1945,16 +1966,41 @@ def system_delete_defaults(
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
-def system_list_resources(
+@click.option(
+    "--limit",
+    "-l",
+    "limits",
+    multiple=True,
+    required=True,
+    help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
+)
+def entity_set_limits(
+    entity_id: str,
+    resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    limits: tuple[str, ...],
 ) -> None:
-    """List all resources with system-level default limits."""
+    """Set limits for a specific entity and resource.
+
+    ENTITY_ID is the entity to configure (e.g., 'user-123', 'api-key-abc').
+    Entity limits override resource and system defaults.
+    """
     from .exceptions import ValidationError
+    from .models import Limit as LimitModel
     from .repository import Repository
 
-    async def _list() -> None:
+    # Parse limits
+    parsed_limits: list[LimitModel] = []
+    for limit_str in limits:
+        try:
+            parsed_limits.append(_parse_limit(limit_str))
+        except click.BadParameter as e:
+            click.echo(f"Error: {e.message}", err=True)
+            sys.exit(1)
+
+    async def _set() -> None:
         try:
             repo = Repository(name, region, endpoint_url)
         except ValidationError as e:
@@ -1962,21 +2008,168 @@ def system_list_resources(
             sys.exit(1)
 
         try:
-            resources = await repo.list_system_resources_with_limits()
-            if not resources:
-                click.echo("No resources with system-level defaults")
-                return
-
-            click.echo("Resources with system-level defaults:")
-            for res in resources:
-                click.echo(f"  {res}")
+            await repo.set_limits(entity_id, parsed_limits, resource=resource_name)
+            click.echo(
+                f"Set {len(parsed_limits)} limit(s) for entity '{entity_id}' "
+                f"on resource '{resource_name}':"
+            )
+            for limit in parsed_limits:
+                click.echo(f"  {_format_limit(limit)}")
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
         except Exception as e:
-            click.echo(f"Error: Failed to list resources: {e}", err=True)
+            click.echo(f"Error: Failed to set entity limits: {e}", err=True)
             sys.exit(1)
         finally:
             await repo.close()
 
-    asyncio.run(_list())
+    asyncio.run(_set())
+
+
+@entity.command("get-limits")
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    "-r",
+    "resource_name",
+    required=True,
+    help="Resource name (e.g., 'gpt-4', 'claude-3')",
+)
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def entity_get_limits(
+    entity_id: str,
+    resource_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """Get limits for a specific entity and resource.
+
+    ENTITY_ID is the entity to query (e.g., 'user-123', 'api-key-abc').
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _get() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            limits = await repo.get_limits(entity_id, resource=resource_name)
+            if not limits:
+                click.echo(
+                    f"No limits configured for entity '{entity_id}' "
+                    f"on resource '{resource_name}'"
+                )
+                return
+
+            click.echo(
+                f"Limits for entity '{entity_id}' on resource '{resource_name}':"
+            )
+            for limit in limits:
+                click.echo(f"  {_format_limit(limit)}")
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to get entity limits: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_get())
+
+
+@entity.command("delete-limits")
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    "-r",
+    "resource_name",
+    required=True,
+    help="Resource name (e.g., 'gpt-4', 'claude-3')",
+)
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation prompt",
+)
+def entity_delete_limits(
+    entity_id: str,
+    resource_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    yes: bool,
+) -> None:
+    """Delete limits for a specific entity and resource.
+
+    ENTITY_ID is the entity to delete limits from (e.g., 'user-123', 'api-key-abc').
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    if not yes:
+        if not click.confirm(
+            f"Delete limits for entity '{entity_id}' on resource '{resource_name}'?"
+        ):
+            click.echo("Cancelled")
+            return
+
+    async def _delete() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            await repo.delete_limits(entity_id, resource=resource_name)
+            click.echo(
+                f"Deleted limits for entity '{entity_id}' on resource '{resource_name}'"
+            )
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to delete entity limits: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_delete())
 
 
 if __name__ == "__main__":

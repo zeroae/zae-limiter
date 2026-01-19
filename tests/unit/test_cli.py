@@ -2455,68 +2455,68 @@ class TestResourceCommands:
         """Test resource command group help."""
         result = runner.invoke(cli, ["resource", "--help"])
         assert result.exit_code == 0
-        assert "Resource-level limit configuration commands" in result.output
+        assert "Resource-level default limit configuration commands" in result.output
 
     def test_resource_set_help(self, runner: CliRunner) -> None:
-        """Test resource set command help."""
-        result = runner.invoke(cli, ["resource", "set", "--help"])
+        """Test resource set-defaults command help."""
+        result = runner.invoke(cli, ["resource", "set-defaults", "--help"])
         assert result.exit_code == 0
-        assert "Set limits for a resource" in result.output
+        assert "Set default limits for a resource" in result.output
         assert "--limit" in result.output
         assert "RESOURCE_NAME" in result.output
 
     def test_resource_get_help(self, runner: CliRunner) -> None:
-        """Test resource get command help."""
-        result = runner.invoke(cli, ["resource", "get", "--help"])
+        """Test resource get-defaults command help."""
+        result = runner.invoke(cli, ["resource", "get-defaults", "--help"])
         assert result.exit_code == 0
-        assert "Get limits for a resource" in result.output
+        assert "Get default limits for a resource" in result.output
         assert "RESOURCE_NAME" in result.output
 
     def test_resource_delete_help(self, runner: CliRunner) -> None:
-        """Test resource delete command help."""
-        result = runner.invoke(cli, ["resource", "delete", "--help"])
+        """Test resource delete-defaults command help."""
+        result = runner.invoke(cli, ["resource", "delete-defaults", "--help"])
         assert result.exit_code == 0
-        assert "Delete limits for a resource" in result.output
+        assert "Delete default limits for a resource" in result.output
         assert "--yes" in result.output
 
     def test_resource_list_help(self, runner: CliRunner) -> None:
         """Test resource list command help."""
         result = runner.invoke(cli, ["resource", "list", "--help"])
         assert result.exit_code == 0
-        assert "List all resources with configured limits" in result.output
+        assert "List all resources with configured defaults" in result.output
 
     def test_resource_set_requires_resource_name(self, runner: CliRunner) -> None:
-        """Test resource set requires RESOURCE_NAME argument."""
-        result = runner.invoke(cli, ["resource", "set", "-l", "tpm:10000"])
+        """Test resource set-defaults requires RESOURCE_NAME argument."""
+        result = runner.invoke(cli, ["resource", "set-defaults", "-l", "tpm:10000"])
         assert result.exit_code != 0
         assert "RESOURCE_NAME" in result.output
 
     def test_resource_set_requires_limit(self, runner: CliRunner) -> None:
-        """Test resource set requires at least one --limit."""
-        result = runner.invoke(cli, ["resource", "set", "gpt-4"])
+        """Test resource set-defaults requires at least one --limit."""
+        result = runner.invoke(cli, ["resource", "set-defaults", "gpt-4"])
         assert result.exit_code != 0
         assert "limit" in result.output.lower()
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_set_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource set with valid limits."""
+        """Test resource set-defaults with valid limits."""
         mock_repo = Mock()
-        mock_repo.set_resource_limits = AsyncMock(return_value=None)
+        mock_repo.set_resource_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
         result = runner.invoke(
-            cli, ["resource", "set", "gpt-4", "-l", "tpm:10000", "-l", "rpm:500:1000"]
+            cli, ["resource", "set-defaults", "gpt-4", "-l", "tpm:10000", "-l", "rpm:500:1000"]
         )
 
         assert result.exit_code == 0
-        assert "Set 2 limit(s) for resource 'gpt-4'" in result.output
+        assert "Set 2 default(s) for resource 'gpt-4'" in result.output
         assert "tpm: 10,000/min (burst: 10,000)" in result.output
         assert "rpm: 500/min (burst: 1,000)" in result.output
 
         # Verify repository was called correctly
-        mock_repo.set_resource_limits.assert_called_once()
-        call_args = mock_repo.set_resource_limits.call_args
+        mock_repo.set_resource_defaults.assert_called_once()
+        call_args = mock_repo.set_resource_defaults.call_args
         assert call_args[0][0] == "gpt-4"
         limits = call_args[0][1]
         assert len(limits) == 2
@@ -2527,26 +2527,26 @@ class TestResourceCommands:
         assert limits[1].burst == 1000
 
     def test_resource_set_invalid_limit_format(self, runner: CliRunner) -> None:
-        """Test resource set with invalid limit format."""
-        result = runner.invoke(cli, ["resource", "set", "gpt-4", "-l", "invalid"])
+        """Test resource set-defaults with invalid limit format."""
+        result = runner.invoke(cli, ["resource", "set-defaults", "gpt-4", "-l", "invalid"])
 
         assert result.exit_code == 1
         assert "Invalid limit format" in result.output
 
     def test_resource_set_invalid_limit_values(self, runner: CliRunner) -> None:
-        """Test resource set with non-numeric limit values."""
-        result = runner.invoke(cli, ["resource", "set", "gpt-4", "-l", "tpm:abc"])
+        """Test resource set-defaults with non-numeric limit values."""
+        result = runner.invoke(cli, ["resource", "set-defaults", "gpt-4", "-l", "tpm:abc"])
 
         assert result.exit_code == 1
         assert "Invalid limit values" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_set_validation_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource set handles ValidationError."""
+        """Test resource set-defaults handles ValidationError."""
         from zae_limiter.exceptions import ValidationError
 
         mock_repo = Mock()
-        mock_repo.set_resource_limits = AsyncMock(
+        mock_repo.set_resource_defaults = AsyncMock(
             side_effect=ValidationError(
                 field="resource", value="gpt-4", reason="Invalid resource name"
             )
@@ -2554,14 +2554,14 @@ class TestResourceCommands:
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "set", "gpt-4", "-l", "tpm:10000"])
+        result = runner.invoke(cli, ["resource", "set-defaults", "gpt-4", "-l", "tpm:10000"])
 
         assert result.exit_code == 1
         assert "Invalid resource name" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_get_with_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource get displays limits."""
+        """Test resource get-defaults displays limits."""
         from zae_limiter.models import Limit
 
         mock_limits = [
@@ -2582,71 +2582,71 @@ class TestResourceCommands:
         ]
 
         mock_repo = Mock()
-        mock_repo.get_resource_limits = AsyncMock(return_value=mock_limits)
+        mock_repo.get_resource_defaults = AsyncMock(return_value=mock_limits)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "get", "gpt-4"])
+        result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
         assert result.exit_code == 0
-        assert "Limits for resource 'gpt-4'" in result.output
+        assert "Defaults for resource 'gpt-4'" in result.output
         assert "tpm: 10,000/min (burst: 10,000)" in result.output
         assert "rpm: 500/min (burst: 1,000)" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_get_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource get when no limits configured."""
+        """Test resource get-defaults when no limits configured."""
         mock_repo = Mock()
-        mock_repo.get_resource_limits = AsyncMock(return_value=[])
+        mock_repo.get_resource_defaults = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "get", "gpt-4"])
+        result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
         assert result.exit_code == 0
-        assert "No limits configured for resource 'gpt-4'" in result.output
+        assert "No defaults configured for resource 'gpt-4'" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_delete_with_confirmation(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test resource delete with user confirmation."""
+        """Test resource delete-defaults with user confirmation."""
         mock_repo = Mock()
-        mock_repo.delete_resource_limits = AsyncMock(return_value=None)
+        mock_repo.delete_resource_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "delete", "gpt-4"], input="y\n")
+        result = runner.invoke(cli, ["resource", "delete-defaults", "gpt-4"], input="y\n")
 
         assert result.exit_code == 0
-        assert "Deleted limits for resource 'gpt-4'" in result.output
+        assert "Deleted defaults for resource 'gpt-4'" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_delete_cancelled(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource delete cancelled by user."""
-        result = runner.invoke(cli, ["resource", "delete", "gpt-4"], input="n\n")
+        """Test resource delete-defaults cancelled by user."""
+        result = runner.invoke(cli, ["resource", "delete-defaults", "gpt-4"], input="n\n")
 
         assert result.exit_code == 0
         assert "Cancelled" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_delete_with_yes_flag(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource delete with --yes flag skips confirmation."""
+        """Test resource delete-defaults with --yes flag skips confirmation."""
         mock_repo = Mock()
-        mock_repo.delete_resource_limits = AsyncMock(return_value=None)
+        mock_repo.delete_resource_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "delete", "gpt-4", "--yes"])
+        result = runner.invoke(cli, ["resource", "delete-defaults", "gpt-4", "--yes"])
 
         assert result.exit_code == 0
-        assert "Deleted limits for resource 'gpt-4'" in result.output
+        assert "Deleted defaults for resource 'gpt-4'" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_list_with_resources(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test resource list displays resources."""
         mock_repo = Mock()
-        mock_repo.list_resources_with_limits = AsyncMock(
+        mock_repo.list_resources_with_defaults = AsyncMock(
             return_value=["claude-3", "gpt-4", "llama-70b"]
         )
         mock_repo.close = AsyncMock(return_value=None)
@@ -2655,7 +2655,7 @@ class TestResourceCommands:
         result = runner.invoke(cli, ["resource", "list"])
 
         assert result.exit_code == 0
-        assert "Resources with configured limits:" in result.output
+        assert "Resources with configured defaults:" in result.output
         assert "claude-3" in result.output
         assert "gpt-4" in result.output
         assert "llama-70b" in result.output
@@ -2664,40 +2664,40 @@ class TestResourceCommands:
     def test_resource_list_no_resources(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test resource list when no resources configured."""
         mock_repo = Mock()
-        mock_repo.list_resources_with_limits = AsyncMock(return_value=[])
+        mock_repo.list_resources_with_defaults = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
         result = runner.invoke(cli, ["resource", "list"])
 
         assert result.exit_code == 0
-        assert "No resources with configured limits" in result.output
+        assert "No resources with configured defaults" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_set_handles_exception(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource set handles unexpected exceptions."""
+        """Test resource set-defaults handles unexpected exceptions."""
         mock_repo = Mock()
-        mock_repo.set_resource_limits = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.set_resource_defaults = AsyncMock(side_effect=Exception("DynamoDB error"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "set", "gpt-4", "-l", "tpm:10000"])
+        result = runner.invoke(cli, ["resource", "set-defaults", "gpt-4", "-l", "tpm:10000"])
 
         assert result.exit_code == 1
-        assert "Failed to set resource limits" in result.output
+        assert "Failed to set resource defaults" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_get_handles_exception(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource get handles unexpected exceptions."""
+        """Test resource get-defaults handles unexpected exceptions."""
         mock_repo = Mock()
-        mock_repo.get_resource_limits = AsyncMock(side_effect=Exception("Connection failed"))
+        mock_repo.get_resource_defaults = AsyncMock(side_effect=Exception("Connection failed"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "get", "gpt-4"])
+        result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
         assert result.exit_code == 1
-        assert "Failed to get resource limits" in result.output
+        assert "Failed to get resource defaults" in result.output
 
 
 class TestSystemCommands:
@@ -2707,44 +2707,31 @@ class TestSystemCommands:
         """Test system command group help."""
         result = runner.invoke(cli, ["system", "--help"])
         assert result.exit_code == 0
-        assert "System-level limit configuration commands" in result.output
+        assert "System-level default limit configuration commands" in result.output
 
     def test_system_set_defaults_help(self, runner: CliRunner) -> None:
         """Test system set-defaults command help."""
         result = runner.invoke(cli, ["system", "set-defaults", "--help"])
         assert result.exit_code == 0
-        assert "Set system-level default limits for a resource" in result.output
+        assert "Set system-wide default limits" in result.output
         assert "--limit" in result.output
-        assert "RESOURCE_NAME" in result.output
 
     def test_system_get_defaults_help(self, runner: CliRunner) -> None:
         """Test system get-defaults command help."""
         result = runner.invoke(cli, ["system", "get-defaults", "--help"])
         assert result.exit_code == 0
-        assert "Get system-level default limits for a resource" in result.output
+        assert "Get system-wide default limits" in result.output
 
     def test_system_delete_defaults_help(self, runner: CliRunner) -> None:
         """Test system delete-defaults command help."""
         result = runner.invoke(cli, ["system", "delete-defaults", "--help"])
         assert result.exit_code == 0
-        assert "Delete system-level default limits for a resource" in result.output
+        assert "Delete" in result.output
         assert "--yes" in result.output
-
-    def test_system_list_resources_help(self, runner: CliRunner) -> None:
-        """Test system list-resources command help."""
-        result = runner.invoke(cli, ["system", "list-resources", "--help"])
-        assert result.exit_code == 0
-        assert "List all resources with system-level default limits" in result.output
-
-    def test_system_set_defaults_requires_resource_name(self, runner: CliRunner) -> None:
-        """Test system set-defaults requires RESOURCE_NAME argument."""
-        result = runner.invoke(cli, ["system", "set-defaults", "-l", "tpm:10000"])
-        assert result.exit_code != 0
-        assert "RESOURCE_NAME" in result.output
 
     def test_system_set_defaults_requires_limit(self, runner: CliRunner) -> None:
         """Test system set-defaults requires at least one --limit."""
-        result = runner.invoke(cli, ["system", "set-defaults", "gpt-4"])
+        result = runner.invoke(cli, ["system", "set-defaults"])
         assert result.exit_code != 0
         assert "limit" in result.output.lower()
 
@@ -2752,37 +2739,60 @@ class TestSystemCommands:
     def test_system_set_defaults_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test system set-defaults with valid limits."""
         mock_repo = Mock()
-        mock_repo.set_system_limits = AsyncMock(return_value=None)
+        mock_repo.set_system_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
         result = runner.invoke(
             cli,
-            ["system", "set-defaults", "gpt-4", "-l", "tpm:10000", "-l", "rpm:500:1000"],
+            ["system", "set-defaults", "-l", "tpm:10000", "-l", "rpm:500:1000"],
         )
 
         assert result.exit_code == 0
-        assert "Set 2 system default(s) for resource 'gpt-4'" in result.output
+        assert "Set 2 system-wide default(s)" in result.output
         assert "tpm: 10,000/min (burst: 10,000)" in result.output
         assert "rpm: 500/min (burst: 1,000)" in result.output
 
         # Verify repository was called correctly
-        mock_repo.set_system_limits.assert_called_once()
-        call_args = mock_repo.set_system_limits.call_args
-        assert call_args[0][0] == "gpt-4"
-        limits = call_args[0][1]
+        mock_repo.set_system_defaults.assert_called_once()
+        call_args = mock_repo.set_system_defaults.call_args
+        limits = call_args[0][0]  # First positional arg is limits
         assert len(limits) == 2
+
+    @patch("zae_limiter.repository.Repository")
+    def test_system_set_defaults_with_on_unavailable(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test system set-defaults with --on-unavailable option."""
+        mock_repo = Mock()
+        mock_repo.set_system_defaults = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            ["system", "set-defaults", "-l", "tpm:10000", "--on-unavailable", "allow"],
+        )
+
+        assert result.exit_code == 0
+        assert "Set 1 system-wide default(s)" in result.output
+        assert "on_unavailable: allow" in result.output
+
+        # Verify on_unavailable was passed
+        mock_repo.set_system_defaults.assert_called_once()
+        call_args = mock_repo.set_system_defaults.call_args
+        assert call_args.kwargs.get("on_unavailable") == "allow"
 
     def test_system_set_defaults_invalid_limit_format(self, runner: CliRunner) -> None:
         """Test system set-defaults with invalid limit format."""
-        result = runner.invoke(cli, ["system", "set-defaults", "gpt-4", "-l", "invalid"])
+        result = runner.invoke(cli, ["system", "set-defaults", "-l", "invalid"])
 
         assert result.exit_code == 1
         assert "Invalid limit format" in result.output
 
     def test_system_set_defaults_invalid_limit_values(self, runner: CliRunner) -> None:
         """Test system set-defaults with non-numeric limit values."""
-        result = runner.invoke(cli, ["system", "set-defaults", "gpt-4", "-l", "tpm:abc"])
+        result = runner.invoke(cli, ["system", "set-defaults", "-l", "tpm:abc"])
 
         assert result.exit_code == 1
         assert "Invalid limit values" in result.output
@@ -2795,18 +2805,16 @@ class TestSystemCommands:
         from zae_limiter.exceptions import ValidationError
 
         mock_repo = Mock()
-        mock_repo.set_system_limits = AsyncMock(
-            side_effect=ValidationError(
-                field="resource", value="gpt-4", reason="Invalid resource name"
-            )
+        mock_repo.set_system_defaults = AsyncMock(
+            side_effect=ValidationError(field="limits", value="[]", reason="At least one limit")
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "set-defaults", "gpt-4", "-l", "tpm:10000"])
+        result = runner.invoke(cli, ["system", "set-defaults", "-l", "tpm:10000"])
 
         assert result.exit_code == 1
-        assert "Invalid resource name" in result.output
+        assert "At least one limit" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_system_get_defaults_with_limits(
@@ -2833,29 +2841,32 @@ class TestSystemCommands:
         ]
 
         mock_repo = Mock()
-        mock_repo.get_system_limits = AsyncMock(return_value=mock_limits)
+        # get_system_defaults returns (limits, on_unavailable)
+        mock_repo.get_system_defaults = AsyncMock(return_value=(mock_limits, "allow"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "get-defaults", "gpt-4"])
+        result = runner.invoke(cli, ["system", "get-defaults"])
 
         assert result.exit_code == 0
-        assert "System defaults for resource 'gpt-4'" in result.output
+        assert "System-wide defaults" in result.output
         assert "tpm: 10,000/min (burst: 10,000)" in result.output
         assert "rpm: 500/min (burst: 1,000)" in result.output
+        assert "on_unavailable: allow" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_system_get_defaults_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test system get-defaults when no limits configured."""
         mock_repo = Mock()
-        mock_repo.get_system_limits = AsyncMock(return_value=[])
+        # get_system_defaults returns (limits, on_unavailable)
+        mock_repo.get_system_defaults = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "get-defaults", "gpt-4"])
+        result = runner.invoke(cli, ["system", "get-defaults"])
 
         assert result.exit_code == 0
-        assert "No system defaults configured for resource 'gpt-4'" in result.output
+        assert "No system defaults configured" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_system_delete_defaults_with_confirmation(
@@ -2863,21 +2874,21 @@ class TestSystemCommands:
     ) -> None:
         """Test system delete-defaults with user confirmation."""
         mock_repo = Mock()
-        mock_repo.delete_system_limits = AsyncMock(return_value=None)
+        mock_repo.delete_system_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "delete-defaults", "gpt-4"], input="y\n")
+        result = runner.invoke(cli, ["system", "delete-defaults"], input="y\n")
 
         assert result.exit_code == 0
-        assert "Deleted system defaults for resource 'gpt-4'" in result.output
+        assert "Deleted all system-wide defaults" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_system_delete_defaults_cancelled(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
         """Test system delete-defaults cancelled by user."""
-        result = runner.invoke(cli, ["system", "delete-defaults", "gpt-4"], input="n\n")
+        result = runner.invoke(cli, ["system", "delete-defaults"], input="n\n")
 
         assert result.exit_code == 0
         assert "Cancelled" in result.output
@@ -2888,49 +2899,14 @@ class TestSystemCommands:
     ) -> None:
         """Test system delete-defaults with --yes flag skips confirmation."""
         mock_repo = Mock()
-        mock_repo.delete_system_limits = AsyncMock(return_value=None)
+        mock_repo.delete_system_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "delete-defaults", "gpt-4", "--yes"])
+        result = runner.invoke(cli, ["system", "delete-defaults", "--yes"])
 
         assert result.exit_code == 0
-        assert "Deleted system defaults for resource 'gpt-4'" in result.output
-
-    @patch("zae_limiter.repository.Repository")
-    def test_system_list_resources_with_resources(
-        self, mock_repo_class: Mock, runner: CliRunner
-    ) -> None:
-        """Test system list-resources displays resources."""
-        mock_repo = Mock()
-        mock_repo.list_system_resources_with_limits = AsyncMock(
-            return_value=["claude-3", "gpt-4", "llama-70b"]
-        )
-        mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.return_value = mock_repo
-
-        result = runner.invoke(cli, ["system", "list-resources"])
-
-        assert result.exit_code == 0
-        assert "Resources with system-level defaults:" in result.output
-        assert "claude-3" in result.output
-        assert "gpt-4" in result.output
-        assert "llama-70b" in result.output
-
-    @patch("zae_limiter.repository.Repository")
-    def test_system_list_resources_no_resources(
-        self, mock_repo_class: Mock, runner: CliRunner
-    ) -> None:
-        """Test system list-resources when no resources configured."""
-        mock_repo = Mock()
-        mock_repo.list_system_resources_with_limits = AsyncMock(return_value=[])
-        mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.return_value = mock_repo
-
-        result = runner.invoke(cli, ["system", "list-resources"])
-
-        assert result.exit_code == 0
-        assert "No resources with system-level defaults" in result.output
+        assert "Deleted all system-wide defaults" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_system_get_defaults_handles_exception(
@@ -2938,11 +2914,11 @@ class TestSystemCommands:
     ) -> None:
         """Test system get-defaults handles unexpected exceptions."""
         mock_repo = Mock()
-        mock_repo.get_system_limits = AsyncMock(side_effect=Exception("Connection failed"))
+        mock_repo.get_system_defaults = AsyncMock(side_effect=Exception("Connection failed"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "get-defaults", "gpt-4"])
+        result = runner.invoke(cli, ["system", "get-defaults"])
 
         assert result.exit_code == 1
         assert "Failed to get system defaults" in result.output
@@ -2953,11 +2929,11 @@ class TestSystemCommands:
     ) -> None:
         """Test system set-defaults handles unexpected exceptions."""
         mock_repo = Mock()
-        mock_repo.set_system_limits = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.set_system_defaults = AsyncMock(side_effect=Exception("DynamoDB error"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "set-defaults", "gpt-4", "-l", "tpm:10000"])
+        result = runner.invoke(cli, ["system", "set-defaults", "-l", "tpm:10000"])
 
         assert result.exit_code == 1
         assert "Failed to set system defaults" in result.output
@@ -2968,31 +2944,14 @@ class TestSystemCommands:
     ) -> None:
         """Test system delete-defaults handles unexpected exceptions."""
         mock_repo = Mock()
-        mock_repo.delete_system_limits = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.delete_system_defaults = AsyncMock(side_effect=Exception("DynamoDB error"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "delete-defaults", "gpt-4", "--yes"])
+        result = runner.invoke(cli, ["system", "delete-defaults", "--yes"])
 
         assert result.exit_code == 1
         assert "Failed to delete system defaults" in result.output
-
-    @patch("zae_limiter.repository.Repository")
-    def test_system_list_resources_handles_exception(
-        self, mock_repo_class: Mock, runner: CliRunner
-    ) -> None:
-        """Test system list-resources handles unexpected exceptions."""
-        mock_repo = Mock()
-        mock_repo.list_system_resources_with_limits = AsyncMock(
-            side_effect=Exception("Scan failed")
-        )
-        mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.return_value = mock_repo
-
-        result = runner.invoke(cli, ["system", "list-resources"])
-
-        assert result.exit_code == 1
-        assert "Failed to list resources" in result.output
 
 
 class TestLimitParsing:
@@ -3112,14 +3071,14 @@ class TestResourceCommandsEdgeCases:
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_set_with_custom_name(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource set with custom --name option."""
+        """Test resource set-defaults with custom --name option."""
         mock_repo = Mock()
-        mock_repo.set_resource_limits = AsyncMock(return_value=None)
+        mock_repo.set_resource_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
         result = runner.invoke(
-            cli, ["resource", "set", "gpt-4", "-n", "my-limiter", "-l", "tpm:10000"]
+            cli, ["resource", "set-defaults", "gpt-4", "-n", "my-limiter", "-l", "tpm:10000"]
         )
 
         assert result.exit_code == 0
@@ -3130,15 +3089,15 @@ class TestResourceCommandsEdgeCases:
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_set_with_region(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource set with --region option."""
+        """Test resource set-defaults with --region option."""
         mock_repo = Mock()
-        mock_repo.set_resource_limits = AsyncMock(return_value=None)
+        mock_repo.set_resource_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
         result = runner.invoke(
             cli,
-            ["resource", "set", "gpt-4", "--region", "eu-west-1", "-l", "tpm:10000"],
+            ["resource", "set-defaults", "gpt-4", "--region", "eu-west-1", "-l", "tpm:10000"],
         )
 
         assert result.exit_code == 0
@@ -3148,9 +3107,9 @@ class TestResourceCommandsEdgeCases:
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_set_with_endpoint_url(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource set with --endpoint-url option."""
+        """Test resource set-defaults with --endpoint-url option."""
         mock_repo = Mock()
-        mock_repo.set_resource_limits = AsyncMock(return_value=None)
+        mock_repo.set_resource_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
@@ -3158,7 +3117,7 @@ class TestResourceCommandsEdgeCases:
             cli,
             [
                 "resource",
-                "set",
+                "set-defaults",
                 "gpt-4",
                 "--endpoint-url",
                 "http://localhost:4566",
@@ -3176,16 +3135,16 @@ class TestResourceCommandsEdgeCases:
     def test_resource_delete_handles_exception(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test resource delete handles unexpected exceptions."""
+        """Test resource delete-defaults handles unexpected exceptions."""
         mock_repo = Mock()
-        mock_repo.delete_resource_limits = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.delete_resource_defaults = AsyncMock(side_effect=Exception("DynamoDB error"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "delete", "gpt-4", "--yes"])
+        result = runner.invoke(cli, ["resource", "delete-defaults", "gpt-4", "--yes"])
 
         assert result.exit_code == 1
-        assert "Failed to delete resource limits" in result.output
+        assert "Failed to delete resource defaults" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_list_handles_exception(
@@ -3193,7 +3152,7 @@ class TestResourceCommandsEdgeCases:
     ) -> None:
         """Test resource list handles unexpected exceptions."""
         mock_repo = Mock()
-        mock_repo.list_resources_with_limits = AsyncMock(side_effect=Exception("Scan failed"))
+        mock_repo.list_resources_with_defaults = AsyncMock(side_effect=Exception("Scan failed"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
@@ -3203,7 +3162,7 @@ class TestResourceCommandsEdgeCases:
         assert "Failed to list resources" in result.output
 
     def test_resource_set_repo_init_validation_error(self, runner: CliRunner) -> None:
-        """Test resource set handles ValidationError during Repository init."""
+        """Test resource set-defaults handles ValidationError during Repository init."""
         from zae_limiter.exceptions import ValidationError
 
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
@@ -3211,13 +3170,13 @@ class TestResourceCommandsEdgeCases:
                 field="name", value="invalid", reason="Invalid name format"
             )
 
-            result = runner.invoke(cli, ["resource", "set", "gpt-4", "-l", "tpm:10000"])
+            result = runner.invoke(cli, ["resource", "set-defaults", "gpt-4", "-l", "tpm:10000"])
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
 
     def test_resource_get_repo_init_validation_error(self, runner: CliRunner) -> None:
-        """Test resource get handles ValidationError during Repository init."""
+        """Test resource get-defaults handles ValidationError during Repository init."""
         from zae_limiter.exceptions import ValidationError
 
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
@@ -3225,13 +3184,13 @@ class TestResourceCommandsEdgeCases:
                 field="name", value="invalid", reason="Invalid name format"
             )
 
-            result = runner.invoke(cli, ["resource", "get", "gpt-4"])
+            result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
 
     def test_resource_delete_repo_init_validation_error(self, runner: CliRunner) -> None:
-        """Test resource delete handles ValidationError during Repository init."""
+        """Test resource delete-defaults handles ValidationError during Repository init."""
         from zae_limiter.exceptions import ValidationError
 
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
@@ -3239,7 +3198,7 @@ class TestResourceCommandsEdgeCases:
                 field="name", value="invalid", reason="Invalid name format"
             )
 
-            result = runner.invoke(cli, ["resource", "delete", "gpt-4", "--yes"])
+            result = runner.invoke(cli, ["resource", "delete-defaults", "gpt-4", "--yes"])
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
@@ -3268,13 +3227,13 @@ class TestSystemCommandsEdgeCases:
     ) -> None:
         """Test system set-defaults with custom --name option."""
         mock_repo = Mock()
-        mock_repo.set_system_limits = AsyncMock(return_value=None)
+        mock_repo.set_system_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
         result = runner.invoke(
             cli,
-            ["system", "set-defaults", "gpt-4", "-n", "my-limiter", "-l", "tpm:10000"],
+            ["system", "set-defaults", "-n", "my-limiter", "-l", "tpm:10000"],
         )
 
         assert result.exit_code == 0
@@ -3291,7 +3250,7 @@ class TestSystemCommandsEdgeCases:
                 field="name", value="invalid", reason="Invalid name format"
             )
 
-            result = runner.invoke(cli, ["system", "set-defaults", "gpt-4", "-l", "tpm:10000"])
+            result = runner.invoke(cli, ["system", "set-defaults", "-l", "tpm:10000"])
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
@@ -3305,7 +3264,7 @@ class TestSystemCommandsEdgeCases:
                 field="name", value="invalid", reason="Invalid name format"
             )
 
-            result = runner.invoke(cli, ["system", "get-defaults", "gpt-4"])
+            result = runner.invoke(cli, ["system", "get-defaults"])
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
@@ -3319,21 +3278,7 @@ class TestSystemCommandsEdgeCases:
                 field="name", value="invalid", reason="Invalid name format"
             )
 
-            result = runner.invoke(cli, ["system", "delete-defaults", "gpt-4", "--yes"])
-
-            assert result.exit_code == 1
-            assert "Invalid name format" in result.output
-
-    def test_system_list_resources_repo_init_validation_error(self, runner: CliRunner) -> None:
-        """Test system list-resources handles ValidationError during Repository init."""
-        from zae_limiter.exceptions import ValidationError
-
-        with patch("zae_limiter.repository.Repository") as mock_repo_class:
-            mock_repo_class.side_effect = ValidationError(
-                field="name", value="invalid", reason="Invalid name format"
-            )
-
-            result = runner.invoke(cli, ["system", "list-resources"])
+            result = runner.invoke(cli, ["system", "delete-defaults", "--yes"])
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
@@ -3346,18 +3291,18 @@ class TestSystemCommandsEdgeCases:
         from zae_limiter.exceptions import ValidationError
 
         mock_repo = Mock()
-        mock_repo.get_system_limits = AsyncMock(
+        mock_repo.get_system_defaults = AsyncMock(
             side_effect=ValidationError(
-                field="resource", value="invalid", reason="Invalid resource name"
+                field="limits", value="invalid", reason="Invalid limits"
             )
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "get-defaults", "invalid!resource"])
+        result = runner.invoke(cli, ["system", "get-defaults"])
 
         assert result.exit_code == 1
-        assert "Invalid resource name" in result.output
+        assert "Invalid limits" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_system_delete_defaults_validation_error(
@@ -3367,26 +3312,26 @@ class TestSystemCommandsEdgeCases:
         from zae_limiter.exceptions import ValidationError
 
         mock_repo = Mock()
-        mock_repo.delete_system_limits = AsyncMock(
+        mock_repo.delete_system_defaults = AsyncMock(
             side_effect=ValidationError(
-                field="resource", value="invalid", reason="Invalid resource name"
+                field="limits", value="invalid", reason="Invalid limits"
             )
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["system", "delete-defaults", "gpt-4", "--yes"])
+        result = runner.invoke(cli, ["system", "delete-defaults", "--yes"])
 
         assert result.exit_code == 1
-        assert "Invalid resource name" in result.output
+        assert "Invalid limits" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_get_validation_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource get handles ValidationError from repository."""
+        """Test resource get-defaults handles ValidationError from repository."""
         from zae_limiter.exceptions import ValidationError
 
         mock_repo = Mock()
-        mock_repo.get_resource_limits = AsyncMock(
+        mock_repo.get_resource_defaults = AsyncMock(
             side_effect=ValidationError(
                 field="resource", value="invalid", reason="Invalid resource name"
             )
@@ -3394,7 +3339,7 @@ class TestSystemCommandsEdgeCases:
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "get", "invalid!resource"])
+        result = runner.invoke(cli, ["resource", "get-defaults", "invalid!resource"])
 
         assert result.exit_code == 1
         assert "Invalid resource name" in result.output
@@ -3403,11 +3348,11 @@ class TestSystemCommandsEdgeCases:
     def test_resource_delete_validation_error(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test resource delete handles ValidationError from repository."""
+        """Test resource delete-defaults handles ValidationError from repository."""
         from zae_limiter.exceptions import ValidationError
 
         mock_repo = Mock()
-        mock_repo.delete_resource_limits = AsyncMock(
+        mock_repo.delete_resource_defaults = AsyncMock(
             side_effect=ValidationError(
                 field="resource", value="invalid", reason="Invalid resource name"
             )
@@ -3415,7 +3360,7 @@ class TestSystemCommandsEdgeCases:
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
-        result = runner.invoke(cli, ["resource", "delete", "gpt-4", "--yes"])
+        result = runner.invoke(cli, ["resource", "delete-defaults", "gpt-4", "--yes"])
 
         assert result.exit_code == 1
         assert "Invalid resource name" in result.output

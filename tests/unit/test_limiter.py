@@ -456,122 +456,121 @@ class TestRateLimiterStoredLimits:
         assert len(retrieved) == 0
 
 
-class TestRateLimiterResourceLimits:
-    """Tests for resource-level limit configs."""
+class TestRateLimiterResourceDefaults:
+    """Tests for resource-level default configs."""
 
-    async def test_set_and_get_resource_limits(self, limiter):
-        """Test storing and retrieving resource-level limits."""
+    async def test_set_and_get_resource_defaults(self, limiter):
+        """Test storing and retrieving resource-level defaults."""
         limits = [
             Limit.per_minute("rpm", 100),
             Limit.per_minute("tpm", 10_000),
         ]
-        await limiter.set_resource_limits("gpt-4", limits)
+        await limiter.set_resource_defaults("gpt-4", limits)
 
-        retrieved = await limiter.get_resource_limits("gpt-4")
+        retrieved = await limiter.get_resource_defaults("gpt-4")
         assert len(retrieved) == 2
 
         names = {limit.name for limit in retrieved}
         assert names == {"rpm", "tpm"}
 
-    async def test_delete_resource_limits(self, limiter):
-        """Test deleting resource-level limits."""
+    async def test_delete_resource_defaults(self, limiter):
+        """Test deleting resource-level defaults."""
         limits = [Limit.per_minute("rpm", 100)]
-        await limiter.set_resource_limits("gpt-4", limits)
+        await limiter.set_resource_defaults("gpt-4", limits)
 
-        await limiter.delete_resource_limits("gpt-4")
+        await limiter.delete_resource_defaults("gpt-4")
 
-        retrieved = await limiter.get_resource_limits("gpt-4")
+        retrieved = await limiter.get_resource_defaults("gpt-4")
         assert len(retrieved) == 0
 
-    async def test_get_resource_limits_empty(self, limiter):
-        """Test getting resource limits when none exist."""
-        retrieved = await limiter.get_resource_limits("nonexistent")
+    async def test_get_resource_defaults_empty(self, limiter):
+        """Test getting resource defaults when none exist."""
+        retrieved = await limiter.get_resource_defaults("nonexistent")
         assert len(retrieved) == 0
 
-    async def test_list_resources_with_limits(self, limiter):
-        """Test listing resources with configured limits."""
+    async def test_list_resources_with_defaults(self, limiter):
+        """Test listing resources with configured defaults."""
         # Initially empty
-        resources = await limiter.list_resources_with_limits()
+        resources = await limiter.list_resources_with_defaults()
         assert len(resources) == 0
 
-        # Add limits for two resources
+        # Add defaults for two resources
         limits = [Limit.per_minute("rpm", 100)]
-        await limiter.set_resource_limits("gpt-4", limits)
-        await limiter.set_resource_limits("claude-3", limits)
+        await limiter.set_resource_defaults("gpt-4", limits)
+        await limiter.set_resource_defaults("claude-3", limits)
 
-        resources = await limiter.list_resources_with_limits()
+        resources = await limiter.list_resources_with_defaults()
         assert "gpt-4" in resources
         assert "claude-3" in resources
 
-    async def test_resource_limits_replace_on_update(self, limiter):
-        """Test that setting limits replaces existing ones."""
-        # Set initial limits
-        await limiter.set_resource_limits("gpt-4", [Limit.per_minute("rpm", 100)])
+    async def test_resource_defaults_replace_on_update(self, limiter):
+        """Test that setting defaults replaces existing ones."""
+        # Set initial defaults
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
 
-        # Replace with different limits
-        await limiter.set_resource_limits("gpt-4", [Limit.per_minute("tpm", 5000)])
+        # Replace with different defaults
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("tpm", 5000)])
 
-        retrieved = await limiter.get_resource_limits("gpt-4")
+        retrieved = await limiter.get_resource_defaults("gpt-4")
         assert len(retrieved) == 1
         assert retrieved[0].name == "tpm"
 
 
-class TestRateLimiterSystemLimits:
-    """Tests for system-level limit configs."""
+class TestRateLimiterSystemDefaults:
+    """Tests for system-level default configs."""
 
-    async def test_set_and_get_system_limits(self, limiter):
-        """Test storing and retrieving system-level limits."""
+    async def test_set_and_get_system_defaults(self, limiter):
+        """Test storing and retrieving system-level defaults."""
         limits = [
             Limit.per_minute("rpm", 50),
             Limit.per_minute("tpm", 5_000),
         ]
-        await limiter.set_system_limits("gpt-4", limits)
+        await limiter.set_system_defaults(limits)
 
-        retrieved = await limiter.get_system_limits("gpt-4")
+        retrieved, on_unavailable = await limiter.get_system_defaults()
         assert len(retrieved) == 2
 
         names = {limit.name for limit in retrieved}
         assert names == {"rpm", "tpm"}
+        assert on_unavailable is None
 
-    async def test_delete_system_limits(self, limiter):
-        """Test deleting system-level limits."""
+    async def test_set_system_defaults_with_on_unavailable(self, limiter):
+        """Test storing system defaults with on_unavailable config."""
+        from zae_limiter import OnUnavailable
+
         limits = [Limit.per_minute("rpm", 50)]
-        await limiter.set_system_limits("gpt-4", limits)
+        await limiter.set_system_defaults(limits, on_unavailable=OnUnavailable.ALLOW)
 
-        await limiter.delete_system_limits("gpt-4")
+        retrieved, on_unavailable = await limiter.get_system_defaults()
+        assert len(retrieved) == 1
+        assert on_unavailable == OnUnavailable.ALLOW
 
-        retrieved = await limiter.get_system_limits("gpt-4")
-        assert len(retrieved) == 0
-
-    async def test_get_system_limits_empty(self, limiter):
-        """Test getting system limits when none exist."""
-        retrieved = await limiter.get_system_limits("nonexistent")
-        assert len(retrieved) == 0
-
-    async def test_list_system_resources_with_limits(self, limiter):
-        """Test listing resources with system-level defaults."""
-        # Initially empty
-        resources = await limiter.list_system_resources_with_limits()
-        assert len(resources) == 0
-
-        # Add limits for two resources
+    async def test_delete_system_defaults(self, limiter):
+        """Test deleting system-level defaults."""
         limits = [Limit.per_minute("rpm", 50)]
-        await limiter.set_system_limits("gpt-4", limits)
-        await limiter.set_system_limits("claude-3", limits)
+        await limiter.set_system_defaults(limits)
 
-        resources = await limiter.list_system_resources_with_limits()
-        assert "gpt-4" in resources
-        assert "claude-3" in resources
+        await limiter.delete_system_defaults()
 
-    async def test_system_limits_replace_on_update(self, limiter):
-        """Test that setting limits replaces existing ones."""
-        # Set initial limits
-        await limiter.set_system_limits("gpt-4", [Limit.per_minute("rpm", 50)])
+        retrieved, on_unavailable = await limiter.get_system_defaults()
+        assert len(retrieved) == 0
+        assert on_unavailable is None
 
-        # Replace with different limits
-        await limiter.set_system_limits("gpt-4", [Limit.per_minute("tpm", 2500)])
+    async def test_get_system_defaults_empty(self, limiter):
+        """Test getting system defaults when none exist."""
+        retrieved, on_unavailable = await limiter.get_system_defaults()
+        assert len(retrieved) == 0
+        assert on_unavailable is None
 
-        retrieved = await limiter.get_system_limits("gpt-4")
+    async def test_system_defaults_replace_on_update(self, limiter):
+        """Test that setting defaults replaces existing ones."""
+        # Set initial defaults
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 50)])
+
+        # Replace with different defaults
+        await limiter.set_system_defaults([Limit.per_minute("tpm", 2500)])
+
+        retrieved, _ = await limiter.get_system_defaults()
         assert len(retrieved) == 1
         assert retrieved[0].name == "tpm"
 

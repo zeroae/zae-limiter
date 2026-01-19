@@ -585,14 +585,14 @@ class Repository:
     # Resource-level limit config operations (flat schema)
     # -------------------------------------------------------------------------
 
-    async def set_resource_limits(
+    async def set_resource_defaults(
         self,
         resource: str,
         limits: list[Limit],
         principal: str | None = None,
     ) -> None:
         """
-        Store limit configs at resource level (flat schema).
+        Store default limit configs for a resource (flat schema).
 
         Args:
             resource: Resource name
@@ -603,13 +603,14 @@ class Repository:
         client = await self._get_client()
 
         # Delete existing limits for this resource
-        await self._delete_resource_limits_internal(resource)
+        await self._delete_resource_defaults_internal(resource)
 
         # Write new limits with FLAT schema (no nested data.M)
+        # SK uses sk_resource_limit (no resource in SK since PK has it)
         for limit in limits:
             item = {
                 "PK": {"S": schema.pk_resource(resource)},
-                "SK": {"S": schema.sk_limit(resource, limit.name)},
+                "SK": {"S": schema.sk_resource_limit(limit.name)},
                 "resource": {"S": resource},
                 "limit_name": {"S": limit.name},
                 "capacity": {"N": str(limit.capacity)},
@@ -629,11 +630,11 @@ class Repository:
             details={"limits": [limit.to_dict() for limit in limits]},
         )
 
-    async def get_resource_limits(
+    async def get_resource_defaults(
         self,
         resource: str,
     ) -> list[Limit]:
-        """Get stored limit configs at resource level."""
+        """Get stored default limit configs for a resource."""
         validate_name(resource, "resource")
         client = await self._get_client()
 
@@ -642,7 +643,7 @@ class Repository:
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
                 ":pk": {"S": schema.pk_resource(resource)},
-                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+                ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
             },
         )
 
@@ -661,20 +662,20 @@ class Repository:
 
         return limits
 
-    async def delete_resource_limits(
+    async def delete_resource_defaults(
         self,
         resource: str,
         principal: str | None = None,
     ) -> None:
         """
-        Delete stored limit configs at resource level.
+        Delete stored default limit configs for a resource.
 
         Args:
             resource: Resource name
             principal: Caller identity for audit logging
         """
         validate_name(resource, "resource")
-        await self._delete_resource_limits_internal(resource)
+        await self._delete_resource_defaults_internal(resource)
 
         # Log audit event
         await self._log_audit_event(
@@ -684,8 +685,8 @@ class Repository:
             resource=resource,
         )
 
-    async def _delete_resource_limits_internal(self, resource: str) -> None:
-        """Delete all limits for a resource (internal, no audit)."""
+    async def _delete_resource_defaults_internal(self, resource: str) -> None:
+        """Delete all default limits for a resource (internal, no audit)."""
         client = await self._get_client()
 
         response = await client.query(
@@ -693,7 +694,7 @@ class Repository:
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
                 ":pk": {"S": schema.pk_resource(resource)},
-                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+                ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
             },
             ProjectionExpression="PK, SK",
         )
@@ -710,8 +711,8 @@ class Repository:
             chunk = delete_requests[i : i + 25]
             await client.batch_write_item(RequestItems={self.table_name: chunk})
 
-    async def list_resources_with_limits(self) -> list[str]:
-        """List all resources that have resource-level limit configs."""
+    async def list_resources_with_defaults(self) -> list[str]:
+        """List all resources that have default limit configs."""
         client = await self._get_client()
 
         # Query for all items with PK starting with RESOURCE#
@@ -736,35 +737,36 @@ class Repository:
         return sorted(resources)
 
     # -------------------------------------------------------------------------
-    # System-level limit config operations (flat schema)
+    # System-level default config operations (flat schema)
     # -------------------------------------------------------------------------
 
-    async def set_system_limits(
+    async def set_system_defaults(
         self,
-        resource: str,
         limits: list[Limit],
+        on_unavailable: str | None = None,
         principal: str | None = None,
     ) -> None:
         """
-        Store limit configs at system level (flat schema).
+        Store system-wide default limits and config (flat schema).
+
+        System defaults apply to ALL resources unless overridden at resource
+        or entity level.
 
         Args:
-            resource: Resource name these defaults apply to
-            limits: List of Limit configurations to store
+            limits: List of Limit configurations (apply to all resources)
+            on_unavailable: Behavior when DynamoDB unavailable ("allow" or "block")
             principal: Caller identity for audit logging
         """
-        validate_name(resource, "resource")
         client = await self._get_client()
 
-        # Delete existing limits for this resource at system level
-        await self._delete_system_limits_internal(resource)
+        # Delete existing system limits
+        await self._delete_system_limits_internal()
 
-        # Write new limits with FLAT schema (no nested data.M)
+        # Write new limits with FLAT schema (no resource in SK)
         for limit in limits:
             item = {
                 "PK": {"S": schema.pk_system()},
-                "SK": {"S": schema.sk_limit(resource, limit.name)},
-                "resource": {"S": resource},
+                "SK": {"S": schema.sk_system_limit(limit.name)},
                 "limit_name": {"S": limit.name},
                 "capacity": {"N": str(limit.capacity)},
                 "burst": {"N": str(limit.burst)},
@@ -774,72 +776,93 @@ class Repository:
             }
             await client.put_item(TableName=self.table_name, Item=item)
 
-        # Log audit event with special prefix
-        await self._log_audit_event(
-            action=AuditAction.LIMITS_SET,
-            entity_id="$SYSTEM",
-            principal=principal,
-            resource=resource,
-            details={"limits": [limit.to_dict() for limit in limits]},
-        )
+            # Log audit event per limit
+            await self._log_audit_event(
+                action=AuditAction.LIMITS_SET,
+                entity_id=f"$SYSTEM:{limit.name}",
+                principal=principal,
+                details={"limit": limit.to_dict()},
+            )
 
-    async def get_system_limits(
-        self,
-        resource: str,
-    ) -> list[Limit]:
-        """Get stored limit configs at system level."""
-        validate_name(resource, "resource")
+        # Store system config (on_unavailable, etc.) if provided
+        if on_unavailable is not None:
+            await self._set_system_config(on_unavailable=on_unavailable, principal=principal)
+
+    async def get_system_defaults(self) -> tuple[list[Limit], str | None]:
+        """
+        Get system-wide default limits and config.
+
+        Returns:
+            Tuple of (limits, on_unavailable). on_unavailable may be None if not set.
+        """
         client = await self._get_client()
 
+        # Get all system limits
         response = await client.query(
             TableName=self.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
                 ":pk": {"S": schema.pk_system()},
-                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+                ":sk_prefix": {"S": schema.sk_system_limit_prefix()},
             },
         )
 
         limits = []
         for item in response.get("Items", []):
+            # Skip the config record (SK=#CONFIG)
+            sk = item.get("SK", {}).get("S", "")
+            if sk == schema.sk_config():
+                continue
+            # Skip version record
+            if sk == schema.sk_version():
+                continue
+
             # Flat schema - fields are top-level
-            limits.append(
-                Limit(
-                    name=item.get("limit_name", {}).get("S", ""),
-                    capacity=int(item.get("capacity", {}).get("N", "0")),
-                    burst=int(item.get("burst", {}).get("N", "0")),
-                    refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
-                    refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
+            limit_name = item.get("limit_name", {}).get("S", "")
+            if limit_name:  # Only add if it's a valid limit record
+                limits.append(
+                    Limit(
+                        name=limit_name,
+                        capacity=int(item.get("capacity", {}).get("N", "0")),
+                        burst=int(item.get("burst", {}).get("N", "0")),
+                        refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
+                        refill_period_seconds=int(
+                            item.get("refill_period_seconds", {}).get("N", "0")
+                        ),
+                    )
                 )
-            )
 
-        return limits
+        # Get system config
+        on_unavailable = await self._get_system_config_value("on_unavailable")
 
-    async def delete_system_limits(
+        return limits, on_unavailable
+
+    async def delete_system_defaults(
         self,
-        resource: str,
         principal: str | None = None,
     ) -> None:
         """
-        Delete stored limit configs at system level.
+        Delete all system-wide default limits and config.
 
         Args:
-            resource: Resource name
             principal: Caller identity for audit logging
         """
-        validate_name(resource, "resource")
-        await self._delete_system_limits_internal(resource)
+        # Get existing limits for audit logging
+        limits, _ = await self.get_system_defaults()
+
+        await self._delete_system_limits_internal()
+        await self._delete_system_config()
 
         # Log audit event
-        await self._log_audit_event(
-            action=AuditAction.LIMITS_DELETED,
-            entity_id="$SYSTEM",
-            principal=principal,
-            resource=resource,
-        )
+        for limit in limits:
+            await self._log_audit_event(
+                action=AuditAction.LIMITS_DELETED,
+                entity_id=f"$SYSTEM:{limit.name}",
+                principal=principal,
+            )
 
-    async def _delete_system_limits_internal(self, resource: str) -> None:
-        """Delete all limits for a resource at system level (internal, no audit)."""
+    async def _delete_system_limits_internal(self) -> None:
+        """Delete all system-level limits (internal, no audit)."""
         client = await self._get_client()
 
         response = await client.query(
@@ -847,48 +870,95 @@ class Repository:
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
                 ":pk": {"S": schema.pk_system()},
-                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+                ":sk_prefix": {"S": schema.sk_system_limit_prefix()},
             },
             ProjectionExpression="PK, SK",
         )
 
         items = response.get("Items", [])
-        if not items:
+        # Filter out config and version records
+        limit_items = [
+            item
+            for item in items
+            if item.get("SK", {}).get("S", "") not in (schema.sk_config(), schema.sk_version())
+        ]
+
+        if not limit_items:
             return
 
         delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in items
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in limit_items
         ]
 
         for i in range(0, len(delete_requests), 25):
             chunk = delete_requests[i : i + 25]
             await client.batch_write_item(RequestItems={self.table_name: chunk})
 
-    async def list_system_resources_with_limits(self) -> list[str]:
-        """List all resources that have system-level limit configs."""
+    async def _set_system_config(
+        self,
+        on_unavailable: str | None = None,
+        principal: str | None = None,
+    ) -> None:
+        """Store system behavior config (on_unavailable, etc.)."""
         client = await self._get_client()
 
-        response = await client.query(
-            TableName=self.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_system()},
-                ":sk_prefix": {"S": schema.SK_LIMIT},
-            },
-            ProjectionExpression="SK",
+        item: dict[str, Any] = {
+            "PK": {"S": schema.pk_system()},
+            "SK": {"S": schema.sk_config()},
+            "config_version": {"N": "1"},
+        }
+
+        if on_unavailable is not None:
+            item["on_unavailable"] = {"S": on_unavailable}
+
+        await client.put_item(TableName=self.table_name, Item=item)
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,  # Using LIMITS_SET for config changes too
+            entity_id="$SYSTEM:CONFIG",
+            principal=principal,
+            details={"on_unavailable": on_unavailable},
         )
 
-        # Extract unique resource names from sort keys
-        resources = set()
-        for item in response.get("Items", []):
-            sk = item.get("SK", {}).get("S", "")
-            if sk.startswith(schema.SK_LIMIT):
-                # SK format: #LIMIT#{resource}#{limit_name}
-                parts = sk[len(schema.SK_LIMIT) :].split("#", 1)
-                if parts:
-                    resources.add(parts[0])
+    async def _get_system_config_value(self, field: str) -> str | None:
+        """Get a specific system config value."""
+        client = await self._get_client()
 
-        return sorted(resources)
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+        item = response.get("Item")
+        if not item:
+            return None
+
+        return item.get(field, {}).get("S")
+
+    async def _delete_system_config(self) -> None:
+        """Delete system config record."""
+        client = await self._get_client()
+
+        await client.delete_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+    async def get_system_limits(self) -> list[Limit]:
+        """Get system-wide default limits (without config).
+
+        This is a convenience method that returns only the limits.
+        Use get_system_defaults() to also get on_unavailable config.
+        """
+        limits, _ = await self.get_system_defaults()
+        return limits
 
     # -------------------------------------------------------------------------
     # Version record operations

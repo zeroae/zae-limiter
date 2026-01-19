@@ -111,27 +111,42 @@ if wait_seconds > 0:
 
 ## Stored Limits
 
-Configure per-entity limits stored in DynamoDB:
+zae-limiter uses a three-level configuration hierarchy to resolve limits. See [Configuration Hierarchy](config-hierarchy.md) for full details.
 
 ```python
-# Set custom limits for a premium user
+# Set entity-specific limits (highest precedence)
 await limiter.set_limits(
     entity_id="user-premium",
+    resource="gpt-4",
     limits=[
         Limit.per_minute("rpm", 500),        # 5x normal
         Limit.per_minute("tpm", 50_000),     # 5x normal
     ],
 )
 
-# Use stored limits (falls back to defaults if not found)
+# Limits are automatically resolved from config hierarchy:
+# Entity > Resource > System > Constructor defaults
 async with limiter.acquire(
     entity_id="user-premium",
     resource="gpt-4",
-    limits=[Limit.per_minute("rpm", 100)],  # Default
     consume={"rpm": 1},
-    use_stored_limits=True,  # Use stored if available
 ) as lease:
     ...
+```
+
+You can also set defaults at system and resource levels:
+
+```python
+# System defaults apply to ALL resources
+await limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 100)],
+)
+
+# Resource defaults override system for specific resources
+await limiter.set_resource_defaults(
+    resource="gpt-4",
+    limits=[Limit.per_minute("rpm", 50)],
+)
 ```
 
 ## Entity Management

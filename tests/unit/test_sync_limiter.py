@@ -270,80 +270,83 @@ class TestSyncRateLimiterAudit:
         assert delete_events[0].principal == "admin"
 
 
-class TestSyncRateLimiterResourceLimits:
-    """Tests for sync resource-level limit configs."""
+class TestSyncRateLimiterResourceDefaults:
+    """Tests for sync resource-level default configs."""
 
-    def test_set_and_get_resource_limits(self, sync_limiter):
-        """Test storing and retrieving resource-level limits."""
+    def test_set_and_get_resource_defaults(self, sync_limiter):
+        """Test storing and retrieving resource-level defaults."""
         limits = [
             Limit.per_minute("rpm", 100),
             Limit.per_minute("tpm", 10_000),
         ]
-        sync_limiter.set_resource_limits("gpt-4", limits)
+        sync_limiter.set_resource_defaults("gpt-4", limits)
 
-        retrieved = sync_limiter.get_resource_limits("gpt-4")
+        retrieved = sync_limiter.get_resource_defaults("gpt-4")
         assert len(retrieved) == 2
 
         names = {limit.name for limit in retrieved}
         assert names == {"rpm", "tpm"}
 
-    def test_delete_resource_limits(self, sync_limiter):
-        """Test deleting resource-level limits."""
+    def test_delete_resource_defaults(self, sync_limiter):
+        """Test deleting resource-level defaults."""
         limits = [Limit.per_minute("rpm", 100)]
-        sync_limiter.set_resource_limits("gpt-4", limits)
+        sync_limiter.set_resource_defaults("gpt-4", limits)
 
-        sync_limiter.delete_resource_limits("gpt-4")
+        sync_limiter.delete_resource_defaults("gpt-4")
 
-        retrieved = sync_limiter.get_resource_limits("gpt-4")
+        retrieved = sync_limiter.get_resource_defaults("gpt-4")
         assert len(retrieved) == 0
 
-    def test_list_resources_with_limits(self, sync_limiter):
-        """Test listing resources with configured limits."""
+    def test_list_resources_with_defaults(self, sync_limiter):
+        """Test listing resources with configured defaults."""
         limits = [Limit.per_minute("rpm", 100)]
-        sync_limiter.set_resource_limits("gpt-4", limits)
-        sync_limiter.set_resource_limits("claude-3", limits)
+        sync_limiter.set_resource_defaults("gpt-4", limits)
+        sync_limiter.set_resource_defaults("claude-3", limits)
 
-        resources = sync_limiter.list_resources_with_limits()
+        resources = sync_limiter.list_resources_with_defaults()
         assert "gpt-4" in resources
         assert "claude-3" in resources
 
 
-class TestSyncRateLimiterSystemLimits:
-    """Tests for sync system-level limit configs."""
+class TestSyncRateLimiterSystemDefaults:
+    """Tests for sync system-level default configs."""
 
-    def test_set_and_get_system_limits(self, sync_limiter):
-        """Test storing and retrieving system-level limits."""
+    def test_set_and_get_system_defaults(self, sync_limiter):
+        """Test storing and retrieving system-level defaults."""
         limits = [
             Limit.per_minute("rpm", 50),
             Limit.per_minute("tpm", 5_000),
         ]
-        sync_limiter.set_system_limits("gpt-4", limits)
+        sync_limiter.set_system_defaults(limits)
 
-        retrieved = sync_limiter.get_system_limits("gpt-4")
+        retrieved, on_unavailable = sync_limiter.get_system_defaults()
         assert len(retrieved) == 2
 
         names = {limit.name for limit in retrieved}
         assert names == {"rpm", "tpm"}
+        assert on_unavailable is None
 
-    def test_delete_system_limits(self, sync_limiter):
-        """Test deleting system-level limits."""
+    def test_set_system_defaults_with_on_unavailable(self, sync_limiter):
+        """Test storing system defaults with on_unavailable config."""
+        from zae_limiter import OnUnavailable
+
         limits = [Limit.per_minute("rpm", 50)]
-        sync_limiter.set_system_limits("gpt-4", limits)
+        sync_limiter.set_system_defaults(limits, on_unavailable=OnUnavailable.ALLOW)
 
-        sync_limiter.delete_system_limits("gpt-4")
+        retrieved, on_unavailable = sync_limiter.get_system_defaults()
+        assert len(retrieved) == 1
+        assert on_unavailable == OnUnavailable.ALLOW
 
-        retrieved = sync_limiter.get_system_limits("gpt-4")
+    def test_delete_system_defaults(self, sync_limiter):
+        """Test deleting system-level defaults."""
+        limits = [Limit.per_minute("rpm", 50)]
+        sync_limiter.set_system_defaults(limits)
+
+        sync_limiter.delete_system_defaults()
+
+        retrieved, on_unavailable = sync_limiter.get_system_defaults()
         assert len(retrieved) == 0
-
-    def test_list_system_resources_with_limits(self, sync_limiter):
-        """Test listing resources with system-level defaults."""
-        limits = [Limit.per_minute("rpm", 50)]
-        sync_limiter.set_system_limits("gpt-4", limits)
-        sync_limiter.set_system_limits("claude-3", limits)
-
-        resources = sync_limiter.list_system_resources_with_limits()
-        assert "gpt-4" in resources
-        assert "claude-3" in resources
+        assert on_unavailable is None
 
 
 class TestSyncRateLimiterUsageSnapshots:

@@ -850,17 +850,19 @@ class RateLimiter:
         await self._repository.delete_limits(entity_id, resource, principal=principal)
 
     # -------------------------------------------------------------------------
-    # Resource-level limits management
+    # Resource-level defaults management
     # -------------------------------------------------------------------------
 
-    async def set_resource_limits(
+    async def set_resource_defaults(
         self,
         resource: str,
         limits: list[Limit],
         principal: str | None = None,
     ) -> None:
         """
-        Store limit configs at resource level.
+        Store default limit configs for a resource.
+
+        Resource defaults override system defaults for the specified resource.
 
         Args:
             resource: Resource name
@@ -868,14 +870,14 @@ class RateLimiter:
             principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
-        await self._repository.set_resource_limits(resource, limits, principal=principal)
+        await self._repository.set_resource_defaults(resource, limits, principal=principal)
 
-    async def get_resource_limits(
+    async def get_resource_defaults(
         self,
         resource: str,
     ) -> list[Limit]:
         """
-        Get stored limit configs at resource level.
+        Get stored default limit configs for a resource.
 
         Args:
             resource: Resource name
@@ -884,84 +886,81 @@ class RateLimiter:
             List of stored limits (empty if none)
         """
         await self._ensure_initialized()
-        return await self._repository.get_resource_limits(resource)
+        return await self._repository.get_resource_defaults(resource)
 
-    async def delete_resource_limits(
+    async def delete_resource_defaults(
         self,
         resource: str,
         principal: str | None = None,
     ) -> None:
         """
-        Delete stored limit configs at resource level.
+        Delete stored default limit configs for a resource.
 
         Args:
             resource: Resource name
             principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
-        await self._repository.delete_resource_limits(resource, principal=principal)
+        await self._repository.delete_resource_defaults(resource, principal=principal)
 
-    async def list_resources_with_limits(self) -> list[str]:
-        """List all resources that have resource-level limit configs."""
+    async def list_resources_with_defaults(self) -> list[str]:
+        """List all resources that have default limit configs."""
         await self._ensure_initialized()
-        return await self._repository.list_resources_with_limits()
+        return await self._repository.list_resources_with_defaults()
 
     # -------------------------------------------------------------------------
-    # System-level limits management
+    # System-level defaults management
     # -------------------------------------------------------------------------
 
-    async def set_system_limits(
+    async def set_system_defaults(
         self,
-        resource: str,
         limits: list[Limit],
+        on_unavailable: OnUnavailable | None = None,
         principal: str | None = None,
     ) -> None:
         """
-        Store limit configs at system level (global defaults).
+        Store system-wide default limits and config.
+
+        System defaults apply to ALL resources unless overridden at resource
+        or entity level.
 
         Args:
-            resource: Resource name these defaults apply to
-            limits: Limits to store
+            limits: Limits to store (apply globally to all resources)
+            on_unavailable: Behavior when DynamoDB unavailable (optional)
             principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
-        await self._repository.set_system_limits(resource, limits, principal=principal)
+        on_unavailable_str = on_unavailable.value if on_unavailable else None
+        await self._repository.set_system_defaults(
+            limits, on_unavailable=on_unavailable_str, principal=principal
+        )
 
-    async def get_system_limits(
-        self,
-        resource: str,
-    ) -> list[Limit]:
+    async def get_system_defaults(self) -> tuple[list[Limit], OnUnavailable | None]:
         """
-        Get stored limit configs at system level.
-
-        Args:
-            resource: Resource name
+        Get system-wide default limits and config.
 
         Returns:
-            List of stored limits (empty if none)
+            Tuple of (limits, on_unavailable). on_unavailable may be None if not set.
         """
         await self._ensure_initialized()
-        return await self._repository.get_system_limits(resource)
+        limits, on_unavailable_str = await self._repository.get_system_defaults()
+        on_unavailable = None
+        if on_unavailable_str:
+            on_unavailable = OnUnavailable(on_unavailable_str)
+        return limits, on_unavailable
 
-    async def delete_system_limits(
+    async def delete_system_defaults(
         self,
-        resource: str,
         principal: str | None = None,
     ) -> None:
         """
-        Delete stored limit configs at system level.
+        Delete all system-wide default limits and config.
 
         Args:
-            resource: Resource name
             principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
-        await self._repository.delete_system_limits(resource, principal=principal)
-
-    async def list_system_resources_with_limits(self) -> list[str]:
-        """List all resources that have system-level limit configs."""
-        await self._ensure_initialized()
-        return await self._repository.list_system_resources_with_limits()
+        await self._repository.delete_system_defaults(principal=principal)
 
     # -------------------------------------------------------------------------
     # Capacity queries
@@ -1247,6 +1246,11 @@ class SyncRateLimiter:
         )
         self._loop: asyncio.AbstractEventLoop | None = None
 
+    @property
+    def name(self) -> str:
+        """The resource identifier (with ZAEL- prefix)."""
+        return self._limiter.name
+
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Get or create an event loop."""
         if self._loop is None or self._loop.is_closed():
@@ -1527,68 +1531,64 @@ class SyncRateLimiter:
         self._run(self._limiter.delete_limits(entity_id, resource, principal=principal))
 
     # -------------------------------------------------------------------------
-    # Resource-level limits management
+    # Resource-level defaults management
     # -------------------------------------------------------------------------
 
-    def set_resource_limits(
+    def set_resource_defaults(
         self,
         resource: str,
         limits: list[Limit],
         principal: str | None = None,
     ) -> None:
-        """Store limit configs at resource level."""
-        self._run(self._limiter.set_resource_limits(resource, limits, principal=principal))
+        """Store default limit configs for a resource."""
+        self._run(self._limiter.set_resource_defaults(resource, limits, principal=principal))
 
-    def get_resource_limits(
+    def get_resource_defaults(
         self,
         resource: str,
     ) -> list[Limit]:
-        """Get stored limit configs at resource level."""
-        return self._run(self._limiter.get_resource_limits(resource))
+        """Get stored default limit configs for a resource."""
+        return self._run(self._limiter.get_resource_defaults(resource))
 
-    def delete_resource_limits(
+    def delete_resource_defaults(
         self,
         resource: str,
         principal: str | None = None,
     ) -> None:
-        """Delete stored limit configs at resource level."""
-        self._run(self._limiter.delete_resource_limits(resource, principal=principal))
+        """Delete stored default limit configs for a resource."""
+        self._run(self._limiter.delete_resource_defaults(resource, principal=principal))
 
-    def list_resources_with_limits(self) -> list[str]:
-        """List all resources that have resource-level limit configs."""
-        return self._run(self._limiter.list_resources_with_limits())
+    def list_resources_with_defaults(self) -> list[str]:
+        """List all resources that have default limit configs."""
+        return self._run(self._limiter.list_resources_with_defaults())
 
     # -------------------------------------------------------------------------
-    # System-level limits management
+    # System-level defaults management
     # -------------------------------------------------------------------------
 
-    def set_system_limits(
+    def set_system_defaults(
         self,
-        resource: str,
         limits: list[Limit],
+        on_unavailable: OnUnavailable | None = None,
         principal: str | None = None,
     ) -> None:
-        """Store limit configs at system level (global defaults)."""
-        self._run(self._limiter.set_system_limits(resource, limits, principal=principal))
+        """Store system-wide default limits and config."""
+        self._run(
+            self._limiter.set_system_defaults(
+                limits, on_unavailable=on_unavailable, principal=principal
+            )
+        )
 
-    def get_system_limits(
-        self,
-        resource: str,
-    ) -> list[Limit]:
-        """Get stored limit configs at system level."""
-        return self._run(self._limiter.get_system_limits(resource))
+    def get_system_defaults(self) -> tuple[list[Limit], OnUnavailable | None]:
+        """Get system-wide default limits and config."""
+        return self._run(self._limiter.get_system_defaults())
 
-    def delete_system_limits(
+    def delete_system_defaults(
         self,
-        resource: str,
         principal: str | None = None,
     ) -> None:
-        """Delete stored limit configs at system level."""
-        self._run(self._limiter.delete_system_limits(resource, principal=principal))
-
-    def list_system_resources_with_limits(self) -> list[str]:
-        """List all resources that have system-level limit configs."""
-        return self._run(self._limiter.list_system_resources_with_limits())
+        """Delete all system-wide default limits and config."""
+        self._run(self._limiter.delete_system_defaults(principal=principal))
 
     # -------------------------------------------------------------------------
     # Capacity queries

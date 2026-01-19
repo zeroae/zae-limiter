@@ -97,6 +97,7 @@ nav:
       - Getting Started: getting-started.md
       - Token Bucket Algorithm: guide/token-bucket.md
       - Basic Usage: guide/basic-usage.md
+      - Configuration Hierarchy: guide/config-hierarchy.md
       - Hierarchical Limits: guide/hierarchical.md
       - LLM Integration: guide/llm-integration.md
       - Usage Snapshots: guide/usage-snapshots.md
