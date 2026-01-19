@@ -31,10 +31,8 @@ services:
     stdin_open: true
     tty: true
     # Default: run the refactor agent
-    entrypoint: /bin/bash
-    command: >
-      --dangerously-skip-permissions
-      --print
-      "Read .claude/agents/refactor-150.md and follow those instructions exactly
-       to implement issue #150. Start with Phase 1: Explore and Document.
-       After each phase, commit your work and proceed to the next phase."
+    # Entrypoint is "claude" from Dockerfile
+    command:
+      - "--dangerously-skip-permissions"
+      - "--print"
+      - "Read .claude/agents/refactor-150.md and follow those instructions exactly to implement issue #150. Start with Phase 1: Explore and Document. After each phase, commit your work and proceed to the next phase."
