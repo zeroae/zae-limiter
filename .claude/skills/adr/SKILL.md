@@ -37,7 +37,7 @@ When arguments start with `create`:
    - **Decision**: From conclusions like "let's use X", "we'll go with Y", or implementation choices
    - **Alternatives**: From rejected options discussed ("we considered X but...")
 4. Present the draft ADR to the user for confirmation before writing
-5. Generate ADR following `.claude/rules/adr-format.md` with this structure:
+5. Generate ADR following `template.md` with this structure:
 
 ```markdown
 # ADR-NNN: <Title>
@@ -75,7 +75,7 @@ Rejected because: <one sentence>
 When arguments start with `review`:
 
 1. If no file specified, list `docs/adr/` and ask which to review
-2. Check the ADR against criteria from `.claude/rules/adr-format.md`:
+2. Check the ADR against criteria from `template.md`:
 
 | Check | Pass Criteria |
 |-------|---------------|
