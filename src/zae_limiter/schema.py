@@ -40,6 +40,11 @@ def pk_system() -> str:
     return SYSTEM_PREFIX
 
 
+def pk_resource(resource: str) -> str:
+    """Build partition key for resource config records."""
+    return f"{RESOURCE_PREFIX}{resource}"
+
+
 def sk_version() -> str:
     """Build sort key for version record."""
     return SK_VERSION

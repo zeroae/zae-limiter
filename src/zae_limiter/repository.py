@@ -19,6 +19,7 @@ from .models import (
     UsageSnapshot,
     UsageSummary,
     validate_identifier,
+    validate_name,
 )
 from .naming import normalize_stack_name
 
@@ -579,6 +580,321 @@ class Repository:
         for i in range(0, len(delete_requests), 25):
             chunk = delete_requests[i : i + 25]
             await client.batch_write_item(RequestItems={self.table_name: chunk})
+
+    # -------------------------------------------------------------------------
+    # Resource-level limit config operations (flat schema)
+    # -------------------------------------------------------------------------
+
+    async def set_resource_limits(
+        self,
+        resource: str,
+        limits: list[Limit],
+        principal: str | None = None,
+    ) -> None:
+        """
+        Store limit configs at resource level (flat schema).
+
+        Args:
+            resource: Resource name
+            limits: List of Limit configurations to store
+            principal: Caller identity for audit logging
+        """
+        validate_name(resource, "resource")
+        client = await self._get_client()
+
+        # Delete existing limits for this resource
+        await self._delete_resource_limits_internal(resource)
+
+        # Write new limits with FLAT schema (no nested data.M)
+        for limit in limits:
+            item = {
+                "PK": {"S": schema.pk_resource(resource)},
+                "SK": {"S": schema.sk_limit(resource, limit.name)},
+                "resource": {"S": resource},
+                "limit_name": {"S": limit.name},
+                "capacity": {"N": str(limit.capacity)},
+                "burst": {"N": str(limit.burst)},
+                "refill_amount": {"N": str(limit.refill_amount)},
+                "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
+                "config_version": {"N": "1"},  # Initial version for future caching
+            }
+            await client.put_item(TableName=self.table_name, Item=item)
+
+        # Log audit event with special prefix
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
+            details={"limits": [limit.to_dict() for limit in limits]},
+        )
+
+    async def get_resource_limits(
+        self,
+        resource: str,
+    ) -> list[Limit]:
+        """Get stored limit configs at resource level."""
+        validate_name(resource, "resource")
+        client = await self._get_client()
+
+        response = await client.query(
+            TableName=self.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_resource(resource)},
+                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+            },
+        )
+
+        limits = []
+        for item in response.get("Items", []):
+            # Flat schema - fields are top-level
+            limits.append(
+                Limit(
+                    name=item.get("limit_name", {}).get("S", ""),
+                    capacity=int(item.get("capacity", {}).get("N", "0")),
+                    burst=int(item.get("burst", {}).get("N", "0")),
+                    refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
+                    refill_period_seconds=int(
+                        item.get("refill_period_seconds", {}).get("N", "0")
+                    ),
+                )
+            )
+
+        return limits
+
+    async def delete_resource_limits(
+        self,
+        resource: str,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete stored limit configs at resource level.
+
+        Args:
+            resource: Resource name
+            principal: Caller identity for audit logging
+        """
+        validate_name(resource, "resource")
+        await self._delete_resource_limits_internal(resource)
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_DELETED,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
+        )
+
+    async def _delete_resource_limits_internal(self, resource: str) -> None:
+        """Delete all limits for a resource (internal, no audit)."""
+        client = await self._get_client()
+
+        response = await client.query(
+            TableName=self.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_resource(resource)},
+                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+            },
+            ProjectionExpression="PK, SK",
+        )
+
+        items = response.get("Items", [])
+        if not items:
+            return
+
+        delete_requests = [
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}}
+            for item in items
+        ]
+
+        for i in range(0, len(delete_requests), 25):
+            chunk = delete_requests[i : i + 25]
+            await client.batch_write_item(RequestItems={self.table_name: chunk})
+
+    async def list_resources_with_limits(self) -> list[str]:
+        """List all resources that have resource-level limit configs."""
+        client = await self._get_client()
+
+        # Query for all items with PK starting with RESOURCE#
+        # This requires a scan since we don't have a GSI for this pattern
+        response = await client.scan(
+            TableName=self.table_name,
+            FilterExpression="begins_with(PK, :prefix)",
+            ExpressionAttributeValues={
+                ":prefix": {"S": schema.RESOURCE_PREFIX},
+            },
+            ProjectionExpression="PK",
+        )
+
+        # Extract unique resource names from partition keys
+        resources = set()
+        for item in response.get("Items", []):
+            pk = item.get("PK", {}).get("S", "")
+            if pk.startswith(schema.RESOURCE_PREFIX):
+                resource = pk[len(schema.RESOURCE_PREFIX) :]
+                resources.add(resource)
+
+        return sorted(resources)
+
+    # -------------------------------------------------------------------------
+    # System-level limit config operations (flat schema)
+    # -------------------------------------------------------------------------
+
+    async def set_system_limits(
+        self,
+        resource: str,
+        limits: list[Limit],
+        principal: str | None = None,
+    ) -> None:
+        """
+        Store limit configs at system level (flat schema).
+
+        Args:
+            resource: Resource name these defaults apply to
+            limits: List of Limit configurations to store
+            principal: Caller identity for audit logging
+        """
+        validate_name(resource, "resource")
+        client = await self._get_client()
+
+        # Delete existing limits for this resource at system level
+        await self._delete_system_limits_internal(resource)
+
+        # Write new limits with FLAT schema (no nested data.M)
+        for limit in limits:
+            item = {
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_limit(resource, limit.name)},
+                "resource": {"S": resource},
+                "limit_name": {"S": limit.name},
+                "capacity": {"N": str(limit.capacity)},
+                "burst": {"N": str(limit.burst)},
+                "refill_amount": {"N": str(limit.refill_amount)},
+                "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
+                "config_version": {"N": "1"},  # Initial version for future caching
+            }
+            await client.put_item(TableName=self.table_name, Item=item)
+
+        # Log audit event with special prefix
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id="$SYSTEM",
+            principal=principal,
+            resource=resource,
+            details={"limits": [limit.to_dict() for limit in limits]},
+        )
+
+    async def get_system_limits(
+        self,
+        resource: str,
+    ) -> list[Limit]:
+        """Get stored limit configs at system level."""
+        validate_name(resource, "resource")
+        client = await self._get_client()
+
+        response = await client.query(
+            TableName=self.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_system()},
+                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+            },
+        )
+
+        limits = []
+        for item in response.get("Items", []):
+            # Flat schema - fields are top-level
+            limits.append(
+                Limit(
+                    name=item.get("limit_name", {}).get("S", ""),
+                    capacity=int(item.get("capacity", {}).get("N", "0")),
+                    burst=int(item.get("burst", {}).get("N", "0")),
+                    refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
+                    refill_period_seconds=int(
+                        item.get("refill_period_seconds", {}).get("N", "0")
+                    ),
+                )
+            )
+
+        return limits
+
+    async def delete_system_limits(
+        self,
+        resource: str,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete stored limit configs at system level.
+
+        Args:
+            resource: Resource name
+            principal: Caller identity for audit logging
+        """
+        validate_name(resource, "resource")
+        await self._delete_system_limits_internal(resource)
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_DELETED,
+            entity_id="$SYSTEM",
+            principal=principal,
+            resource=resource,
+        )
+
+    async def _delete_system_limits_internal(self, resource: str) -> None:
+        """Delete all limits for a resource at system level (internal, no audit)."""
+        client = await self._get_client()
+
+        response = await client.query(
+            TableName=self.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_system()},
+                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+            },
+            ProjectionExpression="PK, SK",
+        )
+
+        items = response.get("Items", [])
+        if not items:
+            return
+
+        delete_requests = [
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}}
+            for item in items
+        ]
+
+        for i in range(0, len(delete_requests), 25):
+            chunk = delete_requests[i : i + 25]
+            await client.batch_write_item(RequestItems={self.table_name: chunk})
+
+    async def list_system_resources_with_limits(self) -> list[str]:
+        """List all resources that have system-level limit configs."""
+        client = await self._get_client()
+
+        response = await client.query(
+            TableName=self.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_system()},
+                ":sk_prefix": {"S": schema.SK_LIMIT},
+            },
+            ProjectionExpression="SK",
+        )
+
+        # Extract unique resource names from sort keys
+        resources = set()
+        for item in response.get("Items", []):
+            sk = item.get("SK", {}).get("S", "")
+            if sk.startswith(schema.SK_LIMIT):
+                # SK format: #LIMIT#{resource}#{limit_name}
+                parts = sk[len(schema.SK_LIMIT) :].split("#", 1)
+                if parts:
+                    resources.add(parts[0])
+
+        return sorted(resources)
 
     # -------------------------------------------------------------------------
     # Version record operations

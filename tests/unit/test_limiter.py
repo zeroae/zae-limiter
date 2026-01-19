@@ -456,6 +456,126 @@ class TestRateLimiterStoredLimits:
         assert len(retrieved) == 0
 
 
+class TestRateLimiterResourceLimits:
+    """Tests for resource-level limit configs."""
+
+    async def test_set_and_get_resource_limits(self, limiter):
+        """Test storing and retrieving resource-level limits."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+        ]
+        await limiter.set_resource_limits("gpt-4", limits)
+
+        retrieved = await limiter.get_resource_limits("gpt-4")
+        assert len(retrieved) == 2
+
+        names = {limit.name for limit in retrieved}
+        assert names == {"rpm", "tpm"}
+
+    async def test_delete_resource_limits(self, limiter):
+        """Test deleting resource-level limits."""
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_resource_limits("gpt-4", limits)
+
+        await limiter.delete_resource_limits("gpt-4")
+
+        retrieved = await limiter.get_resource_limits("gpt-4")
+        assert len(retrieved) == 0
+
+    async def test_get_resource_limits_empty(self, limiter):
+        """Test getting resource limits when none exist."""
+        retrieved = await limiter.get_resource_limits("nonexistent")
+        assert len(retrieved) == 0
+
+    async def test_list_resources_with_limits(self, limiter):
+        """Test listing resources with configured limits."""
+        # Initially empty
+        resources = await limiter.list_resources_with_limits()
+        assert len(resources) == 0
+
+        # Add limits for two resources
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_resource_limits("gpt-4", limits)
+        await limiter.set_resource_limits("claude-3", limits)
+
+        resources = await limiter.list_resources_with_limits()
+        assert "gpt-4" in resources
+        assert "claude-3" in resources
+
+    async def test_resource_limits_replace_on_update(self, limiter):
+        """Test that setting limits replaces existing ones."""
+        # Set initial limits
+        await limiter.set_resource_limits("gpt-4", [Limit.per_minute("rpm", 100)])
+
+        # Replace with different limits
+        await limiter.set_resource_limits("gpt-4", [Limit.per_minute("tpm", 5000)])
+
+        retrieved = await limiter.get_resource_limits("gpt-4")
+        assert len(retrieved) == 1
+        assert retrieved[0].name == "tpm"
+
+
+class TestRateLimiterSystemLimits:
+    """Tests for system-level limit configs."""
+
+    async def test_set_and_get_system_limits(self, limiter):
+        """Test storing and retrieving system-level limits."""
+        limits = [
+            Limit.per_minute("rpm", 50),
+            Limit.per_minute("tpm", 5_000),
+        ]
+        await limiter.set_system_limits("gpt-4", limits)
+
+        retrieved = await limiter.get_system_limits("gpt-4")
+        assert len(retrieved) == 2
+
+        names = {limit.name for limit in retrieved}
+        assert names == {"rpm", "tpm"}
+
+    async def test_delete_system_limits(self, limiter):
+        """Test deleting system-level limits."""
+        limits = [Limit.per_minute("rpm", 50)]
+        await limiter.set_system_limits("gpt-4", limits)
+
+        await limiter.delete_system_limits("gpt-4")
+
+        retrieved = await limiter.get_system_limits("gpt-4")
+        assert len(retrieved) == 0
+
+    async def test_get_system_limits_empty(self, limiter):
+        """Test getting system limits when none exist."""
+        retrieved = await limiter.get_system_limits("nonexistent")
+        assert len(retrieved) == 0
+
+    async def test_list_system_resources_with_limits(self, limiter):
+        """Test listing resources with system-level defaults."""
+        # Initially empty
+        resources = await limiter.list_system_resources_with_limits()
+        assert len(resources) == 0
+
+        # Add limits for two resources
+        limits = [Limit.per_minute("rpm", 50)]
+        await limiter.set_system_limits("gpt-4", limits)
+        await limiter.set_system_limits("claude-3", limits)
+
+        resources = await limiter.list_system_resources_with_limits()
+        assert "gpt-4" in resources
+        assert "claude-3" in resources
+
+    async def test_system_limits_replace_on_update(self, limiter):
+        """Test that setting limits replaces existing ones."""
+        # Set initial limits
+        await limiter.set_system_limits("gpt-4", [Limit.per_minute("rpm", 50)])
+
+        # Replace with different limits
+        await limiter.set_system_limits("gpt-4", [Limit.per_minute("tpm", 2500)])
+
+        retrieved = await limiter.get_system_limits("gpt-4")
+        assert len(retrieved) == 1
+        assert retrieved[0].name == "tpm"
+
+
 class TestRateLimiterCapacity:
     """Tests for capacity queries."""
 
