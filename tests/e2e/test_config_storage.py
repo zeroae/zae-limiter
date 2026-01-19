@@ -289,9 +289,7 @@ class TestE2EConfigCLIWorkflow:
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
-    def test_resource_config_cli_workflow(
-        self, e2e_limiter, cli_runner, localstack_endpoint
-    ):
+    def test_resource_config_cli_workflow(self, e2e_limiter, cli_runner, localstack_endpoint):
         """
         Test resource config CLI workflow.
 
@@ -381,9 +379,7 @@ class TestE2EConfigCLIWorkflow:
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert "Deleted defaults for resource 'gpt-4'" in result.output
 
-    def test_system_config_cli_workflow(
-        self, e2e_limiter, cli_runner, localstack_endpoint
-    ):
+    def test_system_config_cli_workflow(self, e2e_limiter, cli_runner, localstack_endpoint):
         """
         Test system config CLI workflow.
 
@@ -456,9 +452,7 @@ class TestE2EConfigCLIWorkflow:
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert "Deleted all system-wide defaults" in result.output
 
-    def test_entity_config_cli_workflow(
-        self, e2e_limiter, cli_runner, localstack_endpoint
-    ):
+    def test_entity_config_cli_workflow(self, e2e_limiter, cli_runner, localstack_endpoint):
         """
         Test entity config CLI workflow.
 

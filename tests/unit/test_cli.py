@@ -3292,9 +3292,7 @@ class TestSystemCommandsEdgeCases:
 
         mock_repo = Mock()
         mock_repo.get_system_defaults = AsyncMock(
-            side_effect=ValidationError(
-                field="limits", value="invalid", reason="Invalid limits"
-            )
+            side_effect=ValidationError(field="limits", value="invalid", reason="Invalid limits")
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
@@ -3313,9 +3311,7 @@ class TestSystemCommandsEdgeCases:
 
         mock_repo = Mock()
         mock_repo.delete_system_defaults = AsyncMock(
-            side_effect=ValidationError(
-                field="limits", value="invalid", reason="Invalid limits"
-            )
+            side_effect=ValidationError(field="limits", value="invalid", reason="Invalid limits")
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo

@@ -1797,9 +1797,7 @@ def system_set_defaults(
             sys.exit(1)
 
         try:
-            await repo.set_system_defaults(
-                parsed_limits, on_unavailable=on_unavailable
-            )
+            await repo.set_system_defaults(parsed_limits, on_unavailable=on_unavailable)
             n_limits = len(parsed_limits)
             click.echo(f"Set {n_limits} system-wide default(s):")
             for limit in parsed_limits:
@@ -2075,14 +2073,11 @@ def entity_get_limits(
             limits = await repo.get_limits(entity_id, resource=resource_name)
             if not limits:
                 click.echo(
-                    f"No limits configured for entity '{entity_id}' "
-                    f"on resource '{resource_name}'"
+                    f"No limits configured for entity '{entity_id}' on resource '{resource_name}'"
                 )
                 return
 
-            click.echo(
-                f"Limits for entity '{entity_id}' on resource '{resource_name}':"
-            )
+            click.echo(f"Limits for entity '{entity_id}' on resource '{resource_name}':")
             for limit in limits:
                 click.echo(f"  {_format_limit(limit)}")
         except ValidationError as e:
@@ -2157,9 +2152,7 @@ def entity_delete_limits(
 
         try:
             await repo.delete_limits(entity_id, resource=resource_name)
-            click.echo(
-                f"Deleted limits for entity '{entity_id}' on resource '{resource_name}'"
-            )
+            click.echo(f"Deleted limits for entity '{entity_id}' on resource '{resource_name}'")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
