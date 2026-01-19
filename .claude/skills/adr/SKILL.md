@@ -1,16 +1,19 @@
 ---
-description: Create and review Architecture Decision Records. Use `/adr create <title>` to create a new ADR or `/adr review` to check an existing one.
-argument-hint: create <title> | review [file]
+description: Create and review Architecture Decision Records. Use `/adr create <title>` to create a new ADR, `/adr review` to check an existing one, or `/adr enforce` to validate changes against architectural decisions. Invoke `/adr enforce` before implementing significant changes to core modules or architecture.
+argument-hint: create <title> | review [file] | enforce
 allowed-tools: Glob, Read, Write, AskUserQuestion
 ---
 
 # ADR Skill
 
-Create and review Architecture Decision Records.
+Create, review, and enforce Architecture Decision Records.
 
 ## Arguments
 
-- `$ARGUMENTS`: Either `create <title>` or `review [file]`
+- `$ARGUMENTS`: One of:
+  - `create <title>` - Create a new ADR
+  - `review [file]` - Review an existing ADR
+  - `enforce` - Validate current changes against all ADRs
 
 ## Create Mode
 
@@ -70,3 +73,35 @@ When arguments start with `review`:
 | Required sections | Context, Decision, Consequences, Alternatives |
 
 3. Report as checklist with specific fix suggestions
+
+## Enforce Mode
+
+When arguments are `enforce` (or empty and invoked proactively):
+
+1. Read all ADRs from `docs/adr/` (glob `*.md`)
+2. For each ADR, extract:
+   - Title and number
+   - The **Context** (what problem it addresses)
+   - The **Decision** (the constraint to enforce)
+3. Compare each ADR's context against the current task/changes
+4. For ADRs whose context is relevant, check if the proposed approach aligns with the Decision
+5. Report findings:
+
+**Output format:**
+
+```
+## ADR Enforcement Check
+
+### Relevant ADRs for this change:
+- ADR-NNN: <title> - ✅ Compliant | ⚠️ Review needed | ❌ Violation
+
+### Details:
+<For any non-compliant items, explain the concern and suggest fixes>
+
+### Not applicable:
+<List ADRs checked but not relevant to this change>
+```
+
+6. If a change appears to violate an ADR, ask the user if they want to:
+   - Adjust the implementation to comply
+   - Create a new ADR to supersede the old decision
