@@ -2423,8 +2423,8 @@ class TestRateLimiterRepositoryParameter:
     @pytest.mark.asyncio
     async def test_repository_parameter_accepted(self, mock_dynamodb):
         """Test RateLimiter accepts repository parameter."""
-        from zae_limiter import Repository
         from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
 
         with _patch_aiobotocore_response():
             repo = Repository(
@@ -2441,8 +2441,8 @@ class TestRateLimiterRepositoryParameter:
     @pytest.mark.asyncio
     async def test_repository_parameter_conflict_with_name_raises(self, mock_dynamodb):
         """Test ValueError when both repository and name are provided."""
-        from zae_limiter import Repository
         from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
 
         with _patch_aiobotocore_response():
             repo = Repository(stack_name="ZAEL-my-app", region="us-east-1")
@@ -2456,8 +2456,8 @@ class TestRateLimiterRepositoryParameter:
     @pytest.mark.asyncio
     async def test_repository_parameter_conflict_with_region_raises(self, mock_dynamodb):
         """Test ValueError when both repository and region are provided."""
-        from zae_limiter import Repository
         from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
 
         with _patch_aiobotocore_response():
             repo = Repository(stack_name="ZAEL-my-app", region="us-east-1")
@@ -2469,12 +2469,10 @@ class TestRateLimiterRepositoryParameter:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_repository_parameter_conflict_with_endpoint_url_raises(
-        self, mock_dynamodb
-    ):
+    async def test_repository_parameter_conflict_with_endpoint_url_raises(self, mock_dynamodb):
         """Test ValueError when both repository and endpoint_url are provided."""
-        from zae_limiter import Repository
         from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
 
         with _patch_aiobotocore_response():
             repo = Repository(stack_name="ZAEL-my-app", region="us-east-1")
@@ -2486,12 +2484,10 @@ class TestRateLimiterRepositoryParameter:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_repository_parameter_conflict_with_stack_options_raises(
-        self, mock_dynamodb
-    ):
+    async def test_repository_parameter_conflict_with_stack_options_raises(self, mock_dynamodb):
         """Test ValueError when both repository and stack_options are provided."""
-        from zae_limiter import Repository, StackOptions
         from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository, StackOptions
 
         with _patch_aiobotocore_response():
             repo = Repository(stack_name="ZAEL-my-app", region="us-east-1")
@@ -2515,9 +2511,7 @@ class TestRateLimiterRepositoryParameter:
                 warnings.simplefilter("always")
                 limiter = RateLimiter()
                 # Filter for our specific deprecation warning
-                deprecation_warnings = [
-                    x for x in w if "deprecated" in str(x.message).lower()
-                ]
+                deprecation_warnings = [x for x in w if "deprecated" in str(x.message).lower()]
                 assert len(deprecation_warnings) == 0
 
             assert limiter.stack_name == "ZAEL-limiter"
