@@ -15,20 +15,15 @@ Create and edit PRs following project conventions. Supports three modes:
 | **Edit** | `/pr edit [pr-number]`, "update pr" | Regenerate PR body from current commits |
 | **Release** | `/pr release <version>`, "release prep" | Verify release readiness |
 
-## Branch-Based Mode Detection
+## Mode Detection
 
-Before processing any mode, check the current branch name:
+1. **If issue number provided** (`/pr 123`) → **Create mode** (always, regardless of branch)
+2. **If `edit` keyword** (`/pr edit`) → **Edit mode**
+3. **If `release` keyword** (`/pr release 0.5.0`) → **Release mode**
+4. **If on release branch AND no arguments** (`/pr` on `release/0.5.0`) → **Release mode**
+5. **Otherwise** → **Create mode**
 
-```bash
-git rev-parse --abbrev-ref HEAD
-```
-
-If branch matches `release/X.X.X` or `release/vX.X.X` (e.g., `release/0.5.0`, `release/v1.2.3`):
-- **Auto-detect as Release mode** - extract version from branch name
-- Skip to [release.md](release.md) workflow
-- No issue number required
-
-Pattern: `^release/v?[0-9]+\.[0-9]+\.[0-9]+$`
+Pattern for release branches: `^release/v?[0-9]+\.[0-9]+\.[0-9]+$`
 
 ## Release Branch Workflow
 
