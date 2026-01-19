@@ -1,5 +1,5 @@
 ---
-description: Create and review Architecture Decision Records. Use `/adr create <title>` to create a new ADR, `/adr review` to check an existing one, `/adr enforce` to validate changes against architectural decisions, `/adr list` to show all ADRs, `/adr accept <number>` to mark as accepted, or `/adr supersede <old> <new>` to mark an ADR as superseded.
+description: Create and review Architecture Decision Records. Use `/adr create <title>` to create a new ADR, `/adr review` to check an existing one, `/adr enforce` to validate changes against ADRs in docs/adr/, `/adr list` to show all ADRs, `/adr accept <number>` to mark as accepted, or `/adr supersede <old> <new>` to mark an ADR as superseded.
 argument-hint: create <title> | review [file] | enforce | list | accept <number> | supersede <old> <new>
 allowed-tools: Glob, Grep, Read, Write, Edit, Bash, AskUserQuestion
 ---
