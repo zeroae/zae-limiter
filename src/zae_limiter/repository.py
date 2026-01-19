@@ -1,7 +1,7 @@
 """DynamoDB repository for rate limiter data."""
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aioboto3  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
@@ -1621,3 +1621,11 @@ class Repository:
             refill_period_ms=int(data.get("refill_period_ms", 0)),
             total_consumed_milli=total_consumed_milli,
         )
+
+
+# Type assertion: Repository implements RepositoryProtocol
+# This is verified at type-check time by mypy, not at runtime
+if TYPE_CHECKING:
+    from .repository_protocol import RepositoryProtocol
+
+    _: RepositoryProtocol = cast(Repository, None)
