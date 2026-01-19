@@ -1,8 +1,0 @@
-# cfn-lint configuration
-# https://github.com/aws-cloudformation/cfn-lint
-
-ignore_checks:
-  # W3037: False positive - TransactWriteItems is a valid DynamoDB action
-  # cfn-lint's IAM action database is incomplete
-  # See: https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html
-  - W3037
