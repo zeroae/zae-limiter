@@ -1,0 +1,40 @@
+name: Claude ADR Enforcer
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    paths:
+      - "src/**/*.py"
+      - "tests/**/*.py"
+      - "docs/**/*.md"
+
+jobs:
+  adr-enforce:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history for git diff
+
+      - name: Enforce ADRs
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Run /adr enforce to validate PR ${{ github.repository }}/pull/${{ github.event.pull_request.number }} against architectural decisions in docs/adr/.
+
+            For each ADR violation or concern found:
+            1. Post an inline comment on the specific file and line where the violation occurs
+            2. Reference the ADR number and explain how it's being violated
+            3. Suggest how to fix the issue or ask if a new ADR should supersede the old one
+
+            If all ADRs are satisfied, post a summary comment confirming compliance.
+
+            Use `gh api` to post inline review comments on the PR.
