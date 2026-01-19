@@ -69,6 +69,10 @@
          <lastmod>2026-01-19</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/012-cloudformation-docs-parity/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/100-centralized-config/</loc>
          <lastmod>2026-01-19</lastmod>
     </url>
@@ -94,6 +98,10 @@
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/106-audit-entity-ids-for-config/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/107-iam-roles-for-application-access/</loc>
          <lastmod>2026-01-19</lastmod>
     </url>
     <url>
