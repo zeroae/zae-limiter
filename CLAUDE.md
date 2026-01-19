@@ -630,7 +630,7 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 | Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
 | Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
 | Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#` |
-| Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#{resource}#` |
+| Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#` |
 | Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
 
 **Key builders for config records:**
@@ -638,6 +638,7 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 - `pk_resource(resource)` - Returns `RESOURCE#{resource}`
 - `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
 - `sk_system_limit(limit_name)` - Returns `#LIMIT#{limit_name}` (no resource)
+- `sk_resource_limit(limit_name)` - Returns `#LIMIT#{limit_name}` (no resource in SK since PK has it)
 - `sk_limit(resource, limit_name)` - Returns `#LIMIT#{resource}#{limit_name}`
 
 **Audit entity IDs for config levels** (ADR-106):
