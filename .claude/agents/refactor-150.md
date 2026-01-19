@@ -175,11 +175,36 @@ if repository is not None and name is not None:
     raise ValueError("Cannot specify both 'repository' and 'name'. Use one or the other.")
 ```
 
-## Session Lifecycle Notes
+## Design Decisions (User-Confirmed)
+
+### 1. Session Lifecycle: Always Close
+`RateLimiter.__aexit__` ALWAYS calls `repository.close()`, regardless of who created the Repository.
+- Simpler mental model
+- User can create new Repository if they need to reuse it
+
+### 2. Default Arguments: Silent Backward Compat
+`RateLimiter()` with no arguments works silently (no deprecation warning).
+- Creates `Repository(name="limiter")` internally
+- Only emit warning when `name=`, `region=`, etc. are explicitly passed
+
+### 3. CLI: Update to Repository
+Update CLI internal code to use the new Repository pattern.
+- Lead by example
+- Validates the new API works for real use cases
+
+### 4. Test Scope: Unit + Integration
+Run both unit tests AND integration tests during validation.
+```bash
+uv run pytest tests/unit/ tests/integration/ -v
+```
+- Requires LocalStack to be running
+- More thorough validation of the refactor
+
+## Technical Notes
 
 - `Repository` creates aioboto3 session lazily in `_get_client()`
-- `RateLimiter.close()` calls `repository.close()`
-- When `repository` is injected, caller owns lifecycle (don't close in `__aexit__`)
+- `RateLimiter.close()` always calls `repository.close()`
+- No `SyncRepository` needed - `SyncRateLimiter` wraps async `Repository`
 
 ## Success Criteria
 
