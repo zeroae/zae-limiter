@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768782744291,
+  "lastUpdate": 1768795593137,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -6689,6 +6689,205 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.20738034202519",
             "extra": "mean: 205.01539515151302 msec\nrounds: 33"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f3f1a61cb620643949b3bd3c135baf7bf1e6f90",
+          "message": "docs(adr): add ADR-001 centralized configuration access patterns (#195)\n\n* 📝 docs: add mkdocs serve --livereload --dirty workaround\n\nDue to Click 8.3.x bug (squidfunk/mkdocs-material#8478), the\n--livereload flag must be explicitly passed for live reload to work.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: add ADR-001 centralized config access patterns (#129)\n\nAdd Architecture Decision Record documenting:\n- Three-level config hierarchy (Entity > Resource > System)\n- Flat schema for atomic config_version counter\n- Caching strategy with negative caching for sparse traffic\n- Cost analysis for various traffic patterns\n- API change: stored limits as default behavior\n- v0.6.0 recommendation to flatten all existing records\n\nUpdate CLAUDE.md with centralized configuration section and\naccess patterns documentation.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(adr): refine ADR-001 with config scope, caching, and issue links\n\n- Clarify config field scope: on_unavailable at all levels, auto_update/strict_version system-only\n- Add detailed record structure examples for each level (system, resource, entity)\n- Update RCU costs to use eventually consistent reads (50% savings)\n- Add distributed cache consistency and read consistency sections\n- Remove config_version (TTL-based cache is sufficient)\n- Link implementation checklist to milestone issues (#129, #130, #131, #135)\n- Enable pymdownx.tasklist extension in mkdocs.yml\n- Convert checklist to admonition format for better rendering\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🔧 chore: add mkdocs permission to project settings\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✨ feat(skills): add context-aware issue and PR skills\n\n- Issue skill: create, update, and track progress on GitHub issues\n  - Infers type, labels, milestone from conversation context\n  - Supports Bug, Feature, Task, Chore, Epic, Theme types\n  - Progress mode checks off checkboxes based on completed work\n\n- PR skill: create feature PRs and release prep PRs\n  - Feature PR inherits metadata from linked issues\n  - Release Prep PR verifies milestone readiness before cutting release\n  - Moved Release Epic functionality from issue to PR skill\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🔧 chore(docs): remove navigation expand features from mkdocs\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✨ feat(skills): add ADR creation and review skill\n\nAdd tooling to enforce ADR best practices:\n- .claude/rules/adr-format.md: Auto-enforced rules (100 line limit,\n  one decision per ADR, required sections, excluded content)\n- .claude/skills/adr/SKILL.md: User-invocable skill for /adr create\n  and /adr review commands\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✨ feat(skills): add changelog skill for git-cliff setup\n\nConverts changelog.md rule to on-demand skill to save context.\nUse `/changelog init` to set up git-cliff in a new project.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(adr): split ADR-001 into focused decisions (101-105)\n\nSplit the 401-line ADR-001 into 6 focused ADRs under 100 lines each:\n- ADR-001: Summary/index linking to sub-decisions\n- ADR-101: Flat schema for config records\n- ADR-102: Three-level configuration hierarchy\n- ADR-103: Client-side config caching with TTL\n- ADR-104: Stored limits as default behavior\n- ADR-105: Eventually consistent reads for config\n\nNumbering starts at 100 to leave 001-099 available for backfilling\nhistorical decisions.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: add ADR-101 through ADR-105 to mkdocs nav\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🔧 chore: add hook to prompt mkdocs.yml update for new docs files\n\nWhen a new .md file is created in docs/, Claude is prompted to check\nif mkdocs.yml nav needs updating. Also fixes duplicate PostToolUse\nkeys in settings.json.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(adr): rename ADR-001 to ADR-100\n\nAll centralized config ADRs now use 100-series numbering (100-105),\nleaving 001-099 available for backfilling historical decisions.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✨ feat(skills): add /pr edit mode to update PR body\n\nAdd Edit PR Mode to regenerate PR descriptions based on current commits.\nUseful when PR scope has changed significantly.\n\nTriggers:\n- `/pr edit` - Edit PR for current branch\n- `/pr edit 195` - Edit specific PR number\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T23:00:05-05:00",
+          "tree_id": "7dadc6e85120e250e8ab5fb0add325c2e446b8aa",
+          "url": "https://github.com/zeroae/zae-limiter/commit/4f3f1a61cb620643949b3bd3c135baf7bf1e6f90"
+        },
+        "date": 1768795592648,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 65.34614428034439,
+            "unit": "iter/sec",
+            "range": "stddev: 0.023387088395285378",
+            "extra": "mean: 15.303121722222135 msec\nrounds: 252"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 20.56382958881603,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07154730090949278",
+            "extra": "mean: 48.62907444748843 msec\nrounds: 219"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 21.62468062461691,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12642766123893304",
+            "extra": "mean: 46.243457527027196 msec\nrounds: 148"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 1081.961217531116,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003459236378671372",
+            "extra": "mean: 924.247545842595 usec\nrounds: 938"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 57.72442864386516,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07393603550760068",
+            "extra": "mean: 17.323688141974845 msec\nrounds: 162"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 150.82280919483728,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008152362190369352",
+            "extra": "mean: 6.6302968717959025 msec\nrounds: 78"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 27.831563805567868,
+            "unit": "iter/sec",
+            "range": "stddev: 0.044347130859435015",
+            "extra": "mean: 35.93042802000023 msec\nrounds: 150"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 51.2578693623136,
+            "unit": "iter/sec",
+            "range": "stddev: 0.053229875530078984",
+            "extra": "mean: 19.509199512987006 msec\nrounds: 308"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 21.060802499884606,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06663299965471572",
+            "extra": "mean: 47.481571512076954 msec\nrounds: 207"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 5.5676340918352185,
+            "unit": "iter/sec",
+            "range": "stddev: 0.2320406224859751",
+            "extra": "mean: 179.60950441525466 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.477200105049217,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007675276271258486",
+            "extra": "mean: 46.56100400000014 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.00497949824244,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006020508287303626",
+            "extra": "mean: 52.61778893749813 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 34.93005019922934,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004343322300004094",
+            "extra": "mean: 28.62864480000269 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 29.787415555655176,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004271614939677754",
+            "extra": "mean: 33.57122400000053 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.52754805577793,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00649975001990095",
+            "extra": "mean: 42.5033665909108 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 209.61664291378193,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000824716475384087",
+            "extra": "mean: 4.770613564359548 msec\nrounds: 101"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 35.92057928647786,
+            "unit": "iter/sec",
+            "range": "stddev: 0.18174450816671864",
+            "extra": "mean: 27.839194686274045 msec\nrounds: 306"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 19.609137032704982,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08868638994005211",
+            "extra": "mean: 50.996634799999406 msec\nrounds: 225"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1087.656185274311,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000027914815006011996",
+            "extra": "mean: 919.408185729019 usec\nrounds: 953"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 343.9018735148748,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022276184947571203",
+            "extra": "mean: 2.907806200005325 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 62.83483963618035,
+            "unit": "iter/sec",
+            "range": "stddev: 0.025360435066339164",
+            "extra": "mean: 15.914737839550389 msec\nrounds: 268"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 27.085572935500064,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04808837519719052",
+            "extra": "mean: 36.92002389542725 msec\nrounds: 153"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 25.525433315378933,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10381204656753522",
+            "extra": "mean: 39.176612112496656 msec\nrounds: 80"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 4.9377391809175855,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12313329474757424",
+            "extra": "mean: 202.52183506666483 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 5.228637656355214,
+            "unit": "iter/sec",
+            "range": "stddev: 0.2221929804666495",
+            "extra": "mean: 191.25440807406827 msec\nrounds: 27"
           }
         ]
       }
