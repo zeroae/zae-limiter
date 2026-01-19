@@ -66,7 +66,7 @@ Use template from [release-template.md](release-template.md).
 ```bash
 gh pr create \
   --draft \
-  --title "chore: release prep v<version>" \
+  --title "🔖 chore: release prep v<version>" \
   --body "<generated-body>" \
   --milestone "v<version>"
 ```

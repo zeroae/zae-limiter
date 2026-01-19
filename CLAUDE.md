@@ -615,7 +615,7 @@ When implementing features that derive data from state changes (like consumption
 
 ## Commit Messages
 
-Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md).
+Follow the [commit conventions](.claude/rules/commits.md).
 
 **Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `test`, `benchmark`
 
