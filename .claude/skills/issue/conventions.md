@@ -16,17 +16,26 @@ Types classify the fundamental nature of work and map to conventional commit typ
 
 ## Issue Titles
 
-Use emoji-only prefix (not full conventional commit format):
+Use gitmoji prefix with capitalized description. Any gitmoji from conventional commits is valid:
 
-| Type | Emoji | Example |
-|------|-------|---------|
-| Feature | ✨ | `✨ Add health_check method` |
-| Bug | 🐛 | `🐛 Fix asyncio deprecation warning` |
-| Task | 📋 | `📋 Update migration docs` |
-| Epic | 🎯 | `🎯 v0.9.0: API Polish` |
-| Chore | 🔧 | `🔧 Update CI workflow` |
+| Gitmoji | Commit Type | GitHub Type | Example |
+|---------|-------------|-------------|---------|
+| ✨ | feat | Feature | `✨ Add health_check method` |
+| 🐛 | fix | Bug | `🐛 Fix asyncio deprecation warning` |
+| 📝 | docs | Task | `📝 Update migration docs` |
+| ♻️ | refactor | Chore | `♻️ Simplify bucket calculation` |
+| ⚡ | perf | Feature | `⚡ Optimize DynamoDB queries` |
+| ✅ | test | Task | `✅ Add integration tests for lease` |
+| 🔧 | chore | Chore | `🔧 Update ruff configuration` |
+| 👷 | ci | Chore | `👷 Add Python 3.13 to CI matrix` |
+| 🔒 | security | Bug | `🔒 Fix IAM permission escalation` |
+| ⬆️ | deps | Chore | `⬆️ Upgrade boto3 to 1.35` |
+| 🔥 | remove | Chore | `🔥 Remove deprecated v1 API` |
+| 💥 | breaking | Feature | `💥 Change default cascade behavior` |
+| 🎯 | (epic) | Epic | `🎯 v0.9.0: API Polish` |
+| 🎨 | style | Theme | `🎨 Consistent error handling` |
 
-**Note:** Issue titles use **capitalized** descriptions for readability.
+See [commits.md](../../rules/commits.md) for the complete gitmoji list.
 
 ## Labels
 

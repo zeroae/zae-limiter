@@ -21,14 +21,18 @@ This skill operates in three modes based on context:
 
 ## Supported Issue Types
 
-| Type | Emoji | GitHub Type | Use For |
-|------|-------|-------------|---------|
-| Bug | 🐛 | Bug | Defects, unexpected behavior |
-| Feature | ✨ | Feature | New functionality, enhancements |
-| Task | 📋 | Task | Documentation, testing, specific work items |
-| Chore | 🔧 | Chore | Maintenance: refactor, deps, ci, cleanup |
-| Epic | 🎯 | Epic | Major feature spanning multiple issues |
-| Theme | 🎨 | Theme | Strategic initiative spanning epics |
+GitHub supports 5 issue types. The title emoji can be any gitmoji - it doesn't have to match the canonical type emoji:
+
+| GitHub Type | Canonical Emoji | Alternative Emojis | Use For |
+|-------------|-----------------|-------------------|---------|
+| Bug | 🐛 | 🔒 (security) | Defects, unexpected behavior |
+| Feature | ✨ | ⚡ (perf), 💥 (breaking) | New functionality, enhancements |
+| Task | 📋 | 📝 (docs), ✅ (test) | Documentation, testing, specific work items |
+| Chore | 🔧 | ♻️ (refactor), ⬆️ (deps), 👷 (ci), 🔥 (remove) | Maintenance: refactor, deps, ci, cleanup |
+| Epic | 🎯 | - | Major feature spanning multiple issues |
+| Theme | 🎨 | - | Strategic initiative spanning epics |
+
+See [conventions.md](conventions.md) for full gitmoji-to-type mapping.
 
 > **Note:** For release preparation, use `/pr release <version>` to create a Release Prep PR.
 
