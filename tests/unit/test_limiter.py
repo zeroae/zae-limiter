@@ -14,6 +14,7 @@ from zae_limiter import (
     RateLimiter,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    ValidationError,
 )
 from zae_limiter.exceptions import InvalidIdentifierError, InvalidNameError
 from zae_limiter.infra.discovery import InfrastructureDiscovery
@@ -573,6 +574,131 @@ class TestRateLimiterSystemDefaults:
         retrieved, _ = await limiter.get_system_defaults()
         assert len(retrieved) == 1
         assert retrieved[0].name == "tpm"
+
+
+class TestRateLimiterThreeTierResolution:
+    """Tests for three-tier limit resolution: Entity > Resource > System > Override."""
+
+    async def test_resolution_entity_level(self, limiter):
+        """Test that entity-level limits take precedence."""
+        # Set all three levels
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+
+        # Entity-level should be used (100 rpm)
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+            consume={"rpm": 75},  # Exceeds resource (50) and system (10), but not entity (100)
+        ):
+            pass  # Should succeed
+
+    async def test_resolution_resource_level_fallback(self, limiter):
+        """Test that resource-level limits are used when no entity limits exist."""
+        # Set system and resource levels only
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+
+        # Resource-level should be used (50 rpm)
+        async with limiter.acquire(
+            entity_id="user-2",  # No entity-level limits
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+            consume={"rpm": 25},  # Exceeds system (10), but not resource (50)
+        ):
+            pass  # Should succeed
+
+    async def test_resolution_system_level_fallback(self, limiter):
+        """Test that system-level limits are used when no entity/resource limits exist."""
+        # Set system level only
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # System-level should be used (100 rpm)
+        async with limiter.acquire(
+            entity_id="user-3",  # No entity-level limits
+            resource="claude-3",  # No resource-level limits
+            limits=None,  # Auto-resolve
+            consume={"rpm": 50},
+        ):
+            pass  # Should succeed
+
+    async def test_resolution_override_fallback(self, limiter):
+        """Test that override parameter is used when no stored config exists."""
+        # No stored config at any level
+
+        # Override parameter should be used
+        async with limiter.acquire(
+            entity_id="user-4",
+            resource="new-resource",
+            limits=[Limit.per_minute("rpm", 100)],  # Override
+            consume={"rpm": 50},
+        ):
+            pass  # Should succeed
+
+    async def test_resolution_no_limits_raises_validation_error(self, limiter):
+        """Test that ValidationError is raised when no limits found anywhere."""
+        # No stored config and no override
+
+        with pytest.raises(ValidationError) as exc_info:
+            async with limiter.acquire(
+                entity_id="user-5",
+                resource="unknown-resource",
+                limits=None,  # No override
+                consume={"rpm": 1},
+            ):
+                pass
+
+        assert "No limits configured" in str(exc_info.value)
+        assert "user-5" in str(exc_info.value)
+        assert "unknown-resource" in str(exc_info.value)
+
+    async def test_on_unavailable_resolution_from_system_config(self, limiter):
+        """Test that on_unavailable is resolved from system config."""
+        from zae_limiter import OnUnavailable
+
+        # Set system defaults with on_unavailable
+        await limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100)],
+            on_unavailable=OnUnavailable.ALLOW,
+        )
+
+        # Acquire should use the system config on_unavailable
+        async with limiter.acquire(
+            entity_id="user-6",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve limits and on_unavailable
+            consume={"rpm": 1},
+        ):
+            pass  # Should succeed
+
+    async def test_available_uses_resolution(self, limiter):
+        """Test that available() also uses three-tier resolution."""
+        # Set resource-level limits
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+
+        # available() should resolve to resource level
+        available = await limiter.available(
+            entity_id="user-7",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+        )
+        assert available["rpm"] == 100
+
+    async def test_time_until_available_uses_resolution(self, limiter):
+        """Test that time_until_available() also uses three-tier resolution."""
+        # Set resource-level limits
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+
+        # time_until_available() should resolve to resource level
+        wait_time = await limiter.time_until_available(
+            entity_id="user-8",
+            resource="gpt-4",
+            needed={"rpm": 50},
+            limits=None,  # Auto-resolve
+        )
+        assert wait_time == 0.0  # Full capacity available
 
 
 class TestRateLimiterCapacity:
