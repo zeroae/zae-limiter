@@ -85,16 +85,17 @@ Closes #<issue-number>
 
 ### 6. Create the PR
 
+**All PRs are created in draft mode.**
+
 ```bash
 gh pr create \
+  --draft \
   --base "<base-branch>" \
   --title "<emoji> <type>(scope): description" \
   --body "<body>" \
   --label "<inherited-labels>" \
   --milestone "<inherited-milestone>"
 ```
-
-**Note:** Use `--base release/<version>` when targeting a release branch.
 
 ### 7. Push if Needed
 
