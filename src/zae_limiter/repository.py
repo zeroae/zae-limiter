@@ -937,7 +937,9 @@ class Repository:
         if not item:
             return None
 
-        return item.get(field, {}).get("S")
+        field_value = item.get(field, {})
+        result: str | None = field_value.get("S") if field_value else None
+        return result
 
     async def _delete_system_config(self) -> None:
         """Delete system config record."""

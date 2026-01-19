@@ -109,11 +109,29 @@ if wait_seconds > 0:
     print(f"Need to wait {wait_seconds}s for capacity")
 ```
 
-## Stored Limits
+## Automatic Limit Resolution
 
-zae-limiter uses a three-level configuration hierarchy to resolve limits. See [Configuration Hierarchy](config-hierarchy.md) for full details.
+zae-limiter automatically resolves limits from stored configurations using a three-level hierarchy. See [Configuration Hierarchy](config-hierarchy.md) for full details.
+
+**Resolution order (highest to lowest precedence):**
+
+1. **Entity level** - Specific limits for an entity+resource pair
+2. **Resource level** - Default limits for a resource (all entities)
+3. **System level** - Global defaults (all resources)
+4. **Override parameter** - Fallback if no stored config exists
 
 ```python
+# Set system-wide defaults (lowest precedence)
+await limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 100)],
+)
+
+# Set resource defaults (overrides system for this resource)
+await limiter.set_resource_defaults(
+    resource="gpt-4",
+    limits=[Limit.per_minute("rpm", 50)],
+)
+
 # Set entity-specific limits (highest precedence)
 await limiter.set_limits(
     entity_id="user-premium",
@@ -124,30 +142,37 @@ await limiter.set_limits(
     ],
 )
 
-# Limits are automatically resolved from config hierarchy:
-# Entity > Resource > System > Constructor defaults
+# Limits are resolved automatically - no special flag needed
 async with limiter.acquire(
     entity_id="user-premium",
     resource="gpt-4",
+    limits=None,  # Auto-resolves to entity-level (500 rpm)
+    consume={"rpm": 1},
+) as lease:
+    ...
+
+# Free user falls back to resource defaults (50 rpm)
+async with limiter.acquire(
+    entity_id="user-free",
+    resource="gpt-4",
+    limits=None,  # Auto-resolves to resource-level
+    consume={"rpm": 1},
+) as lease:
+    ...
+
+# Override stored config for a specific call
+async with limiter.acquire(
+    entity_id="user-premium",
+    resource="gpt-4",
+    limits=[Limit.per_minute("rpm", 10)],  # Explicit override
     consume={"rpm": 1},
 ) as lease:
     ...
 ```
 
-You can also set defaults at system and resource levels:
-
-```python
-# System defaults apply to ALL resources
-await limiter.set_system_defaults(
-    limits=[Limit.per_minute("rpm", 100)],
-)
-
-# Resource defaults override system for specific resources
-await limiter.set_resource_defaults(
-    resource="gpt-4",
-    limits=[Limit.per_minute("rpm", 50)],
-)
-```
+!!! note "v0.5.0 Breaking Change"
+    Prior to v0.5.0, you needed `use_stored_limits=True` to enable limit lookup.
+    This parameter is now deprecated - limits are always resolved automatically.
 
 ## Entity Management
 

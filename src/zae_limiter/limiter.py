@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import warnings
 from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
@@ -555,7 +556,7 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits: list[Limit] | None,
         consume: dict[str, int],
         cascade: bool = False,
         use_stored_limits: bool = False,
@@ -564,13 +565,17 @@ class RateLimiter:
         """
         Acquire rate limit capacity.
 
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+
         Args:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
-            limits: Default limits to apply
             consume: Amounts to consume by limit name
+            limits: Override limits (optional, falls back to stored config)
             cascade: If True, also consume from parent entity
-            use_stored_limits: If True, use stored limits if available
+            use_stored_limits: DEPRECATED - limits are now always resolved from
+                stored config. This parameter will be removed in v1.0.
             on_unavailable: Override default on_unavailable behavior
 
         Yields:
@@ -579,19 +584,31 @@ class RateLimiter:
         Raises:
             RateLimitExceeded: If any limit would be exceeded
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
+            ValidationError: If no limits found at any level and no override provided
         """
         await self._ensure_initialized()
-        mode = on_unavailable or self.on_unavailable
+
+        # Deprecation warning for use_stored_limits
+        if use_stored_limits:
+            warnings.warn(
+                "use_stored_limits is deprecated and will be removed in v1.0. "
+                "Limits are now always resolved from stored config (Entity > Resource > System). "
+                "Pass limits parameter as override if needed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # Resolve on_unavailable mode
+        mode = await self._resolve_on_unavailable(on_unavailable)
 
         # Acquire the lease (this may fail due to rate limit or infrastructure)
         try:
             lease = await self._do_acquire(
                 entity_id=entity_id,
                 resource=resource,
-                limits=limits,
+                limits_override=limits,
                 consume=consume,
                 cascade=cascade,
-                use_stored_limits=use_stored_limits,
             )
         except (RateLimitExceeded, ValidationError):
             raise
@@ -621,10 +638,9 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits_override: list[Limit] | None,
         consume: dict[str, int],
         cascade: bool,
-        use_stored_limits: bool,
     ) -> Lease:
         """Internal acquire implementation."""
         # Validate inputs at API boundary
@@ -640,16 +656,10 @@ class RateLimiter:
             if entity and entity.parent_id:
                 entity_ids.append(entity.parent_id)
 
-        # Resolve limits for each entity
+        # Resolve limits for each entity using three-tier hierarchy
         entity_limits: dict[str, list[Limit]] = {}
         for eid in entity_ids:
-            if use_stored_limits:
-                stored = await self._repository.get_limits(eid, resource)
-                if not stored:
-                    stored = await self._repository.get_limits(eid, DEFAULT_RESOURCE)
-                entity_limits[eid] = stored if stored else limits
-            else:
-                entity_limits[eid] = limits
+            entity_limits[eid] = await self._resolve_limits(eid, resource, limits_override)
 
         # Get or create buckets for each entity/limit
         entries: list[LeaseEntry] = []
@@ -703,15 +713,100 @@ class RateLimiter:
 
         return Lease(repository=self._repository, entries=entries)
 
+    async def _resolve_limits(
+        self,
+        entity_id: str,
+        resource: str,
+        limits_override: list[Limit] | None,
+    ) -> list[Limit]:
+        """
+        Resolve limits using three-tier hierarchy: Entity > Resource > System > Override.
+
+        Resolution order:
+        1. Entity-level config for this resource
+        2. Resource-level defaults (if entity config is empty)
+        3. System-level defaults (if resource config is empty)
+        4. Override parameter (if all configs are empty)
+        5. ValidationError (if no limits found anywhere)
+
+        Args:
+            entity_id: Entity to resolve limits for
+            resource: Resource being accessed
+            limits_override: Optional override limits (from limits parameter)
+
+        Returns:
+            Resolved list of Limit objects
+
+        Raises:
+            ValidationError: If no limits found at any level and no override provided
+        """
+        # Try Entity level
+        entity_limits = await self._repository.get_limits(entity_id, resource)
+        if entity_limits:
+            return entity_limits
+
+        # Try Resource level
+        resource_limits = await self._repository.get_resource_defaults(resource)
+        if resource_limits:
+            return resource_limits
+
+        # Try System level
+        system_limits, _ = await self._repository.get_system_defaults()
+        if system_limits:
+            return system_limits
+
+        # Try override parameter
+        if limits_override is not None:
+            return limits_override
+
+        # No limits found anywhere
+        raise ValidationError(
+            field="limits",
+            value=f"entity={entity_id}, resource={resource}",
+            reason=(
+                f"No limits configured for entity '{entity_id}' and resource '{resource}'. "
+                "Configure limits at entity, resource, or system level, "
+                "or provide limits parameter."
+            ),
+        )
+
+    async def _resolve_on_unavailable(
+        self,
+        on_unavailable_param: OnUnavailable | None,
+    ) -> OnUnavailable:
+        """
+        Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
+
+        Args:
+            on_unavailable_param: Optional parameter override
+
+        Returns:
+            Resolved OnUnavailable enum value
+        """
+        # If parameter is provided, use it
+        if on_unavailable_param is not None:
+            return on_unavailable_param
+
+        # Try System config
+        _, on_unavailable_str = await self._repository.get_system_defaults()
+        if on_unavailable_str is not None:
+            return OnUnavailable(on_unavailable_str)
+
+        # Fall back to constructor default
+        return self.on_unavailable
+
     async def available(
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
     ) -> dict[str, int]:
         """
         Check available capacity without consuming.
+
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
 
         Returns minimum available across entity (and parent if cascade).
         Can return negative values if bucket is in debt.
@@ -719,24 +814,34 @@ class RateLimiter:
         Args:
             entity_id: Entity to check
             resource: Resource to check
-            limits: Default limits
-            use_stored_limits: Use stored limits if available
+            limits: Override limits (optional, falls back to stored config)
+            use_stored_limits: DEPRECATED - limits are now always resolved from
+                stored config. This parameter will be removed in v1.0.
 
         Returns:
             Dict mapping limit_name -> available tokens
+
+        Raises:
+            ValidationError: If no limits found at any level and no override provided
         """
         await self._ensure_initialized()
         now_ms = int(time.time() * 1000)
 
-        # Resolve limits
+        # Deprecation warning for use_stored_limits
         if use_stored_limits:
-            stored = await self._repository.get_limits(entity_id, resource)
-            if not stored:
-                stored = await self._repository.get_limits(entity_id, DEFAULT_RESOURCE)
-            limits = stored if stored else limits
+            warnings.warn(
+                "use_stored_limits is deprecated and will be removed in v1.0. "
+                "Limits are now always resolved from stored config (Entity > Resource > System). "
+                "Pass limits parameter as override if needed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # Resolve limits using three-tier hierarchy
+        resolved_limits = await self._resolve_limits(entity_id, resource, limits)
 
         result: dict[str, int] = {}
-        for limit in limits:
+        for limit in resolved_limits:
             state = await self._repository.get_bucket(entity_id, resource, limit.name)
             if state is None:
                 result[limit.name] = limit.burst
@@ -749,35 +854,48 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
         needed: dict[str, int],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
     ) -> float:
         """
         Calculate seconds until requested capacity is available.
 
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+
         Args:
             entity_id: Entity to check
             resource: Resource to check
-            limits: Default limits
             needed: Required amounts by limit name
-            use_stored_limits: Use stored limits if available
+            limits: Override limits (optional, falls back to stored config)
+            use_stored_limits: DEPRECATED - limits are now always resolved from
+                stored config. This parameter will be removed in v1.0.
 
         Returns:
             Seconds until available (0.0 if already available)
+
+        Raises:
+            ValidationError: If no limits found at any level and no override provided
         """
         await self._ensure_initialized()
         now_ms = int(time.time() * 1000)
 
-        # Resolve limits
+        # Deprecation warning for use_stored_limits
         if use_stored_limits:
-            stored = await self._repository.get_limits(entity_id, resource)
-            if not stored:
-                stored = await self._repository.get_limits(entity_id, DEFAULT_RESOURCE)
-            limits = stored if stored else limits
+            warnings.warn(
+                "use_stored_limits is deprecated and will be removed in v1.0. "
+                "Limits are now always resolved from stored config (Entity > Resource > System). "
+                "Pass limits parameter as override if needed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # Resolve limits using three-tier hierarchy
+        resolved_limits = await self._resolve_limits(entity_id, resource, limits)
 
         max_wait = 0.0
-        for limit in limits:
+        for limit in resolved_limits:
             amount = needed.get(limit.name, 0)
             if amount <= 0:
                 continue
@@ -1425,13 +1543,18 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits: list[Limit] | None,
         consume: dict[str, int],
         cascade: bool = False,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
     ) -> Iterator[SyncLease]:
-        """Acquire rate limit capacity (synchronous)."""
+        """
+        Acquire rate limit capacity (synchronous).
+
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+        """
         loop = self._get_loop()
 
         async def do_acquire() -> tuple[Lease, bool]:
@@ -1467,10 +1590,15 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
     ) -> dict[str, int]:
-        """Check available capacity without consuming."""
+        """
+        Check available capacity without consuming.
+
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+        """
         return self._run(
             self._limiter.available(
                 entity_id=entity_id,
@@ -1484,17 +1612,22 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
         needed: dict[str, int],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
     ) -> float:
-        """Calculate seconds until requested capacity is available."""
+        """
+        Calculate seconds until requested capacity is available.
+
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+        """
         return self._run(
             self._limiter.time_until_available(
                 entity_id=entity_id,
                 resource=resource,
-                limits=limits,
                 needed=needed,
+                limits=limits,
                 use_stored_limits=use_stored_limits,
             )
         )

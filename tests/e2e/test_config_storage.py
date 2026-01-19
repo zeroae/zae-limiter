@@ -542,7 +542,9 @@ class TestE2ESyncConfigStorage:
     """E2E tests for sync limiter config storage."""
 
     @pytest.fixture(scope="class")
-    def sync_localstack_limiter(self, localstack_endpoint, unique_name_class, minimal_stack_options):
+    def sync_localstack_limiter(
+        self, localstack_endpoint, unique_name_class, minimal_stack_options
+    ):
         """Class-scoped sync limiter for config tests."""
         from zae_limiter import SyncRateLimiter
 

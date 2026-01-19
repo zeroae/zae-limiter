@@ -629,7 +629,7 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
 | Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
-| Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#{resource}#` |
+| Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#` |
 | Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#{resource}#` |
 | Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
 
@@ -637,6 +637,7 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 - `pk_system()` - Returns `SYSTEM#`
 - `pk_resource(resource)` - Returns `RESOURCE#{resource}`
 - `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
+- `sk_system_limit(limit_name)` - Returns `#LIMIT#{limit_name}` (no resource)
 - `sk_limit(resource, limit_name)` - Returns `#LIMIT#{resource}#{limit_name}`
 
 **Audit entity IDs for config levels** (ADR-106):
@@ -651,31 +652,35 @@ Limit configs use a three-level hierarchy with precedence: **Entity > Resource >
 
 | Level | Set | Get | Delete | List |
 |-------|-----|-----|--------|------|
-| System | `set_system_limits(resource, limits)` | `get_system_limits(resource)` | `delete_system_limits(resource)` | `list_system_resources_with_limits()` |
-| Resource | `set_resource_limits(resource, limits)` | `get_resource_limits(resource)` | `delete_resource_limits(resource)` | `list_resources_with_limits()` |
+| System | `set_system_defaults(limits, on_unavailable)` | `get_system_defaults()` | `delete_system_defaults()` | - |
+| Resource | `set_resource_defaults(resource, limits)` | `get_resource_defaults(resource)` | `delete_resource_defaults(resource)` | `list_resources_with_defaults()` |
 | Entity | `set_limits(entity_id, limits, resource)` | `get_limits(entity_id, resource)` | `delete_limits(entity_id, resource)` | - |
 
 **CLI commands for managing stored limits:**
 
 ```bash
-# System-level defaults (apply to all entities unless overridden)
-zae-limiter system set-defaults gpt-4 -l tpm:100000 -l rpm:1000
-zae-limiter system get-defaults gpt-4
-zae-limiter system delete-defaults gpt-4 --yes
-zae-limiter system list-resources
+# System-level defaults (apply to ALL resources unless overridden)
+zae-limiter system set-defaults -l tpm:100000 -l rpm:1000 --on-unavailable allow
+zae-limiter system get-defaults
+zae-limiter system delete-defaults --yes
 
 # Resource-level limits (apply to specific resource)
-zae-limiter resource set gpt-4 -l tpm:50000 -l rpm:500
-zae-limiter resource get gpt-4
-zae-limiter resource delete gpt-4 --yes
+zae-limiter resource set-defaults gpt-4 -l tpm:50000 -l rpm:500
+zae-limiter resource get-defaults gpt-4
+zae-limiter resource delete-defaults gpt-4 --yes
 zae-limiter resource list
+
+# Entity-level limits (highest precedence)
+zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
+zae-limiter entity get-limits user-123 --resource gpt-4
+zae-limiter entity delete-limits user-123 --resource gpt-4 --yes
 ```
 
 Config fields are stored alongside limits in existing `#LIMIT#` records using **flat schema** (no nested `data.M`):
 
 | Level | PK | SK | Purpose |
 |-------|----|----|---------|
-| System | `SYSTEM#` | `#LIMIT#{resource}#{limit_name}` | Global defaults |
+| System | `SYSTEM#` | `#LIMIT#{limit_name}` | Global defaults (all resources) |
 | Resource | `RESOURCE#{resource}` | `#LIMIT#{resource}#{limit_name}` | Resource-specific |
 | Entity | `ENTITY#{id}` | `#LIMIT#{resource}#{limit_name}` | Entity-specific (existing) |
 
