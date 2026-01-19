@@ -20,6 +20,12 @@ flowchart TB
             lambda[[Lambda Aggregator]]
         end
 
+        subgraph iam[Application IAM Roles]
+            appRole[AppRole]
+            adminRole[AdminRole]
+            readonlyRole[ReadOnlyRole]
+        end
+
         subgraph observe[Observability]
             logs[(CloudWatch Logs)]
             alarms([CloudWatch Alarms])
@@ -37,11 +43,18 @@ flowchart TB
     alarms -.-> lambda
     alarms -.-> dlq
 
+    appRole -.-> table
+    adminRole -.-> table
+    readonlyRole -.-> table
+
     click table "#dynamodb-table"
     click stream "#stream-configuration"
     click s3 "#s3-audit-archive-bucket"
     click lambda "#lambda-aggregator"
     click role "#iam-permissions"
+    click appRole "#application-iam-roles"
+    click adminRole "#application-iam-roles"
+    click readonlyRole "#application-iam-roles"
     click dlq "#add-dead-letter-queue"
     click alarms "#add-cloudwatch-alarms"
 ```
@@ -78,6 +91,8 @@ The DynamoDB table name is automatically derived from the CloudFormation stack n
 | `RoleName` | String | _(empty)_ | Custom IAM role name (use `{}` as placeholder for base name) |
 | `EnableAuditArchival` | String | `true` | Archive expired audit events to S3 |
 | `AuditArchiveGlacierDays` | Number | `90` | Days before Glacier IR transition (1-3650) |
+| `EnableTracing` | String | `false` | Enable AWS X-Ray tracing for Lambda |
+| `EnableIAMRoles` | String | `true` | Create App/Admin/ReadOnly IAM roles |
 
 ## DynamoDB Table
 
@@ -262,6 +277,59 @@ AggregatorRole:
               Resource: !Sub "${AuditArchiveBucket.Arn}/*"
 ```
 
+## Application IAM Roles
+
+When `EnableIAMRoles` is `true` (default), the template creates three IAM roles for different access patterns. These roles allow applications, administrators, and monitoring systems to assume least-privilege access to the DynamoDB table.
+
+### Role Summary
+
+| Role | Use Case | DynamoDB Permissions |
+|------|----------|---------------------|
+| `AppRole` | Applications calling `acquire()` | GetItem, Query, TransactWriteItems |
+| `AdminRole` | Ops teams managing config | App + PutItem, DeleteItem, UpdateItem, BatchWriteItem |
+| `ReadOnlyRole` | Monitoring and dashboards | GetItem, Query, Scan, DescribeTable |
+
+### Trust Policy
+
+All roles trust the same AWS account root principal, allowing any IAM entity in the account to assume the role (subject to their own permissions):
+
+```yaml
+AssumeRolePolicyDocument:
+  Version: '2012-10-17'
+  Statement:
+    - Effect: Allow
+      Principal:
+        AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+      Action: sts:AssumeRole
+```
+
+### Role Naming
+
+- Default: `${StackName}-{app,admin,readonly}-role`
+- With custom `RoleName`: `${RoleName}-{app,admin,readonly}`
+
+Roles respect `PermissionBoundary` if configured.
+
+### Usage Example
+
+```python
+import boto3
+
+# Assume the AppRole for rate limiting operations
+sts = boto3.client('sts')
+credentials = sts.assume_role(
+    RoleArn='arn:aws:iam::123456789012:role/ZAEL-my-app-app-role',
+    RoleSessionName='my-app'
+)['Credentials']
+
+# Use assumed credentials
+session = boto3.Session(
+    aws_access_key_id=credentials['AccessKeyId'],
+    aws_secret_access_key=credentials['SecretAccessKey'],
+    aws_session_token=credentials['SessionToken']
+)
+```
+
 ## Customization
 
 ### Add Dead Letter Queue
@@ -390,6 +458,12 @@ The template exports:
 | `FunctionArn` | Lambda function ARN |
 | `AuditArchiveBucketName` | S3 bucket for audit archives (when enabled) |
 | `AuditArchiveBucketArn` | S3 bucket ARN (when enabled) |
+| `AppRoleArn` | IAM role ARN for applications (when IAM roles enabled) |
+| `AppRoleName` | IAM role name for applications |
+| `AdminRoleArn` | IAM role ARN for administrators |
+| `AdminRoleName` | IAM role name for administrators |
+| `ReadOnlyRoleArn` | IAM role ARN for read-only access |
+| `ReadOnlyRoleName` | IAM role name for read-only access |
 
 Access outputs:
 

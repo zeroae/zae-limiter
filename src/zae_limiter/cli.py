@@ -160,6 +160,11 @@ def cli() -> None:
     default=False,
     help="Enable AWS X-Ray tracing for Lambda aggregator (default: disabled)",
 )
+@click.option(
+    "--enable-iam-roles/--no-iam-roles",
+    default=True,
+    help="Create App/Admin/ReadOnly IAM roles for application access (default: enabled)",
+)
 def deploy(
     name: str,
     region: str | None,
@@ -180,6 +185,7 @@ def deploy(
     enable_audit_archival: bool,
     audit_archive_glacier_days: int,
     enable_tracing: bool,
+    enable_iam_roles: bool,
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
     from .exceptions import ValidationError
@@ -209,6 +215,7 @@ def deploy(
                 enable_audit_archival=enable_audit_archival,
                 audit_archive_glacier_days=audit_archive_glacier_days,
                 enable_tracing=enable_tracing,
+                create_iam_roles=enable_iam_roles,
             )
 
             click.echo(f"Deploying stack: {manager.stack_name}")
@@ -228,6 +235,9 @@ def deploy(
             click.echo(f"  Alarms: {'enabled' if stack_options.enable_alarms else 'disabled'}")
             if stack_options.enable_alarms and stack_options.alarm_sns_topic:
                 click.echo(f"  Alarm SNS topic: {stack_options.alarm_sns_topic}")
+            click.echo(
+                f"  IAM roles: {'enabled' if stack_options.create_iam_roles else 'disabled'}"
+            )
             if stack_options.enable_aggregator:
                 archival_status = "enabled" if stack_options.enable_audit_archival else "disabled"
                 click.echo(f"  Audit archival: {archival_status}")
@@ -538,11 +548,26 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
         lambda_version: str | None = None
         table_item_count: int | None = None
         table_size_bytes: int | None = None
+        role_arns: dict[str, str] = {}
 
-        # Get CloudFormation stack status (read-only)
+        # Get CloudFormation stack status and outputs (read-only)
         try:
             async with StackManager(stack_name, region, endpoint_url) as manager:
                 cfn_status = await manager.get_stack_status(stack_name)
+                # Get stack outputs for role ARNs if stack exists and is complete
+                if cfn_status and "COMPLETE" in cfn_status:
+                    try:
+                        client = await manager._get_client()
+                        response = await client.describe_stacks(StackName=stack_name)
+                        if response.get("Stacks"):
+                            outputs = response["Stacks"][0].get("Outputs", [])
+                            for output in outputs:
+                                key = output.get("OutputKey", "")
+                                value = output.get("OutputValue", "")
+                                if key in ("AppRoleArn", "AdminRoleArn", "ReadOnlyRoleArn"):
+                                    role_arns[key] = value
+                    except Exception:
+                        pass  # Stack outputs unavailable
         except Exception:
             pass  # Stack status unavailable
 
@@ -620,6 +645,17 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
             click.echo(f"  Items:         {_format_count(table_item_count)}")
             click.echo(f"  Size:          {_format_size(table_size_bytes)}")
             click.echo()
+
+            # IAM Roles section (only if roles exist)
+            if role_arns:
+                click.echo("IAM Roles")
+                if "AppRoleArn" in role_arns:
+                    click.echo(f"  App:           {role_arns['AppRoleArn']}")
+                if "AdminRoleArn" in role_arns:
+                    click.echo(f"  Admin:         {role_arns['AdminRoleArn']}")
+                if "ReadOnlyRoleArn" in role_arns:
+                    click.echo(f"  ReadOnly:      {role_arns['ReadOnlyRoleArn']}")
+                click.echo()
 
             # Exit with appropriate status code
             if not available:

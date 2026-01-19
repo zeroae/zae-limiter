@@ -75,11 +75,6 @@
             "type": "command",
             "command": "jq -re '.tool_input.file_path | select(endswith(\"pyproject.toml\"))' > /dev/null && uv sync --all-extras --directory \"$CLAUDE_PROJECT_DIR\" || true",
             "statusMessage": "Syncing dependencies..."
-          },
-          {
-            "type": "prompt",
-            "prompt": "A new file was created in docs/. Check if mkdocs.yml nav needs updating to include this file.",
-            "command": "file_path=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty'); if [[ \"$TOOL_USE_RESULT\" == *\"File created successfully\"* ]] && [[ \"$file_path\" == */docs/*.md ]]; then echo \"New docs file: $file_path\"; exit 1; fi"
           }
         ]
       }
