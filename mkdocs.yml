@@ -22,8 +22,6 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
   features:
-    - navigation.sections
-    - navigation.expand
     - navigation.top
     - navigation.footer
     - content.code.copy
@@ -70,6 +68,9 @@ extra:
 
 markdown_extensions:
   - admonition
+  - pymdownx.tasklist:
+      custom_checkbox: true
+      clickable_checkbox: false
   - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
@@ -122,3 +123,10 @@ nav:
       - LocalStack: contributing/localstack.md
       - Testing: contributing/testing.md
       - Architecture: contributing/architecture.md
+  - ADRs:
+      - ADR-100 Centralized Config: adr/100-centralized-config.md
+      - ADR-101 Flat Schema: adr/101-flat-schema-config.md
+      - ADR-102 Config Hierarchy: adr/102-config-hierarchy.md
+      - ADR-103 Config Caching: adr/103-config-caching.md
+      - ADR-104 Stored Limits Default: adr/104-stored-limits-default.md
+      - ADR-105 Eventual Consistency: adr/105-eventual-consistency.md

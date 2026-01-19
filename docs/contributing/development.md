@@ -76,6 +76,19 @@ refactor(schema): simplify DynamoDB key structure
 
 **Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `test`, `benchmark`
 
+## Documentation
+
+To preview documentation locally:
+
+```bash
+uv run mkdocs serve --livereload --dirty
+```
+
+Then open <http://localhost:8000/zae-limiter/> in your browser.
+
+!!! note "Live reload requires `--livereload`"
+    Due to a [known issue](https://github.com/squidfunk/mkdocs-material/issues/8478) with Click 8.3.x, the `--livereload` flag must be explicitly passed for automatic browser refresh to work.
+
 ## Next Steps
 
 - [LocalStack](localstack.md) - Local AWS development

@@ -1,0 +1,39 @@
+# GitHub Actions release job snippet for changelog generation
+# Add this job to .github/workflows/release.yml
+
+release:
+  needs: build
+  runs-on: ubuntu-latest
+  permissions:
+    contents: write
+  steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0  # Required for full git history
+
+    - uses: actions/download-artifact@v7
+      with:
+        name: dist
+        path: dist/
+
+    - name: Generate changelog
+      uses: orhun/git-cliff-action@v4
+      with:
+        config: cliff.toml
+        args: --latest --strip header
+      env:
+        OUTPUT: CHANGELOG.md
+
+    - name: Create GitHub Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create ${{ github.ref_name }} \
+          --title "Release ${{ github.ref_name }}" \
+          --notes-file CHANGELOG.md \
+          dist/*
+
+# Key points:
+# - fetch-depth: 0 is required for full git history
+# - The changelog is generated from commits since the last tag
+# - No S3 or external storage needed
