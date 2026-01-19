@@ -776,10 +776,10 @@ class Repository:
             }
             await client.put_item(TableName=self.table_name, Item=item)
 
-            # Log audit event per limit
+            # Log audit event per limit (ADR-106: use $SYSTEM for all system-level events)
             await self._log_audit_event(
                 action=AuditAction.LIMITS_SET,
-                entity_id=f"$SYSTEM:{limit.name}",
+                entity_id="$SYSTEM",
                 principal=principal,
                 details={"limit": limit.to_dict()},
             )
@@ -853,12 +853,13 @@ class Repository:
         await self._delete_system_limits_internal()
         await self._delete_system_config()
 
-        # Log audit event
+        # Log audit event (ADR-106: use $SYSTEM for all system-level events)
         for limit in limits:
             await self._log_audit_event(
                 action=AuditAction.LIMITS_DELETED,
-                entity_id=f"$SYSTEM:{limit.name}",
+                entity_id="$SYSTEM",
                 principal=principal,
+                details={"limit": limit.name},
             )
 
     async def _delete_system_limits_internal(self) -> None:
@@ -913,10 +914,10 @@ class Repository:
 
         await client.put_item(TableName=self.table_name, Item=item)
 
-        # Log audit event
+        # Log audit event (ADR-106: use $SYSTEM for all system-level events)
         await self._log_audit_event(
             action=AuditAction.LIMITS_SET,  # Using LIMITS_SET for config changes too
-            entity_id="$SYSTEM:CONFIG",
+            entity_id="$SYSTEM",
             principal=principal,
             details={"on_unavailable": on_unavailable},
         )
