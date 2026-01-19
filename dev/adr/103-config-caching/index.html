@@ -12,9 +12,13 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/operations/streams/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/103-config-caching/">
       
       
+        <link rel="prev" href="../102-config-hierarchy/">
+      
+      
+        <link rel="next" href="../104-stored-limits-default/">
       
       
         
@@ -25,7 +29,7 @@
     
     
       
-        <title>Stream Processing Operations - zae-limiter</title>
+        <title>ADR-103 Config Caching - zae-limiter</title>
       
     
     
@@ -78,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#stream-processing-operations" class="md-skip">
+        <a href="#adr-103-client-side-config-caching-with-ttl" class="md-skip">
           Skip to content
         </a>
       
@@ -118,7 +122,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Stream Processing Operations
+              ADR-103 Config Caching
             
           </span>
         </div>
@@ -702,7 +706,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../" class="md-nav__link">
+      <a href="../../operations/" class="md-nav__link">
         
   
   
@@ -1261,18 +1265,20 @@
       
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
@@ -1293,7 +1299,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1311,7 +1317,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/100-centralized-config/" class="md-nav__link">
+      <a href="../100-centralized-config/" class="md-nav__link">
         
   
   
@@ -1339,7 +1345,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/101-flat-schema-config/" class="md-nav__link">
+      <a href="../101-flat-schema-config/" class="md-nav__link">
         
   
   
@@ -1367,7 +1373,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/102-config-hierarchy/" class="md-nav__link">
+      <a href="../102-config-hierarchy/" class="md-nav__link">
         
   
   
@@ -1392,10 +1398,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../adr/103-config-caching/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-103 Config Caching
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1411,6 +1444,109 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#no-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No Caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#distributed-cache-rediselasticache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Distributed Cache (Redis/ElastiCache)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dynamodb-streams-for-invalidation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DynamoDB Streams for Invalidation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1423,7 +1559,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/104-stored-limits-default/" class="md-nav__link">
+      <a href="../104-stored-limits-default/" class="md-nav__link">
         
   
   
@@ -1451,7 +1587,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/105-eventual-consistency/" class="md-nav__link">
+      <a href="../105-eventual-consistency/" class="md-nav__link">
         
   
   
@@ -1506,10 +1642,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#decision-tree" class="md-nav__link">
+  <a href="#context" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Decision Tree
+        Context
       
     </span>
   </a>
@@ -1517,22 +1653,44 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
+  <a href="#decision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Troubleshooting
+        Decision
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Troubleshooting">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#symptoms" class="md-nav__link">
+  <a href="#no-caching" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Symptoms
+        No Caching
       
     </span>
   </a>
@@ -1540,10 +1698,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#diagnostic-steps" class="md-nav__link">
+  <a href="#distributed-cache-rediselasticache" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Diagnostic Steps
+        Distributed Cache (Redis/ElastiCache)
       
     </span>
   </a>
@@ -1551,21 +1709,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#high-iterator-age" class="md-nav__link">
+  <a href="#dynamodb-streams-for-invalidation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        High Iterator Age
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#lambda-throttling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Lambda Throttling
+        DynamoDB Streams for Invalidation
       
     </span>
   </a>
@@ -1574,111 +1721,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#procedures" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Procedures
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Procedures">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#increase-lambda-concurrency" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Increase Lambda Concurrency
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#adjust-batch-size" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adjust Batch Size
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#shard-scaling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Shard Scaling
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#enable-parallelization-factor" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Enable Parallelization Factor
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verify-stream-health" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verify Stream Health
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#monitor-after-changes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Monitor After Changes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#tuning-guidelines" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tuning Guidelines
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#related" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Related
-      
-    </span>
-  </a>
   
 </li>
       
@@ -1699,7 +1741,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/operations/streams.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/103-config-caching.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1707,251 +1749,40 @@
   
 
 
-<h1 id="stream-processing-operations">Stream Processing Operations<a class="headerlink" href="#stream-processing-operations" title="Permanent link">&para;</a></h1>
-<p>This guide covers troubleshooting and operational procedures for DynamoDB Streams processing, which powers the usage aggregation feature.</p>
-<h2 id="decision-tree">Decision Tree<a class="headerlink" href="#decision-tree" title="Permanent link">&para;</a></h2>
-<div class="mermaid">flowchart TD
-    START([Stream Issue]) --&gt; Q1{What's the symptom?}
-
-    Q1 --&gt;|High IteratorAge| A1[Check processing lag]
-    Q1 --&gt;|Lambda throttling| A2[Check concurrency]
-    Q1 --&gt;|Missing snapshots| A3[Check Lambda errors]
-    Q1 --&gt;|Planning optimization| A4[Tune configuration]
-
-    A1 --&gt; CHECK1{Lambda healthy?}
-    CHECK1 --&gt;|No| LINK1([→ Lambda])
-    CHECK1 --&gt;|Yes| SCALE[Increase concurrency]
-
-    A2 --&gt; SCALE
-    A3 --&gt; LINK1
-    A4 --&gt; TUNE[Adjust batch size / concurrency]
-
-    click A1 "#high-iterator-age" "Diagnose lag"
-    click LINK1 "lambda/" "Lambda troubleshooting"
-    click SCALE "#scaling-stream-processing" "Scale concurrency"
-    click A3 "lambda/#error-rate-issues" "Check Lambda errors"
-    click TUNE "#tuning-stream-processing" "Configuration tuning"</div>
-<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
-<h3 id="symptoms">Symptoms<a class="headerlink" href="#symptoms" title="Permanent link">&para;</a></h3>
+<h1 id="adr-103-client-side-config-caching-with-ttl">ADR-103: Client-Side Config Caching with TTL<a class="headerlink" href="#adr-103-client-side-config-caching-with-ttl" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
+<strong>Date:</strong> 2026-01-18
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/135">#135</a></p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>The three-level config hierarchy (ADR-102) requires fetching 3 DynamoDB items per <code>acquire()</code> call. Without caching:</p>
 <ul>
-<li><code>IteratorAge</code> metric growing</li>
-<li>Usage snapshots delayed</li>
-<li>Stream iterator age alarm triggered</li>
-<li>Lambda throttling</li>
+<li><strong>Cost:</strong> 1.5 RCU per request (unacceptable at scale)</li>
+<li><strong>Latency:</strong> BatchGetItem round-trip on every request</li>
 </ul>
-<h3 id="diagnostic-steps">Diagnostic Steps<a class="headerlink" href="#diagnostic-steps" title="Permanent link">&para;</a></h3>
-<p><strong>Check IteratorAge metric:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/Lambda<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--metric-name<span class="w"> </span>IteratorAge<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>FunctionName,Value<span class="o">=</span>ZAEL-&lt;name&gt;-aggregator<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">60</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span>--statistics<span class="w"> </span>Maximum
-</span></code></pre></div>
-<p><strong>Check stream status:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-table<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">&#39;Table.StreamSpecification&#39;</span>
-</span></code></pre></div>
-<p><strong>Check Lambda event source mapping:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>list-event-source-mappings<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--function-name<span class="w"> </span>ZAEL-&lt;name&gt;-aggregator
-</span></code></pre></div>
-<p><strong>Check Lambda concurrent executions:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/Lambda<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--metric-name<span class="w"> </span>ConcurrentExecutions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>FunctionName,Value<span class="o">=</span>ZAEL-&lt;name&gt;-aggregator<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">60</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span>--statistics<span class="w"> </span>Maximum
-</span></code></pre></div>
-<h3 id="high-iterator-age">High Iterator Age<a class="headerlink" href="#high-iterator-age" title="Permanent link">&para;</a></h3>
-<p><strong>Common causes and solutions:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Cause</th>
-<th>Solution</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Lambda errors</strong></td>
-<td>Fix errors (check DLQ and logs) - see <a href="../lambda/">Lambda Operations</a></td>
-</tr>
-<tr>
-<td><strong>Lambda throttling</strong></td>
-<td>Increase reserved concurrency</td>
-</tr>
-<tr>
-<td><strong>Low Lambda concurrency</strong></td>
-<td>Match concurrency to shard count</td>
-</tr>
-<tr>
-<td><strong>DynamoDB throttling</strong></td>
-<td>Increase table capacity - see <a href="../dynamodb/">DynamoDB Operations</a></td>
-</tr>
-<tr>
-<td><strong>Large batch sizes</strong></td>
-<td>Reduce batch size in event source mapping</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Understanding IteratorAge:</strong></p>
-<ul>
-<li><code>IteratorAge</code> measures the delay between when a record is written to the stream and when Lambda processes it</li>
-<li>Healthy: &lt; 1 second</li>
-<li>Warning: &lt; 30 seconds</li>
-<li>Critical: &gt; 30 seconds (default alarm threshold)</li>
-</ul>
-<h3 id="lambda-throttling">Lambda Throttling<a class="headerlink" href="#lambda-throttling" title="Permanent link">&para;</a></h3>
-<p><strong>Check if Lambda is being throttled:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/Lambda<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--metric-name<span class="w"> </span>Throttles<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>FunctionName,Value<span class="o">=</span>ZAEL-&lt;name&gt;-aggregator<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span>--statistics<span class="w"> </span>Sum
-</span></code></pre></div>
-<p><strong>Solution:</strong> Increase reserved concurrency (see procedures below).</p>
-<h2 id="procedures">Procedures<a class="headerlink" href="#procedures" title="Permanent link">&para;</a></h2>
-<h3 id="increase-lambda-concurrency">Increase Lambda Concurrency<a class="headerlink" href="#increase-lambda-concurrency" title="Permanent link">&para;</a></h3>
-<p><strong>Set reserved concurrency:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>put-function-concurrency<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--function-name<span class="w"> </span>ZAEL-&lt;name&gt;-aggregator<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--reserved-concurrent-executions<span class="w"> </span><span class="m">10</span>
-</span></code></pre></div>
-<p><strong>Check current concurrency:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>get-function-concurrency<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--function-name<span class="w"> </span>ZAEL-&lt;name&gt;-aggregator
-</span></code></pre></div>
-<p><strong>Remove concurrency limit (use account default):</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>delete-function-concurrency<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--function-name<span class="w"> </span>ZAEL-&lt;name&gt;-aggregator
-</span></code></pre></div>
-<h3 id="adjust-batch-size">Adjust Batch Size<a class="headerlink" href="#adjust-batch-size" title="Permanent link">&para;</a></h3>
-<p><strong>Get current mapping UUID:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nv">MAPPING_UUID</span><span class="o">=</span><span class="k">$(</span>aws<span class="w"> </span>lambda<span class="w"> </span>list-event-source-mappings<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--function-name<span class="w"> </span>ZAEL-&lt;name&gt;-aggregator<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">&#39;EventSourceMappings[0].UUID&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>--output<span class="w"> </span>text<span class="k">)</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;Mapping UUID: </span><span class="nv">$MAPPING_UUID</span><span class="s2">&quot;</span>
-</span></code></pre></div>
-<p><strong>Reduce batch size (process fewer records per invocation):</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>update-event-source-mapping<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--uuid<span class="w"> </span><span class="nv">$MAPPING_UUID</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span>--batch-size<span class="w"> </span><span class="m">50</span>
-</span></code></pre></div>
-<p><strong>Increase batch size (higher throughput, higher latency):</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>update-event-source-mapping<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>--uuid<span class="w"> </span><span class="nv">$MAPPING_UUID</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--batch-size<span class="w"> </span><span class="m">100</span>
-</span></code></pre></div>
-<p><strong>Adjust batch window (wait for more records):</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>update-event-source-mapping<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--uuid<span class="w"> </span><span class="nv">$MAPPING_UUID</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--maximum-batching-window-in-seconds<span class="w"> </span><span class="m">5</span>
-</span></code></pre></div>
-<h3 id="shard-scaling">Shard Scaling<a class="headerlink" href="#shard-scaling" title="Permanent link">&para;</a></h3>
-<p>DynamoDB Streams automatically scales shards based on table throughput.</p>
-<p><strong>Check shard count:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>aws<span class="w"> </span>dynamodbstreams<span class="w"> </span>describe-stream<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--stream-arn<span class="w"> </span><span class="k">$(</span>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-table<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span>--query<span class="w"> </span><span class="s1">&#39;Table.LatestStreamArn&#39;</span><span class="w"> </span>--output<span class="w"> </span>text<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">&#39;StreamDescription.Shards | length(@)&#39;</span>
-</span></code></pre></div>
-<p><strong>Rule of thumb:</strong> Lambda concurrency should be &gt;= shard count for optimal processing.</p>
-<p>If you have 10 shards but only 5 concurrent Lambda executions, processing will lag.</p>
-<h3 id="enable-parallelization-factor">Enable Parallelization Factor<a class="headerlink" href="#enable-parallelization-factor" title="Permanent link">&para;</a></h3>
-<p>Process multiple batches from the same shard concurrently:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>update-event-source-mapping<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span>--uuid<span class="w"> </span><span class="nv">$MAPPING_UUID</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>--parallelization-factor<span class="w"> </span><span class="m">2</span>
-</span></code></pre></div>
-<p><strong>Valid values:</strong> 1-10 (default: 1)</p>
-<div class="admonition note">
-<p class="admonition-title">Ordering</p>
-<p>Increasing parallelization factor may result in out-of-order processing within a shard. This is acceptable for usage aggregation but may not be suitable for all use cases.</p>
-</div>
-<h3 id="verify-stream-health">Verify Stream Health<a class="headerlink" href="#verify-stream-health" title="Permanent link">&para;</a></h3>
-<p><strong>Check stream is enabled:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-table<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">&#39;Table.StreamSpecification&#39;</span>
-</span></code></pre></div>
-<p>Expected output:
-<div class="language-json highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="p">{</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">    </span><span class="nt">&quot;StreamEnabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">    </span><span class="nt">&quot;StreamViewType&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;NEW_AND_OLD_IMAGES&quot;</span>
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="p">}</span>
-</span></code></pre></div></p>
-<p><strong>Check event source mapping is active:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>aws<span class="w"> </span>lambda<span class="w"> </span>list-event-source-mappings<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span>--function-name<span class="w"> </span>ZAEL-&lt;name&gt;-aggregator<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">&#39;EventSourceMappings[0].State&#39;</span>
-</span></code></pre></div>
-<p>Expected output: <code>"Enabled"</code></p>
-<h3 id="monitor-after-changes">Monitor After Changes<a class="headerlink" href="#monitor-after-changes" title="Permanent link">&para;</a></h3>
-<p>After tuning, monitor for 15-30 minutes:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># Watch IteratorAge</span>
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>watch<span class="w"> </span>-n<span class="w"> </span><span class="m">30</span><span class="w"> </span><span class="s2">&quot;aws cloudwatch get-metric-statistics \</span>
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="s2">  --namespace AWS/Lambda \</span>
-</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="s2">  --metric-name IteratorAge \</span>
-</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="s2">  --dimensions Name=FunctionName,Value=ZAEL-&lt;name&gt;-aggregator \</span>
-</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="s2">  --start-time \$(date -u -d &#39;30 minutes ago&#39; +%Y-%m-%dT%H:%M:%SZ) \</span>
-</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="s2">  --end-time \$(date -u +%Y-%m-%dT%H:%M:%SZ) \</span>
-</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="s2">  --period 60 \</span>
-</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="s2">  --statistics Maximum \</span>
-</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a><span class="s2">  --query &#39;Datapoints | sort_by(@, &amp;Timestamp) | [-1].Maximum&#39;&quot;</span>
-</span></code></pre></div>
-<h2 id="tuning-guidelines">Tuning Guidelines<a class="headerlink" href="#tuning-guidelines" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Scenario</th>
-<th>Batch Size</th>
-<th>Concurrency</th>
-<th>Parallelization</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Low volume (&lt; 100 req/s)</td>
-<td>100</td>
-<td>2</td>
-<td>1</td>
-</tr>
-<tr>
-<td>Medium volume (100-1000 req/s)</td>
-<td>100</td>
-<td>5-10</td>
-<td>1</td>
-</tr>
-<tr>
-<td>High volume (&gt; 1000 req/s)</td>
-<td>50-100</td>
-<td>10+</td>
-<td>2</td>
-</tr>
-<tr>
-<td>Real-time requirements</td>
-<td>10-50</td>
-<td>10+</td>
-<td>2-5</td>
-</tr>
-</tbody>
-</table>
-<h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="../lambda/">Lambda Operations</a> - Lambda errors and duration issues</li>
-<li><a href="../dynamodb/">DynamoDB Operations</a> - Throttling affecting stream processing</li>
-<li><a href="../../monitoring/">Monitoring Guide</a> - CloudWatch dashboards for streams</li>
-</ul>
+<p>Config changes are infrequent (typically during deployment or admin operations), making aggressive caching appropriate.</p>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<p>Implement <strong>in-memory TTL caching</strong> per RateLimiter instance with 60-second TTL and <strong>negative caching</strong>.</p>
+<p><strong>Negative caching:</strong> Cache "no entity config exists" to avoid repeated misses for the 95%+ of users without custom limits.</p>
+<p><strong>Cache invalidation:</strong>
+- Automatic: TTL expiry (60s)
+- Manual: <code>limiter.invalidate_config_cache()</code> method</p>
+<p><strong>No distributed invalidation:</strong> Config changes propagate via TTL expiry (max 60s staleness). This avoids infrastructure complexity (SNS/EventBridge) for infrequent operations.</p>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<p><strong>Positive:</strong>
+- High-frequency traffic: 99.98% cache hit rate (100 req/sec × 60s = 6K hits per miss)
+- Negligible amortized cost: +0.00025 RCU per request at scale
+- Negative caching reduces cost for sparse traffic patterns</p>
+<p><strong>Negative:</strong>
+- Max 60s staleness for config changes
+- No cross-process invalidation (each instance has independent cache)
+- Memory usage scales with unique entity×resource combinations</p>
+<h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
+<h3 id="no-caching">No Caching<a class="headerlink" href="#no-caching" title="Permanent link">&para;</a></h3>
+<p>Rejected: 1.5 RCU per acquire is unacceptable; poor latency.</p>
+<h3 id="distributed-cache-rediselasticache">Distributed Cache (Redis/ElastiCache)<a class="headerlink" href="#distributed-cache-rediselasticache" title="Permanent link">&para;</a></h3>
+<p>Rejected: Adds infrastructure dependency; 60s staleness is acceptable for config.</p>
+<h3 id="dynamodb-streams-for-invalidation">DynamoDB Streams for Invalidation<a class="headerlink" href="#dynamodb-streams-for-invalidation" title="Permanent link">&para;</a></h3>
+<p>Rejected: Requires Lambda infrastructure; complexity not justified for config updates.</p>
 
 
 
@@ -1982,6 +1813,44 @@
       
         <footer class="md-footer">
   
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../102-config-hierarchy/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-102 Config Hierarchy">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                ADR-102 Config Hierarchy
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../104-stored-limits-default/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-104 Stored Limits Default">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                ADR-104 Stored Limits Default
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
     
   
   <div class="md-footer-meta md-typeset">

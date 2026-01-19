@@ -25,6 +25,30 @@
          <lastmod>2026-01-19</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/100-centralized-config/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/101-flat-schema-config/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/102-config-hierarchy/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/103-config-caching/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/104-stored-limits-default/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/105-eventual-consistency/</loc>
+         <lastmod>2026-01-19</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/</loc>
          <lastmod>2026-01-19</lastmod>
     </url>
