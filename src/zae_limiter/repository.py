@@ -655,9 +655,7 @@ class Repository:
                     capacity=int(item.get("capacity", {}).get("N", "0")),
                     burst=int(item.get("burst", {}).get("N", "0")),
                     refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
-                    refill_period_seconds=int(
-                        item.get("refill_period_seconds", {}).get("N", "0")
-                    ),
+                    refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
                 )
             )
 
@@ -705,8 +703,7 @@ class Repository:
             return
 
         delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}}
-            for item in items
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in items
         ]
 
         for i in range(0, len(delete_requests), 25):
@@ -812,9 +809,7 @@ class Repository:
                     capacity=int(item.get("capacity", {}).get("N", "0")),
                     burst=int(item.get("burst", {}).get("N", "0")),
                     refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
-                    refill_period_seconds=int(
-                        item.get("refill_period_seconds", {}).get("N", "0")
-                    ),
+                    refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
                 )
             )
 
@@ -862,8 +857,7 @@ class Repository:
             return
 
         delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}}
-            for item in items
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in items
         ]
 
         for i in range(0, len(delete_requests), 25):

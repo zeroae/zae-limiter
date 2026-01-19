@@ -73,7 +73,7 @@ class TestE2EResourceConfigStorage:
         assert names == {"rpm", "tpm"}
 
         # Verify capacity values
-        rpm_limit = next(l for l in retrieved if l.name == "rpm")
+        rpm_limit = next(lim for lim in retrieved if lim.name == "rpm")
         assert rpm_limit.capacity == 100
 
         # Step 3: UPDATE (replace)
@@ -208,7 +208,7 @@ class TestE2ESystemConfigStorage:
         assert names == {"rpm", "tpm"}
 
         # Verify capacity values
-        rpm_limit = next(l for l in retrieved if l.name == "rpm")
+        rpm_limit = next(lim for lim in retrieved if lim.name == "rpm")
         assert rpm_limit.capacity == 50
 
         # Step 3: UPDATE (replace)
@@ -546,9 +546,7 @@ class TestE2EConfigCLIWorkflow:
 class TestE2ESyncConfigStorage:
     """E2E tests for sync limiter config storage."""
 
-    def test_sync_resource_config_workflow(
-        self, sync_localstack_limiter
-    ):
+    def test_sync_resource_config_workflow(self, sync_localstack_limiter):
         """
         Test resource config with SyncRateLimiter.
 
@@ -578,9 +576,7 @@ class TestE2ESyncConfigStorage:
         deleted = limiter.get_resource_limits("gpt-4")
         assert len(deleted) == 0
 
-    def test_sync_system_config_workflow(
-        self, sync_localstack_limiter
-    ):
+    def test_sync_system_config_workflow(self, sync_localstack_limiter):
         """
         Test system config with SyncRateLimiter.
 
