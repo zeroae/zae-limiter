@@ -2428,7 +2428,7 @@ class TestRateLimiterRepositoryParameter:
 
         with _patch_aiobotocore_response():
             repo = Repository(
-                stack_name="ZAEL-my-repo-app",
+                name="my-repo-app",
                 region="us-east-1",
             )
             limiter = RateLimiter(repository=repo)
@@ -2445,7 +2445,7 @@ class TestRateLimiterRepositoryParameter:
         from zae_limiter import Repository
 
         with _patch_aiobotocore_response():
-            repo = Repository(stack_name="ZAEL-my-app", region="us-east-1")
+            repo = Repository(name="my-app", region="us-east-1")
 
             with pytest.raises(ValueError) as exc_info:
                 RateLimiter(repository=repo, name="other-app")
@@ -2460,7 +2460,7 @@ class TestRateLimiterRepositoryParameter:
         from zae_limiter import Repository
 
         with _patch_aiobotocore_response():
-            repo = Repository(stack_name="ZAEL-my-app", region="us-east-1")
+            repo = Repository(name="my-app", region="us-east-1")
 
             with pytest.raises(ValueError) as exc_info:
                 RateLimiter(repository=repo, region="eu-west-1")
@@ -2475,7 +2475,7 @@ class TestRateLimiterRepositoryParameter:
         from zae_limiter import Repository
 
         with _patch_aiobotocore_response():
-            repo = Repository(stack_name="ZAEL-my-app", region="us-east-1")
+            repo = Repository(name="my-app", region="us-east-1")
 
             with pytest.raises(ValueError) as exc_info:
                 RateLimiter(repository=repo, endpoint_url="http://localhost:4566")
@@ -2490,7 +2490,7 @@ class TestRateLimiterRepositoryParameter:
         from zae_limiter import Repository, StackOptions
 
         with _patch_aiobotocore_response():
-            repo = Repository(stack_name="ZAEL-my-app", region="us-east-1")
+            repo = Repository(name="my-app", region="us-east-1")
 
             with pytest.raises(ValueError) as exc_info:
                 RateLimiter(repository=repo, stack_options=StackOptions())
@@ -2526,7 +2526,7 @@ class TestRepositoryProtocolCompliance:
         """Test that Repository passes isinstance check for RepositoryProtocol."""
         from zae_limiter import Repository, RepositoryProtocol
 
-        repo = Repository(stack_name="ZAEL-test", region="us-east-1")
+        repo = Repository(name="test", region="us-east-1")
         assert isinstance(repo, RepositoryProtocol)
 
     def test_repository_protocol_is_runtime_checkable(self):
@@ -2540,7 +2540,7 @@ class TestRepositoryProtocolCompliance:
         """Test that Repository exposes capabilities."""
         from zae_limiter import BackendCapabilities, Repository
 
-        repo = Repository(stack_name="ZAEL-test", region="us-east-1")
+        repo = Repository(name="test", region="us-east-1")
         caps = repo.capabilities
 
         assert isinstance(caps, BackendCapabilities)

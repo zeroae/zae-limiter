@@ -152,7 +152,7 @@ class RateLimiter:
             self._name = normalize_name(effective_name)
             self._stack_options = stack_options
             self._repository = Repository(
-                stack_name=self._name,
+                name=self._name,
                 region=region,
                 endpoint_url=endpoint_url,
             )
@@ -160,7 +160,7 @@ class RateLimiter:
             # Default: silent backward compatibility
             self._name = normalize_name("limiter")
             self._stack_options = None
-            self._repository = Repository(stack_name=self._name)
+            self._repository = Repository(name=self._name)
 
         # Internal: stack_name and table_name for AWS resources
         self.stack_name = self._name

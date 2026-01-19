@@ -1,6 +1,6 @@
 # ADR-108: Repository Protocol Design
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-19
 **Issue:** [#150](https://github.com/zeroae/zae-limiter/issues/150)
 **Milestone:** v0.5.0

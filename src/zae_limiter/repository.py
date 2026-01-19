@@ -32,18 +32,25 @@ class Repository:
     Handles all DynamoDB operations including entities, buckets,
     limit configs, and transactions.
 
-    The stack_name is automatically prefixed with 'ZAEL-' if not already present.
-    The table_name is always identical to the stack_name.
+    Args:
+        name: Resource identifier (e.g., "my-app"). Automatically prefixed
+            with 'ZAEL-' to form stack_name and table_name.
+        region: AWS region (e.g., "us-east-1").
+        endpoint_url: Custom endpoint URL (e.g., LocalStack).
+
+    Example:
+        repo = Repository(name="my-app", region="us-east-1")
+        # Creates stack_name="ZAEL-my-app", table_name="ZAEL-my-app"
     """
 
     def __init__(
         self,
-        stack_name: str,
+        name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
     ) -> None:
-        # Validate and normalize stack name (adds ZAEL- prefix)
-        self.stack_name = normalize_stack_name(stack_name)
+        # Validate and normalize name (adds ZAEL- prefix)
+        self.stack_name = normalize_stack_name(name)
         # Table name is always identical to stack name
         self.table_name = self.stack_name
         self.region = region

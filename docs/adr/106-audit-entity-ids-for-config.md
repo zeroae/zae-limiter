@@ -1,6 +1,6 @@
 # ADR-106: Audit Entity IDs for Config Levels
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-19
 **Issue:** [#130](https://github.com/zeroae/zae-limiter/issues/130)
 

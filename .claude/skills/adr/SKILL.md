@@ -1,6 +1,6 @@
 ---
 description: Create and review Architecture Decision Records. Use `/adr create <title>` to create a new ADR, `/adr review` to check an existing one, `/adr enforce` to validate changes against ADRs in docs/adr/, `/adr list` to show all ADRs, `/adr accept <number>` to mark as accepted, or `/adr supersede <old> <new>` to mark an ADR as superseded.
-argument-hint: create <title> | review [file] | enforce [--base <branch>] | list | accept <number> | supersede <old> <new>
+argument-hint: create <title> | review [file] | enforce [--brief] [--base <branch>] [--all] | list | accept <number> | supersede <old> <new>
 allowed-tools: Glob, Grep, Read, Write, Edit, Bash, AskUserQuestion
 ---
 
@@ -15,7 +15,7 @@ Create, review, and enforce Architecture Decision Records.
 - `$ARGUMENTS`: One of:
   - `create <title>` - Create a new ADR
   - `review [file]` - Review an existing ADR
-  - `enforce [--base <branch>]` - Validate current changes against all ADRs
+  - `enforce [--brief] [--base <branch>] [--all]` - Validate changes or entire codebase against all ADRs
   - `list` - List all ADRs with status and title
   - `accept <number>` - Transition ADR status to Accepted
   - `supersede <old> <new>` - Mark old ADR as superseded by new one
@@ -89,11 +89,27 @@ When arguments start with `review`:
 
 ## Enforce Mode
 
-When arguments are `enforce` or `enforce --base <branch>`:
+When arguments are `enforce`, `enforce --brief`, `enforce --base <branch>`, or `enforce --all`:
 
-### Step 1: Determine the base branch
+**Options:**
+- `--brief`: Concise output showing only files with violations (default: verbose)
+- `--base <branch>`: Specify base branch for comparison (diff mode)
+- `--all`: Scan entire codebase instead of just changed files (full scan mode)
 
-Use this priority order to find the correct base branch for comparison:
+**Mode selection:**
+- `--all` and `--base` are mutually exclusive
+- If `--all` is specified, skip branch detection and scan all source files
+- If `--base` is specified (or detected), compare against that branch
+
+### Step 1: Determine scan mode
+
+**If `--all` is specified:**
+- Skip to Step 2b (full scan)
+- Report: "Scan mode: full codebase"
+
+**Otherwise (diff mode):**
+- Continue with branch detection below
+- Use this priority order to find the correct base branch:
 
 1. **Explicit argument**: If `--base <branch>` is provided, use it
 2. **PR context**: Run `gh pr view --json baseRefName -q .baseRefName` - if successful, use the PR's base branch
@@ -102,11 +118,24 @@ Use this priority order to find the correct base branch for comparison:
 
 Report which detection method was used: "Base branch: `<branch>` (detected from: <method>)"
 
-### Step 2: Get the diff
+### Step 2a: Get the diff (diff mode)
 
 Run `git diff origin/<base>...HEAD` to identify changed files and understand the current changes.
 
 If the base branch doesn't exist locally, fetch it first: `git fetch origin <base>`
+
+### Step 2b: Get all source files (full scan mode)
+
+When `--all` is specified:
+
+1. Glob `src/**/*.py` to find all Python source files
+2. Also include other relevant files: `tests/**/*.py`, configuration files
+3. Read file contents for analysis against ADR constraints
+
+This mode is useful for:
+- **Auditing**: Check entire codebase against all ADRs
+- **Onboarding**: Understand how ADRs apply to existing code
+- **Refactoring**: Verify compliance before major changes
 
 ### Step 3: Read and analyze ADRs
 
@@ -115,17 +144,40 @@ If the base branch doesn't exist locally, fetch it first: `git fetch origin <bas
    - Title and number
    - The **Context** (what problem it addresses)
    - The **Decision** (the constraint to enforce)
-3. Compare each ADR's context against the changes from `git diff`
-4. For ADRs whose context is relevant, check if the proposed approach aligns with the Decision
+3. Compare each ADR's context against the files being checked (diff or full scan)
+4. For ADRs whose context is relevant, check if the code aligns with the Decision
 
 ### Step 4: Report findings
 
-**Output format:**
+**Brief output format** (when `--brief` is specified):
+
+Show only violations grouped by file. If no violations, output a single success line.
+
+```
+## ADR Enforcement: ✅ All clear | ❌ N violations
+
+| File | Violation | ADR |
+|------|-----------|-----|
+| src/foo.py | Uses ABC instead of Protocol | ADR-108 |
+| src/bar.py | Missing capability declaration | ADR-109 |
+```
+
+If all compliant:
+```
+## ADR Enforcement: ✅ All clear (checked N ADRs against M files)
+```
+
+For full scan mode, append scan type:
+```
+## ADR Enforcement: ✅ All clear (checked N ADRs against M files, full scan)
+```
+
+**Verbose output format** (default, when `--brief` is NOT specified):
 
 ```
 ## ADR Enforcement Check
 
-**Base branch:** `<branch>` (detected from: <method>)
+**Scan mode:** `diff` (base: <branch>) | `full codebase`
 
 ### Relevant ADRs for this change:
 - ADR-NNN: <title> - ✅ Compliant | ⚠️ Review needed | ❌ Violation

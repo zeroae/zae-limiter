@@ -1,6 +1,6 @@
 # ADR-107: IAM Roles for Application Access
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-19
 **Issue:** [#132](https://github.com/zeroae/zae-limiter/issues/132)
 
