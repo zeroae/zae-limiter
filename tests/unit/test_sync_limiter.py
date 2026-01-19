@@ -270,6 +270,82 @@ class TestSyncRateLimiterAudit:
         assert delete_events[0].principal == "admin"
 
 
+class TestSyncRateLimiterResourceLimits:
+    """Tests for sync resource-level limit configs."""
+
+    def test_set_and_get_resource_limits(self, sync_limiter):
+        """Test storing and retrieving resource-level limits."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+        ]
+        sync_limiter.set_resource_limits("gpt-4", limits)
+
+        retrieved = sync_limiter.get_resource_limits("gpt-4")
+        assert len(retrieved) == 2
+
+        names = {limit.name for limit in retrieved}
+        assert names == {"rpm", "tpm"}
+
+    def test_delete_resource_limits(self, sync_limiter):
+        """Test deleting resource-level limits."""
+        limits = [Limit.per_minute("rpm", 100)]
+        sync_limiter.set_resource_limits("gpt-4", limits)
+
+        sync_limiter.delete_resource_limits("gpt-4")
+
+        retrieved = sync_limiter.get_resource_limits("gpt-4")
+        assert len(retrieved) == 0
+
+    def test_list_resources_with_limits(self, sync_limiter):
+        """Test listing resources with configured limits."""
+        limits = [Limit.per_minute("rpm", 100)]
+        sync_limiter.set_resource_limits("gpt-4", limits)
+        sync_limiter.set_resource_limits("claude-3", limits)
+
+        resources = sync_limiter.list_resources_with_limits()
+        assert "gpt-4" in resources
+        assert "claude-3" in resources
+
+
+class TestSyncRateLimiterSystemLimits:
+    """Tests for sync system-level limit configs."""
+
+    def test_set_and_get_system_limits(self, sync_limiter):
+        """Test storing and retrieving system-level limits."""
+        limits = [
+            Limit.per_minute("rpm", 50),
+            Limit.per_minute("tpm", 5_000),
+        ]
+        sync_limiter.set_system_limits("gpt-4", limits)
+
+        retrieved = sync_limiter.get_system_limits("gpt-4")
+        assert len(retrieved) == 2
+
+        names = {limit.name for limit in retrieved}
+        assert names == {"rpm", "tpm"}
+
+    def test_delete_system_limits(self, sync_limiter):
+        """Test deleting system-level limits."""
+        limits = [Limit.per_minute("rpm", 50)]
+        sync_limiter.set_system_limits("gpt-4", limits)
+
+        sync_limiter.delete_system_limits("gpt-4")
+
+        retrieved = sync_limiter.get_system_limits("gpt-4")
+        assert len(retrieved) == 0
+
+    def test_list_system_resources_with_limits(self, sync_limiter):
+        """Test listing resources with system-level defaults."""
+        limits = [Limit.per_minute("rpm", 50)]
+        sync_limiter.set_system_limits("gpt-4", limits)
+        sync_limiter.set_system_limits("claude-3", limits)
+
+        resources = sync_limiter.list_system_resources_with_limits()
+        assert "gpt-4" in resources
+        assert "claude-3" in resources
+
+
 class TestSyncRateLimiterUsageSnapshots:
     """Tests for sync usage snapshot queries."""
 
