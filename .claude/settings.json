@@ -79,7 +79,7 @@
           {
             "type": "prompt",
             "prompt": "A new file was created in docs/. Check if mkdocs.yml nav needs updating to include this file.",
-            "command": "file_path=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty'); if [[ \"$TOOL_USE_RESULT\" == *\"File created successfully\"* ]] && [[ \"$file_path\" == */docs/*.md ]]; then echo \"New docs file: $file_path\"; fi; exit 0"
+            "command": "file_path=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty'); if [[ \"$TOOL_USE_RESULT\" == *\"File created successfully\"* ]] && [[ \"$file_path\" == */docs/*.md ]]; then echo \"New docs file: $file_path\"; exit 1; fi"
           }
         ]
       }
