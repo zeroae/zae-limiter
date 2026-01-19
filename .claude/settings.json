@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(docker compose:*)",
+      "Bash(export AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1:*)",
       "Bash(gh api:*)",
       "Bash(gh issue create:*)",
       "Bash(gh issue edit:*)",
@@ -18,17 +19,19 @@
       "Bash(gh run view:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
+      "Bash(git diff:*)",
       "Bash(git log:*)",
       "Bash(git push)",
-      "Bash(git diff:*)",
+      "Bash(uv run cfn-lint:*)",
       "Bash(uv run mypy:*)",
       "Bash(uv run pytest:*)",
+      "Bash(uv run python:*)",
       "Bash(uv run ruff:*)",
-      "Bash(uv run cfn-lint:*)",
-      "Bash(export AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1:*)",
-      "Bash(uv run zae-limiter deploy:*)"
+      "Bash(uv run zae-limiter:*)"
     ],
     "ask": [
+      "Bash(AWS_PROFILE=* uv run zae-limiter delete:*)",
+      "Bash(AWS_PROFILE=* uv run zae-limiter deploy:*)",
       "Bash(gh issue close:*)",
       "Bash(gh pr merge:*)"
     ]
