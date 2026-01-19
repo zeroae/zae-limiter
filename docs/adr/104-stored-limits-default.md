@@ -1,6 +1,6 @@
 # ADR-104: Stored Limits as Default Behavior
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-18
 **Issue:** [#130](https://github.com/zeroae/zae-limiter/issues/130)
 
