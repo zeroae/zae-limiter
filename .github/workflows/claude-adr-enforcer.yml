@@ -6,6 +6,7 @@ on:
     paths:
       - "src/**/*.py"
       - "tests/**/*.py"
+      - "docs/**/*.md"
 
 jobs:
   adr-enforce:
