@@ -130,3 +130,4 @@ nav:
       - ADR-103 Config Caching: adr/103-config-caching.md
       - ADR-104 Stored Limits Default: adr/104-stored-limits-default.md
       - ADR-105 Eventual Consistency: adr/105-eventual-consistency.md
+      - ADR-106 Audit Entity IDs: adr/106-audit-entity-ids-for-config.md
