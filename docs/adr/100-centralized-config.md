@@ -1,4 +1,4 @@
-# ADR-001: Centralized Configuration Access Patterns
+# ADR-100: Centralized Configuration Access Patterns
 
 **Status:** Proposed
 **Date:** 2026-01-18
