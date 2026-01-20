@@ -17,7 +17,7 @@ Create, update, and manage GitHub issues following ZeroAE conventions. Infer as 
 | **Create** | "create issue", "file issue", "new issue", "report bug", "request feature" | Create new issue |
 | **Update** | "update issue", "add to issue", "update #123" | Modify existing issue |
 | **Progress** | "check off", "mark complete", "done with", "finished" | Check checkboxes based on work done |
-| **Verify** | `/issue verify <number> [--dry-run]`, "verify issue", "verify #123" | Validate acceptance criteria strictly |
+| **Verify** | `/issue verify <number> [--dry-run]`, "verify issue", "verify #123" | Validate criteria, prompt to check off |
 
 ## Mode Detection
 

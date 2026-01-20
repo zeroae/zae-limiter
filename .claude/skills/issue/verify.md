@@ -5,10 +5,10 @@ Strictly verify acceptance criteria by running actual tests/checks against the c
 ## Usage
 
 ```bash
-# Default: verify and auto-check passing criteria
+# Verify and prompt before checking off
 /issue verify 150
 
-# Dry-run: verify only, don't modify the issue
+# Dry-run: verify only, skip the prompt
 /issue verify 150 --dry-run
 ```
 
@@ -27,7 +27,8 @@ gh issue view <number>
    - Mark as `completed` with PASS/FAIL/PARTIAL status
    - Move to next criterion
 6. **Report Results**: Show summary table with status and evidence
-7. **Auto-Check** (unless `--dry-run`): Update issue to check passing criteria
+7. **Ask User** (unless `--dry-run`): Prompt whether to check off passing criteria
+8. **Update Issue**: If user confirms, check off passing criteria
 
 ## Verification Approach
 
@@ -76,22 +77,39 @@ Acceptance Criteria:
 ...
 ```
 
-## Auto-Check Passing Criteria
+## Output Format
+
+After verification, present results in a markdown table:
+
+```markdown
+## Issue #<number> Verification Results
+
+| # | Criterion | Status | Details |
+|---|-----------|--------|---------|
+| 1 | <criterion text> | ✅ PASS | <evidence> |
+| 2 | <criterion text> | ❌ FAIL | <what's wrong> |
+| 3 | <criterion text> | ⚠️ PARTIAL | <what's missing> |
+
+**Summary: X PASS, Y FAIL, Z PARTIAL**
+```
+
+## User Confirmation (unless --dry-run)
+
+After presenting results, ask the user using AskUserQuestion:
+
+```
+X criteria passed verification. Check them off in issue #<number>?
+- Yes, check off passing criteria
+- No, leave issue unchanged
+```
 
 **Behavior:**
-- **Default**: After verification, update issue body to check `- [x]` for all PASS criteria
-- **`--dry-run`**: Report results only, don't modify the issue
+- **Default**: Present results, then ask user before modifying
+- **`--dry-run`**: Present results only, skip the prompt entirely
 
-**IMPORTANT: Only modify checkboxes**
-- The ONLY change allowed is converting `- [ ]` to `- [x]` for passing criteria
-- Do NOT modify any other text in the issue body
-- Do NOT add comments, summaries, or verification results to the issue
-- Do NOT change formatting, whitespace, or any non-checkbox content
-- Parse the exact checkbox line, replace only `[ ]` with `[x]`, preserve everything else
+## Update Issue (if user confirms)
 
-## Update Issue (non-dry-run)
-
-After verification completes, update the issue body by ONLY changing checkboxes:
+If the user confirms, update the issue body by ONLY changing checkboxes:
 
 1. Fetch current body: `gh issue view <number> --json body --jq '.body'`
 2. For each PASS criterion, find the exact line `- [ ] <text>` and replace with `- [x] <text>`
@@ -105,21 +123,9 @@ EOF
 )"
 ```
 
-## Output
-
-Return a markdown table:
-
-```markdown
-## Issue #<number> Verification Results
-
-| # | Criterion | Status | Details |
-|---|-----------|--------|---------|
-| 1 | <criterion text> | ✅ PASS | <evidence> |
-| 2 | <criterion text> | ❌ FAIL | <what's wrong> |
-| 3 | <criterion text> | ⚠️ PARTIAL | <what's missing> |
-
-**Summary: X PASS, Y FAIL, Z PARTIAL**
-
-[If not --dry-run]
-✅ Checked off 8 passing criteria in issue #150
-```
+**IMPORTANT: Only modify checkboxes**
+- The ONLY change allowed is converting `- [ ]` to `- [x]` for passing criteria
+- Do NOT modify any other text in the issue body
+- Do NOT add comments, summaries, or verification results to the issue
+- Do NOT change formatting, whitespace, or any non-checkbox content
+- Parse the exact checkbox line, replace only `[ ]` with `[x]`, preserve everything else
