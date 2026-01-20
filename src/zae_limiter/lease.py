@@ -10,7 +10,7 @@ from .exceptions import RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
 
 if TYPE_CHECKING:
-    from .repository import Repository
+    from .repository_protocol import RepositoryProtocol
 
 
 @dataclass
@@ -33,7 +33,7 @@ class Lease:
     rollback on exception.
     """
 
-    repository: "Repository"
+    repository: "RepositoryProtocol"
     entries: list[LeaseEntry] = field(default_factory=list)
     _committed: bool = False
     _rolled_back: bool = False

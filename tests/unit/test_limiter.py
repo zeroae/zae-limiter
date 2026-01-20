@@ -2415,3 +2415,170 @@ class TestRateLimiterListDeployed:
             mock_session.client.assert_called_once_with("cloudformation")
 
             await discovery.close()
+
+
+class TestRateLimiterRepositoryParameter:
+    """Tests for the new repository parameter in RateLimiter constructor."""
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_accepted(self, mock_dynamodb):
+        """Test RateLimiter accepts repository parameter."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            repo = Repository(
+                name="my-repo-app",
+                region="us-east-1",
+            )
+            limiter = RateLimiter(repository=repo)
+
+            assert limiter._repository is repo
+            assert limiter.stack_name == "ZAEL-my-repo-app"
+            assert limiter.name == "ZAEL-my-repo-app"
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_conflict_with_name_raises(self, mock_dynamodb):
+        """Test ValueError when both repository and name are provided."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="my-app", region="us-east-1")
+
+            with pytest.raises(ValueError) as exc_info:
+                RateLimiter(repository=repo, name="other-app")
+
+            assert "Cannot specify both 'repository'" in str(exc_info.value)
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_conflict_with_region_raises(self, mock_dynamodb):
+        """Test ValueError when both repository and region are provided."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="my-app", region="us-east-1")
+
+            with pytest.raises(ValueError) as exc_info:
+                RateLimiter(repository=repo, region="eu-west-1")
+
+            assert "Cannot specify both 'repository'" in str(exc_info.value)
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_conflict_with_endpoint_url_raises(self, mock_dynamodb):
+        """Test ValueError when both repository and endpoint_url are provided."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="my-app", region="us-east-1")
+
+            with pytest.raises(ValueError) as exc_info:
+                RateLimiter(repository=repo, endpoint_url="http://localhost:4566")
+
+            assert "Cannot specify both 'repository'" in str(exc_info.value)
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_conflict_with_stack_options_raises(self, mock_dynamodb):
+        """Test ValueError when both repository and stack_options are provided."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository, StackOptions
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="my-app", region="us-east-1")
+
+            with pytest.raises(ValueError) as exc_info:
+                RateLimiter(repository=repo, stack_options=StackOptions())
+
+            assert "Cannot specify both 'repository'" in str(exc_info.value)
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_default_limiter_creates_repository(self, mock_dynamodb):
+        """Test RateLimiter with no args creates default repository."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            # No deprecation warning for default behavior
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                limiter = RateLimiter()
+                # Filter for our specific deprecation warning
+                deprecation_warnings = [x for x in w if "deprecated" in str(x.message).lower()]
+                assert len(deprecation_warnings) == 0
+
+            assert limiter.stack_name == "ZAEL-limiter"
+            assert limiter._repository is not None
+            await limiter.close()
+
+
+class TestRepositoryProtocolCompliance:
+    """Tests that Repository implements RepositoryProtocol."""
+
+    def test_repository_is_instance_of_protocol(self):
+        """Test that Repository passes isinstance check for RepositoryProtocol."""
+        from zae_limiter import Repository, RepositoryProtocol
+
+        repo = Repository(name="test", region="us-east-1")
+        assert isinstance(repo, RepositoryProtocol)
+
+    def test_repository_protocol_is_runtime_checkable(self):
+        """Test that RepositoryProtocol is runtime checkable."""
+        from zae_limiter import RepositoryProtocol
+
+        # Should have __subclasshook__ from @runtime_checkable
+        assert hasattr(RepositoryProtocol, "__subclasshook__")
+
+    def test_repository_has_capabilities_property(self):
+        """Test that Repository exposes capabilities."""
+        from zae_limiter import BackendCapabilities, Repository
+
+        repo = Repository(name="test", region="us-east-1")
+        caps = repo.capabilities
+
+        assert isinstance(caps, BackendCapabilities)
+        assert caps.supports_audit_logging is True
+        assert caps.supports_usage_snapshots is True
+        assert caps.supports_infrastructure_management is True
+        assert caps.supports_change_streams is True
+
+
+class TestLazyImports:
+    """Tests for lazy imports in __init__.py."""
+
+    def test_repository_lazy_import(self):
+        """Test Repository can be imported from zae_limiter."""
+        from zae_limiter import Repository
+
+        assert Repository is not None
+        assert Repository.__name__ == "Repository"
+
+    def test_repository_protocol_lazy_import(self):
+        """Test RepositoryProtocol can be imported from zae_limiter."""
+        from zae_limiter import RepositoryProtocol
+
+        assert RepositoryProtocol is not None
+        assert RepositoryProtocol.__name__ == "RepositoryProtocol"
+
+    def test_stack_manager_lazy_import(self):
+        """Test StackManager can be imported from zae_limiter."""
+        from zae_limiter import StackManager
+
+        assert StackManager is not None
+        assert StackManager.__name__ == "StackManager"
+
+    def test_invalid_attribute_raises(self):
+        """Test accessing invalid attribute raises AttributeError."""
+        import zae_limiter
+
+        with pytest.raises(AttributeError) as exc_info:
+            _ = zae_limiter.NonExistentClass
+
+        assert "has no attribute 'NonExistentClass'" in str(exc_info.value)

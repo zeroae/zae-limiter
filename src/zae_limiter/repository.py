@@ -1,7 +1,7 @@
 """DynamoDB repository for rate limiter data."""
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aioboto3  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
@@ -12,6 +12,7 @@ from .exceptions import EntityExistsError
 from .models import (
     AuditAction,
     AuditEvent,
+    BackendCapabilities,
     BucketState,
     Entity,
     Limit,
@@ -31,26 +32,57 @@ class Repository:
     Handles all DynamoDB operations including entities, buckets,
     limit configs, and transactions.
 
-    The stack_name is automatically prefixed with 'ZAEL-' if not already present.
-    The table_name is always identical to the stack_name.
+    Args:
+        name: Resource identifier (e.g., "my-app"). Automatically prefixed
+            with 'ZAEL-' to form stack_name and table_name.
+        region: AWS region (e.g., "us-east-1").
+        endpoint_url: Custom endpoint URL (e.g., LocalStack).
+        stack_options: Configuration for CloudFormation infrastructure.
+            Pass StackOptions to enable declarative infrastructure management.
+
+    Example:
+        # Basic usage
+        repo = Repository(name="my-app", region="us-east-1")
+
+        # With infrastructure management (ADR-108)
+        repo = Repository(
+            name="my-app",
+            region="us-east-1",
+            stack_options=StackOptions(lambda_memory=512, enable_alarms=True),
+        )
     """
 
     def __init__(
         self,
-        stack_name: str,
+        name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
+        stack_options: StackOptions | None = None,
     ) -> None:
-        # Validate and normalize stack name (adds ZAEL- prefix)
-        self.stack_name = normalize_stack_name(stack_name)
+        # Validate and normalize name (adds ZAEL- prefix)
+        self.stack_name = normalize_stack_name(name)
         # Table name is always identical to stack name
         self.table_name = self.stack_name
         self.region = region
         self.endpoint_url = endpoint_url
+        self._stack_options = stack_options
         self._session: aioboto3.Session | None = None
         self._client: Any = None
         self._caller_identity_arn: str | None = None
         self._caller_identity_fetched = False
+
+        # DynamoDB supports all extended features
+        self._capabilities = BackendCapabilities(
+            supports_audit_logging=True,
+            supports_usage_snapshots=True,
+            supports_infrastructure_management=True,
+            supports_change_streams=True,
+        )
+
+    @property
+    def capabilities(self) -> BackendCapabilities:
+        """Declare which extended features this backend supports."""
+        return self._capabilities
 
     async def _get_client(self) -> Any:
         """Get or create the DynamoDB client."""
@@ -137,16 +169,20 @@ class Repository:
         Create DynamoDB infrastructure via CloudFormation.
 
         Args:
-            stack_options: Configuration for CloudFormation stack
+            stack_options: Configuration for CloudFormation stack.
+                If None, uses the stack_options passed to the constructor.
 
         Raises:
             StackCreationError: If CloudFormation stack creation fails
         """
         from .infra.stack_manager import StackManager
 
+        # Use constructor-provided options if none specified
+        options = stack_options if stack_options is not None else self._stack_options
+
         async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             await manager.create_stack(
-                stack_options=stack_options,
+                stack_options=options,
             )
 
     # -------------------------------------------------------------------------
@@ -365,6 +401,51 @@ class Repository:
         )
 
         return [self._deserialize_bucket(item) for item in response.get("Items", [])]
+
+    async def get_or_create_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limit: Limit,
+    ) -> BucketState:
+        """
+        Get an existing bucket or create a new one with the given limit.
+
+        If the bucket exists, it is returned. If not, a new bucket is created
+        with capacity set to the limit's capacity.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name (e.g., "gpt-4")
+            limit: Limit configuration for the bucket
+
+        Returns:
+            Existing or newly created BucketState
+        """
+        existing = await self.get_bucket(entity_id, resource, limit.name)
+        if existing is not None:
+            return existing
+
+        # Create new bucket at full capacity
+        now_ms = self._now_ms()
+        state = BucketState(
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=limit.name,
+            tokens_milli=limit.capacity * 1000,
+            last_refill_ms=now_ms,
+            capacity_milli=limit.capacity * 1000,
+            burst_milli=limit.burst * 1000,
+            refill_amount_milli=limit.refill_amount * 1000,
+            refill_period_ms=limit.refill_period_seconds * 1000,
+            total_consumed_milli=0,
+        )
+
+        # Write bucket to DynamoDB
+        put_item = self.build_bucket_put_item(state)
+        await self.transact_write([put_item])
+
+        return state
 
     def build_bucket_put_item(
         self,
@@ -1621,3 +1702,11 @@ class Repository:
             refill_period_ms=int(data.get("refill_period_ms", 0)),
             total_consumed_milli=total_consumed_milli,
         )
+
+
+# Type assertion: Repository implements RepositoryProtocol
+# This is verified at type-check time by mypy, not at runtime
+if TYPE_CHECKING:
+    from .repository_protocol import RepositoryProtocol
+
+    _: RepositoryProtocol = cast(Repository, None)

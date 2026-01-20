@@ -1,6 +1,6 @@
 # ADR-012: CloudFormation Documentation Parity
 
-**Status:** Accepted
+**Status:** Superseded by ADR-013
 **Date:** 2026-01-19
 
 ## Context

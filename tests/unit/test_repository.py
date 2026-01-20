@@ -16,7 +16,7 @@ async def repo(mock_dynamodb):
     from tests.unit.conftest import _patch_aiobotocore_response
 
     with _patch_aiobotocore_response():
-        repo = Repository(stack_name="test-repo", region="us-east-1")
+        repo = Repository(name="test-repo", region="us-east-1")
         await repo.create_table()
         yield repo
         await repo.close()

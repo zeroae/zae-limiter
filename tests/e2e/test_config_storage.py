@@ -124,6 +124,35 @@ class TestE2EResourceConfigStorage:
         await e2e_limiter.delete_resource_defaults("claude-3")
 
     @pytest.mark.asyncio(loop_scope="class")
+    async def test_resource_config_audit_trail(self, e2e_limiter):
+        """
+        Verify resource config changes use $RESOURCE:{name} audit entity (ADR-106).
+
+        Workflow:
+        1. Set resource defaults
+        2. Query audit events for $RESOURCE:{resource}
+        3. Verify audit events are recorded with correct entity_id
+        """
+        # Step 1: Set resource defaults
+        await e2e_limiter.set_resource_defaults(
+            "audit-test-resource",
+            [Limit.per_minute("rpm", 100)],
+        )
+
+        # Step 2: Query audit events using special entity_id pattern
+        events = await e2e_limiter.get_audit_events(
+            entity_id="$RESOURCE:audit-test-resource",
+            limit=10,
+        )
+
+        # Step 3: Verify audit events exist
+        assert len(events) > 0, "Expected audit events for resource config change"
+        assert events[0].action == "limits_set"
+
+        # Cleanup
+        await e2e_limiter.delete_resource_defaults("audit-test-resource")
+
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_list_resources_with_defaults(self, e2e_limiter):
         """
         Test listing resources with configured defaults.
@@ -252,6 +281,35 @@ class TestE2ESystemConfigStorage:
         assert on_unavailable == OnUnavailable.BLOCK
 
         # Step 4: Cleanup
+        await e2e_limiter.delete_system_defaults()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_system_config_audit_trail(self, e2e_limiter):
+        """
+        Verify system config changes use $SYSTEM audit entity (ADR-106).
+
+        Workflow:
+        1. Set system defaults
+        2. Query audit events for $SYSTEM
+        3. Verify audit events are recorded with correct entity_id
+        """
+        # Step 1: Set system defaults
+        await e2e_limiter.set_system_defaults(
+            limits=[Limit.per_minute("rpm", 100)],
+            on_unavailable=OnUnavailable.ALLOW,
+        )
+
+        # Step 2: Query audit events using special entity_id
+        events = await e2e_limiter.get_audit_events(
+            entity_id="$SYSTEM",
+            limit=10,
+        )
+
+        # Step 3: Verify audit events exist
+        assert len(events) > 0, "Expected audit events for system config change"
+        assert events[0].action == "limits_set"
+
+        # Cleanup
         await e2e_limiter.delete_system_defaults()
 
 

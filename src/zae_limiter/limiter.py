@@ -7,7 +7,10 @@ from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from enum import Enum
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from .repository_protocol import RepositoryProtocol
 
 from .bucket import (
     calculate_available,
@@ -62,7 +65,17 @@ class RateLimiter:
     - Stored limit configs
     - Usage analytics
 
-    Example:
+    Example (new API - preferred):
+        from zae_limiter import RateLimiter, Repository, StackOptions
+
+        repo = Repository(
+            name="my-app",
+            region="us-east-1",
+            stack_options=StackOptions(),
+        )
+        limiter = RateLimiter(repository=repo)
+
+    Example (old API - deprecated):
         limiter = RateLimiter(
             name="my-app",  # Creates ZAEL-my-app resources
             region="us-east-1",
@@ -72,10 +85,14 @@ class RateLimiter:
 
     def __init__(
         self,
-        name: str = "limiter",
+        # New API (preferred)
+        repository: "RepositoryProtocol | None" = None,
+        # Old API (deprecated in v0.5.0, removed in v2.0.0)
+        name: str | None = None,
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
+        # Business logic config (not deprecated)
         on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
         auto_update: bool = True,
         strict_version: bool = True,
@@ -85,21 +102,67 @@ class RateLimiter:
         Initialize the rate limiter.
 
         Args:
-            name: Resource identifier (e.g., 'my-app').
-                Will be prefixed with 'ZAEL-' automatically.
-                Default: 'limiter' (creates 'ZAEL-limiter' resources)
-            region: AWS region
-            endpoint_url: DynamoDB endpoint URL (for local development)
-            stack_options: Desired infrastructure state (None = connect only, don't manage)
+            repository: Repository instance (new API, preferred).
+                Pass a Repository or any RepositoryProtocol implementation.
+            name: DEPRECATED. Resource identifier (e.g., 'my-app').
+                Use Repository(name=...) instead.
+            region: DEPRECATED. AWS region.
+                Use Repository(region=...) instead.
+            endpoint_url: DEPRECATED. DynamoDB endpoint URL.
+                Use Repository(endpoint_url=...) instead.
+            stack_options: DEPRECATED. Infrastructure state.
+                Use Repository(stack_options=...) instead.
             on_unavailable: Behavior when DynamoDB is unavailable
             auto_update: Auto-update Lambda when version mismatch detected
             strict_version: Fail if version mismatch (when auto_update is False)
             skip_version_check: Skip all version checks (dangerous)
+
+        Raises:
+            ValueError: If both repository and name/region/endpoint_url/stack_options
+                are provided.
         """
         from .naming import normalize_name
 
-        # Validate and normalize name (adds ZAEL- prefix)
-        self._name = normalize_name(name)
+        # Check for conflicting parameters
+        old_params_provided = any(
+            p is not None for p in (name, region, endpoint_url, stack_options)
+        )
+
+        if repository is not None and old_params_provided:
+            raise ValueError(
+                "Cannot specify both 'repository' and 'name'/'region'/'endpoint_url'/"
+                "'stack_options'. Use Repository(...) to configure data access."
+            )
+
+        if repository is not None:
+            # New API: use provided repository
+            self._repository = repository
+            self._name = repository.stack_name
+            self._stack_options = None  # Repository owns infrastructure
+        elif old_params_provided:
+            # Old API: emit deprecation warning
+            warnings.warn(
+                "Passing name/region/endpoint_url/stack_options directly to "
+                "RateLimiter is deprecated. Use Repository(...) instead. "
+                "This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            effective_name = name if name is not None else "limiter"
+            self._name = normalize_name(effective_name)
+            self._stack_options = stack_options
+            self._repository = Repository(
+                name=self._name,
+                region=region,
+                endpoint_url=endpoint_url,
+                stack_options=stack_options,
+            )
+        else:
+            # Default: silent backward compatibility
+            self._name = normalize_name("limiter")
+            self._stack_options = None
+            self._repository = Repository(name=self._name)
+
         # Internal: stack_name and table_name for AWS resources
         self.stack_name = self._name
         self.table_name = self._name
@@ -107,13 +170,6 @@ class RateLimiter:
         self._auto_update = auto_update
         self._strict_version = strict_version
         self._skip_version_check = skip_version_check
-
-        self._stack_options = stack_options
-        self._repository = Repository(
-            stack_name=self._name,
-            region=region,
-            endpoint_url=endpoint_url,
-        )
         self._initialized = False
 
     @property
@@ -1301,24 +1357,31 @@ class RateLimiter:
             pass  # Stack status unavailable
 
         # Ping DynamoDB and measure latency
+        # Note: _get_client is DynamoDB-specific, use hasattr for protocol compliance
         try:
             start_time = time.time()
-            client = await self._repository._get_client()
+            if hasattr(self._repository, "_get_client"):
+                client = await self._repository._get_client()
 
-            # Use DescribeTable to check connectivity and get table info
-            response = await client.describe_table(TableName=self.table_name)
-            latency_ms = (time.time() - start_time) * 1000
-            available = True
+                # Use DescribeTable to check connectivity and get table info
+                response = await client.describe_table(TableName=self.table_name)
+                latency_ms = (time.time() - start_time) * 1000
+                available = True
 
-            # Extract table information
-            table = response.get("Table", {})
-            table_status = table.get("TableStatus")
-            table_item_count = table.get("ItemCount")
-            table_size_bytes = table.get("TableSizeInBytes")
+                # Extract table information
+                table = response.get("Table", {})
+                table_status = table.get("TableStatus")
+                table_item_count = table.get("ItemCount")
+                table_size_bytes = table.get("TableSizeInBytes")
 
-            # Check if aggregator is enabled by looking for stream specification
-            stream_spec = table.get("StreamSpecification", {})
-            aggregator_enabled = stream_spec.get("StreamEnabled", False)
+                # Check if aggregator is enabled by looking for stream specification
+                stream_spec = table.get("StreamSpecification", {})
+                aggregator_enabled = stream_spec.get("StreamEnabled", False)
+            else:
+                # Non-DynamoDB backend: use ping() for availability check
+                available = await self._repository.ping()
+                if available:
+                    latency_ms = (time.time() - start_time) * 1000
 
         except Exception:
             pass  # DynamoDB unavailable
@@ -1358,7 +1421,17 @@ class SyncRateLimiter:
 
     Wraps RateLimiter, running async operations in an event loop.
 
-    Example:
+    Example (new API - preferred):
+        from zae_limiter import SyncRateLimiter, Repository, StackOptions
+
+        repo = Repository(
+            name="my-app",
+            region="us-east-1",
+            stack_options=StackOptions(),
+        )
+        limiter = SyncRateLimiter(repository=repo)
+
+    Example (old API - deprecated):
         limiter = SyncRateLimiter(
             name="my-app",  # Creates ZAEL-my-app resources
             region="us-east-1",
@@ -1368,16 +1441,23 @@ class SyncRateLimiter:
 
     def __init__(
         self,
-        name: str = "limiter",
+        # New API (preferred)
+        repository: "RepositoryProtocol | None" = None,
+        # Old API (deprecated in v0.5.0, removed in v2.0.0)
+        name: str | None = None,
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
+        # Business logic config (not deprecated)
         on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
     ) -> None:
+        # Delegate to RateLimiter with same parameters
+        # RateLimiter handles deprecation warning and validation
         self._limiter = RateLimiter(
+            repository=repository,
             name=name,
             region=region,
             endpoint_url=endpoint_url,
