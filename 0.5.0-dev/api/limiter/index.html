@@ -2758,6 +2758,145 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Repository Protocol (v0.5.0)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Repository Protocol (v0.5.0)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/108-repository-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-108 Repository Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/109-backend-capability-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-109 Backend Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/110-deprecation-constructor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-110 Deprecation Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3587,7 +3726,7 @@
 
 
 <a href="#zae_limiter.limiter.RateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;limiter&#39;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -3601,16 +3740,22 @@
 - Cascade mode (consume from entity + parent)
 - Stored limit configs
 - Usage analytics</p>
-
-
-<details class="example" open>
-  <summary>Example</summary>
-  <p>limiter = RateLimiter(
-    name="my-app",  # Creates ZAEL-my-app resources
-    region="us-east-1",
+<p>Example (new API - preferred):
+    from zae_limiter import RateLimiter, Repository, StackOptions</p>
+<div class="language-text highlight"><pre><span></span><code>repo = Repository(
+    name=&quot;my-app&quot;,
+    region=&quot;us-east-1&quot;,
     stack_options=StackOptions(),
-)</p>
-</details>
+)
+limiter = RateLimiter(repository=repo)
+</code></pre></div>
+<p>Example (old API - deprecated):
+    limiter = RateLimiter(
+        name="my-app",  # Creates ZAEL-my-app resources
+        region="us-east-1",
+        stack_options=StackOptions(),
+    )</p>
+
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -3626,20 +3771,36 @@
       <tbody>
           <tr class="doc-section-item">
             <td>
-                <code>name</code>
+                <code>repository</code>
             </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><span title="zae_limiter.repository_protocol.RepositoryProtocol">RepositoryProtocol</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Resource identifier (e.g., 'my-app').
-Will be prefixed with 'ZAEL-' automatically.
-Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
+                <p>Repository instance (new API, preferred).
+Pass a Repository or any RepositoryProtocol implementation.</p>
               </div>
             </td>
             <td>
-                  <code>&#39;limiter&#39;</code>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>name</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>DEPRECATED. Resource identifier (e.g., 'my-app').
+Use Repository(name=...) instead.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -3651,7 +3812,8 @@ Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>AWS region</p>
+                <p>DEPRECATED. AWS region.
+Use Repository(region=...) instead.</p>
               </div>
             </td>
             <td>
@@ -3667,7 +3829,8 @@ Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>DynamoDB endpoint URL (for local development)</p>
+                <p>DEPRECATED. DynamoDB endpoint URL.
+Use Repository(endpoint_url=...) instead.</p>
               </div>
             </td>
             <td>
@@ -3683,7 +3846,8 @@ Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Desired infrastructure state (None = connect only, don't manage)</p>
+                <p>DEPRECATED. Infrastructure state.
+Use Repository(stack_options=...) instead.</p>
               </div>
             </td>
             <td>
@@ -3752,6 +3916,30 @@ Default: 'limiter' (creates 'ZAEL-limiter' resources)</p>
             </td>
             <td>
                   <code>False</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If both repository and name/region/endpoint_url/stack_options
+are provided.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -6681,7 +6869,7 @@ round-trip time to the DynamoDB endpoint.</p>
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;limiter&#39;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -6690,16 +6878,22 @@ round-trip time to the DynamoDB endpoint.</p>
 
         <p>Synchronous rate limiter backed by DynamoDB.</p>
 <p>Wraps RateLimiter, running async operations in an event loop.</p>
-
-
-<details class="example" open>
-  <summary>Example</summary>
-  <p>limiter = SyncRateLimiter(
-    name="my-app",  # Creates ZAEL-my-app resources
-    region="us-east-1",
+<p>Example (new API - preferred):
+    from zae_limiter import SyncRateLimiter, Repository, StackOptions</p>
+<div class="language-text highlight"><pre><span></span><code>repo = Repository(
+    name=&quot;my-app&quot;,
+    region=&quot;us-east-1&quot;,
     stack_options=StackOptions(),
-)</p>
-</details>
+)
+limiter = SyncRateLimiter(repository=repo)
+</code></pre></div>
+<p>Example (old API - deprecated):
+    limiter = SyncRateLimiter(
+        name="my-app",  # Creates ZAEL-my-app resources
+        region="us-east-1",
+        stack_options=StackOptions(),
+    )</p>
+
 
 
 

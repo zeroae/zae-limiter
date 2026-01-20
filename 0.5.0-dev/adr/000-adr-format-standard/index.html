@@ -12,7 +12,7 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/107-iam-roles-for-application-access/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/000-adr-format-standard/">
       
       
       
@@ -25,7 +25,7 @@
     
     
       
-        <title>ADR-107: IAM Roles for Application Access - zae-limiter</title>
+        <title>ADR-000: ADR Format Standard - zae-limiter</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-107-iam-roles-for-application-access" class="md-skip">
+        <a href="#adr-000-adr-format-standard" class="md-skip">
           Skip to content
         </a>
       
@@ -118,7 +118,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-107: IAM Roles for Application Access
+              ADR-000: ADR Format Standard
             
           </span>
         </div>
@@ -2164,10 +2164,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#inline-iam-policies-in-documentation-only" class="md-nav__link">
+  <a href="#free-form-documentation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Inline IAM policies in documentation only
+        Free-form documentation
       
     </span>
   </a>
@@ -2175,21 +2175,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#single-role-with-configurable-permissions" class="md-nav__link">
+  <a href="#detailed-design-documents" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Single role with configurable permissions
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#iam-policies-attached-to-user-provided-roles" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        IAM policies attached to user-provided roles
+        Detailed design documents
       
     </span>
   </a>
@@ -2218,7 +2207,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/107-iam-roles-for-application-access.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/000-adr-format-standard.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2226,32 +2215,42 @@
   
 
 
-<h1 id="adr-107-iam-roles-for-application-access">ADR-107: IAM Roles for Application Access<a class="headerlink" href="#adr-107-iam-roles-for-application-access" title="Permanent link">&para;</a></h1>
+<h1 id="adr-000-adr-format-standard">ADR-000: ADR Format Standard<a class="headerlink" href="#adr-000-adr-format-standard" title="Permanent link">&para;</a></h1>
 <p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-01-19
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/132">#132</a></p>
+<strong>Date:</strong> 2026-01-19</p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>Users deploying zae-limiter must create their own IAM policies to access the DynamoDB table. This requires understanding the exact DynamoDB actions needed for different use cases (applications vs. administrators vs. monitoring), leading to either overly permissive policies or trial-and-error debugging of permission errors.</p>
-<p>The CloudFormation stack currently only creates the Lambda execution role for the aggregator. Different deployment patterns require different access levels: applications need transactional write access for <code>acquire()</code>, administrators need full CRUD for configuration management, and monitoring systems need read-only access.</p>
+<p>Architecture Decision Records help teams understand why past decisions were made. Without consistent formatting, ADRs become hard to scan, compare, and maintain. Some ADRs balloon into design documents with code examples and implementation checklists, while others lack essential sections like alternatives considered.</p>
+<p>The team needs a standard format that keeps ADRs focused on the "why" while ensuring they remain concise and actionable.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>The CloudFormation stack creates three optional IAM roles (AppRole, AdminRole, ReadOnlyRole) with least-privilege DynamoDB permissions, enabled by default and controlled via <code>--no-iam-roles</code> flag or <code>StackOptions.create_iam_roles=False</code>.</p>
+<p>All ADRs must follow this format:</p>
+<ol>
+<li><strong>Maximum 100 lines</strong> - If longer, split into multiple ADRs or move details to issues</li>
+<li><strong>One decision per ADR</strong> - Each ADR documents exactly one architectural choice</li>
+<li><strong>Required sections:</strong></li>
+<li>Context (2-3 paragraphs max)</li>
+<li>Decision (1-2 sentences)</li>
+<li>Consequences (positive and negative bullet lists)</li>
+<li>Alternatives Considered (1 sentence rejection reason each)</li>
+<li><strong>Excluded content</strong> (belongs in issues or design docs):</li>
+<li>Code examples or API signatures</li>
+<li>Implementation checklists</li>
+<li>Test cases</li>
+<li>Phased rollout plans</li>
+<li>Detailed cost calculations</li>
+</ol>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Easy onboarding with correct IAM permissions out-of-the-box
-- Least-privilege security enforced by default
-- Clear separation between app/admin/monitoring access patterns
-- Roles respect existing <code>permission_boundary</code> and <code>role_name_format</code> options
-- No new IAM permission requirements (stack already needs <code>iam:CreateRole</code> for Lambda)</p>
+- ADRs are quick to read and compare
+- Reviewers can focus on architectural reasoning, not implementation details
+- Consistent structure makes it easy to find information</p>
 <p><strong>Negative:</strong>
-- Three additional IAM roles per stack increases IAM resource count
-- Users with existing IAM setup may have redundant roles (use <code>--no-iam-roles</code>)</p>
+- Some decisions require linking to external design documents
+- Contributors must learn the format before writing ADRs</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="inline-iam-policies-in-documentation-only">Inline IAM policies in documentation only<a class="headerlink" href="#inline-iam-policies-in-documentation-only" title="Permanent link">&para;</a></h3>
-<p>Rejected because: Users still need to create and maintain policies manually, defeating the goal of easy onboarding.</p>
-<h3 id="single-role-with-configurable-permissions">Single role with configurable permissions<a class="headerlink" href="#single-role-with-configurable-permissions" title="Permanent link">&para;</a></h3>
-<p>Rejected because: A single role can't satisfy least-privilege for different access patterns; applications shouldn't have config deletion rights.</p>
-<h3 id="iam-policies-attached-to-user-provided-roles">IAM policies attached to user-provided roles<a class="headerlink" href="#iam-policies-attached-to-user-provided-roles" title="Permanent link">&para;</a></h3>
-<p>Rejected because: Increases deployment complexity by requiring users to pre-create roles and pass ARNs as parameters.</p>
+<h3 id="free-form-documentation">Free-form documentation<a class="headerlink" href="#free-form-documentation" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Inconsistent formats make ADRs hard to scan and maintain over time.</p>
+<h3 id="detailed-design-documents">Detailed design documents<a class="headerlink" href="#detailed-design-documents" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Design docs focus on "how" rather than "why", and become stale after implementation.</p>
 
 
 

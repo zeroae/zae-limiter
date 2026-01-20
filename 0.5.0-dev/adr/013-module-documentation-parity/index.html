@@ -12,7 +12,7 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/107-iam-roles-for-application-access/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/0.5.0-dev/adr/013-module-documentation-parity/">
       
       
       
@@ -25,7 +25,7 @@
     
     
       
-        <title>ADR-107: IAM Roles for Application Access - zae-limiter</title>
+        <title>ADR-013: Bidirectional Source-Documentation Parity - zae-limiter</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-107-iam-roles-for-application-access" class="md-skip">
+        <a href="#adr-013-bidirectional-source-documentation-parity" class="md-skip">
           Skip to content
         </a>
       
@@ -118,7 +118,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-107: IAM Roles for Application Access
+              ADR-013: Bidirectional Source-Documentation Parity
             
           </span>
         </div>
@@ -2160,45 +2160,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Alternatives Considered">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#inline-iam-policies-in-documentation-only" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Inline IAM policies in documentation only
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-role-with-configurable-permissions" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single role with configurable permissions
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#iam-policies-attached-to-user-provided-roles" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        IAM policies attached to user-provided roles
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
     </ul>
@@ -2218,7 +2179,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/107-iam-roles-for-application-access.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/013-module-documentation-parity.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2226,32 +2187,94 @@
   
 
 
-<h1 id="adr-107-iam-roles-for-application-access">ADR-107: IAM Roles for Application Access<a class="headerlink" href="#adr-107-iam-roles-for-application-access" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
+<h1 id="adr-013-bidirectional-source-documentation-parity">ADR-013: Bidirectional Source-Documentation Parity<a class="headerlink" href="#adr-013-bidirectional-source-documentation-parity" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
 <strong>Date:</strong> 2026-01-19
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/132">#132</a></p>
+<strong>Supersedes:</strong> ADR-012</p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>Users deploying zae-limiter must create their own IAM policies to access the DynamoDB table. This requires understanding the exact DynamoDB actions needed for different use cases (applications vs. administrators vs. monitoring), leading to either overly permissive policies or trial-and-error debugging of permission errors.</p>
-<p>The CloudFormation stack currently only creates the Lambda execution role for the aggregator. Different deployment patterns require different access levels: applications need transactional write access for <code>acquire()</code>, administrators need full CRUD for configuration management, and monitoring systems need read-only access.</p>
+<p>Source code and documentation frequently drift out of sync. When <code>limiter.py</code> adds a <code>repository</code> parameter, the getting-started guide still shows the old constructor. When <code>cli.py</code> adds <code>--enable-tracing</code>, the CLI reference is missing it. When someone updates docs to describe a planned feature, users try to use APIs that don't exist yet.</p>
+<p>The project has narrow-scope ADRs (ADR-011 for API/CLI parity, ADR-012 for CloudFormation docs), but contributors must guess which documentation files need updating for changes outside those areas.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>The CloudFormation stack creates three optional IAM roles (AppRole, AdminRole, ReadOnlyRole) with least-privilege DynamoDB permissions, enabled by default and controlled via <code>--no-iam-roles</code> flag or <code>StackOptions.create_iam_roles=False</code>.</p>
+<p>Maintain a bidirectional mapping between source modules and documentation. When either side changes, verify the other is synchronized.</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Documentation</th>
+<th>What to Sync</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>limiter.py</code></td>
+<td><code>docs/api/limiter.md</code>, <code>docs/guide/basic-usage.md</code></td>
+<td>Constructor signatures, method examples</td>
+</tr>
+<tr>
+<td><code>models.py</code></td>
+<td><code>docs/api/models.md</code></td>
+<td>Dataclass fields, factory methods</td>
+</tr>
+<tr>
+<td><code>exceptions.py</code></td>
+<td><code>docs/api/exceptions.md</code></td>
+<td>Exception classes, error fields</td>
+</tr>
+<tr>
+<td><code>cli.py</code></td>
+<td><code>docs/cli.md</code></td>
+<td>Commands, flags, usage examples</td>
+</tr>
+<tr>
+<td><code>repository.py</code></td>
+<td><code>docs/contributing/architecture.md</code></td>
+<td>Protocol methods, schema patterns</td>
+</tr>
+<tr>
+<td><code>schema.py</code></td>
+<td><code>docs/contributing/architecture.md</code></td>
+<td>Key patterns, GSI definitions</td>
+</tr>
+<tr>
+<td><code>bucket.py</code></td>
+<td><code>docs/guide/token-bucket.md</code></td>
+<td>Algorithm formulas, refill math</td>
+</tr>
+<tr>
+<td><code>infra/cfn_template.yaml</code></td>
+<td><code>docs/infra/cloudformation.md</code></td>
+<td>Mermaid diagram, parameters, outputs</td>
+</tr>
+<tr>
+<td><code>infra/</code> (other)</td>
+<td><code>docs/infra/deployment.md</code></td>
+<td>CLI examples, StackOptions fields</td>
+</tr>
+<tr>
+<td><code>aggregator/</code></td>
+<td><code>docs/guide/usage-snapshots.md</code></td>
+<td>Stream processing, snapshot schema</td>
+</tr>
+<tr>
+<td><code>__init__.py</code></td>
+<td><code>docs/api/index.md</code></td>
+<td>Public exports, module docstring</td>
+</tr>
+</tbody>
+</table>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Easy onboarding with correct IAM permissions out-of-the-box
-- Least-privilege security enforced by default
-- Clear separation between app/admin/monitoring access patterns
-- Roles respect existing <code>permission_boundary</code> and <code>role_name_format</code> options
-- No new IAM permission requirements (stack already needs <code>iam:CreateRole</code> for Lambda)</p>
+- Contributors know exactly which files to update for any change
+- Users can trust that documented examples match actual behavior
+- Reviewers can check documentation coverage during PR review</p>
 <p><strong>Negative:</strong>
-- Three additional IAM roles per stack increases IAM resource count
-- Users with existing IAM setup may have redundant roles (use <code>--no-iam-roles</code>)</p>
+- Every code change requires checking corresponding documentation
+- Matrix needs updating when new modules are added</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="inline-iam-policies-in-documentation-only">Inline IAM policies in documentation only<a class="headerlink" href="#inline-iam-policies-in-documentation-only" title="Permanent link">&para;</a></h3>
-<p>Rejected because: Users still need to create and maintain policies manually, defeating the goal of easy onboarding.</p>
-<h3 id="single-role-with-configurable-permissions">Single role with configurable permissions<a class="headerlink" href="#single-role-with-configurable-permissions" title="Permanent link">&para;</a></h3>
-<p>Rejected because: A single role can't satisfy least-privilege for different access patterns; applications shouldn't have config deletion rights.</p>
-<h3 id="iam-policies-attached-to-user-provided-roles">IAM policies attached to user-provided roles<a class="headerlink" href="#iam-policies-attached-to-user-provided-roles" title="Permanent link">&para;</a></h3>
-<p>Rejected because: Increases deployment complexity by requiring users to pre-create roles and pass ARNs as parameters.</p>
+<ul>
+<li><strong>Convention-based mapping</strong> (e.g., <code>foo.py</code> → <code>docs/foo.md</code>): Rejected; our docs structure doesn't mirror source structure, and implicit rules are easily forgotten</li>
+<li><strong>Documentation-only reviews</strong>: Rejected; catching drift after the fact means users already hit broken examples</li>
+</ul>
 
 
 
