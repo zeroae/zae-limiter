@@ -5,8 +5,11 @@ Strictly verify acceptance criteria by running actual tests/checks against the c
 ## Usage
 
 ```bash
-# Verify and prompt before checking off
+# Verify unchecked criteria only (default)
 /issue verify 150
+
+# Verify ALL criteria (including already checked)
+/issue verify 150 --all
 
 # Dry-run: verify only, skip the prompt
 /issue verify 150 --dry-run
@@ -20,6 +23,8 @@ Strictly verify acceptance criteria by running actual tests/checks against the c
 gh issue view <number>
 ```
 3. **Extract Acceptance Criteria**: Parse checkboxes from issue body
+   - **Default**: Only unchecked `- [ ]` items
+   - **`--all`**: Both checked `- [x]` and unchecked `- [ ]` items
 4. **Create Todo List**: Add each criterion as a pending todo item
 5. **Verify Each Criterion Strictly**:
    - Mark current criterion as `in_progress`
@@ -104,7 +109,8 @@ X criteria passed verification. Check them off in issue #<number>?
 ```
 
 **Behavior:**
-- **Default**: Present results, then ask user before modifying
+- **Default**: Verify unchecked items only, present results, then ask user before modifying
+- **`--all`**: Verify ALL items (including already checked), useful for re-verification
 - **`--dry-run`**: Present results only, skip the prompt entirely
 
 ## Update Issue (if user confirms)

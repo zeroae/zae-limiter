@@ -3,7 +3,7 @@ name: issue
 description: Create and update GitHub issues. Triggers on "create issue", "file issue", "open issue", "new issue", "report bug", "request feature", "track this", "create epic", "create theme", "update issue", "check off", "mark complete", "close issue", "verify issue", "verify #". Infers type, labels, and milestone from conversation context.
 allowed-tools: Bash(gh:*), AskUserQuestion, Grep, Read
 user-invocable: true
-argument-hint: verify <number> [--dry-run]
+argument-hint: verify <number> [--all] [--dry-run]
 ---
 
 # Issue Skill
@@ -17,7 +17,7 @@ Create, update, and manage GitHub issues following ZeroAE conventions. Infer as 
 | **Create** | "create issue", "file issue", "new issue", "report bug", "request feature" | Create new issue |
 | **Update** | "update issue", "add to issue", "update #123" | Modify existing issue |
 | **Progress** | "check off", "mark complete", "done with", "finished" | Check checkboxes based on work done |
-| **Verify** | `/issue verify <number> [--dry-run]`, "verify issue", "verify #123" | Validate criteria, prompt to check off |
+| **Verify** | `/issue verify <number> [--all] [--dry-run]` | Validate unchecked criteria, prompt to check off |
 
 ## Mode Detection
 
