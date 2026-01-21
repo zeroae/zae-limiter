@@ -28,13 +28,17 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            Run /adr enforce to validate PR ${{ github.repository }}/pull/${{ github.event.pull_request.number }} against architectural decisions in docs/adr/.
+            Run /adr audit --base ${{ github.base_ref }} to validate PR ${{ github.repository }}/pull/${{ github.event.pull_request.number }} against architectural decisions in docs/adr/.
 
-            For each ADR violation or concern found:
-            1. Post an inline comment on the specific file and line where the violation occurs
-            2. Reference the ADR number and explain how it's being violated
-            3. Suggest how to fix the issue or ask if a new ADR should supersede the old one
+            IMPORTANT: Write the result script to `.claude/audit-result.sh` as documented in .claude/skills/adr/audit.md.
+            The script must use GitHub Actions annotations for inline PR feedback and exit with the appropriate code (0 for pass, 1 for violations).
 
-            If all ADRs are satisfied, post a summary comment confirming compliance.
-
-            Use `gh api` to post inline review comments on the PR.
+      - name: Check ADR audit result
+        if: always()
+        run: |
+          if [ -f .claude/audit-result.sh ]; then
+            chmod +x .claude/audit-result.sh
+            ./.claude/audit-result.sh
+          else
+            echo "::warning::ADR audit did not produce a result file"
+          fi
