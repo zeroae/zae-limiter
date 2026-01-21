@@ -63,7 +63,7 @@ class TestConfigCacheSystemDefaults:
         """Test cache miss for system defaults."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = AsyncMock(return_value=(limits, "allow"))
 
         result = await cache.get_system_defaults(fetch_fn)
@@ -80,7 +80,7 @@ class TestConfigCacheSystemDefaults:
         """Test cache hit for system defaults."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = AsyncMock(return_value=(limits, "allow"))
 
         # First call - miss
@@ -100,8 +100,8 @@ class TestConfigCacheSystemDefaults:
         """Test cache expiration for system defaults."""
         cache = ConfigCache(ttl_seconds=1)  # 1 second TTL
 
-        limits1 = [Limit.per_minute("tpm",10000)]
-        limits2 = [Limit.per_minute("tpm",20000)]
+        limits1 = [Limit.per_minute("tpm", 10000)]
+        limits2 = [Limit.per_minute("tpm", 20000)]
         fetch_fn = AsyncMock(side_effect=[(limits1, "allow"), (limits2, "block")])
 
         # First call - miss
@@ -122,7 +122,7 @@ class TestConfigCacheSystemDefaults:
         """Test system defaults with disabled cache (TTL=0)."""
         cache = ConfigCache(ttl_seconds=0)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = AsyncMock(return_value=(limits, "allow"))
 
         # Each call should fetch
@@ -135,7 +135,7 @@ class TestConfigCacheSystemDefaults:
         """Test sync cache hit for system defaults."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = Mock(return_value=(limits, "allow"))
 
         # First call - miss
@@ -155,7 +155,7 @@ class TestConfigCacheResourceDefaults:
         """Test cache miss for resource defaults."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = AsyncMock(return_value=limits)
 
         result = await cache.get_resource_defaults("gpt-4", fetch_fn)
@@ -168,7 +168,7 @@ class TestConfigCacheResourceDefaults:
         """Test cache hit for resource defaults."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = AsyncMock(return_value=limits)
 
         # First call - miss
@@ -184,8 +184,8 @@ class TestConfigCacheResourceDefaults:
         """Test separate cache entries for different resources."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits_gpt4 = [Limit.per_minute("tpm",10000)]
-        limits_gpt35 = [Limit.per_minute("tpm",5000)]
+        limits_gpt4 = [Limit.per_minute("tpm", 10000)]
+        limits_gpt35 = [Limit.per_minute("tpm", 5000)]
 
         async def fetch_fn(resource: str) -> list[Limit]:
             if resource == "gpt-4":
@@ -210,7 +210,7 @@ class TestConfigCacheResourceDefaults:
         """Test sync cache hit for resource defaults."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = Mock(return_value=limits)
 
         # First call - miss
@@ -230,7 +230,7 @@ class TestConfigCacheEntityLimits:
         """Test cache miss for entity limits."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = AsyncMock(return_value=limits)
 
         result = await cache.get_entity_limits("user-1", "gpt-4", fetch_fn)
@@ -243,7 +243,7 @@ class TestConfigCacheEntityLimits:
         """Test cache hit for entity limits."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = AsyncMock(return_value=limits)
 
         # First call - miss
@@ -278,7 +278,7 @@ class TestConfigCacheEntityLimits:
         """Test separate cache entries for different entity×resource pairs."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = AsyncMock(return_value=limits)
 
         # Different entity×resource pairs
@@ -293,7 +293,7 @@ class TestConfigCacheEntityLimits:
         """Test sync cache hit for entity limits."""
         cache = ConfigCache(ttl_seconds=60)
 
-        limits = [Limit.per_minute("tpm",10000)]
+        limits = [Limit.per_minute("tpm", 10000)]
         fetch_fn = Mock(return_value=limits)
 
         # First call - miss
@@ -329,9 +329,9 @@ class TestConfigCacheInvalidation:
         cache = ConfigCache(ttl_seconds=60)
 
         # Populate cache
-        system_fetch = AsyncMock(return_value=([Limit.per_minute("tpm",10000)], "allow"))
-        resource_fetch = AsyncMock(return_value=[Limit.per_minute("tpm",5000)])
-        entity_fetch = AsyncMock(return_value=[Limit.per_minute("tpm",1000)])
+        system_fetch = AsyncMock(return_value=([Limit.per_minute("tpm", 10000)], "allow"))
+        resource_fetch = AsyncMock(return_value=[Limit.per_minute("tpm", 5000)])
+        entity_fetch = AsyncMock(return_value=[Limit.per_minute("tpm", 1000)])
 
         await cache.get_system_defaults(system_fetch)
         await cache.get_resource_defaults("gpt-4", resource_fetch)
@@ -362,7 +362,7 @@ class TestConfigCacheInvalidation:
         cache = ConfigCache(ttl_seconds=60)
 
         # Populate cache
-        system_fetch = AsyncMock(return_value=([Limit.per_minute("tpm",10000)], "allow"))
+        system_fetch = AsyncMock(return_value=([Limit.per_minute("tpm", 10000)], "allow"))
         await cache.get_system_defaults(system_fetch)
 
         stats = cache.get_stats()
@@ -383,7 +383,7 @@ class TestConfigCacheStats:
         """Test that stats accurately track hits and misses."""
         cache = ConfigCache(ttl_seconds=60)
 
-        fetch_fn = AsyncMock(return_value=([Limit.per_minute("tpm",10000)], "allow"))
+        fetch_fn = AsyncMock(return_value=([Limit.per_minute("tpm", 10000)], "allow"))
 
         # 3 misses
         await cache.get_system_defaults(fetch_fn)
@@ -405,9 +405,9 @@ class TestConfigCacheStats:
         """Test that stats accurately track cache size."""
         cache = ConfigCache(ttl_seconds=60)
 
-        system_fetch = AsyncMock(return_value=([Limit.per_minute("tpm",10000)], "allow"))
-        resource_fetch = AsyncMock(return_value=[Limit.per_minute("tpm",5000)])
-        entity_fetch = AsyncMock(return_value=[Limit.per_minute("tpm",1000)])
+        system_fetch = AsyncMock(return_value=([Limit.per_minute("tpm", 10000)], "allow"))
+        resource_fetch = AsyncMock(return_value=[Limit.per_minute("tpm", 5000)])
+        entity_fetch = AsyncMock(return_value=[Limit.per_minute("tpm", 1000)])
 
         await cache.get_system_defaults(system_fetch)
         assert cache.get_stats().size == 1
@@ -433,7 +433,7 @@ class TestConfigCacheThreadSafety:
             with lock:
                 call_count += 1
             time.sleep(0.01)  # Simulate slow fetch
-            return [Limit.per_minute("tpm",10000)], "allow"
+            return [Limit.per_minute("tpm", 10000)], "allow"
 
         results: list[tuple[list[Limit], str | None]] = []
 
@@ -452,7 +452,7 @@ class TestConfigCacheThreadSafety:
 
         # All results should be the same
         assert len(results) == 50
-        expected = ([Limit.per_minute("tpm",10000)], "allow")
+        expected = ([Limit.per_minute("tpm", 10000)], "allow")
         for result in results:
             assert result == expected
 
@@ -475,7 +475,7 @@ class TestConfigCacheAsyncSafety:
             nonlocal call_count
             call_count += 1
             await asyncio.sleep(0.01)  # Simulate slow fetch
-            return [Limit.per_minute("tpm",10000)], "allow"
+            return [Limit.per_minute("tpm", 10000)], "allow"
 
         async def worker() -> list[tuple[list[Limit], str | None]]:
             results = []
@@ -488,7 +488,7 @@ class TestConfigCacheAsyncSafety:
         worker_results = await asyncio.gather(*[worker() for _ in range(5)])
 
         # All results should be the same
-        expected = ([Limit.per_minute("tpm",10000)], "allow")
+        expected = ([Limit.per_minute("tpm", 10000)], "allow")
         for results in worker_results:
             assert len(results) == 10
             for result in results:
