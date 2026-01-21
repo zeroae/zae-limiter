@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from zae_limiter.config_cache import CacheStats, ConfigCache, _NO_CONFIG
+from zae_limiter.config_cache import _NO_CONFIG, CacheStats, ConfigCache
 from zae_limiter.models import Limit
 
 
@@ -506,5 +506,5 @@ class TestConfigCacheNegativeCachingSentinel:
     def test_no_config_sentinel_is_unique(self) -> None:
         """Test that _NO_CONFIG sentinel is a unique object."""
         assert _NO_CONFIG is not None
-        assert _NO_CONFIG is not []
+        assert _NO_CONFIG != []
         assert _NO_CONFIG != []

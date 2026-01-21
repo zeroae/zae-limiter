@@ -738,7 +738,7 @@ Config fields are stored alongside limits in existing `#LIMIT#` records using **
 
 **Cost impact:** 3 RCU per cache miss (one per level). With caching and negative caching, ~2.1 RCU per request for typical deployments (20K users, 5% with custom limits).
 
-See [ADR-001](docs/adr/001-centralized-config.md) for full design details.
+See [ADR-100](docs/adr/100-centralized-config.md) for full design details.
 
 ### Schema Design Notes
 
