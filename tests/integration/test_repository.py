@@ -318,16 +318,10 @@ class TestRepositoryBatchGetBuckets:
         for entity_id in entity_ids:
             for limit in limits:
                 state = BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)
-                await localstack_repo.transact_write(
-                    [localstack_repo.build_bucket_put_item(state)]
-                )
+                await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
 
         # Batch get all buckets
-        keys = [
-            (entity_id, "gpt-4", limit.name)
-            for entity_id in entity_ids
-            for limit in limits
-        ]
+        keys = [(entity_id, "gpt-4", limit.name) for entity_id in entity_ids for limit in limits]
         result = await localstack_repo.batch_get_buckets(keys)
 
         # Should return all 6 buckets (3 entities × 2 limits)
@@ -409,9 +403,7 @@ class TestRepositoryBatchGetBuckets:
 
         for entity_id in entity_ids:
             state = BucketState.from_limit(entity_id, "api", limit, now_ms)
-            await localstack_repo.transact_write(
-                [localstack_repo.build_bucket_put_item(state)]
-            )
+            await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
 
         # Batch get all 110 buckets (requires 2 DynamoDB calls)
         keys = [(entity_id, "api", "rpm") for entity_id in entity_ids]
