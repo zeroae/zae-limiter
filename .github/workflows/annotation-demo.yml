@@ -1,0 +1,219 @@
+name: Annotation Demo
+
+on:
+  workflow_dispatch: # Manual trigger only
+
+jobs:
+  annotations-demo:
+    runs-on: ubuntu-latest
+    steps:
+      # ============================================
+      # BASIC ANNOTATIONS (workflow commands)
+      # ============================================
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Basic annotations (no file reference)
+        run: |
+          echo "::notice::This is a notice - informational message"
+          echo "::warning::This is a warning - something to watch"
+          echo "::error::This is an error - something went wrong"
+
+      - name: Annotations with file/line references
+        run: |
+          # These will show inline in PR diffs
+          echo "::notice file=README.md,line=1::Notice on README line 1"
+          echo "::warning file=README.md,line=2,col=5::Warning at specific column"
+          echo "::error file=README.md,line=3,endLine=5::Error spanning multiple lines"
+
+      - name: Annotations with titles
+        run: |
+          echo "::notice title=Build Info::Build started at $(date)"
+          echo "::warning title=Deprecation::This API will be removed in v2.0"
+          echo "::error title=Validation Failed::Missing required field 'name'"
+
+      # ============================================
+      # GROUPING (collapsible sections in logs)
+      # ============================================
+
+      - name: Grouped output
+        run: |
+          echo "::group::Installing dependencies"
+          echo "Installing package A..."
+          echo "Installing package B..."
+          echo "Installing package C..."
+          echo "::endgroup::"
+
+          echo "::group::Running tests"
+          echo "Test 1: PASS"
+          echo "Test 2: PASS"
+          echo "Test 3: PASS"
+          echo "::endgroup::"
+
+      # ============================================
+      # DEBUG MESSAGES (only visible if debug enabled)
+      # ============================================
+
+      - name: Debug messages
+        run: |
+          # Only visible if ACTIONS_STEP_DEBUG secret is set to true
+          echo "::debug::This is a debug message - hidden by default"
+          echo "::debug::Variable X = 42"
+
+      # ============================================
+      # MASKING SECRETS
+      # ============================================
+
+      - name: Mask sensitive data
+        run: |
+          MY_SECRET="super-secret-value-12345"
+          echo "::add-mask::$MY_SECRET"
+          echo "The secret is: $MY_SECRET"  # Will show as ***
+
+      # ============================================
+      # PROBLEM MATCHER
+      # ============================================
+
+      - name: Create problem matcher
+        run: |
+          mkdir -p .github/matchers
+          cat > .github/matchers/my-tool.json << 'EOF'
+          {
+            "problemMatcher": [
+              {
+                "owner": "my-tool-errors",
+                "severity": "error",
+                "pattern": [
+                  {
+                    "regexp": "^ERROR:\\s+(.+):(\\d+):(\\d+):\\s+(.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 4
+                  }
+                ]
+              },
+              {
+                "owner": "my-tool-warnings",
+                "severity": "warning",
+                "pattern": [
+                  {
+                    "regexp": "^WARN:\\s+(.+):(\\d+):\\s+(.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "message": 3
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+      - name: Register and use problem matcher
+        run: |
+          # Register the problem matcher
+          echo "::add-matcher::.github/matchers/my-tool.json"
+
+          # These lines will be parsed and create annotations automatically
+          echo "ERROR: src/app.py:42:10: undefined variable 'foo'"
+          echo "ERROR: src/utils.py:15:1: missing return statement"
+          echo "WARN: src/old.py:100: deprecated function 'bar'"
+
+          # Regular output is not matched
+          echo "This is normal output, not an error"
+
+          # Remove the matcher when done (optional)
+          echo "::remove-matcher owner=my-tool-errors::"
+          echo "::remove-matcher owner=my-tool-warnings::"
+
+      # ============================================
+      # MULTILINE PROBLEM MATCHER
+      # ============================================
+
+      - name: Create multiline problem matcher
+        run: |
+          cat > .github/matchers/multiline.json << 'EOF'
+          {
+            "problemMatcher": [
+              {
+                "owner": "multiline-errors",
+                "severity": "error",
+                "pattern": [
+                  {
+                    "regexp": "^File \"(.+)\", line (\\d+)",
+                    "file": 1,
+                    "line": 2
+                  },
+                  {
+                    "regexp": "^\\s+(.+)$",
+                    "message": 1,
+                    "loop": true
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+      - name: Use multiline problem matcher (Python traceback style)
+        run: |
+          echo "::add-matcher::.github/matchers/multiline.json"
+
+          # Simulated Python-style error output
+          echo 'File "src/main.py", line 25'
+          echo '    undefined_variable'
+          echo "::remove-matcher owner=multiline-errors::"
+
+      # ============================================
+      # STEP SUMMARY (Markdown in job summary)
+      # ============================================
+
+      - name: Write job summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## Annotation Demo Results
+
+          | Type | Count | Status |
+          |------|-------|--------|
+          | Errors | 3 | :x: |
+          | Warnings | 2 | :warning: |
+          | Notices | 3 | :information_source: |
+
+          ### Details
+
+          - All annotation types demonstrated
+          - Problem matchers registered and tested
+          - See the "Annotations" section above for results
+
+          ```python
+          # Code blocks work too!
+          def hello():
+              print("Hello from job summary!")
+          ```
+          EOF
+
+      # ============================================
+      # DEMONSTRATE THAT ANNOTATIONS DON'T FAIL
+      # ============================================
+
+      - name: Prove errors don't fail the job
+        run: |
+          echo "::error::This error annotation does NOT fail the job"
+          echo "::error::Neither does this one"
+          echo "Job continues running..."
+          echo "See? Still going!"
+          # exit 0 is implicit - job succeeds despite error annotations
+
+  # ============================================
+  # SEPARATE JOB: Show how to actually fail
+  # ============================================
+
+  fail-demo:
+    runs-on: ubuntu-latest
+    if: false # Disabled by default - change to true to see failure
+    steps:
+      - name: Error annotation PLUS exit code
+        run: |
+          echo "::error title=Fatal Error::Something went catastrophically wrong"
+          exit 1  # THIS is what actually fails the job
