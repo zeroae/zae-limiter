@@ -77,6 +77,7 @@ class Repository:
             supports_usage_snapshots=True,
             supports_infrastructure_management=True,
             supports_change_streams=True,
+            supports_batch_operations=True,
         )
 
     @property
