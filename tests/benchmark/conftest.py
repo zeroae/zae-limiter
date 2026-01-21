@@ -47,6 +47,7 @@ class CapacityCounter:
 
     Attributes:
         get_item: Number of GetItem calls (1 RCU each)
+        batch_get_item: List of item counts per BatchGetItem call (issue #133)
         query: Number of Query calls (RCUs depend on data returned)
         put_item: Number of PutItem calls (1 WCU each)
         transact_write_items: List of item counts per TransactWriteItems call
@@ -54,6 +55,7 @@ class CapacityCounter:
     """
 
     get_item: int = 0
+    batch_get_item: list[int] = field(default_factory=list)
     query: int = 0
     put_item: int = 0
     transact_write_items: list[int] = field(default_factory=list)
@@ -61,8 +63,12 @@ class CapacityCounter:
 
     @property
     def total_rcus(self) -> int:
-        """Estimate total RCUs consumed (simplified: 1 RCU per GetItem/Query)."""
-        return self.get_item + self.query
+        """Estimate total RCUs consumed (simplified: 1 RCU per GetItem/Query).
+
+        Note: BatchGetItem items are counted individually as they each consume
+        0.5 RCU for items up to 4KB (eventually consistent read).
+        """
+        return self.get_item + sum(self.batch_get_item) + self.query
 
     @property
     def total_wcus(self) -> int:
@@ -72,6 +78,7 @@ class CapacityCounter:
     def reset(self) -> None:
         """Reset all counters to zero."""
         self.get_item = 0
+        self.batch_get_item.clear()
         self.query = 0
         self.put_item = 0
         self.transact_write_items.clear()
@@ -106,6 +113,7 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
 
     # Store original methods
     original_get_item = client.get_item
+    original_batch_get = client.batch_get_item
     original_query = client.query
     original_put_item = client.put_item
     original_transact = client.transact_write_items
@@ -115,6 +123,12 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
     async def counting_get_item(*args: Any, **kwargs: Any) -> Any:
         counter.get_item += 1
         return await original_get_item(*args, **kwargs)
+
+    async def counting_batch_get(*args: Any, **kwargs: Any) -> Any:
+        request_items = kwargs.get("RequestItems", {})
+        total_items = sum(len(items.get("Keys", [])) for items in request_items.values())
+        counter.batch_get_item.append(total_items)
+        return await original_batch_get(*args, **kwargs)
 
     async def counting_query(*args: Any, **kwargs: Any) -> Any:
         counter.query += 1
@@ -137,6 +151,7 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
 
     # Apply wrappers
     client.get_item = counting_get_item
+    client.batch_get_item = counting_batch_get
     client.query = counting_query
     client.put_item = counting_put_item
     client.transact_write_items = counting_transact
@@ -147,6 +162,7 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
     finally:
         # Restore original methods
         client.get_item = original_get_item
+        client.batch_get_item = original_batch_get
         client.query = original_query
         client.put_item = original_put_item
         client.transact_write_items = original_transact
