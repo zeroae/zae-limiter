@@ -27,19 +27,19 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_tools: "Bash,Write,Read,Glob,Grep,Task"
+          claude_args: "--allowedTools Bash,Write,Read,Glob,Grep,Task"
           prompt: |
             Run /adr audit --base ${{ github.base_ref }} to validate PR ${{ github.repository }}/pull/${{ github.event.pull_request.number }} against architectural decisions in docs/adr/.
 
-            IMPORTANT: Write the result script to `.claude/audit-result.sh` as documented in .claude/skills/adr/audit.md.
+            IMPORTANT: Write the result script to `.github/audit-result.sh` as documented in .claude/skills/adr/audit.md.
             The script must use GitHub Actions annotations for inline PR feedback and exit with the appropriate code (0 for pass, 1 for violations).
 
       - name: Check ADR audit result
         if: always()
         run: |
-          if [ -f .claude/audit-result.sh ]; then
-            chmod +x .claude/audit-result.sh
-            ./.claude/audit-result.sh
+          if [ -f .github/audit-result.sh ]; then
+            chmod +x .github/audit-result.sh
+            ./.github/audit-result.sh
           else
             echo "::warning::ADR audit did not produce a result file"
           fi
