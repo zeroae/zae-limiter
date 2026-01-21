@@ -30,6 +30,7 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 |---------|-------|
 | Get entity | `PK=ENTITY#{id}, SK=#META` |
 | Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
+| Batch get buckets | `BatchGetItem` with multiple PK/SK pairs |
 | Get children | GSI1: `GSI1PK=PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
@@ -38,6 +39,24 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 | Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#{resource}#` |
 | Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#{resource}#` |
 | Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+
+### Optimized Read Patterns
+
+The `acquire()` operation uses `BatchGetItem` to fetch all required buckets in a
+single DynamoDB round trip (see [Issue #133](https://github.com/zeroae/zae-limiter/issues/133)):
+
+```python
+# Before: N sequential GetItem calls
+for entity_id, resource, limit_name in bucket_keys:
+    bucket = await get_bucket(entity_id, resource, limit_name)
+
+# After: 1 BatchGetItem call
+buckets = await batch_get_buckets(bucket_keys)
+```
+
+This optimization is particularly beneficial for cascade scenarios where both
+entity and parent buckets are fetched together, reducing latency from
+2×N round trips to 1.
 
 ### Item Structure
 

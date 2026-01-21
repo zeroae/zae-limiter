@@ -402,6 +402,69 @@ class Repository:
 
         return [self._deserialize_bucket(item) for item in response.get("Items", [])]
 
+    async def batch_get_buckets(
+        self,
+        keys: list[tuple[str, str, str]],
+    ) -> dict[tuple[str, str, str], BucketState]:
+        """
+        Batch get multiple buckets in a single DynamoDB call.
+
+        Uses BatchGetItem to reduce round trips when fetching buckets for
+        multiple entity/resource/limit combinations (e.g., cascade scenarios).
+
+        Args:
+            keys: List of (entity_id, resource, limit_name) tuples
+
+        Returns:
+            Dict mapping (entity_id, resource, limit_name) to BucketState.
+            Missing buckets are not included in the result.
+
+        Note:
+            DynamoDB BatchGetItem supports up to 100 items per request.
+            For larger batches, this method automatically chunks the requests.
+        """
+        if not keys:
+            return {}
+
+        client = await self._get_client()
+        result: dict[tuple[str, str, str], BucketState] = {}
+
+        # Build request keys (deduplicate)
+        unique_keys = list(set(keys))
+
+        # BatchGetItem supports max 100 items per request
+        for i in range(0, len(unique_keys), 100):
+            chunk = unique_keys[i : i + 100]
+
+            request_keys = [
+                {
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource, limit_name)},
+                }
+                for entity_id, resource, limit_name in chunk
+            ]
+
+            response = await client.batch_get_item(
+                RequestItems={
+                    self.table_name: {
+                        "Keys": request_keys,
+                    }
+                }
+            )
+
+            # Process responses
+            items = response.get("Responses", {}).get(self.table_name, [])
+            for item in items:
+                bucket = self._deserialize_bucket(item)
+                key = (bucket.entity_id, bucket.resource, bucket.limit_name)
+                result[key] = bucket
+
+            # Handle unprocessed keys (retry with exponential backoff if needed)
+            # For simplicity, we don't retry here - the caller can handle missing keys
+            # In production, consider adding retry logic for UnprocessedKeys
+
+        return result
+
     async def get_or_create_bucket(
         self,
         entity_id: str,

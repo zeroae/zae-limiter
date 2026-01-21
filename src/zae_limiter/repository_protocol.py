@@ -264,6 +264,25 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def batch_get_buckets(
+        self,
+        keys: list[tuple[str, str, str]],
+    ) -> "dict[tuple[str, str, str], BucketState]":
+        """
+        Batch get multiple buckets in a single call.
+
+        Uses BatchGetItem (DynamoDB) or equivalent to reduce round trips when
+        fetching buckets for multiple entity/resource/limit combinations.
+
+        Args:
+            keys: List of (entity_id, resource, limit_name) tuples
+
+        Returns:
+            Dict mapping (entity_id, resource, limit_name) to BucketState.
+            Missing buckets are not included in the result.
+        """
+        ...
+
     async def get_resource_buckets(
         self,
         resource: str,

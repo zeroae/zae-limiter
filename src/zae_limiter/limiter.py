@@ -717,14 +717,25 @@ class RateLimiter:
         for eid in entity_ids:
             entity_limits[eid] = await self._resolve_limits(eid, resource, limits_override)
 
-        # Get or create buckets for each entity/limit
+        # Build list of bucket keys to fetch
+        bucket_keys: list[tuple[str, str, str]] = [
+            (eid, resource, limit.name)
+            for eid in entity_ids
+            for limit in entity_limits[eid]
+        ]
+
+        # Batch fetch all buckets in a single DynamoDB call (issue #133)
+        existing_buckets = await self._repository.batch_get_buckets(bucket_keys)
+
+        # Process buckets and build lease entries
         entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
 
         for eid in entity_ids:
             for limit in entity_limits[eid]:
-                # Get existing bucket or create new one
-                state = await self._repository.get_bucket(eid, resource, limit.name)
+                # Get existing bucket from batch result or create new one
+                bucket_key = (eid, resource, limit.name)
+                state = existing_buckets.get(bucket_key)
                 if state is None:
                     state = BucketState.from_limit(eid, resource, limit, now_ms)
 
