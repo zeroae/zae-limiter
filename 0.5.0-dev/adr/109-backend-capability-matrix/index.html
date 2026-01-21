@@ -2760,25 +2760,28 @@
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">supports_usage_snapshots</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">supports_infrastructure_management</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 </span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">supports_change_streams</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">RepositoryProtocol</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="nd">@property</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">capabilities</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BackendCapabilities</span><span class="p">:</span> <span class="o">...</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">supports_batch_operations</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">class</span><span class="w"> </span><span class="nc">RepositoryProtocol</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    <span class="nd">@property</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">capabilities</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BackendCapabilities</span><span class="p">:</span> <span class="o">...</span>
 </span></code></pre></div>
 <h3 id="capability-declaration-by-backend">Capability Declaration by Backend<a class="headerlink" href="#capability-declaration-by-backend" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
 <th>Backend</th>
-<th><code>supports_audit_logging</code></th>
-<th><code>supports_usage_snapshots</code></th>
-<th><code>supports_infrastructure_management</code></th>
-<th><code>supports_change_streams</code></th>
+<th><code>audit_logging</code></th>
+<th><code>usage_snapshots</code></th>
+<th><code>infrastructure_management</code></th>
+<th><code>change_streams</code></th>
+<th><code>batch_operations</code></th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>DynamoDB</td>
+<td>True</td>
 <td>True</td>
 <td>True</td>
 <td>True</td>
@@ -2790,6 +2793,7 @@
 <td>True (Consumer)</td>
 <td>False</td>
 <td>True</td>
+<td>True (Pipeline)</td>
 </tr>
 <tr>
 <td>SQLite</td>
@@ -2797,9 +2801,11 @@
 <td>True (Polling)</td>
 <td>False</td>
 <td>False</td>
+<td>False</td>
 </tr>
 <tr>
 <td>In-Memory</td>
+<td>False</td>
 <td>False</td>
 <td>False</td>
 <td>False</td>
@@ -2811,6 +2817,7 @@
 <td>TBD</td>
 <td>False</td>
 <td>True</td>
+<td>True (Bulk)</td>
 </tr>
 <tr>
 <td>Firestore</td>
@@ -2818,12 +2825,14 @@
 <td>TBD</td>
 <td>False</td>
 <td>True</td>
+<td>True (getAll)</td>
 </tr>
 <tr>
 <td>OCI NoSQL</td>
 <td>TBD</td>
 <td>TBD</td>
 <td>False</td>
+<td>TBD</td>
 <td>TBD</td>
 </tr>
 </tbody>

@@ -3237,19 +3237,19 @@
 <td><code>acquire()</code> - single limit</td>
 <td>1</td>
 <td>1</td>
-<td>GetItem + TransactWrite</td>
+<td>BatchGetItem + TransactWrite</td>
 </tr>
 <tr>
 <td><code>acquire()</code> - N limits</td>
 <td>N</td>
 <td>N</td>
-<td>N GetItems + TransactWrite(N items)</td>
+<td>1 BatchGetItem + TransactWrite(N items)</td>
 </tr>
 <tr>
 <td><code>acquire(cascade=True)</code></td>
-<td>3</td>
-<td>2</td>
-<td>+GetEntity + parent bucket ops</td>
+<td>N×2</td>
+<td>N×2</td>
+<td>1 GetEntity + 1 BatchGetItem + TransactWrite</td>
 </tr>
 <tr>
 <td><code>acquire(use_stored_limits=True)</code></td>
@@ -3283,6 +3283,12 @@
 </tr>
 </tbody>
 </table>
+<div class="admonition note">
+<p class="admonition-title">Read Optimization (v0.5.0)</p>
+<p><code>acquire()</code> uses <code>BatchGetItem</code> to fetch all buckets in a single DynamoDB call,
+reducing round trips for cascade scenarios. Previously, each bucket was fetched
+with a separate <code>GetItem</code> call.</p>
+</div>
 <div class="admonition info">
 <p class="admonition-title">Capacity Validation</p>
 <p>These costs are validated by automated tests. Run <code>uv run pytest tests/benchmark/test_capacity.py -v</code> to verify.</p>
