@@ -641,7 +641,6 @@ Follow the [commit conventions](.claude/rules/commits.md).
 |---------|-------|
 | Get entity | `PK=ENTITY#{id}, SK=#META` |
 | Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
-| Batch get buckets | `BatchGetItem` with multiple PK/SK pairs (issue #133) |
 | Get children | GSI1: `GSI1PK=PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
@@ -651,10 +650,6 @@ Follow the [commit conventions](.claude/rules/commits.md).
 | Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#` |
 | Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#` |
 | Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
-
-**Optimized read patterns (issue #133):**
-- `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
-- This reduces cascade scenarios from N sequential GetItem calls to 1 BatchGetItem call
 
 **Key builders for config records:**
 - `pk_system()` - Returns `SYSTEM#`

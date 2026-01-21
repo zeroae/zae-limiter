@@ -717,18 +717,14 @@ class RateLimiter:
         for eid in entity_ids:
             entity_limits[eid] = await self._resolve_limits(eid, resource, limits_override)
 
-        # Fetch all buckets - use batch if available, otherwise sequential (issue #133)
-        existing_buckets = await self._fetch_buckets(entity_ids, resource, entity_limits)
-
-        # Process buckets and build lease entries
+        # Get or create buckets for each entity/limit
         entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
 
         for eid in entity_ids:
             for limit in entity_limits[eid]:
-                # Get existing bucket from batch result or create new one
-                bucket_key = (eid, resource, limit.name)
-                state = existing_buckets.get(bucket_key)
+                # Get existing bucket or create new one
+                state = await self._repository.get_bucket(eid, resource, limit.name)
                 if state is None:
                     state = BucketState.from_limit(eid, resource, limit, now_ms)
 
@@ -772,47 +768,6 @@ class RateLimiter:
             raise RateLimitExceeded(statuses)
 
         return Lease(repository=self._repository, entries=entries)
-
-    async def _fetch_buckets(
-        self,
-        entity_ids: list[str],
-        resource: str,
-        entity_limits: dict[str, list[Limit]],
-    ) -> dict[tuple[str, str, str], BucketState]:
-        """
-        Fetch buckets for all entity/resource/limit combinations.
-
-        Uses batch_get_buckets if the backend supports it (DynamoDB),
-        otherwise falls back to sequential get_buckets calls.
-
-        Args:
-            entity_ids: List of entity IDs to fetch buckets for
-            resource: Resource name
-            entity_limits: Map of entity_id -> limits for that entity
-
-        Returns:
-            Dict mapping (entity_id, resource, limit_name) to BucketState.
-            Missing buckets are not included in the result.
-        """
-        # Use batch operation if backend supports it (issue #133)
-        if self._repository.capabilities.supports_batch_operations:
-            bucket_keys: list[tuple[str, str, str]] = [
-                (eid, resource, limit.name) for eid in entity_ids for limit in entity_limits[eid]
-            ]
-            # batch_get_buckets exists when supports_batch_operations is True
-            batch_result: dict[tuple[str, str, str], BucketState] = (
-                await self._repository.batch_get_buckets(bucket_keys)  # type: ignore[attr-defined]
-            )
-            return batch_result
-
-        # Fallback: sequential get_buckets calls
-        result: dict[tuple[str, str, str], BucketState] = {}
-        for eid in entity_ids:
-            buckets = await self._repository.get_buckets(eid, resource)
-            for bucket in buckets:
-                key = (bucket.entity_id, bucket.resource, bucket.limit_name)
-                result[key] = bucket
-        return result
 
     async def _resolve_limits(
         self,

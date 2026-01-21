@@ -97,23 +97,6 @@ Protocol is more Pythonic: any object with the right methods satisfies the proto
 - `get_audit_events()` - Audit logging (DynamoDB-specific schema)
 - `get_usage_snapshots()` - Usage aggregation (requires Lambda)
 
-**Capability-gated optimizations (detected via `capabilities` property):**
-- `batch_get_buckets()` - Batch bucket reads (DynamoDB `BatchGetItem`)
-
-Capability-gated methods are accessed after checking `capabilities.supports_*`:
-
-```python
-# RateLimiter checks capability before using optimization
-if repo.capabilities.supports_batch_operations:
-    buckets = await repo.batch_get_buckets(keys)
-else:
-    # Fallback to sequential get_buckets() calls
-    buckets = {}
-    for entity_id, resource, _ in keys:
-        for bucket in await repo.get_buckets(entity_id, resource):
-            buckets[(bucket.entity_id, bucket.resource, bucket.limit_name)] = bucket
-```
-
 Optional methods are accessed via backend-specific types, not the protocol.
 
 ### 4. Infrastructure Management Belongs in Repository

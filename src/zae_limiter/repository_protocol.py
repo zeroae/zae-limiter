@@ -264,11 +264,6 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    # NOTE: batch_get_buckets() is NOT part of the protocol.
-    # It is an optional optimization method available when
-    # capabilities.supports_batch_operations is True.
-    # See ADR-108 section 3 for rationale.
-
     async def get_resource_buckets(
         self,
         resource: str,

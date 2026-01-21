@@ -25,62 +25,6 @@ EOF
 gh api -X PATCH repos/{owner}/{repo}/issues/<number> -f type=<Type>
 ```
 
-## Acceptance Criteria Guidelines
-
-When writing acceptance criteria, ensure each criterion is **objectively verifiable**. Avoid subjective language that requires judgment calls.
-
-### Red Flags (Subjective)
-
-| Subjective Phrase | Problem |
-|-------------------|---------|
-| "where beneficial" | Who decides what's beneficial? |
-| "as appropriate" | Undefined threshold |
-| "improved performance" | No measurable target |
-| "clean code" | Style is subjective |
-| "well-documented" | No specific requirement |
-| "reasonable" / "acceptable" | Undefined standards |
-
-### Rewrite Patterns
-
-| ❌ Subjective | ✅ Objective |
-|---------------|--------------|
-| "Projection expressions used where beneficial" | "Projection expressions fetch only attributes necessary and sufficient for execution without changing unit tests" |
-| "Performance is improved" | "p99 latency ≤ baseline" or "No regression in p99 latency" |
-| "Code is well-tested" | "Unit tests cover new methods" or "Coverage ≥ 80%" |
-| "Documentation updated as needed" | "CLAUDE.md updated with new access patterns" |
-| "Error handling is appropriate" | "RateLimitExceeded raised when tokens < 0" |
-
-### Verification Test
-
-For each criterion, ask: **Can this be verified with grep, pytest, or a measurable metric?**
-
-If not, rewrite it to specify:
-- **What** exactly must exist/change
-- **Where** it must be (file, function, config)
-- **How** to verify (test passes, grep finds it, metric threshold)
-
-### Ask User for Subjective Criteria
-
-If any acceptance criterion contains subjective language, **do not create the issue**. Instead, use `AskUserQuestion` to propose objective alternatives:
-
-```
-Criterion: "Projection expressions used where beneficial"
-
-This criterion is subjective ("where beneficial" requires judgment).
-
-How would you like to make it objective?
-- "Projection expressions fetch only attributes necessary and sufficient for execution without changing unit tests"
-- "Projection expressions used in all GetItem calls"
-- "Projection expressions reduce item size by ≥50%"
-- Other (specify)
-```
-
-**Rules:**
-- Scan all criteria before creating the issue
-- Flag ALL subjective criteria in a single question (batch them)
-- Provide 2-3 concrete alternatives based on context
-- Only proceed to create after user confirms objective rewrites
-
 ## Context Inference
 
 ### Type Inference

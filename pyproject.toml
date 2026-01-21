@@ -105,5 +105,4 @@ warn_unused_ignores = true
 [dependency-groups]
 dev = [
     "cfn-lint>=1.43.3",
-    "pytest-repeat>=0.9.4",
 ]

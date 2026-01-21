@@ -89,14 +89,13 @@ jobs:
         python-version: ["3.11", "3.12"]
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:latest
         ports:
           - 4566:4566
         env:
-          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
           DEBUG: 0
           DOCKER_HOST: unix:///var/run/docker.sock
-          DYNAMODB_REMOVE_EXPIRED_ITEMS: 1
         volumes:
           - /var/run/docker.sock:/var/run/docker.sock
         options: >-
@@ -143,14 +142,13 @@ jobs:
         python-version: ["3.11", "3.12"]
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:latest
         ports:
           - 4566:4566
         env:
-          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
           DEBUG: 0
           DOCKER_HOST: unix:///var/run/docker.sock
-          DYNAMODB_REMOVE_EXPIRED_ITEMS: 1
         volumes:
           - /var/run/docker.sock:/var/run/docker.sock
         options: >-
@@ -194,14 +192,13 @@ jobs:
     runs-on: ubuntu-latest
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:latest
         ports:
           - 4566:4566
         env:
-          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
           DEBUG: 0
           DOCKER_HOST: unix:///var/run/docker.sock
-          DYNAMODB_REMOVE_EXPIRED_ITEMS: 1
         volumes:
           - /var/run/docker.sock:/var/run/docker.sock
         options: >-

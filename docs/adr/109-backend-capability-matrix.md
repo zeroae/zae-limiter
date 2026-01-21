@@ -100,7 +100,6 @@ class BackendCapabilities:
     supports_usage_snapshots: bool = False
     supports_infrastructure_management: bool = False
     supports_change_streams: bool = False
-    supports_batch_operations: bool = False
 
 class RepositoryProtocol(Protocol):
     @property
@@ -109,15 +108,15 @@ class RepositoryProtocol(Protocol):
 
 ### Capability Declaration by Backend
 
-| Backend | `audit_logging` | `usage_snapshots` | `infrastructure_management` | `change_streams` | `batch_operations` |
-|---------|-----------------|-------------------|-----------------------------|--------------------|-------------------|
-| DynamoDB | True | True | True | True | True |
-| Redis | True (Streams) | True (Consumer) | False | True | True (Pipeline) |
-| SQLite | True (Table) | True (Polling) | False | False | False |
-| In-Memory | False | False | False | False | False |
-| Cosmos DB | TBD | TBD | False | True | True (Bulk) |
-| Firestore | TBD | TBD | False | True | True (getAll) |
-| OCI NoSQL | TBD | TBD | False | TBD | TBD |
+| Backend | `supports_audit_logging` | `supports_usage_snapshots` | `supports_infrastructure_management` | `supports_change_streams` |
+|---------|--------------------------|----------------------------|--------------------------------------|---------------------------|
+| DynamoDB | True | True | True | True |
+| Redis | True (Streams) | True (Consumer) | False | True |
+| SQLite | True (Table) | True (Polling) | False | False |
+| In-Memory | False | False | False | False |
+| Cosmos DB | TBD | TBD | False | True |
+| Firestore | TBD | TBD | False | True |
+| OCI NoSQL | TBD | TBD | False | TBD |
 
 ### Audit Logging Implementation by Backend
 
