@@ -49,7 +49,9 @@ If violations are found, ask if the user wants to:
 
 ## CI Output (GitHub Actions)
 
-When running in CI (detected via `CI=true` environment variable), write a result script to `.claude/audit-result.sh`. The workflow executes this script to determine pass/fail status.
+When running in CI (detected via `CI=true` environment variable), write a result script to `.github/audit-result.sh`. The workflow executes this script to determine pass/fail status.
+
+**Note:** Do not use `.claude/` directory as it is considered sensitive and writes will be blocked.
 
 ### Available GitHub Actions Commands
 
