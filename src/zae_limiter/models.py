@@ -124,6 +124,9 @@ class BackendCapabilities:
     supports_change_streams: bool = False
     """Whether the backend supports real-time change notifications."""
 
+    supports_batch_operations: bool = False
+    """Whether the backend supports batch_get_buckets() for optimized reads."""
+
 
 # ---------------------------------------------------------------------------
 # Limit Configuration

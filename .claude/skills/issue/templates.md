@@ -50,6 +50,8 @@ result = limiter.new_feature()
 **Required fields:** Problem or Use Case
 **Optional fields:** Proposed Solution, Alternatives Considered
 
+> **Note:** Feature issues often include Acceptance Criteria. If so, ensure each criterion is objectively verifiable. See [create.md](create.md#acceptance-criteria-guidelines).
+
 ## Task 📋 / 📝 / ✅
 
 ```markdown
@@ -65,6 +67,8 @@ result = limiter.new_feature()
 
 **Required fields:** Description
 **Optional fields:** Acceptance Criteria
+
+> **Writing Criteria:** Each criterion must be objectively verifiable via grep, pytest, or measurable metric. See [create.md](create.md#acceptance-criteria-guidelines) for patterns to avoid.
 
 ## Chore 🔧 / ♻️ / ⬆️ / 👷 / 🔥
 

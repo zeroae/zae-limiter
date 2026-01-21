@@ -173,6 +173,40 @@ class TestRateLimiterAcquire:
         # Bucket should still have full capacity (no commit happened)
         assert available["rpm"] == 100
 
+    async def test_acquire_fallback_when_batch_not_supported(self, limiter, monkeypatch):
+        """Test that acquire falls back to sequential get_buckets when batch not supported."""
+        from zae_limiter.models import BackendCapabilities
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # First, create a bucket with batch operations enabled
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            assert lease.consumed == {"rpm": 1}
+
+        # Now override capabilities to disable batch operations
+        no_batch_capabilities = BackendCapabilities(
+            supports_audit_logging=True,
+            supports_usage_snapshots=True,
+            supports_infrastructure_management=True,
+            supports_change_streams=True,
+            supports_batch_operations=False,  # Disable batch
+        )
+        monkeypatch.setattr(limiter._repository, "_capabilities", no_batch_capabilities)
+
+        # Second acquire should use fallback path with existing bucket
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            assert lease.consumed == {"rpm": 1}
+
 
 class TestRateLimiterLease:
     """Tests for Lease functionality."""
@@ -809,10 +843,10 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ServiceUnavailable", "Message": "DynamoDB down"}},
-                "GetItem",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
 
         # Set on_unavailable to ALLOW
         limiter.on_unavailable = OnUnavailable.ALLOW
@@ -837,10 +871,10 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ProvisionedThroughputExceededException"}},
-                "Query",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
 
         # Set on_unavailable to BLOCK (default)
         limiter.on_unavailable = OnUnavailable.BLOCK
@@ -868,10 +902,10 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "InternalServerError"}},
-                "TransactWriteItems",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
 
         # Set limiter to BLOCK, but override in acquire
         limiter.on_unavailable = OnUnavailable.BLOCK
@@ -895,7 +929,7 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise Exception("DynamoDB timeout")
 
-        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
 
         # Set limiter to ALLOW, but override in acquire
         limiter.on_unavailable = OnUnavailable.ALLOW

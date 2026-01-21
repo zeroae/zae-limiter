@@ -10,14 +10,19 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 
 | Operation | RCUs | WCUs | Notes |
 |-----------|------|------|-------|
-| `acquire()` - single limit | 1 | 1 | GetItem + TransactWrite |
-| `acquire()` - N limits | N | N | N GetItems + TransactWrite(N items) |
-| `acquire(cascade=True)` | 3 | 2 | +GetEntity + parent bucket ops |
+| `acquire()` - single limit | 1 | 1 | BatchGetItem + TransactWrite |
+| `acquire()` - N limits | N | N | 1 BatchGetItem + TransactWrite(N items) |
+| `acquire(cascade=True)` | N×2 | N×2 | 1 GetEntity + 1 BatchGetItem + TransactWrite |
 | `acquire(use_stored_limits=True)` | +2 | 0 | +2 Query operations for limits |
 | `available()` | 1 per limit | 0 | Read-only, no transaction |
 | `get_limits()` | 1 | 0 | Query operation |
 | `set_limits()` | 1 | N+1 | Query + N PutItems |
 | `delete_entity()` | 1 | batched | Query + BatchWrite in 25-item chunks |
+
+!!! note "Read Optimization (v0.5.0)"
+    `acquire()` uses `BatchGetItem` to fetch all buckets in a single DynamoDB call,
+    reducing round trips for cascade scenarios. Previously, each bucket was fetched
+    with a separate `GetItem` call.
 
 !!! info "Capacity Validation"
     These costs are validated by automated tests. Run `uv run pytest tests/benchmark/test_capacity.py -v` to verify.
