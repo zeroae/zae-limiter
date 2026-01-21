@@ -32,7 +32,7 @@ pytestmark = pytest.mark.integration
 async def localstack_repo(localstack_endpoint, unique_name):
     """Repository connected to LocalStack (direct table creation, no CloudFormation)."""
     repo = Repository(
-        stack_name=unique_name,
+        name=unique_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
     )
@@ -54,7 +54,7 @@ class TestRepositoryLocalStackCloudFormation:
     ):
         """Should create CloudFormation stack with minimal infrastructure."""
         repo = Repository(
-            stack_name=unique_name,
+            name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
         )
@@ -82,7 +82,7 @@ class TestRepositoryLocalStackCloudFormation:
     async def test_create_stack_with_custom_parameters(self, localstack_endpoint, unique_name):
         """Should pass custom parameters to CloudFormation stack."""
         repo = Repository(
-            stack_name=unique_name,
+            name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
         )
@@ -310,7 +310,7 @@ class TestRepositoryPing:
     async def test_ping_returns_false_when_table_missing(self, localstack_endpoint):
         """ping() should return False when table doesn't exist."""
         repo = Repository(
-            stack_name="ping-missing-table-test",
+            name="ping-missing-table-test",
             endpoint_url=localstack_endpoint,
             region="us-east-1",
         )
