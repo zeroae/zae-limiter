@@ -734,7 +734,7 @@ Config fields are stored alongside limits in existing `#LIMIT#` records using **
 - `auto_update` (bool): Auto-update Lambda on version mismatch
 - `strict_version` (bool): Fail on version mismatch
 
-**Caching:** 60s TTL in-memory cache per RateLimiter instance. Use `invalidate_config_cache()` for immediate refresh. Negative caching for entities without custom config.
+**Caching:** 60s TTL in-memory cache per RateLimiter instance (configurable via `config_cache_ttl` parameter, 0 to disable). Use `invalidate_config_cache()` for immediate refresh. Use `get_cache_stats()` for monitoring. Negative caching for entities without custom config.
 
 **Cost impact:** 3 RCU per cache miss (one per level). With caching and negative caching, ~2.1 RCU per request for typical deployments (20K users, 5% with custom limits).
 

@@ -239,6 +239,47 @@ except RateLimiterUnavailable as e:
     print(f"Service unavailable: {e}")
 ```
 
+## Config Cache
+
+zae-limiter caches config data (system defaults, resource defaults, entity limits) to reduce DynamoDB reads. The cache has a 60-second TTL by default.
+
+### Configuring Cache TTL
+
+```python
+from zae_limiter import RateLimiter, Repository
+
+# Default: 60-second cache TTL
+limiter = RateLimiter(
+    repository=Repository(name="my-app", region="us-east-1"),
+    config_cache_ttl=60,
+)
+
+# Disable caching (for testing)
+limiter = RateLimiter(
+    repository=Repository(name="my-app", region="us-east-1"),
+    config_cache_ttl=0,
+)
+```
+
+### Manual Cache Invalidation
+
+After modifying config, force immediate refresh:
+
+```python
+await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+await limiter.invalidate_config_cache()  # Optional: force refresh
+```
+
+### Monitoring Cache Performance
+
+```python
+stats = limiter.get_cache_stats()
+print(f"Hits: {stats.hits}, Misses: {stats.misses}")
+print(f"Cache entries: {stats.size}")
+```
+
+See [Config Cache Tuning](../performance.md#7-config-cache-tuning) for advanced configuration.
+
 ## Next Steps
 
 - [Hierarchical Limits](hierarchical.md) - Parent/child rate limiting

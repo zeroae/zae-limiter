@@ -483,6 +483,88 @@ aws budgets create-budget \
 
 ---
 
+## 7. Config Cache Tuning
+
+The config cache reduces DynamoDB reads by caching system defaults, resource defaults, and entity limits. This section covers tuning the cache for your workload.
+
+### Cache Configuration
+
+```python
+from zae_limiter import RateLimiter, Repository
+
+# Default: 60-second TTL (recommended for most workloads)
+limiter = RateLimiter(
+    repository=Repository(name="my-app", region="us-east-1"),
+    config_cache_ttl=60,  # Default
+)
+
+# High-frequency updates: Shorter TTL for faster propagation
+limiter = RateLimiter(
+    repository=Repository(name="my-app", region="us-east-1"),
+    config_cache_ttl=10,  # 10 seconds - faster updates, more cache misses
+)
+
+# Disable caching: For testing or when config changes must be immediate
+limiter = RateLimiter(
+    repository=Repository(name="my-app", region="us-east-1"),
+    config_cache_ttl=0,  # Disabled - every acquire reads from DynamoDB
+)
+```
+
+### Cost Impact
+
+Without caching, each `acquire()` call performs 3 DynamoDB reads to resolve limits:
+
+1. Entity-level config lookup (1 RCU)
+2. Resource-level config lookup (1 RCU)
+3. System-level config lookup (1 RCU)
+
+With caching (default):
+
+| Traffic Rate | Cache Hit Rate | Amortized RCU/request |
+|--------------|----------------|----------------------|
+| 1 req/sec | 98.3% | 0.05 RCU |
+| 10 req/sec | 99.8% | 0.005 RCU |
+| 100 req/sec | 99.98% | 0.0005 RCU |
+
+**Negative caching** also helps: When an entity has no custom config (95%+ of entities typically), the cache remembers this to avoid repeated lookups.
+
+### Manual Invalidation
+
+After modifying config, you can force immediate refresh:
+
+```python
+# Update config
+await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+# Force immediate cache refresh (optional)
+await limiter.invalidate_config_cache()
+```
+
+Without manual invalidation, changes propagate within the TTL period (max 60 seconds by default).
+
+### Monitoring Cache Performance
+
+```python
+# Get cache statistics
+stats = limiter.get_cache_stats()
+print(f"Cache hit rate: {stats.hits / (stats.hits + stats.misses):.1%}")
+print(f"Cache entries: {stats.size}")
+print(f"TTL: {stats.ttl}s")
+```
+
+### TTL Selection Guidelines
+
+| Scenario | Recommended TTL | Rationale |
+|----------|-----------------|-----------|
+| Production (stable config) | 60s (default) | Best cost/latency trade-off |
+| Development/testing | 10-30s | Faster config iteration |
+| Compliance-critical | 10-30s | Minimizes staleness |
+| Testing with frequent changes | 0 (disabled) | Immediate visibility |
+| High-traffic APIs (>100 req/s) | 60-120s | Maximize cache hits |
+
+---
+
 ## Summary
 
 | Optimization Area | Key Recommendations |
@@ -491,6 +573,7 @@ aws budgets create-budget \
 | Latency | Expect 30-50ms p50 on AWS; use LocalStack for realistic testing |
 | Throughput | Distribute load across entities to avoid contention |
 | Cost | Disable cascade/stored_limits when not needed |
+| Config Cache | Use default 60s TTL; invalidate manually for immediate changes |
 | Monitoring | Set up CloudWatch alerts for capacity and cost anomalies |
 
 For detailed benchmark data, run:
