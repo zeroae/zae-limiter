@@ -48,29 +48,54 @@ def archival_stack_options():
     )
 
 
-def trigger_ttl_cleanup(localstack_endpoint: str) -> tuple[bool, str]:
+def trigger_ttl_cleanup(
+    localstack_endpoint: str, max_retries: int = 3, retry_delay: float = 1.0
+) -> tuple[bool, str]:
     """
-    Trigger immediate TTL cleanup in LocalStack.
+    Trigger immediate TTL cleanup in LocalStack with retry logic.
 
     LocalStack auto-scans for expired items every 60 minutes, which is too
     slow for CI/CD. This function calls the internal API to force immediate
     cleanup of all expired items.
 
+    Note: LocalStack has a race condition where concurrent table operations
+    can cause "dictionary changed size during iteration" errors. This is
+    worked around by retrying the request.
+
     Args:
         localstack_endpoint: LocalStack endpoint URL (e.g., http://localhost:4566)
+        max_retries: Maximum number of retry attempts (default 3)
+        retry_delay: Delay between retries in seconds (default 1.0)
 
     Returns:
         Tuple of (success, message) where success is True if cleanup was triggered
         successfully, and message contains details about the response or error.
     """
     url = f"{localstack_endpoint}/_aws/dynamodb/expired"
-    try:
-        response = requests.delete(url, timeout=30)
-        success = response.status_code in (200, 204)
-        msg = f"status={response.status_code}, body={response.text[:200]}"
-        return success, msg
-    except requests.RequestException as e:
-        return False, f"RequestException: {e}"
+    last_msg = ""
+
+    for attempt in range(max_retries):
+        try:
+            response = requests.delete(url, timeout=30)
+            if response.status_code in (200, 204):
+                msg = f"status={response.status_code}, body={response.text[:200]}"
+                return True, msg
+
+            # Check if it's a retryable error (LocalStack race condition)
+            if response.status_code == 500 and "dictionary changed size" in response.text:
+                last_msg = f"status={response.status_code}, body={response.text[:200]} (attempt {attempt + 1}/{max_retries})"
+                time.sleep(retry_delay)
+                continue
+
+            # Non-retryable error
+            last_msg = f"status={response.status_code}, body={response.text[:200]}"
+            return False, last_msg
+
+        except requests.RequestException as e:
+            last_msg = f"RequestException: {e} (attempt {attempt + 1}/{max_retries})"
+            time.sleep(retry_delay)
+
+    return False, last_msg
 
 
 async def poll_for_s3_objects(
