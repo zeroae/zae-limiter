@@ -196,9 +196,7 @@ class TestRateLimiterAcquire:
             supports_change_streams=True,
             supports_batch_operations=False,  # Disable batch
         )
-        monkeypatch.setattr(
-            limiter._repository, "_capabilities", no_batch_capabilities
-        )
+        monkeypatch.setattr(limiter._repository, "_capabilities", no_batch_capabilities)
 
         # Second acquire should use fallback path with existing bucket
         async with limiter.acquire(

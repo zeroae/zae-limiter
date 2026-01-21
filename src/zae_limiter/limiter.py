@@ -797,9 +797,7 @@ class RateLimiter:
         # Use batch operation if backend supports it (issue #133)
         if self._repository.capabilities.supports_batch_operations:
             bucket_keys: list[tuple[str, str, str]] = [
-                (eid, resource, limit.name)
-                for eid in entity_ids
-                for limit in entity_limits[eid]
+                (eid, resource, limit.name) for eid in entity_ids for limit in entity_limits[eid]
             ]
             # batch_get_buckets exists when supports_batch_operations is True
             batch_result: dict[tuple[str, str, str], BucketState] = (
