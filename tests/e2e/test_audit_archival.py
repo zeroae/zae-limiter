@@ -83,7 +83,10 @@ def trigger_ttl_cleanup(
 
             # Check if it's a retryable error (LocalStack race condition)
             if response.status_code == 500 and "dictionary changed size" in response.text:
-                last_msg = f"status={response.status_code}, body={response.text[:200]} (attempt {attempt + 1}/{max_retries})"
+                last_msg = (
+                    f"status={response.status_code}, body={response.text[:200]} "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
                 time.sleep(retry_delay)
                 continue
 
