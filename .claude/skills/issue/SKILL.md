@@ -1,9 +1,9 @@
 ---
 name: issue
-description: Create and update GitHub issues. Triggers on "create issue", "file issue", "open issue", "new issue", "report bug", "request feature", "track this", "create epic", "create theme", "update issue", "check off", "mark complete", "close issue", "verify issue", "verify #". Infers type, labels, and milestone from conversation context.
-allowed-tools: Bash(gh:*), AskUserQuestion, Grep, Read
+description: Create and update GitHub issues. Triggers on "create issue", "file issue", "open issue", "new issue", "report bug", "request feature", "track this", "create epic", "create theme", "update issue", "check off", "mark complete", "close issue", "verify issue", "verify #", "ralph-loop". Infers type, labels, and milestone from conversation context.
+allowed-tools: Bash(gh:*), AskUserQuestion, Grep, Read, Edit, Write, TodoWrite
 user-invocable: true
-argument-hint: verify <number> [--all] [--dry-run]
+argument-hint: verify <number> [--all] [--dry-run] | ralph-loop <number> [--max-iterations <n>]
 ---
 
 # Issue Skill
@@ -18,13 +18,15 @@ Create, update, and manage GitHub issues following ZeroAE conventions. Infer as 
 | **Update** | "update issue", "add to issue", "update #123" | Modify existing issue |
 | **Progress** | "check off", "mark complete", "done with", "finished" | Check checkboxes based on work done |
 | **Verify** | `/issue verify <number> [--all] [--dry-run]` | Validate unchecked criteria, prompt to check off |
+| **Ralph Loop** | `/issue ralph-loop <number> [--max-iterations <n>]` | Iteratively work until all criteria pass |
 
 ## Mode Detection
 
-1. **If `verify` keyword** (`/issue verify 150`) → **Verify mode**
-2. **If update phrases** ("update issue", "add to #123") → **Update mode**
-3. **If progress phrases** ("check off", "mark complete") → **Progress mode**
-4. **Otherwise** → **Create mode**
+1. **If `ralph-loop` keyword** (`/issue ralph-loop 133`) → **Ralph Loop mode**
+2. **If `verify` keyword** (`/issue verify 150`) → **Verify mode**
+3. **If update phrases** ("update issue", "add to #123") → **Update mode**
+4. **If progress phrases** ("check off", "mark complete") → **Progress mode**
+5. **Otherwise** → **Create mode**
 
 ## Supported Issue Types
 
@@ -49,5 +51,6 @@ See [conventions.md](conventions.md) for full gitmoji-to-type mapping.
 - [update.md](update.md) - Update issue mode
 - [progress.md](progress.md) - Progress tracking mode
 - [verify.md](verify.md) - Acceptance criteria verification mode
+- [ralph-loop.md](ralph-loop.md) - Ralph Loop mode (iterative issue resolution)
 - [templates.md](templates.md) - Issue body templates for each type
 - [conventions.md](conventions.md) - Label taxonomy, title formatting, milestone rules
