@@ -48,7 +48,7 @@ def archival_stack_options():
     )
 
 
-def trigger_ttl_cleanup(localstack_endpoint: str) -> bool:
+def trigger_ttl_cleanup(localstack_endpoint: str) -> tuple[bool, str]:
     """
     Trigger immediate TTL cleanup in LocalStack.
 
@@ -60,16 +60,17 @@ def trigger_ttl_cleanup(localstack_endpoint: str) -> bool:
         localstack_endpoint: LocalStack endpoint URL (e.g., http://localhost:4566)
 
     Returns:
-        True if cleanup was triggered successfully, False otherwise
+        Tuple of (success, message) where success is True if cleanup was triggered
+        successfully, and message contains details about the response or error.
     """
+    url = f"{localstack_endpoint}/_aws/dynamodb/expired"
     try:
-        response = requests.delete(
-            f"{localstack_endpoint}/_aws/dynamodb/expired",
-            timeout=30,
-        )
-        return response.status_code in (200, 204)
-    except requests.RequestException:
-        return False
+        response = requests.delete(url, timeout=30)
+        success = response.status_code in (200, 204)
+        msg = f"status={response.status_code}, body={response.text[:200]}"
+        return success, msg
+    except requests.RequestException as e:
+        return False, f"RequestException: {e}"
 
 
 async def poll_for_s3_objects(
@@ -217,8 +218,8 @@ class TestAuditArchival:
                 )
 
             # Step 4: Trigger TTL cleanup
-            cleanup_success = trigger_ttl_cleanup(localstack_endpoint)
-            assert cleanup_success, "Failed to trigger TTL cleanup"
+            cleanup_success, cleanup_msg = trigger_ttl_cleanup(localstack_endpoint)
+            assert cleanup_success, f"Failed to trigger TTL cleanup: {cleanup_msg}"
 
             # Step 5: Wait for Lambda to process and archive
             # Give some time for the stream event to be processed
