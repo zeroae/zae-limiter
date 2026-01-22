@@ -1380,6 +1380,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#7-config-cache-tuning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Config Cache Tuning
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Config Cache Tuning">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cache-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cost-impact" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost Impact
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#manual-invalidation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manual Invalidation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#monitoring-cache-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monitoring Cache Performance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ttl-selection-guidelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TTL Selection Guidelines
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#summary" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3183,6 +3255,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#7-config-cache-tuning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Config Cache Tuning
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Config Cache Tuning">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cache-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cost-impact" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost Impact
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#manual-invalidation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manual Invalidation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#monitoring-cache-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monitoring Cache Performance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ttl-selection-guidelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TTL Selection Guidelines
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#summary" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3864,6 +4008,118 @@ with a separate <code>GetItem</code> call.</p>
 </span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="w">  </span>--notifications-with-subscribers<span class="w"> </span>file://notifications.json
 </span></code></pre></div>
 <hr />
+<h2 id="7-config-cache-tuning">7. Config Cache Tuning<a class="headerlink" href="#7-config-cache-tuning" title="Permanent link">&para;</a></h2>
+<p>The config cache reduces DynamoDB reads by caching system defaults, resource defaults, and entity limits. This section covers tuning the cache for your workload.</p>
+<h3 id="cache-configuration">Cache Configuration<a class="headerlink" href="#cache-configuration" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Repository</span>
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="c1"># Default: 60-second TTL (recommended for most workloads)</span>
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
+</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span>  <span class="c1"># Default</span>
+</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="p">)</span>
+</span><span id="__span-22-8"><a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>
+</span><span id="__span-22-9"><a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a><span class="c1"># High-frequency updates: Shorter TTL for faster propagation</span>
+</span><span id="__span-22-10"><a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-22-11"><a id="__codelineno-22-11" name="__codelineno-22-11" href="#__codelineno-22-11"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
+</span><span id="__span-22-12"><a id="__codelineno-22-12" name="__codelineno-22-12" href="#__codelineno-22-12"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>  <span class="c1"># 10 seconds - faster updates, more cache misses</span>
+</span><span id="__span-22-13"><a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a><span class="p">)</span>
+</span><span id="__span-22-14"><a id="__codelineno-22-14" name="__codelineno-22-14" href="#__codelineno-22-14"></a>
+</span><span id="__span-22-15"><a id="__codelineno-22-15" name="__codelineno-22-15" href="#__codelineno-22-15"></a><span class="c1"># Disable caching: For testing or when config changes must be immediate</span>
+</span><span id="__span-22-16"><a id="__codelineno-22-16" name="__codelineno-22-16" href="#__codelineno-22-16"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-22-17"><a id="__codelineno-22-17" name="__codelineno-22-17" href="#__codelineno-22-17"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
+</span><span id="__span-22-18"><a id="__codelineno-22-18" name="__codelineno-22-18" href="#__codelineno-22-18"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>  <span class="c1"># Disabled - every acquire reads from DynamoDB</span>
+</span><span id="__span-22-19"><a id="__codelineno-22-19" name="__codelineno-22-19" href="#__codelineno-22-19"></a><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="cost-impact">Cost Impact<a class="headerlink" href="#cost-impact" title="Permanent link">&para;</a></h3>
+<p>Without caching, each <code>acquire()</code> call performs 3 DynamoDB reads to resolve limits:</p>
+<ol>
+<li>Entity-level config lookup (1 RCU)</li>
+<li>Resource-level config lookup (1 RCU)</li>
+<li>System-level config lookup (1 RCU)</li>
+</ol>
+<p>With caching (default):</p>
+<table>
+<thead>
+<tr>
+<th>Traffic Rate</th>
+<th>Cache Hit Rate</th>
+<th>Amortized RCU/request</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 req/sec</td>
+<td>98.3%</td>
+<td>0.05 RCU</td>
+</tr>
+<tr>
+<td>10 req/sec</td>
+<td>99.8%</td>
+<td>0.005 RCU</td>
+</tr>
+<tr>
+<td>100 req/sec</td>
+<td>99.98%</td>
+<td>0.0005 RCU</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Negative caching</strong> also helps: When an entity has no custom config (95%+ of entities typically), the cache remembers this to avoid repeated lookups.</p>
+<h3 id="manual-invalidation">Manual Invalidation<a class="headerlink" href="#manual-invalidation" title="Permanent link">&para;</a></h3>
+<p>After modifying config, you can force immediate refresh:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="c1"># Update config</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">([</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)])</span>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="c1"># Force immediate cache refresh (optional)</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">invalidate_config_cache</span><span class="p">()</span>
+</span></code></pre></div>
+<p>Without manual invalidation, changes propagate within the TTL period (max 60 seconds by default).</p>
+<h3 id="monitoring-cache-performance">Monitoring Cache Performance<a class="headerlink" href="#monitoring-cache-performance" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="c1"># Get cache statistics</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="n">stats</span> <span class="o">=</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_cache_stats</span><span class="p">()</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cache hit rate: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">stats</span><span class="o">.</span><span class="n">misses</span><span class="p">)</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cache entries: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;TTL: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">ttl</span><span class="si">}</span><span class="s2">s&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="ttl-selection-guidelines">TTL Selection Guidelines<a class="headerlink" href="#ttl-selection-guidelines" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Recommended TTL</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Production (stable config)</td>
+<td>60s (default)</td>
+<td>Best cost/latency trade-off</td>
+</tr>
+<tr>
+<td>Development/testing</td>
+<td>10-30s</td>
+<td>Faster config iteration</td>
+</tr>
+<tr>
+<td>Compliance-critical</td>
+<td>10-30s</td>
+<td>Minimizes staleness</td>
+</tr>
+<tr>
+<td>Testing with frequent changes</td>
+<td>0 (disabled)</td>
+<td>Immediate visibility</td>
+</tr>
+<tr>
+<td>High-traffic APIs (&gt;100 req/s)</td>
+<td>60-120s</td>
+<td>Maximize cache hits</td>
+</tr>
+</tbody>
+</table>
+<hr />
 <h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -3890,13 +4146,17 @@ with a separate <code>GetItem</code> call.</p>
 <td>Disable cascade/stored_limits when not needed</td>
 </tr>
 <tr>
+<td>Config Cache</td>
+<td>Use default 60s TTL; invalidate manually for immediate changes</td>
+</tr>
+<tr>
 <td>Monitoring</td>
 <td>Set up CloudWatch alerts for capacity and cost anomalies</td>
 </tr>
 </tbody>
 </table>
 <p>For detailed benchmark data, run:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
 </span></code></pre></div></p>
 
 
