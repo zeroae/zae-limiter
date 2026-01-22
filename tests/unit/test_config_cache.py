@@ -500,6 +500,77 @@ class TestConfigCacheAsyncSafety:
         assert call_count < 10  # Much less than 50
 
 
+class TestConfigCacheDisabledBranches:
+    """Tests for cache disabled branches (TTL=0) to ensure 100% coverage."""
+
+    def test_system_defaults_sync_disabled_cache(self) -> None:
+        """Test sync system defaults with disabled cache (TTL=0)."""
+        cache = ConfigCache(ttl_seconds=0)
+
+        limits = [Limit.per_minute("tpm", 10000)]
+        fetch_fn = Mock(return_value=(limits, "allow"))
+
+        # Each call should fetch (no caching)
+        cache.get_system_defaults_sync(fetch_fn)
+        cache.get_system_defaults_sync(fetch_fn)
+
+        assert fetch_fn.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_resource_defaults_disabled_cache(self) -> None:
+        """Test async resource defaults with disabled cache (TTL=0)."""
+        cache = ConfigCache(ttl_seconds=0)
+
+        limits = [Limit.per_minute("rpm", 1000)]
+        fetch_fn = AsyncMock(return_value=limits)
+
+        # Each call should fetch (no caching)
+        await cache.get_resource_defaults("gpt-4", fetch_fn)
+        await cache.get_resource_defaults("gpt-4", fetch_fn)
+
+        assert fetch_fn.call_count == 2
+
+    def test_resource_defaults_sync_disabled_cache(self) -> None:
+        """Test sync resource defaults with disabled cache (TTL=0)."""
+        cache = ConfigCache(ttl_seconds=0)
+
+        limits = [Limit.per_minute("rpm", 1000)]
+        fetch_fn = Mock(return_value=limits)
+
+        # Each call should fetch (no caching)
+        cache.get_resource_defaults_sync("gpt-4", fetch_fn)
+        cache.get_resource_defaults_sync("gpt-4", fetch_fn)
+
+        assert fetch_fn.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_entity_limits_disabled_cache(self) -> None:
+        """Test async entity limits with disabled cache (TTL=0)."""
+        cache = ConfigCache(ttl_seconds=0)
+
+        limits = [Limit.per_minute("rpm", 500)]
+        fetch_fn = AsyncMock(return_value=limits)
+
+        # Each call should fetch (no caching)
+        await cache.get_entity_limits("user-1", "gpt-4", fetch_fn)
+        await cache.get_entity_limits("user-1", "gpt-4", fetch_fn)
+
+        assert fetch_fn.call_count == 2
+
+    def test_entity_limits_sync_disabled_cache(self) -> None:
+        """Test sync entity limits with disabled cache (TTL=0)."""
+        cache = ConfigCache(ttl_seconds=0)
+
+        limits = [Limit.per_minute("rpm", 500)]
+        fetch_fn = Mock(return_value=limits)
+
+        # Each call should fetch (no caching)
+        cache.get_entity_limits_sync("user-1", "gpt-4", fetch_fn)
+        cache.get_entity_limits_sync("user-1", "gpt-4", fetch_fn)
+
+        assert fetch_fn.call_count == 2
+
+
 class TestConfigCacheNegativeCachingSentinel:
     """Tests for negative caching sentinel value."""
 
