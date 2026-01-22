@@ -185,6 +185,119 @@ class TestCascadeOverheadBenchmarks:
         benchmark(operation)
 
 
+class TestConfigLookupBenchmarks:
+    """Benchmarks for centralized config lookup overhead."""
+
+    @pytest.fixture
+    def config_setup_limiter(self, sync_limiter):
+        """Setup limiter with stored config for benchmarking."""
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Set system defaults
+        sync_limiter.set_system_defaults(limits)
+
+        # Set resource defaults
+        sync_limiter.set_resource_defaults("benchmark-resource", limits)
+
+        # Set entity limits
+        sync_limiter.set_limits("config-entity", limits, resource="benchmark-resource")
+
+        return sync_limiter
+
+    def test_acquire_with_cached_config(self, benchmark, config_setup_limiter):
+        """Measure acquire() when config is cached (warm cache).
+
+        After the first acquire, config cache should be warm and subsequent
+        calls should hit the cache rather than DynamoDB.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Warm up the cache with one acquire
+        with config_setup_limiter.acquire(
+            entity_id="config-entity",
+            resource="benchmark-resource",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        def operation():
+            with config_setup_limiter.acquire(
+                entity_id="config-entity",
+                resource="benchmark-resource",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+    def test_acquire_cold_config(self, benchmark, sync_limiter):
+        """Measure acquire() with config cache miss (cold cache).
+
+        First access to an entity should incur config cache miss and
+        fetch stored limits from DynamoDB.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Set resource defaults so they can be fetched
+        sync_limiter.set_resource_defaults("cold-resource", limits)
+
+        # Create a counter to track cache effectiveness
+        entity_id_counter = [0]
+
+        def operation():
+            # Use a unique entity ID each time to simulate cache miss
+            entity_id_counter[0] += 1
+            with sync_limiter.acquire(
+                entity_id=f"cold-entity-{entity_id_counter[0]}",
+                resource="cold-resource",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+    def test_acquire_cascade_with_cached_config(self, benchmark, sync_limiter):
+        """Measure cascade acquire with cached config (warm cache).
+
+        After warming up the cache for both parent and child, cascade
+        should benefit from cached config lookups.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Create hierarchy and set limits
+        sync_limiter.create_entity("config-cascade-parent", name="Parent")
+        sync_limiter.create_entity(
+            "config-cascade-child", name="Child", parent_id="config-cascade-parent"
+        )
+        sync_limiter.set_limits("config-cascade-parent", limits)
+        sync_limiter.set_limits("config-cascade-child", limits)
+
+        # Warm up cache
+        with sync_limiter.acquire(
+            entity_id="config-cascade-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+            cascade=True,
+        ):
+            pass
+
+        def operation():
+            with sync_limiter.acquire(
+                entity_id="config-cascade-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+                cascade=True,
+            ):
+                pass
+
+        benchmark(operation)
+
+
 class TestConcurrentThroughputBenchmarks:
     """Benchmarks for throughput under load."""
 

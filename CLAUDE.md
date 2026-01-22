@@ -480,6 +480,82 @@ pytest --cov=zae_limiter --cov-report=html
 open htmlcov/index.html
 ```
 
+### Benchmark Workflow
+
+Performance-sensitive operations require benchmarking to detect regressions. Benchmarks are stored in `tests/benchmark/` and track latency, throughput, and DynamoDB capacity metrics.
+
+**Benchmark Categories:**
+
+| Type | File | Backend | Use Case |
+|------|------|---------|----------|
+| **Operations** | `test_operations.py` | moto (mocked) | Fast local iteration (< 5s) |
+| **LocalStack** | `test_localstack.py` | DynamoDB emulation | Realistic network latency |
+| **Latency** | `test_latency.py` | moto | p50/p95/p99 breakdown |
+| **Throughput** | `test_throughput.py` | moto | Sequential/concurrent ops |
+| **Capacity** | `test_capacity.py` | moto | RCU/WCU tracking |
+| **AWS** | `test_aws.py` | Real AWS | Production metrics |
+
+**Workflow:**
+
+1. **Baseline before optimization:**
+   ```bash
+   # Run baseline benchmarks and save
+   uv run pytest tests/benchmark/test_operations.py -v \
+     --benchmark-json=baseline.json
+   ```
+
+2. **Make changes (e.g., config caching, BatchGetItem optimization)**
+
+3. **Compare against baseline:**
+   ```bash
+   # Run new benchmarks
+   uv run pytest tests/benchmark/test_operations.py -v \
+     --benchmark-compare=baseline.json
+   ```
+
+4. **LocalStack benchmarks (realistic latency):**
+   ```bash
+   # Start LocalStack with Docker
+   docker compose up -d
+
+   # Run with environment vars
+   export AWS_ENDPOINT_URL=http://localhost:4566
+   export AWS_ACCESS_KEY_ID=test
+   export AWS_SECRET_ACCESS_KEY=test
+   export AWS_DEFAULT_REGION=us-east-1
+   uv run pytest tests/benchmark/test_localstack.py -v \
+     --benchmark-json=baseline-ls.json
+
+   # Stop when done
+   docker compose down
+   ```
+
+**Key Benchmarks:**
+
+| Test | Purpose | Expected |
+|------|---------|----------|
+| `test_acquire_release_single_limit` | Baseline acquire (single limit) | Regression-free |
+| `test_acquire_with_cached_config` | Config cache hit | < 5ms overhead |
+| `test_acquire_cold_config` | Config cache miss | < 20ms overhead |
+| `test_cascade_with_batchgetitem_optimization` | BatchGetItem optimization | 10-20% reduction |
+| `test_cascade_with_config_cache_optimization` | Combined optimizations | Best-case performance |
+
+**Pytest-Benchmark Output:**
+- `mean`: Average latency
+- `std dev`: Consistency (lower is better)
+- `min/max`: Range of observed values
+- `PASS`: No regression detected
+- `FAIL`: Performance degraded (investigate before merging)
+
+**Storing Baselines:**
+
+Save benchmark results for comparison across versions:
+```bash
+# Save baseline for this version
+cp baseline.json docs/benchmark-v0.11.0.json
+git add docs/benchmark-v0.11.0.json
+```
+
 ## Code Style
 
 - Use `ruff` for linting and formatting
