@@ -190,15 +190,120 @@ pytest tests/e2e/test_aws.py --run-aws -v
 
 ### Benchmarks
 
+Performance benchmarks measure operation latency, throughput, and DynamoDB capacity. Benchmarks are essential for detecting performance regressions when optimizing operations like config caching and cascade resolution.
+
+**Quick Start:**
+
 ```bash
-# Mocked benchmarks (fast)
-pytest tests/benchmark/test_operations.py -v
+# Mocked benchmarks (fast - no Docker needed)
+uv run pytest tests/benchmark/test_operations.py -v
 
-# LocalStack benchmarks (realistic latency)
-pytest tests/benchmark/test_localstack.py -v
+# LocalStack benchmarks (realistic latency - requires Docker)
+docker compose up -d
+export AWS_ENDPOINT_URL=http://localhost:4566
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=us-east-1
+uv run pytest tests/benchmark/test_localstack.py -v
+docker compose down
 
-# Export results to JSON
-pytest tests/benchmark/ -v --benchmark-json=benchmark.json
+# Export results to JSON for comparison
+uv run pytest tests/benchmark/ -v --benchmark-json=benchmark.json
+```
+
+**Benchmark Categories:**
+
+| Test File | Backend | Purpose | Speed |
+|-----------|---------|---------|-------|
+| `test_operations.py` | moto (mocked) | Fast iteration, baseline measurements | < 10s |
+| `test_localstack.py` | DynamoDB emulation | Realistic network latency, real-world metrics | 30-60s |
+| `test_latency.py` | moto | p50/p95/p99 latency breakdown | < 10s |
+| `test_throughput.py` | moto | Sequential/concurrent throughput | < 30s |
+| `test_capacity.py` | moto | RCU/WCU tracking | < 10s |
+| `test_aws.py` | Real AWS | Production metrics (optional) | 60-120s |
+
+**Performance Workflow:**
+
+1. **Establish baseline before optimization:**
+   ```bash
+   uv run pytest tests/benchmark/test_operations.py -v \
+     --benchmark-json=baseline.json
+   ```
+
+2. **Implement optimization (e.g., config caching, BatchGetItem)**
+
+3. **Compare against baseline:**
+   ```bash
+   uv run pytest tests/benchmark/test_operations.py -v \
+     --benchmark-compare=baseline.json
+   ```
+
+**Key Benchmarks:**
+
+| Benchmark | Purpose | Typical Overhead |
+|-----------|---------|------------------|
+| `test_acquire_release_single_limit` | Baseline operation | ~1ms (mocked) |
+| `test_acquire_with_cached_config` | Config cache hit | < 5% overhead |
+| `test_acquire_cold_config` | Config cache miss | < 15% overhead |
+| `test_cascade_with_batchgetitem_optimization` | Cascade optimization | 10-20% improvement |
+| `test_cascade_with_config_cache_optimization` | Combined optimizations | 20-30% improvement |
+
+**Interpreting Results:**
+
+```
+test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit
+  mean ± std dev: 1.23 ± 0.15 ms [min: 0.98 ms, max: 1.65 ms] (PASS)
+```
+
+- `PASS`: Performance stable (no regression)
+- `FAIL`: Regression detected (< -5% typical threshold)
+- Positive/negative % = improvement/degradation vs baseline
+
+**Storing Baselines:**
+
+After establishing a good baseline, save it for future comparison:
+
+```bash
+# Save baseline with version
+cp baseline.json docs/benchmark-v0.11.0.json
+git add docs/benchmark-v0.11.0.json
+
+# Compare future runs
+pytest tests/benchmark/ -v --benchmark-compare=docs/benchmark-v0.11.0.json
+```
+
+**Adding New Benchmarks:**
+
+When adding performance-sensitive code:
+
+1. Create test in appropriate benchmark file
+2. Include clear docstring explaining what's measured
+3. Compare against related baseline test
+4. Use `@pytest.mark.benchmark` marker for filtering
+5. Run locally and verify results
+6. Document expected performance targets
+
+Example:
+
+```python
+@pytest.mark.benchmark
+def test_acquire_with_new_optimization(self, benchmark, sync_limiter):
+    """Measure acquire with new optimization.
+
+    Expected: 10% improvement over baseline due to [reason].
+    """
+    limits = [Limit.per_minute("rpm", 1_000_000)]
+
+    def operation():
+        with sync_limiter.acquire(
+            entity_id="bench-opt",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+    benchmark(operation)
 ```
 
 ## CI Configuration
