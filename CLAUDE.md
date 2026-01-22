@@ -298,6 +298,7 @@ src/zae_limiter/
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
+├── config_cache.py    # Client-side config caching with TTL
 ├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, version, upgrade, check, audit, usage, resource, system)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
@@ -617,7 +618,7 @@ When implementing features that derive data from state changes (like consumption
 
 Follow the [commit conventions](.claude/rules/commits.md).
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `test`, `benchmark`
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`
 
 **Examples:**
 ```bash
