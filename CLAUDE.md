@@ -290,11 +290,12 @@ docker compose down
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo
+├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities
 ├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError
 ├── naming.py          # Resource name validation and ZAEL- prefix logic
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders
+├── repository_protocol.py # RepositoryProtocol for backend abstraction
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
