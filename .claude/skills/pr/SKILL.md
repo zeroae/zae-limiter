@@ -1,27 +1,30 @@
 ---
 name: pr
-description: Create and edit pull requests following project conventions. Invoke with "open pr", "create pr", "update pr", or use `/pr <issue-number>` to create, `/pr edit [pr-number]` to update, `/pr release <version>` for release prep.
+description: Create, view, and edit pull requests following project conventions. Invoke with "open pr", "create pr", "update pr", or use `/pr view [pr-number]` to view, `/pr <issue-number>` to create, `/pr edit [pr-number]` to update, `/pr release <version>` for release prep.
 allowed-tools: Bash(gh:*), Bash(git:*), Read, Grep, Glob, AskUserQuestion, Task(Explore)
 user-invocable: true
+context: fork
 ---
 
 # Pull Request Skill
 
-Create and edit PRs following project conventions. Supports three modes:
+Create, view, and edit PRs following project conventions. Supports four modes:
 
 | Mode | Trigger | Purpose |
 |------|---------|---------|
+| **View** | `/pr view [pr-number]` | Display PR details and CI status |
 | **Create** | `/pr [issue-number]`, "create pr" | Create PR for features, bugs, tasks |
 | **Edit** | `/pr edit [pr-number]`, "update pr" | Regenerate PR body from current commits |
 | **Release** | `/pr release <version>`, "release prep" | Verify release readiness |
 
 ## Mode Detection
 
-1. **If issue number provided** (`/pr 123`) → **Create mode** (always, regardless of branch)
-2. **If `edit` keyword** (`/pr edit`) → **Edit mode**
-3. **If `release` keyword** (`/pr release 0.5.0`) → **Release mode**
-4. **If on release branch AND no arguments** (`/pr` on `release/0.5.0`) → **Release mode**
-5. **Otherwise** → **Create mode**
+1. **If `view` keyword** (`/pr view`, `/pr view 218`) → **View mode**
+2. **If issue number provided** (`/pr 123`) → **Create mode** (always, regardless of branch)
+3. **If `edit` keyword** (`/pr edit`) → **Edit mode**
+4. **If `release` keyword** (`/pr release 0.5.0`) → **Release mode**
+5. **If on release branch AND no arguments** (`/pr` on `release/0.5.0`) → **Release mode**
+6. **Otherwise** → **Create mode**
 
 Pattern for release branches: `^release/v?[0-9]+\.[0-9]+\.[0-9]+$`
 
@@ -44,6 +47,7 @@ feature-branch → release/0.5.0 → main
 
 ## Reference Files
 
+- [view.md](view.md) - View PR mode
 - [create.md](create.md) - Create PR mode
 - [edit.md](edit.md) - Edit PR mode
 - [release.md](release.md) - Release prep mode

@@ -1,9 +1,10 @@
 ---
 name: issue
-description: Create and update GitHub issues. Triggers on "create issue", "file issue", "open issue", "new issue", "report bug", "request feature", "track this", "create epic", "create theme", "update issue", "check off", "mark complete", "close issue", "verify issue", "verify #", "ralph-loop", "scan issues", "scan criteria". Infers type, labels, and milestone from conversation context.
+description: Create and update GitHub issues. Triggers on "create issue", "file issue", "open issue", "new issue", "report bug", "request feature", "track this", "create epic", "create theme", "update issue", "check off", "mark complete", "close issue", "verify issue", "verify #", "ralph-loop", "scan issues", "scan criteria", "view issue", "view #". Infers type, labels, and milestone from conversation context.
 allowed-tools: Bash(gh:*), AskUserQuestion, Grep, Read, Edit, Write, TodoWrite
 user-invocable: true
-argument-hint: verify <number> [--all] [--dry-run] | ralph-loop <number> [--max-iterations <n>] | scan [--milestone <name>] [--fix]
+argument-hint: view <number> [--comments] | verify <number> [--all] [--dry-run] | ralph-loop <number> [--max-iterations <n>] | scan [--milestone <name>] [--fix]
+context: fork
 ---
 
 # Issue Skill
@@ -14,6 +15,7 @@ Create, update, and manage GitHub issues following ZeroAE conventions. Infer as 
 
 | Mode | Trigger | Purpose |
 |------|---------|---------|
+| **View** | "view issue", "view #123", `/issue view <number>` | Display issue summary |
 | **Create** | "create issue", "file issue", "new issue", "report bug", "request feature" | Create new issue |
 | **Update** | "update issue", "add to issue", "update #123" | Modify existing issue |
 | **Progress** | "check off", "mark complete", "done with", "finished" | Check checkboxes based on work done |
@@ -23,12 +25,13 @@ Create, update, and manage GitHub issues following ZeroAE conventions. Infer as 
 
 ## Mode Detection
 
-1. **If `ralph-loop` keyword** (`/issue ralph-loop 133`) → **Ralph Loop mode**
-2. **If `scan` keyword** (`/issue scan`, `/issue scan --milestone v0.5.0`) → **Scan mode**
-3. **If `verify` keyword** (`/issue verify 150`) → **Verify mode**
-4. **If update phrases** ("update issue", "add to #123") → **Update mode**
-5. **If progress phrases** ("check off", "mark complete") → **Progress mode**
-6. **Otherwise** → **Create mode**
+1. **If `view` keyword** (`/issue view 135`, `view #135`) → **View mode**
+2. **If `ralph-loop` keyword** (`/issue ralph-loop 133`) → **Ralph Loop mode**
+3. **If `scan` keyword** (`/issue scan`, `/issue scan --milestone v0.5.0`) → **Scan mode**
+4. **If `verify` keyword** (`/issue verify 150`) → **Verify mode**
+5. **If update phrases** ("update issue", "add to #123") → **Update mode**
+6. **If progress phrases** ("check off", "mark complete") → **Progress mode**
+7. **Otherwise** → **Create mode**
 
 ## Supported Issue Types
 
@@ -49,6 +52,7 @@ See [conventions.md](conventions.md) for full gitmoji-to-type mapping.
 
 ## Reference Files
 
+- [view.md](view.md) - View issue mode
 - [create.md](create.md) - Create issue mode
 - [update.md](update.md) - Update issue mode
 - [progress.md](progress.md) - Progress tracking mode
