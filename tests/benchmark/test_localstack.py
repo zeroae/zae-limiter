@@ -205,18 +205,12 @@ class TestCascadeOptimizationBenchmarks:
     def deep_hierarchy(self, sync_localstack_limiter):
         """Setup deeper hierarchy for cascade optimization testing."""
         sync_localstack_limiter.create_entity("opt-root", name="Root")
-        sync_localstack_limiter.create_entity(
-            "opt-level1", name="Level 1", parent_id="opt-root"
-        )
-        sync_localstack_limiter.create_entity(
-            "opt-level2", name="Level 2", parent_id="opt-level1"
-        )
+        sync_localstack_limiter.create_entity("opt-level1", name="Level 1", parent_id="opt-root")
+        sync_localstack_limiter.create_entity("opt-level2", name="Level 2", parent_id="opt-level1")
         return sync_localstack_limiter
 
     @pytest.mark.benchmark(group="cascade-optimization")
-    def test_cascade_with_batchgetitem_optimization(
-        self, benchmark, deep_hierarchy
-    ):
+    def test_cascade_with_batchgetitem_optimization(self, benchmark, deep_hierarchy):
         """Measure cascade using optimized BatchGetItem pattern.
 
         The acquire() method uses BatchGetItem to fetch entity and parent
@@ -282,9 +276,7 @@ class TestCascadeOptimizationBenchmarks:
         return sync_localstack_limiter
 
     @pytest.mark.benchmark(group="cascade-optimization")
-    def test_cascade_with_config_cache_optimization(
-        self, benchmark, cascade_with_config
-    ):
+    def test_cascade_with_config_cache_optimization(self, benchmark, cascade_with_config):
         """Measure cascade with both config cache and BatchGetItem optimization.
 
         This is the ideal case: config cache reduces config lookups, and
