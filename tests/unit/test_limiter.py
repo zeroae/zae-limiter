@@ -8,6 +8,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import (
+    CacheStats,
     Limit,
     LimiterInfo,
     OnUnavailable,
@@ -2616,3 +2617,57 @@ class TestLazyImports:
             _ = zae_limiter.NonExistentClass
 
         assert "has no attribute 'NonExistentClass'" in str(exc_info.value)
+
+
+class TestRateLimiterConfigCache:
+    """Tests for config cache management methods."""
+
+    @pytest.mark.asyncio
+    async def test_get_cache_stats_returns_cache_stats(self, mock_dynamodb):
+        """Test get_cache_stats() returns CacheStats object."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter()
+
+            stats = limiter.get_cache_stats()
+
+            assert isinstance(stats, CacheStats)
+            assert stats.hits == 0
+            assert stats.misses == 0
+            assert stats.size == 0
+            assert stats.ttl_seconds == 60  # Default TTL
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_cache_stats_with_custom_ttl(self, mock_dynamodb):
+        """Test get_cache_stats() reflects custom TTL."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(config_cache_ttl=120)
+
+            stats = limiter.get_cache_stats()
+
+            assert stats.ttl_seconds == 120
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_invalidate_config_cache(self, mock_dynamodb):
+        """Test invalidate_config_cache() clears cache entries."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.config_cache import CacheEntry
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter()
+
+            # Manually populate the cache to verify invalidation
+            entry = CacheEntry(value=[], expires_at=9999999999.0)
+            limiter._config_cache._resource_defaults["gpt-4"] = entry
+
+            assert limiter.get_cache_stats().size == 1
+
+            await limiter.invalidate_config_cache()
+
+            assert limiter.get_cache_stats().size == 0
+            await limiter.close()

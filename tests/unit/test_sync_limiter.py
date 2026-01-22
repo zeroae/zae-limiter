@@ -3,7 +3,13 @@
 import pytest
 from botocore.exceptions import ClientError
 
-from zae_limiter import Limit, OnUnavailable, RateLimiterUnavailable, RateLimitExceeded
+from zae_limiter import (
+    CacheStats,
+    Limit,
+    OnUnavailable,
+    RateLimiterUnavailable,
+    RateLimitExceeded,
+)
 
 
 class TestSyncRateLimiter:
@@ -696,3 +702,31 @@ class TestSyncRateLimiterThreeTierResolution:
             limits=None,  # Auto-resolve
         )
         assert wait == 0.0
+
+
+class TestSyncRateLimiterConfigCache:
+    """Tests for sync config cache management methods."""
+
+    def test_get_cache_stats_returns_cache_stats(self, sync_limiter):
+        """Test get_cache_stats() returns CacheStats object."""
+        stats = sync_limiter.get_cache_stats()
+
+        assert isinstance(stats, CacheStats)
+        assert stats.hits == 0
+        assert stats.misses == 0
+        assert stats.size == 0
+        assert stats.ttl_seconds == 60  # Default TTL
+
+    def test_invalidate_config_cache(self, sync_limiter):
+        """Test invalidate_config_cache() clears cache entries."""
+        from zae_limiter.config_cache import CacheEntry
+
+        # Manually populate the cache to verify invalidation
+        entry = CacheEntry(value=[], expires_at=9999999999.0)
+        sync_limiter._limiter._config_cache._resource_defaults["gpt-4"] = entry
+
+        assert sync_limiter.get_cache_stats().size == 1
+
+        sync_limiter.invalidate_config_cache()
+
+        assert sync_limiter.get_cache_stats().size == 0
