@@ -652,6 +652,7 @@ class Repository:
         """Get stored limit configs for an entity."""
         client = await self._get_client()
 
+        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
         response = await client.query(
             TableName=self.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
@@ -659,6 +660,7 @@ class Repository:
                 ":pk": {"S": schema.pk_entity(entity_id)},
                 ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
             },
+            ConsistentRead=False,
         )
 
         limits = []
@@ -783,6 +785,7 @@ class Repository:
         validate_name(resource, "resource")
         client = await self._get_client()
 
+        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
         response = await client.query(
             TableName=self.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
@@ -790,6 +793,7 @@ class Repository:
                 ":pk": {"S": schema.pk_resource(resource)},
                 ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
             },
+            ConsistentRead=False,
         )
 
         limits = []
@@ -943,6 +947,7 @@ class Repository:
         client = await self._get_client()
 
         # Get all system limits
+        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
         response = await client.query(
             TableName=self.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
@@ -950,6 +955,7 @@ class Repository:
                 ":pk": {"S": schema.pk_system()},
                 ":sk_prefix": {"S": schema.sk_system_limit_prefix()},
             },
+            ConsistentRead=False,
         )
 
         limits = []
@@ -1071,12 +1077,14 @@ class Repository:
         """Get a specific system config value."""
         client = await self._get_client()
 
+        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
         response = await client.get_item(
             TableName=self.table_name,
             Key={
                 "PK": {"S": schema.pk_system()},
                 "SK": {"S": schema.sk_config()},
             },
+            ConsistentRead=False,
         )
 
         item = response.get("Item")

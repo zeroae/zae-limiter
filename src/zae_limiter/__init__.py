@@ -58,6 +58,7 @@ Example (old API - deprecated):
 # ---------------------------------------------------------------------------
 from typing import TYPE_CHECKING
 
+from .config_cache import CacheStats
 from .exceptions import (
     EntityError,
     EntityExistsError,
@@ -136,6 +137,7 @@ __all__ = [
     "StackOptions",
     "BackendCapabilities",
     "Status",
+    "CacheStats",
     # Audit
     "AuditEvent",
     "AuditAction",

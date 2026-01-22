@@ -17,6 +17,7 @@ from .bucket import (
     calculate_time_until_available,
     try_consume,
 )
+from .config_cache import CacheStats, ConfigCache
 from .exceptions import (
     IncompatibleSchemaError,
     RateLimiterUnavailable,
@@ -97,6 +98,7 @@ class RateLimiter:
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
+        config_cache_ttl: int = 60,
     ) -> None:
         """
         Initialize the rate limiter.
@@ -116,6 +118,7 @@ class RateLimiter:
             auto_update: Auto-update Lambda when version mismatch detected
             strict_version: Fail if version mismatch (when auto_update is False)
             skip_version_check: Skip all version checks (dangerous)
+            config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable)
 
         Raises:
             ValueError: If both repository and name/region/endpoint_url/stack_options
@@ -171,6 +174,9 @@ class RateLimiter:
         self._strict_version = strict_version
         self._skip_version_check = skip_version_check
         self._initialized = False
+
+        # Config cache (60s TTL by default, 0 disables)
+        self._config_cache = ConfigCache(ttl_seconds=config_cache_ttl)
 
     @property
     def name(self) -> str:
@@ -344,6 +350,47 @@ class RateLimiter:
 
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
+
+    # -------------------------------------------------------------------------
+    # Config cache management
+    # -------------------------------------------------------------------------
+
+    async def invalidate_config_cache(self) -> None:
+        """
+        Invalidate all cached config entries.
+
+        Call this after modifying config (system defaults, resource defaults,
+        or entity limits) to force an immediate refresh. Without manual
+        invalidation, changes propagate within the TTL period (default: 60s).
+
+        Example:
+            # Update config and force refresh
+            await limiter.set_system_defaults([Limit.tpm(100000)])
+            await limiter.invalidate_config_cache()
+        """
+        await self._config_cache.invalidate_async()
+
+    def get_cache_stats(self) -> CacheStats:
+        """
+        Get config cache performance statistics.
+
+        Returns statistics useful for monitoring and debugging cache behavior:
+        - hits: Number of cache hits (avoided DynamoDB reads)
+        - misses: Number of cache misses (DynamoDB reads performed)
+        - size: Number of entries currently in cache
+        - ttl: Cache TTL in seconds
+
+        Returns:
+            CacheStats object with cache metrics
+
+        Example:
+            stats = limiter.get_cache_stats()
+            total = stats.hits + stats.misses
+            hit_rate = stats.hits / total if total > 0 else 0
+            print(f"Cache hit rate: {hit_rate:.1%}")
+            print(f"Cache entries: {stats.size}")
+        """
+        return self._config_cache.get_stats()
 
     async def is_available(self, timeout: float = 1.0) -> bool:
         """
@@ -830,6 +877,8 @@ class RateLimiter:
         4. Override parameter (if all configs are empty)
         5. ValidationError (if no limits found anywhere)
 
+        Uses config cache to reduce DynamoDB reads.
+
         Args:
             entity_id: Entity to resolve limits for
             resource: Resource being accessed
@@ -841,18 +890,27 @@ class RateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        # Try Entity level
-        entity_limits = await self._repository.get_limits(entity_id, resource)
+        # Try Entity level (with caching and negative caching)
+        entity_limits = await self._config_cache.get_entity_limits(
+            entity_id,
+            resource,
+            self._repository.get_limits,
+        )
         if entity_limits:
             return entity_limits
 
-        # Try Resource level
-        resource_limits = await self._repository.get_resource_defaults(resource)
+        # Try Resource level (with caching)
+        resource_limits = await self._config_cache.get_resource_defaults(
+            resource,
+            self._repository.get_resource_defaults,
+        )
         if resource_limits:
             return resource_limits
 
-        # Try System level
-        system_limits, _ = await self._repository.get_system_defaults()
+        # Try System level (with caching)
+        system_limits, _ = await self._config_cache.get_system_defaults(
+            self._repository.get_system_defaults,
+        )
         if system_limits:
             return system_limits
 
@@ -878,6 +936,8 @@ class RateLimiter:
         """
         Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
 
+        Uses config cache to reduce DynamoDB reads.
+
         Args:
             on_unavailable_param: Optional parameter override
 
@@ -888,8 +948,10 @@ class RateLimiter:
         if on_unavailable_param is not None:
             return on_unavailable_param
 
-        # Try System config
-        _, on_unavailable_str = await self._repository.get_system_defaults()
+        # Try System config (with caching)
+        _, on_unavailable_str = await self._config_cache.get_system_defaults(
+            self._repository.get_system_defaults,
+        )
         if on_unavailable_str is not None:
             return OnUnavailable(on_unavailable_str)
 
@@ -1498,6 +1560,7 @@ class SyncRateLimiter:
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
+        config_cache_ttl: int = 60,
     ) -> None:
         # Delegate to RateLimiter with same parameters
         # RateLimiter handles deprecation warning and validation
@@ -1511,6 +1574,7 @@ class SyncRateLimiter:
             auto_update=auto_update,
             strict_version=strict_version,
             skip_version_check=skip_version_check,
+            config_cache_ttl=config_cache_ttl,
         )
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -1540,6 +1604,28 @@ class SyncRateLimiter:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+    # -------------------------------------------------------------------------
+    # Config cache management
+    # -------------------------------------------------------------------------
+
+    def invalidate_config_cache(self) -> None:
+        """
+        Invalidate all cached config entries.
+
+        Synchronous wrapper for :meth:`RateLimiter.invalidate_config_cache`.
+        See the async version for full documentation.
+        """
+        self._limiter._config_cache.invalidate()
+
+    def get_cache_stats(self) -> CacheStats:
+        """
+        Get config cache performance statistics.
+
+        Synchronous wrapper for :meth:`RateLimiter.get_cache_stats`.
+        See the async version for full documentation.
+        """
+        return self._limiter.get_cache_stats()
 
     def is_available(self, timeout: float = 1.0) -> bool:
         """

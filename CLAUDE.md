@@ -298,6 +298,7 @@ src/zae_limiter/
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
+├── config_cache.py    # Client-side config caching with TTL
 ├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, version, upgrade, check, audit, usage, resource, system)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
@@ -617,7 +618,7 @@ When implementing features that derive data from state changes (like consumption
 
 Follow the [commit conventions](.claude/rules/commits.md).
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `test`, `benchmark`
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`
 
 **Examples:**
 ```bash
@@ -734,11 +735,11 @@ Config fields are stored alongside limits in existing `#LIMIT#` records using **
 - `auto_update` (bool): Auto-update Lambda on version mismatch
 - `strict_version` (bool): Fail on version mismatch
 
-**Caching:** 60s TTL in-memory cache per RateLimiter instance. Use `invalidate_config_cache()` for immediate refresh. Negative caching for entities without custom config.
+**Caching:** 60s TTL in-memory cache per RateLimiter instance (configurable via `config_cache_ttl` parameter, 0 to disable). Use `invalidate_config_cache()` for immediate refresh. Use `get_cache_stats()` for monitoring. Negative caching for entities without custom config.
 
 **Cost impact:** 3 RCU per cache miss (one per level). With caching and negative caching, ~2.1 RCU per request for typical deployments (20K users, 5% with custom limits).
 
-See [ADR-001](docs/adr/001-centralized-config.md) for full design details.
+See [ADR-100](docs/adr/100-centralized-config.md) for full design details.
 
 ### Schema Design Notes
 
