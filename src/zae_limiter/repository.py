@@ -3,7 +3,7 @@
 import time
 from typing import TYPE_CHECKING, Any, cast
 
-import aioboto3  # type: ignore[import-untyped]
+import aioboto3
 from botocore.exceptions import ClientError
 from ulid import ULID
 
@@ -1719,7 +1719,7 @@ class Repository:
                 result[key] = {"S": value}
             elif isinstance(value, bool):
                 result[key] = {"BOOL": value}
-            elif isinstance(value, (int, float)):
+            elif isinstance(value, int | float):
                 result[key] = {"N": str(value)}
             elif isinstance(value, dict):
                 result[key] = {"M": self._serialize_map(value)}
@@ -1735,7 +1735,7 @@ class Repository:
             return {"S": value}
         elif isinstance(value, bool):
             return {"BOOL": value}
-        elif isinstance(value, (int, float)):
+        elif isinstance(value, int | float):
             return {"N": str(value)}
         elif isinstance(value, dict):
             return {"M": self._serialize_map(value)}

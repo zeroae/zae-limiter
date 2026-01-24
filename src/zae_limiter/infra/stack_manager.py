@@ -3,7 +3,7 @@
 from importlib.resources import files
 from typing import Any, cast
 
-import aioboto3  # type: ignore
+import aioboto3
 from botocore.exceptions import ClientError
 
 from ..exceptions import StackAlreadyExistsError, StackCreationError

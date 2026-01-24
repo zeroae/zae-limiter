@@ -6,7 +6,7 @@ separate from the single-stack lifecycle management in StackManager.
 
 from typing import Any
 
-import aioboto3  # type: ignore
+import aioboto3
 from botocore.exceptions import ClientError
 
 from ..models import LimiterInfo
