@@ -17,6 +17,7 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 ```bash
 # Setup (one-time)
 uv sync --all-extras
+pre-commit install  # Install git hooks for linting
 
 # Deploy infrastructure (CloudFormation)
 # Uses ZAEL- prefix: "limiter" becomes "ZAEL-limiter" resources
@@ -28,9 +29,12 @@ uv run pytest
 # Type check
 uv run mypy src/zae_limiter
 
-# Lint
+# Lint (or let pre-commit run automatically on commit)
 uv run ruff check --fix .
 uv run ruff format .
+
+# Run all pre-commit hooks manually
+pre-commit run --all-files
 
 # Lint CloudFormation template (after modifying cfn_template.yaml)
 uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
@@ -560,6 +564,7 @@ git add docs/benchmark-v0.11.0.json
 
 - Use `ruff` for linting and formatting
 - Use `mypy` for type checking (strict mode)
+- Pre-commit hooks run ruff, mypy, and cfn-lint automatically on commit
 - All public APIs must have docstrings
 - Async is primary, sync is wrapper
 
@@ -888,7 +893,7 @@ to enable single-call atomic updates. See: https://github.com/zeroae/zae-limiter
 
 **Optional extras:**
 - `[plot]`: `asciichartpy` for ASCII chart visualization of usage snapshots
-- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy)
+- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit)
 - `[docs]`: MkDocs documentation generation
 - `[cdk]`: AWS CDK constructs
 - `[lambda]`: Lambda Powertools
