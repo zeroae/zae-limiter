@@ -24,16 +24,18 @@ from tests.unit.conftest import (
     mock_dynamodb,
     sync_limiter,
 )
-from zae_limiter import Limit
+from zae_limiter import Limit, SyncRateLimiter
 
 __all__ = [
     "_patch_aiobotocore_response",
     "aws_credentials",
     "mock_dynamodb",
     "sync_limiter",
+    "sync_limiter_no_cache",
     "localstack_endpoint",
     "minimal_stack_options",
     "sync_localstack_limiter",
+    "sync_localstack_limiter_no_cache",
     "unique_name",
     "unique_name_class",
     "capacity_counter",
@@ -221,3 +223,51 @@ def benchmark_entities(sync_limiter: Any) -> list[str]:
             pass
 
     return entity_ids
+
+
+# ---------------------------------------------------------------------------
+# Optimization comparison fixtures (issue #134)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sync_limiter_no_cache(mock_dynamodb):
+    """SyncRateLimiter with config cache disabled for baseline comparison.
+
+    Use this fixture alongside sync_limiter to compare performance
+    with and without config caching optimization.
+    """
+    with _patch_aiobotocore_response():
+        limiter = SyncRateLimiter(
+            name="test-no-cache",
+            region="us-east-1",
+            config_cache_ttl=0,  # Disable config cache
+        )
+        limiter._run(limiter._limiter._repository.create_table())
+        with limiter:
+            yield limiter
+
+
+@pytest.fixture
+def sync_localstack_limiter_no_cache(localstack_endpoint, minimal_stack_options, unique_name):
+    """SyncRateLimiter on LocalStack with config cache disabled.
+
+    Use for realistic latency comparison with cache disabled.
+    """
+    # Append suffix to avoid name collision with cached fixture
+    name = f"{unique_name}-nocache"
+    limiter = SyncRateLimiter(
+        name=name,
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=minimal_stack_options,
+        config_cache_ttl=0,  # Disable config cache
+    )
+
+    with limiter:
+        yield limiter
+
+    try:
+        limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Stack cleanup failed: {e}")
