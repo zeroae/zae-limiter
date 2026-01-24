@@ -32,10 +32,12 @@ __all__ = [
     "aws_credentials",
     "mock_dynamodb",
     "sync_limiter",
+    "sync_limiter_no_cache",
     "localstack_endpoint",
     "minimal_stack_options",
     "aggregator_stack_options",
     "sync_localstack_limiter",
+    "sync_localstack_limiter_no_cache",
     "sync_localstack_limiter_with_aggregator",
     "unique_name",
     "unique_name_class",
@@ -252,3 +254,58 @@ def benchmark_entities(sync_limiter: Any) -> list[str]:
             pass
 
     return entity_ids
+
+
+# ---------------------------------------------------------------------------
+# Optimization comparison fixtures (issue #134)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sync_limiter_no_cache(mock_dynamodb):
+    """SyncRateLimiter with config cache disabled for baseline comparison.
+
+    Use this fixture alongside sync_limiter to compare performance
+    with and without config caching optimization.
+    """
+    with _patch_aiobotocore_response():
+        limiter = SyncRateLimiter(
+            name="test-no-cache",
+            region="us-east-1",
+            config_cache_ttl=0,  # Disable config cache
+        )
+        limiter._run(limiter._limiter._repository.create_table())
+        with limiter:
+            yield limiter
+
+
+@pytest.fixture
+def sync_localstack_limiter_no_cache(localstack_endpoint, minimal_stack_options):
+    """SyncRateLimiter on LocalStack with config cache disabled.
+
+    Use for realistic latency comparison with cache disabled.
+    Uses a separate unique name to avoid collision with cached fixture.
+    """
+    import time
+    import uuid
+
+    # Generate shorter unique name (avoid exceeding 38 char limit)
+    timestamp = int(time.time()) % 100000  # Last 5 digits
+    unique_id = uuid.uuid4().hex[:4]
+    name = f"bench-nc-{timestamp}-{unique_id}"
+
+    limiter = SyncRateLimiter(
+        name=name,
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=minimal_stack_options,
+        config_cache_ttl=0,  # Disable config cache
+    )
+
+    with limiter:
+        yield limiter
+
+    try:
+        limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Stack cleanup failed: {e}")

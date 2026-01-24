@@ -340,3 +340,142 @@ class TestConcurrentThroughputBenchmarks:
                     pass
 
         benchmark(operation)
+
+
+class TestOptimizationComparison:
+    """Direct comparison benchmarks for v0.5.0 optimizations (issue #134).
+
+    These tests run the same operations with and without optimizations enabled
+    to quantify the performance improvement. Tests are grouped for easy
+    comparison in benchmark output.
+
+    Optimizations compared:
+    - Config cache (issue #135): Reduces config lookups from DynamoDB
+    - BatchGetItem (issue #133): Reduces cascade bucket fetches to single call
+    """
+
+    @pytest.mark.benchmark(group="config-cache-comparison")
+    def test_cascade_cache_disabled(self, benchmark, sync_limiter_no_cache):
+        """Baseline: cascade with config cache DISABLED.
+
+        This represents pre-optimization performance for config lookups.
+        Compare with test_cascade_cache_enabled to measure cache impact.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Setup hierarchy
+        sync_limiter_no_cache.create_entity("cmp-nocache-parent", name="Parent")
+        sync_limiter_no_cache.create_entity(
+            "cmp-nocache-child", name="Child", parent_id="cmp-nocache-parent"
+        )
+        sync_limiter_no_cache.set_limits("cmp-nocache-parent", limits)
+        sync_limiter_no_cache.set_limits("cmp-nocache-child", limits)
+
+        def operation():
+            with sync_limiter_no_cache.acquire(
+                entity_id="cmp-nocache-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+                cascade=True,
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="config-cache-comparison")
+    def test_cascade_cache_enabled(self, benchmark, sync_limiter):
+        """Optimized: cascade with config cache ENABLED (default).
+
+        Compare with test_cascade_cache_disabled to measure cache impact.
+        Expected: Faster due to cached config lookups.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Setup hierarchy
+        sync_limiter.create_entity("cmp-cache-parent", name="Parent")
+        sync_limiter.create_entity("cmp-cache-child", name="Child", parent_id="cmp-cache-parent")
+        sync_limiter.set_limits("cmp-cache-parent", limits)
+        sync_limiter.set_limits("cmp-cache-child", limits)
+
+        # Warm up cache
+        with sync_limiter.acquire(
+            entity_id="cmp-cache-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+            cascade=True,
+        ):
+            pass
+
+        def operation():
+            with sync_limiter.acquire(
+                entity_id="cmp-cache-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+                cascade=True,
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="stored-limits-comparison")
+    def test_stored_limits_cache_disabled(self, benchmark, sync_limiter_no_cache):
+        """Baseline: stored limits lookup with cache DISABLED.
+
+        Each acquire() must fetch limits from DynamoDB.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Setup stored limits
+        sync_limiter_no_cache.set_resource_defaults("cmp-resource", limits)
+
+        counter = [0]
+
+        def operation():
+            counter[0] += 1
+            with sync_limiter_no_cache.acquire(
+                entity_id=f"cmp-nocache-entity-{counter[0]}",
+                resource="cmp-resource",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="stored-limits-comparison")
+    def test_stored_limits_cache_enabled(self, benchmark, sync_limiter):
+        """Optimized: stored limits lookup with cache ENABLED.
+
+        After warmup, limits are served from cache.
+        Expected: Faster due to avoided DynamoDB reads.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Setup stored limits
+        sync_limiter.set_resource_defaults("cmp-resource", limits)
+
+        # Warm up cache with first entity
+        with sync_limiter.acquire(
+            entity_id="cmp-cache-entity-warmup",
+            resource="cmp-resource",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        counter = [0]
+
+        def operation():
+            counter[0] += 1
+            with sync_limiter.acquire(
+                entity_id=f"cmp-cache-entity-{counter[0]}",
+                resource="cmp-resource",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)

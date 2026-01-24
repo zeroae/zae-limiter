@@ -311,6 +311,91 @@ class TestCascadeOptimizationBenchmarks:
         benchmark(operation)
 
 
+class TestLocalStackOptimizationComparison:
+    """Direct comparison of v0.5.0 optimizations with realistic network latency.
+
+    These tests measure the actual impact of optimizations when network
+    round-trips are involved, providing production-representative metrics.
+    """
+
+    @pytest.fixture
+    def hierarchy_no_cache(self, sync_localstack_limiter_no_cache):
+        """Setup hierarchy for cache-disabled comparison."""
+        sync_localstack_limiter_no_cache.create_entity("ls-cmp-nocache-parent", name="Parent")
+        sync_localstack_limiter_no_cache.create_entity(
+            "ls-cmp-nocache-child", name="Child", parent_id="ls-cmp-nocache-parent"
+        )
+        return sync_localstack_limiter_no_cache
+
+    @pytest.fixture
+    def hierarchy_with_cache(self, sync_localstack_limiter):
+        """Setup hierarchy for cache-enabled comparison."""
+        sync_localstack_limiter.create_entity("ls-cmp-cache-parent", name="Parent")
+        sync_localstack_limiter.create_entity(
+            "ls-cmp-cache-child", name="Child", parent_id="ls-cmp-cache-parent"
+        )
+        return sync_localstack_limiter
+
+    @pytest.mark.benchmark(group="localstack-cache-comparison")
+    def test_cascade_cache_disabled_localstack(self, benchmark, hierarchy_no_cache):
+        """Baseline: cascade with cache DISABLED on LocalStack.
+
+        Measures realistic latency when every request fetches config from DynamoDB.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Set stored limits
+        hierarchy_no_cache.set_limits("ls-cmp-nocache-parent", limits)
+        hierarchy_no_cache.set_limits("ls-cmp-nocache-child", limits)
+
+        def operation():
+            with hierarchy_no_cache.acquire(
+                entity_id="ls-cmp-nocache-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+                cascade=True,
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="localstack-cache-comparison")
+    def test_cascade_cache_enabled_localstack(self, benchmark, hierarchy_with_cache):
+        """Optimized: cascade with cache ENABLED on LocalStack.
+
+        After warmup, config is served from cache, reducing network round-trips.
+        Compare with test_cascade_cache_disabled_localstack for improvement %.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Set stored limits
+        hierarchy_with_cache.set_limits("ls-cmp-cache-parent", limits)
+        hierarchy_with_cache.set_limits("ls-cmp-cache-child", limits)
+
+        # Warm up cache
+        with hierarchy_with_cache.acquire(
+            entity_id="ls-cmp-cache-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+            cascade=True,
+        ):
+            pass
+
+        def operation():
+            with hierarchy_with_cache.acquire(
+                entity_id="ls-cmp-cache-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+                cascade=True,
+            ):
+                pass
+
+        benchmark(operation)
+
+
 class TestLambdaColdStartBenchmarks:
     """Benchmarks for Lambda cold start latency with aggregator.
 
