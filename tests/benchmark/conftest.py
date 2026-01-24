@@ -249,13 +249,20 @@ def sync_limiter_no_cache(mock_dynamodb):
 
 
 @pytest.fixture
-def sync_localstack_limiter_no_cache(localstack_endpoint, minimal_stack_options, unique_name):
+def sync_localstack_limiter_no_cache(localstack_endpoint, minimal_stack_options):
     """SyncRateLimiter on LocalStack with config cache disabled.
 
     Use for realistic latency comparison with cache disabled.
+    Uses a separate unique name to avoid collision with cached fixture.
     """
-    # Append suffix to avoid name collision with cached fixture
-    name = f"{unique_name}-nocache"
+    import time
+    import uuid
+
+    # Generate shorter unique name (avoid exceeding 38 char limit)
+    timestamp = int(time.time()) % 100000  # Last 5 digits
+    unique_id = uuid.uuid4().hex[:4]
+    name = f"bench-nc-{timestamp}-{unique_id}"
+
     limiter = SyncRateLimiter(
         name=name,
         endpoint_url=localstack_endpoint,
