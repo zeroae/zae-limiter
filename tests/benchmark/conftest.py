@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from tests.integration.conftest import (
+    aggregator_stack_options,
     localstack_endpoint,
     minimal_stack_options,
     sync_localstack_limiter,
@@ -34,8 +35,10 @@ __all__ = [
     "sync_limiter_no_cache",
     "localstack_endpoint",
     "minimal_stack_options",
+    "aggregator_stack_options",
     "sync_localstack_limiter",
     "sync_localstack_limiter_no_cache",
+    "sync_localstack_limiter_with_aggregator",
     "unique_name",
     "unique_name_class",
     "capacity_counter",
@@ -195,6 +198,34 @@ def capacity_counter(sync_limiter: Any) -> Generator[CapacityCounter, None, None
     counter.counting = lambda: _counting_client(counter, sync_limiter)  # type: ignore[attr-defined]
 
     yield counter
+
+
+@pytest.fixture
+def sync_localstack_limiter_with_aggregator(
+    localstack_endpoint, aggregator_stack_options, unique_name
+):
+    """SyncRateLimiter with Lambda aggregator for benchmark tests.
+
+    Creates a LocalStack-based limiter with aggregator Lambda enabled
+    for benchmarking cold start and warm start latency.
+
+    This fixture is primarily used for Lambda cold/warm start benchmarks
+    that require the aggregator function to be deployed.
+    """
+    limiter = SyncRateLimiter(
+        name=unique_name,
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=aggregator_stack_options,
+    )
+
+    with limiter:
+        yield limiter
+
+    try:
+        limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Stack cleanup failed: {e}")
 
 
 @pytest.fixture

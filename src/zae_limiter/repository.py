@@ -838,22 +838,35 @@ class Repository:
         """Delete all default limits for a resource (internal, no audit)."""
         client = await self._get_client()
 
-        response = await client.query(
-            TableName=self.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_resource(resource)},
-                ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
-            },
-            ProjectionExpression="PK, SK",
-        )
+        # Query with pagination to handle large result sets
+        all_items: list[dict[str, Any]] = []
+        next_key: dict[str, Any] | None = None
 
-        items = response.get("Items", [])
-        if not items:
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk_prefix)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": schema.pk_resource(resource)},
+                    ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
+                },
+                "ProjectionExpression": "PK, SK",
+            }
+            if next_key:
+                params["ExclusiveStartKey"] = next_key
+
+            response = await client.query(**params)
+            all_items.extend(response.get("Items", []))
+
+            next_key = response.get("LastEvaluatedKey")
+            if next_key is None:
+                break
+
+        if not all_items:
             return
 
         delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in items
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in all_items
         ]
 
         for i in range(0, len(delete_requests), 25):
@@ -866,22 +879,34 @@ class Repository:
 
         # Query for all items with PK starting with RESOURCE#
         # This requires a scan since we don't have a GSI for this pattern
-        response = await client.scan(
-            TableName=self.table_name,
-            FilterExpression="begins_with(PK, :prefix)",
-            ExpressionAttributeValues={
-                ":prefix": {"S": schema.RESOURCE_PREFIX},
-            },
-            ProjectionExpression="PK",
-        )
+        # Use pagination to handle large result sets (>1MB)
+        resources: set[str] = set()
+        next_key: dict[str, Any] | None = None
 
-        # Extract unique resource names from partition keys
-        resources = set()
-        for item in response.get("Items", []):
-            pk = item.get("PK", {}).get("S", "")
-            if pk.startswith(schema.RESOURCE_PREFIX):
-                resource = pk[len(schema.RESOURCE_PREFIX) :]
-                resources.add(resource)
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "FilterExpression": "begins_with(PK, :prefix)",
+                "ExpressionAttributeValues": {
+                    ":prefix": {"S": schema.RESOURCE_PREFIX},
+                },
+                "ProjectionExpression": "PK",
+            }
+            if next_key:
+                params["ExclusiveStartKey"] = next_key
+
+            response = await client.scan(**params)
+
+            # Extract unique resource names from partition keys
+            for item in response.get("Items", []):
+                pk = item.get("PK", {}).get("S", "")
+                if pk.startswith(schema.RESOURCE_PREFIX):
+                    resource = pk[len(schema.RESOURCE_PREFIX) :]
+                    resources.add(resource)
+
+            next_key = response.get("LastEvaluatedKey")
+            if next_key is None:
+                break
 
         return sorted(resources)
 
