@@ -337,16 +337,16 @@ wheels = [
 
 [[package]]
 name = "boto3-stubs"
-version = "1.42.30"
+version = "1.42.31"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore-stubs" },
     { name = "types-s3transfer" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/a7/9ef634d9dfea14acf6852be022b2dafe0ac1be66aed3e9e5b6615543e43c/boto3_stubs-1.42.30.tar.gz", hash = "sha256:68a2ca754686c980d79d1c67f2d4d5eb8dc3d89f4ec62d4080b95fbdad3ee01b", size = 100897, upload-time = "2026-01-16T20:53:26.666Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/ec/c316ec393455daeaa543f4d44779157d2e65cb340c07cd1efbf33cff414e/boto3_stubs-1.42.31.tar.gz", hash = "sha256:bb0d8c936e29381d38cb724bf52197b1fdb63811707e052e842c1223545a0df7", size = 100901, upload-time = "2026-01-20T21:24:04.797Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/6a/ac708656b0f5fbc3f8c212e1a029a681029ae625acfb7e8e983aabe7672d/boto3_stubs-1.42.30-py3-none-any.whl", hash = "sha256:e1d106cf9c662ecfd6044483e53c6e9584b6da916e753510f51a8bfc8d19016d", size = 69783, upload-time = "2026-01-16T20:53:22.081Z" },
+    { url = "https://files.pythonhosted.org/packages/25/ec/2ee40e05209758b91ef665b014479becbe2af77ca9ea814447a70e84d9a9/boto3_stubs-1.42.31-py3-none-any.whl", hash = "sha256:5abda7807fb0a04ea87309d7a5ab983c856a1d339a911b92d0edcfbce91834be", size = 69781, upload-time = "2026-01-20T21:24:01.46Z" },
 ]
 
 [package.optional-dependencies]
@@ -382,14 +382,14 @@ wheels = [
 
 [[package]]
 name = "botocore-stubs"
-version = "1.42.25"
+version = "1.42.31"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "types-awscrt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/44/23/1f30c552bd0af9523abe49d50e849555298ed836b18a8039093ba786c2ef/botocore_stubs-1.42.25.tar.gz", hash = "sha256:70a8a53ba2684ff462c44d5996acd85fc5c7eb969e2cf3c25274441269524298", size = 42415, upload-time = "2026-01-09T20:32:21.78Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/82/1d/5be12f86e2095b0318f95d32c724acdb6f275e59a1052b7180e58c8e52c3/botocore_stubs-1.42.31.tar.gz", hash = "sha256:e7e762e37b205c7ba79782c67cc5c35151748ce267470a70ac9c026083655d9f", size = 42413, upload-time = "2026-01-20T21:28:08.37Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/c5/4c66c8ade8fb180d417e164de54ab75fc26aa0e5543f6e33c8465722feb9/botocore_stubs-1.42.25-py3-none-any.whl", hash = "sha256:49d15529002bd1099a9a099a77d70b7b52859153783440e96eb55791e8147d1b", size = 66761, upload-time = "2026-01-09T20:32:20.512Z" },
+    { url = "https://files.pythonhosted.org/packages/40/c9/724dfd7cb610d93899df71e70faf5626ee82c86f139b90ae70c2dab22ce3/botocore_stubs-1.42.31-py3-none-any.whl", hash = "sha256:b6ae47a39a6c185e610b7bbf087923dc83e54a52378ad74aff76a6708850d38d", size = 66760, upload-time = "2026-01-20T21:28:06.697Z" },
 ]
 
 [[package]]
@@ -2602,15 +2602,15 @@ wheels = [
 
 [[package]]
 name = "types-aiobotocore"
-version = "3.1.0"
+version = "3.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore-stubs" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a4/5e/968935cba8e01f63b45179aab963551f6c2631d2df784de3c6ee04b279c6/types_aiobotocore-3.1.0.tar.gz", hash = "sha256:9c36d9d29044b424657900fa99e8c058f73d5a755e93d21e4bbeb0eea8f19392", size = 86416, upload-time = "2026-01-03T02:09:47.965Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/78/6974958d6e8923f40a8a3cf3bedd448c28df4456f9e3c258c174d43cc1a4/types_aiobotocore-3.1.1.tar.gz", hash = "sha256:7974585e194939da2c70a7b628f6edb22642769a84e4f6c1aa53228ff3b8ae71", size = 86450, upload-time = "2026-01-21T02:18:21.203Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/ab/20858211d52028ff3f7704babf111a18c95b36697ce0d2063e3e8979fc8c/types_aiobotocore-3.1.0-py3-none-any.whl", hash = "sha256:4ab223580f4249a84ebac17461ff3719b541a1dc94fe0840d392e3f5d2ba7ef0", size = 54201, upload-time = "2026-01-03T02:09:41.068Z" },
+    { url = "https://files.pythonhosted.org/packages/10/58/97c64543dce565272f67b13d55d2a80590e807974cc59620d7563372c194/types_aiobotocore-3.1.1-py3-none-any.whl", hash = "sha256:421577ec8c204dd33275ea14fa1656382fd29723a2cfac1247301b30252c5934", size = 54206, upload-time = "2026-01-21T02:18:15.36Z" },
 ]
 
 [package.optional-dependencies]
@@ -2623,35 +2623,35 @@ s3 = [
 
 [[package]]
 name = "types-aiobotocore-dynamodb"
-version = "3.1.0"
+version = "3.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/31/d5/92050cc5e3dcd8e1e5af5650cc18a231dcc5c51155d92a2373d911faa5f8/types_aiobotocore_dynamodb-3.1.0.tar.gz", hash = "sha256:a8885489f2cdf7ee96677daafbbf2fc7806b94b002c0ec69ee6afcdd17257d0c", size = 47679, upload-time = "2026-01-03T01:55:57.804Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/41/ede67d3ce3e870ce0f67a5147df5ef1f223ec687235a049e8717ab414d8d/types_aiobotocore_dynamodb-3.1.1.tar.gz", hash = "sha256:5d4c15356bcf38c51edad5f13e16338281f7b657e902d3692ab68467b796565b", size = 47719, upload-time = "2026-01-21T02:06:54.471Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/4f/65e60f8c8392856a5d8a6c26b02fe5eb3af3b56ce5d50be6ad81ea26488d/types_aiobotocore_dynamodb-3.1.0-py3-none-any.whl", hash = "sha256:3e47ed5e76ecf4fa7540a3b70c3dbc77b5f14ab13af389b90499d3cc6929cc8d", size = 57723, upload-time = "2026-01-03T01:55:56.781Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/c6/e813aa271462ea10efbebbf4b0e29078a98a576c1aeabcb4ab491749ae0b/types_aiobotocore_dynamodb-3.1.1-py3-none-any.whl", hash = "sha256:24440bbbfb6f48d2645bd9f0fab6c4a1089ea2b536d862ab8c82ab6ecb4ffe26", size = 57726, upload-time = "2026-01-21T02:06:52.664Z" },
 ]
 
 [[package]]
 name = "types-aiobotocore-s3"
-version = "3.1.0"
+version = "3.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/f9/76c84023add0e6b8b647eb8d085538b1a180bd560a0b5d115d5fea79cd11/types_aiobotocore_s3-3.1.0.tar.gz", hash = "sha256:2f61d2f785fcbad9af2a01b3162b50436f95bea5440e0b9b848e6f60a23a3602", size = 76650, upload-time = "2026-01-03T02:07:22.875Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/50/79f380af1ff9872ae3031da6e1f0021ada8a3571d94ffec401a6758865b5/types_aiobotocore_s3-3.1.1.tar.gz", hash = "sha256:e7f4ba6472a324b874435cdeb986f56b0b47806904e27fdc7251f540ce9d62cd", size = 76652, upload-time = "2026-01-21T02:12:57.404Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/08/9ef8235e3b7fd1bfd843a6047a9518c15852e853df76b14c0bd3df7b38f5/types_aiobotocore_s3-3.1.0-py3-none-any.whl", hash = "sha256:b019d2db117a0f17df0f60c3eec547ae98a17ce4d03e73ba5a3cfe77d7f30291", size = 84332, upload-time = "2026-01-03T02:02:28.847Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/54/80c1fa13b6523efae66e4217b287b08be503ae75fe8cfffe7d15c4d82108/types_aiobotocore_s3-3.1.1-py3-none-any.whl", hash = "sha256:85bcc52fa26a833b82a0d32e552035b6d222c8c95b4270fe4320414f2a995b7f", size = 84335, upload-time = "2026-01-21T02:12:56.151Z" },
 ]
 
 [[package]]
 name = "types-awscrt"
-version = "0.30.0"
+version = "0.31.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/30/1f/febd2df22e24f77b759db0dd9ecdd7f07f055e6a4dbbb699c5eb34b617ef/types_awscrt-0.30.0.tar.gz", hash = "sha256:362fd8f5eaebcfcd922cb9fd8274fb375df550319f78031ee3779eac0b9ecc79", size = 17761, upload-time = "2025-12-12T01:55:59.626Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/be/589b7bba42b5681a72bac4d714287afef4e1bb84d07c859610ff631d449e/types_awscrt-0.31.1.tar.gz", hash = "sha256:08b13494f93f45c1a92eb264755fce50ed0d1dc75059abb5e31670feb9a09724", size = 17839, upload-time = "2026-01-16T02:01:23.394Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/5f/15999051fca2949a67562c3f80fae2dd5d3404a3f97b326b614533843281/types_awscrt-0.30.0-py3-none-any.whl", hash = "sha256:8204126e01a00eaa4a746e7a0076538ca0e4e3f52408adec0ab9b471bb0bb64b", size = 42392, upload-time = "2025-12-12T01:55:58.194Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/fd/ddca80617f230bd833f99b4fb959abebffd8651f520493cae2e96276b1bd/types_awscrt-0.31.1-py3-none-any.whl", hash = "sha256:7e4364ac635f72bd57f52b093883640b1448a6eded0ecbac6e900bf4b1e4777b", size = 42516, upload-time = "2026-01-16T02:01:21.637Z" },
 ]
 
 [[package]]
@@ -2925,10 +2925,8 @@ source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
     { name = "boto3" },
-    { name = "boto3-stubs", extra = ["cloudformation", "dynamodb", "lambda", "s3", "sts"] },
     { name = "click" },
     { name = "python-ulid" },
-    { name = "types-aiobotocore", extra = ["dynamodb", "s3"] },
 ]
 
 [package.optional-dependencies]
@@ -2937,6 +2935,7 @@ cdk = [
     { name = "constructs" },
 ]
 dev = [
+    { name = "boto3-stubs", extra = ["cloudformation", "dynamodb", "lambda", "s3", "sts"] },
     { name = "moto", extra = ["dynamodb"] },
     { name = "mypy" },
     { name = "openapi-spec-validator" },
@@ -2946,6 +2945,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
     { name = "ruff" },
+    { name = "types-aiobotocore", extra = ["dynamodb", "s3"] },
 ]
 docs = [
     { name = "mike" },
@@ -2973,7 +2973,7 @@ requires-dist = [
     { name = "aws-cdk-lib", marker = "extra == 'cdk'", specifier = ">=2.0.0" },
     { name = "aws-lambda-powertools", marker = "extra == 'lambda'", specifier = ">=2.0.0" },
     { name = "boto3", specifier = ">=1.34.0" },
-    { name = "boto3-stubs", extras = ["cloudformation", "dynamodb", "lambda", "s3", "sts"], specifier = ">=1.34.0" },
+    { name = "boto3-stubs", extras = ["cloudformation", "dynamodb", "lambda", "s3", "sts"], marker = "extra == 'dev'", specifier = ">=1.34.0" },
     { name = "click", specifier = ">=8.0.0" },
     { name = "constructs", marker = "extra == 'cdk'", specifier = ">=10.0.0" },
     { name = "mike", marker = "extra == 'docs'", specifier = ">=2.1.0" },
@@ -2990,7 +2990,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.5.0" },
     { name = "python-ulid", specifier = ">=3.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "types-aiobotocore", extras = ["dynamodb", "s3"], specifier = ">=2.0.0" },
+    { name = "types-aiobotocore", extras = ["dynamodb", "s3"], marker = "extra == 'dev'", specifier = ">=2.0.0" },
 ]
 provides-extras = ["cdk", "dev", "docs", "lambda", "plot"]
 
