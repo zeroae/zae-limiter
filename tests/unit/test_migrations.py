@@ -1,5 +1,7 @@
 """Tests for migrations module."""
 
+from unittest.mock import patch
+
 import pytest
 
 from zae_limiter.migrations import (
@@ -335,3 +337,181 @@ class TestMigrationV110:
         entity = await repository.get_entity("flat-entity")
         assert entity is not None
         assert entity.name == "Already Flat"
+
+    @pytest.mark.asyncio
+    async def test_v110_skips_empty_data_map(self, limiter):
+        """Items with data attribute but empty M map should be skipped."""
+        from zae_limiter import schema
+        from zae_limiter.migrations.v1_1_0 import migrate_v1_1_0
+
+        repository = limiter._repository
+        client = await repository._get_client()
+
+        # Insert item with data attribute but empty M map
+        await client.put_item(
+            TableName=repository.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("empty-data")},
+                "SK": {"S": schema.sk_meta()},
+                "entity_id": {"S": "empty-data"},
+                "data": {"M": {}},
+            },
+        )
+
+        # Migration should skip the empty data map without error
+        await migrate_v1_1_0(repository)
+
+        # Item should still exist with data attribute (not removed since empty)
+        response = await client.get_item(
+            TableName=repository.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("empty-data")},
+                "SK": {"S": schema.sk_meta()},
+            },
+        )
+        assert "Item" in response
+
+    @pytest.mark.asyncio
+    async def test_v110_pagination(self, limiter):
+        """Migration should handle paginated scan results."""
+        from zae_limiter import schema
+        from zae_limiter.migrations.v1_1_0 import migrate_v1_1_0
+
+        repository = limiter._repository
+        client = await repository._get_client()
+
+        # Insert multiple nested entities to trigger pagination
+        for i in range(3):
+            await client.put_item(
+                TableName=repository.table_name,
+                Item={
+                    "PK": {"S": schema.pk_entity(f"page-entity-{i}")},
+                    "SK": {"S": schema.sk_meta()},
+                    "entity_id": {"S": f"page-entity-{i}"},
+                    "data": {
+                        "M": {
+                            "name": {"S": f"Page {i}"},
+                            "parent_id": {"NULL": True},
+                            "metadata": {"M": {}},
+                            "created_at": {"S": "2024-01-01T00:00:00Z"},
+                        }
+                    },
+                },
+            )
+
+        # Patch scan to return paginated results
+        original_scan = client.scan
+        call_count = 0
+
+        async def paginated_scan(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First page: return with LastEvaluatedKey to force pagination
+                result = await original_scan(**kwargs)
+                items = result.get("Items", [])
+                if len(items) > 1:
+                    result["Items"] = items[:1]
+                    result["LastEvaluatedKey"] = {
+                        "PK": items[0]["PK"],
+                        "SK": items[0]["SK"],
+                    }
+                return result
+            else:
+                # Subsequent pages: remove ExclusiveStartKey and return rest
+                kwargs.pop("ExclusiveStartKey", None)
+                return await original_scan(**kwargs)
+
+        with patch.object(client, "scan", side_effect=paginated_scan):
+            await migrate_v1_1_0(repository)
+
+        # Verify all entities were flattened
+        for i in range(3):
+            response = await client.get_item(
+                TableName=repository.table_name,
+                Key={
+                    "PK": {"S": schema.pk_entity(f"page-entity-{i}")},
+                    "SK": {"S": schema.sk_meta()},
+                },
+            )
+            item = response["Item"]
+            assert "data" not in item
+            assert item["name"]["S"] == f"Page {i}"
+
+        # Verify pagination occurred
+        assert call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_v110_concurrent_migration_skips_already_done(self, limiter):
+        """ConditionalCheckFailedException should be silently skipped."""
+        from zae_limiter import schema
+        from zae_limiter.migrations.v1_1_0 import migrate_v1_1_0
+
+        repository = limiter._repository
+        client = await repository._get_client()
+
+        # Insert nested entity
+        await client.put_item(
+            TableName=repository.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("concurrent-entity")},
+                "SK": {"S": schema.sk_meta()},
+                "entity_id": {"S": "concurrent-entity"},
+                "data": {
+                    "M": {
+                        "name": {"S": "Concurrent"},
+                        "parent_id": {"NULL": True},
+                        "metadata": {"M": {}},
+                        "created_at": {"S": "2024-01-01T00:00:00Z"},
+                    }
+                },
+            },
+        )
+
+        # Patch update_item to raise ConditionalCheckFailedException
+        conditional_error = client.exceptions.ConditionalCheckFailedException(
+            error_response={"Error": {"Code": "ConditionalCheckFailedException"}},
+            operation_name="UpdateItem",
+        )
+
+        async def raise_conditional(**kwargs):
+            raise conditional_error
+
+        with patch.object(client, "update_item", side_effect=raise_conditional):
+            # Should NOT raise — the exception is caught and skipped
+            await migrate_v1_1_0(repository)
+
+    @pytest.mark.asyncio
+    async def test_v110_unexpected_error_is_raised(self, limiter):
+        """Unexpected errors during update_item should be re-raised."""
+        from zae_limiter import schema
+        from zae_limiter.migrations.v1_1_0 import migrate_v1_1_0
+
+        repository = limiter._repository
+        client = await repository._get_client()
+
+        # Insert nested entity
+        await client.put_item(
+            TableName=repository.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("error-entity")},
+                "SK": {"S": schema.sk_meta()},
+                "entity_id": {"S": "error-entity"},
+                "data": {
+                    "M": {
+                        "name": {"S": "Error"},
+                        "parent_id": {"NULL": True},
+                        "metadata": {"M": {}},
+                        "created_at": {"S": "2024-01-01T00:00:00Z"},
+                    }
+                },
+            },
+        )
+
+        # Patch update_item to raise an unexpected error
+        async def raise_unexpected(**kwargs):
+            raise RuntimeError("Unexpected DynamoDB error")
+
+        with patch.object(client, "update_item", side_effect=raise_unexpected):
+            with pytest.raises(RuntimeError, match="Unexpected DynamoDB error"):
+                await migrate_v1_1_0(repository)

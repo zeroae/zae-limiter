@@ -86,9 +86,6 @@ async def migrate_v1_1_0(repository: Repository) -> None:
                 attr_values[value_alias] = field_value
                 set_parts.append(f"{alias} = {value_alias}")
 
-            if not set_parts:
-                continue
-
             update_expr = f"SET {', '.join(set_parts)} REMOVE #data"
 
             try:

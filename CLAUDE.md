@@ -694,18 +694,9 @@ When reviewing PRs, check the following based on files changed:
 - Validate CloudFormation template syntax
 - Check IAM follows least privilege
 - Verify Lambda handler signature
-- **Prefer fixes that preserve existing schema** (see Schema Preservation below)
-- Only update version.py if schema change is unavoidable
-
-### Schema Preservation (DynamoDB changes)
-When fixing DynamoDB-related bugs, prefer solutions that preserve the existing schema:
-- Use `if_not_exists()` to initialize nested maps instead of flattening structure
-- Use conditional expressions to handle missing attributes
-- Avoid changing attribute names or moving data between top-level and nested paths
+- Ensure all records use flat schema (top-level attributes, no nested `data.M`). See ADR-111
 - Schema changes require version bumps, migrations, and careful rollout planning
-- Only change schema when there's no viable alternative
-
-**Exception: Usage Snapshots use FLAT schema** (see DynamoDB Schema section below)
+- Only update version.py if schema change is unavoidable
 
 ### Migrations (changes to migrations/)
 - Verify migration follows protocol (async, Repository param)
@@ -814,7 +805,7 @@ zae-limiter entity get-limits user-123 --resource gpt-4
 zae-limiter entity delete-limits user-123 --resource gpt-4 --yes
 ```
 
-Config fields are stored alongside limits in existing `#LIMIT#` records using **flat schema** (no nested `data.M`):
+Config fields are stored alongside limits in existing `#LIMIT#` records:
 
 | Level | PK | SK | Purpose |
 |-------|----|----|---------|
