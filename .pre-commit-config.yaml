@@ -24,3 +24,14 @@ repos:
     hooks:
       - id: cfn-lint
         files: cfn_template\.yaml$
+
+  # Pre-push hooks (run before git push)
+  - repo: local
+    hooks:
+      - id: patch-coverage
+        name: Check patch coverage (≥95%)
+        entry: bash -c 'uv run pytest tests/unit/ --cov=zae_limiter --cov-report=xml -q -n auto && uv run diff-cover coverage.xml --compare-branch=origin/main --fail-under=95'
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        verbose: true

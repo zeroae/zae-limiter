@@ -33,6 +33,7 @@ dependencies = [
 dev = [
     "boto3-stubs[dynamodb,s3,lambda,cloudformation,sts]>=1.34.0",
     "cfn-lint>=1.43.3",
+    "diff-cover>=9.0.0",
     "mypy>=1.8.0",
     "moto[dynamodb]>=5.0.0",
     "openapi-spec-validator>=0.7.1",  # Required by moto but not declared

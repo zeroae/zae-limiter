@@ -49,7 +49,7 @@
           },
           {
             "type": "command",
-            "command": "uv run --directory \"$CLAUDE_PROJECT_DIR\" pre-commit install --install-hooks"
+            "command": "uv run --directory \"$CLAUDE_PROJECT_DIR\" pre-commit install --install-hooks && uv run --directory \"$CLAUDE_PROJECT_DIR\" pre-commit install --hook-type pre-push"
           },
           {
             "type": "command",
@@ -63,10 +63,6 @@
       {
         "matcher": "Edit|Write",
         "hooks": [
-          {
-            "type": "command",
-            "command": "file_path=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty') && [[ \"$file_path\" == *.py ]] && uv run --directory \"$CLAUDE_PROJECT_DIR\" ruff check --fix \"$file_path\" && uv run --directory \"$CLAUDE_PROJECT_DIR\" ruff format \"$file_path\" || true"
-          },
           {
             "type": "command",
             "command": "jq -re '.tool_input.file_path | select(endswith(\"pyproject.toml\"))' > /dev/null && uv sync --all-extras --directory \"$CLAUDE_PROJECT_DIR\" || true",
