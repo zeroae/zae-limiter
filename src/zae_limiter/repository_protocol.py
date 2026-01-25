@@ -16,7 +16,6 @@ if TYPE_CHECKING:
         BucketState,
         Entity,
         Limit,
-        StackOptions,
         UsageSnapshot,
         UsageSummary,
     )
@@ -115,21 +114,18 @@ class RepositoryProtocol(Protocol):
         ...
 
     # -------------------------------------------------------------------------
-    # Infrastructure management (DynamoDB-specific)
+    # Infrastructure management
     # -------------------------------------------------------------------------
 
-    async def create_stack(
-        self,
-        stack_options: "StackOptions | None" = None,
-    ) -> None:
+    async def ensure_infrastructure(self) -> None:
         """
-        Create backend infrastructure (DynamoDB-specific).
+        Ensure backend infrastructure exists.
 
-        For DynamoDB: Creates CloudFormation stack with table, Lambda, etc.
-        For other backends: May be a no-op or create required resources.
+        For DynamoDB: Creates CloudFormation stack if stack_options was provided
+        to the constructor.
+        For other backends: May create required resources or be a no-op.
 
-        Args:
-            stack_options: Configuration for infrastructure creation
+        Uses the options passed to the constructor. No-op if not provided.
         """
         ...
 

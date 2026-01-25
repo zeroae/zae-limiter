@@ -49,19 +49,21 @@ class TestRepositoryLocalStackCloudFormation:
     """Integration tests for CloudFormation stack operations."""
 
     @pytest.mark.asyncio
-    async def test_create_table_or_stack_uses_cloudformation(
+    async def test_ensure_infrastructure_uses_cloudformation(
         self, localstack_endpoint, minimal_stack_options, unique_name
     ):
-        """Should create CloudFormation stack with minimal infrastructure."""
+        """Should create CloudFormation stack via ensure_infrastructure."""
+        # Pass stack_options to constructor - this is the new API pattern
         repo = Repository(
             name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
+            stack_options=minimal_stack_options,
         )
 
         try:
-            # Create stack using CloudFormation (minimal - no aggregator, no alarms)
-            await repo.create_stack(stack_options=minimal_stack_options)
+            # ensure_infrastructure creates the stack (no-op if stack_options was None)
+            await repo.ensure_infrastructure()
 
             # Verify table was created by trying to use it
             await repo.create_entity("test-entity", name="Test Entity")
@@ -79,23 +81,27 @@ class TestRepositoryLocalStackCloudFormation:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_create_stack_with_custom_parameters(self, localstack_endpoint, unique_name):
+    async def test_ensure_infrastructure_with_custom_parameters(
+        self, localstack_endpoint, unique_name
+    ):
         """Should pass custom parameters to CloudFormation stack."""
+        # Pass stack_options to constructor - this is the new API pattern
+        stack_options = StackOptions(
+            snapshot_windows="hourly,daily",
+            retention_days=90,
+            enable_aggregator=False,
+            enable_alarms=False,
+        )
         repo = Repository(
             name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
+            stack_options=stack_options,
         )
 
         try:
-            # Create with custom parameters using StackOptions (minimal stack)
-            stack_options = StackOptions(
-                snapshot_windows="hourly,daily",
-                retention_days=90,
-                enable_aggregator=False,
-                enable_alarms=False,
-            )
-            await repo.create_stack(stack_options=stack_options)
+            # ensure_infrastructure creates the stack with the configured options
+            await repo.ensure_infrastructure()
 
             # Verify table was created
             await repo.create_entity("test-entity")

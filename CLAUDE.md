@@ -324,6 +324,35 @@ src/zae_limiter/
     └── cfn_template.yaml   # CloudFormation template
 ```
 
+### Repository Pattern (v0.5.0+)
+
+The `Repository` class owns data access and infrastructure management. `RateLimiter` owns business logic.
+
+```python
+from zae_limiter import RateLimiter, Repository, StackOptions
+
+# New pattern (preferred): Repository with stack_options
+repo = Repository(
+    name="my-app",
+    region="us-east-1",
+    stack_options=StackOptions(lambda_memory=512),  # Pass to constructor
+)
+await repo.ensure_infrastructure()  # Creates stack using stored options
+limiter = RateLimiter(repository=repo)
+
+# Old pattern (deprecated, emits DeprecationWarning):
+# repo.create_stack(stack_options=StackOptions())  # Don't use
+
+# RateLimiter._ensure_initialized() calls repo.ensure_infrastructure() automatically
+```
+
+**Key API methods:**
+- `Repository(stack_options=...)` - Pass infrastructure config to constructor
+- `repo.ensure_infrastructure()` - Create/update stack using stored options (no-op if None)
+- `repo.create_stack()` - **Deprecated**. Will be removed in v2.0.0
+
+See [ADR-108](docs/adr/108-repository-protocol.md) and [ADR-110](docs/adr/110-deprecation-constructor.md) for details.
+
 ## Naming Convention
 
 ### Resource Name and ZAEL- Prefix
