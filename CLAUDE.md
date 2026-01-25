@@ -294,8 +294,8 @@ docker compose down
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError
+├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
+├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError, EntityNotFoundError, InfrastructureNotFoundError
 ├── naming.py          # Resource name validation and ZAEL- prefix logic
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders
@@ -303,8 +303,8 @@ src/zae_limiter/
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
-├── config_cache.py    # Client-side config caching with TTL
-├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, version, upgrade, check, audit, usage, resource, system)
+├── config_cache.py    # Client-side config caching with TTL (CacheStats)
+├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
@@ -316,7 +316,8 @@ src/zae_limiter/
 ├── visualization/     # Usage snapshot formatting and display
 │   ├── __init__.py    # UsageFormatter enum, format_usage_snapshots()
 │   ├── factory.py     # Formatter factory
-│   └── formatters.py  # TableFormatter, PlotFormatter (ASCII charts)
+│   ├── formatters.py  # PlotFormatter (ASCII charts)
+│   └── table.py       # TableFormatter for tabular output
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
     ├── lambda_builder.py   # Lambda deployment package builder
