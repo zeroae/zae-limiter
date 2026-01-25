@@ -1086,3 +1086,70 @@ class TestRepositoryUsageSnapshots:
         assert len(snapshots) == 1
         # Invalid date should return original value
         assert snapshots[0].window_end == "invalid-date"
+
+
+class TestRepositoryDeprecation:
+    """Tests for deprecated Repository methods."""
+
+    @pytest.mark.asyncio
+    async def test_create_stack_emits_deprecation_warning(self):
+        """create_stack() should emit DeprecationWarning pointing to ensure_infrastructure()."""
+        from unittest.mock import AsyncMock, patch
+
+        repo = Repository(name="test-deprecation", region="us-east-1")
+
+        # Mock StackManager to avoid actual CloudFormation calls
+        with patch(
+            "zae_limiter.infra.stack_manager.StackManager"
+        ) as mock_manager_class:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+            mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
+            mock_manager_class.return_value = mock_manager
+
+            # Verify deprecation warning is raised
+            with pytest.warns(DeprecationWarning, match="create_stack.*deprecated"):
+                from zae_limiter import StackOptions
+
+                await repo.create_stack(stack_options=StackOptions())
+
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_create_stack_deprecation_message_mentions_ensure_infrastructure(
+        self,
+    ):
+        """Deprecation message should direct users to ensure_infrastructure()."""
+        import warnings
+        from unittest.mock import AsyncMock, patch
+
+        repo = Repository(name="test-deprecation-msg", region="us-east-1")
+
+        with patch(
+            "zae_limiter.infra.stack_manager.StackManager"
+        ) as mock_manager_class:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+            mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
+            mock_manager_class.return_value = mock_manager
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                from zae_limiter import StackOptions
+
+                await repo.create_stack(stack_options=StackOptions())
+
+                # Should have exactly one deprecation warning
+                deprecation_warnings = [
+                    x for x in w if issubclass(x.category, DeprecationWarning)
+                ]
+                assert len(deprecation_warnings) == 1
+
+                # Message should mention ensure_infrastructure
+                msg = str(deprecation_warnings[0].message)
+                assert "ensure_infrastructure" in msg
+                assert "v2.0.0" in msg
+
+        await repo.close()
