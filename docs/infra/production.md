@@ -16,6 +16,7 @@ Before deploying to production:
 | Glacier Transition | `--audit-archive-glacier-days N` | 90 | Adjust based on access patterns |
 | Permission Boundary | `--permission-boundary ARN` | None | Use in restricted IAM environments |
 | X-Ray Tracing | `--enable-tracing` | Disabled | Enable for debugging/performance analysis |
+| IAM Roles | `--enable-iam-roles` | Enabled | Use for least-privilege app access |
 
 ### Example Production Deployment
 
@@ -39,10 +40,44 @@ zae-limiter deploy \
 
 ### IAM
 
-- Lambda aggregator uses least-privilege permissions:
-    - `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`
-- Use `--permission-boundary` for restricted IAM environments
-- Use `--role-name-format` for organizational naming policies
+#### Application Access Roles
+
+The stack creates three IAM roles for different access patterns (enabled by default):
+
+| Role | Use Case | When to Use |
+|------|----------|-------------|
+| **AppRole** | Applications calling `acquire()` | Production workloads, Lambda functions, ECS tasks |
+| **AdminRole** | Ops teams managing config | CLI tools, admin scripts, CI/CD pipelines |
+| **ReadOnlyRole** | Monitoring and dashboards | Grafana, CloudWatch dashboards, audit tools |
+
+**Best practices:**
+
+- **Use AppRole for applications** - Provides only the permissions needed for rate limiting
+- **Use AdminRole for config management** - Separate from application credentials
+- **Use ReadOnlyRole for observability** - Safe access for monitoring systems
+- **Disable with `--no-iam-roles`** - When using existing IAM policies or cross-account access
+
+#### Lambda Aggregator
+
+The Lambda aggregator uses a separate execution role with least-privilege permissions:
+
+- `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`
+- `s3:PutObject` (when audit archival is enabled)
+
+#### Permission Boundaries
+
+For restricted IAM environments:
+
+- Use `--permission-boundary` to apply organizational policies to all created roles
+- Use `--role-name-format` for organizational naming conventions
+
+```bash
+# Enterprise deployment with permission boundary
+zae-limiter deploy \
+    --name prod-limiter \
+    --permission-boundary arn:aws:iam::123456789012:policy/ServiceBoundary \
+    --role-name-format "svc-{}"
+```
 
 ### Network
 

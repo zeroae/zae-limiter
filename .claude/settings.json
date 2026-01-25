@@ -28,7 +28,9 @@
       "Bash(uv run python:*)",
       "Bash(uv run ruff:*)",
       "Bash(uv run mkdocs:*)",
-      "Bash(uv run zae-limiter:*)"
+      "Bash(uv run zae-limiter:*)",
+      "Bash(gh pr diff:*)",
+      "Skill(milestone)"
     ],
     "ask": [
       "Bash(AWS_PROFILE=* uv run zae-limiter delete:*)",
@@ -43,11 +45,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"$CLAUDE_PROJECT_DIR/.claude/rules/zeroae/.git\" || git -C \"$CLAUDE_PROJECT_DIR\" submodule update --init --recursive"
+            "command": "test -d \"$CLAUDE_PROJECT_DIR/.venv\" || uv sync --all-extras --directory \"$CLAUDE_PROJECT_DIR\""
           },
           {
             "type": "command",
-            "command": "test -d \"$CLAUDE_PROJECT_DIR/.venv\" || uv sync --all-extras --directory \"$CLAUDE_PROJECT_DIR\""
+            "command": "uv run --directory \"$CLAUDE_PROJECT_DIR\" pre-commit install --install-hooks && uv run --directory \"$CLAUDE_PROJECT_DIR\" pre-commit install --hook-type pre-push"
           },
           {
             "type": "command",
@@ -56,34 +58,15 @@
         ]
       }
     ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash(git commit:*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run --directory \"$CLAUDE_PROJECT_DIR\" mypy src/zae_limiter"
-          }
-        ]
-      }
-    ],
+    "PreToolUse": [],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "file_path=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty') && [[ \"$file_path\" == *.py ]] && uv run --directory \"$CLAUDE_PROJECT_DIR\" ruff check --fix \"$file_path\" && uv run --directory \"$CLAUDE_PROJECT_DIR\" ruff format \"$file_path\" || true"
-          },
-          {
-            "type": "command",
             "command": "jq -re '.tool_input.file_path | select(endswith(\"pyproject.toml\"))' > /dev/null && uv sync --all-extras --directory \"$CLAUDE_PROJECT_DIR\" || true",
             "statusMessage": "Syncing dependencies..."
-          },
-          {
-            "type": "prompt",
-            "prompt": "A new file was created in docs/. Check if mkdocs.yml nav needs updating to include this file.",
-            "command": "file_path=$(echo \"$TOOL_INPUT\" | jq -r '.file_path // empty') && [[ \"$TOOL_USE_RESULT\" == *\"File created successfully\"* ]] && [[ \"$file_path\" == */docs/*.md ]] && echo \"New docs file: $file_path\""
           }
         ]
       }

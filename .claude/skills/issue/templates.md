@@ -2,7 +2,7 @@
 
 Templates derived from `.github/ISSUE_TEMPLATE/` files. Use the appropriate template based on issue type.
 
-## Bug 🐛
+## Bug 🐛 / 🔒
 
 ```markdown
 ## Description
@@ -25,7 +25,7 @@ Templates derived from `.github/ISSUE_TEMPLATE/` files. Use the appropriate temp
 **Required fields:** Description, Steps to Reproduce
 **Optional fields:** Environment
 
-## Feature ✨
+## Feature ✨ / ⚡ / 💥
 
 ```markdown
 ## Problem or Use Case
@@ -50,7 +50,9 @@ result = limiter.new_feature()
 **Required fields:** Problem or Use Case
 **Optional fields:** Proposed Solution, Alternatives Considered
 
-## Task 📋
+> **Note:** Feature issues often include Acceptance Criteria. If so, ensure each criterion is objectively verifiable. See [create.md](create.md#acceptance-criteria-guidelines).
+
+## Task 📋 / 📝 / ✅
 
 ```markdown
 ## Description
@@ -66,7 +68,9 @@ result = limiter.new_feature()
 **Required fields:** Description
 **Optional fields:** Acceptance Criteria
 
-## Chore 🔧
+> **Writing Criteria:** Each criterion must be objectively verifiable via grep, pytest, or measurable metric. See [create.md](create.md#acceptance-criteria-guidelines) for patterns to avoid.
+
+## Chore 🔧 / ♻️ / ⬆️ / 👷 / 🔥
 
 ```markdown
 ## Description

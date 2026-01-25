@@ -3,7 +3,13 @@
 import pytest
 from botocore.exceptions import ClientError
 
-from zae_limiter import Limit, OnUnavailable, RateLimiterUnavailable, RateLimitExceeded
+from zae_limiter import (
+    CacheStats,
+    Limit,
+    OnUnavailable,
+    RateLimiterUnavailable,
+    RateLimitExceeded,
+)
 
 
 class TestSyncRateLimiter:
@@ -75,6 +81,11 @@ class TestSyncRateLimiter:
         assert len(retrieved) == 1
         assert retrieved[0].name == "rpm"
 
+    def test_name_property(self, sync_limiter):
+        """Test that the name property returns the stack name."""
+        # The name should be the ZAEL-prefixed stack name
+        assert sync_limiter.name.startswith("ZAEL-")
+
 
 class TestSyncRateLimiterIsAvailable:
     """Tests for sync is_available() health check method."""
@@ -130,10 +141,10 @@ class TestSyncRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ServiceUnavailable", "Message": "DynamoDB down"}},
-                "GetItem",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(sync_limiter._limiter._repository, "batch_get_buckets", mock_error)
 
         # Set on_unavailable to ALLOW
         sync_limiter._limiter.on_unavailable = OnUnavailable.ALLOW
@@ -157,10 +168,10 @@ class TestSyncRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ProvisionedThroughputExceededException"}},
-                "Query",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(sync_limiter._limiter._repository, "batch_get_buckets", mock_error)
 
         # Set on_unavailable to BLOCK (default)
         sync_limiter._limiter.on_unavailable = OnUnavailable.BLOCK
@@ -187,10 +198,10 @@ class TestSyncRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "InternalServerError"}},
-                "TransactWriteItems",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(sync_limiter._limiter._repository, "batch_get_buckets", mock_error)
 
         # Set limiter to BLOCK, but override in acquire
         sync_limiter._limiter.on_unavailable = OnUnavailable.BLOCK
@@ -213,7 +224,7 @@ class TestSyncRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise Exception("DynamoDB timeout")
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(sync_limiter._limiter._repository, "batch_get_buckets", mock_error)
 
         # Set limiter to ALLOW, but override in acquire
         sync_limiter._limiter.on_unavailable = OnUnavailable.ALLOW
@@ -268,6 +279,85 @@ class TestSyncRateLimiterAudit:
         delete_events = [e for e in events if e.action == "entity_deleted"]
         assert len(delete_events) == 1
         assert delete_events[0].principal == "admin"
+
+
+class TestSyncRateLimiterResourceDefaults:
+    """Tests for sync resource-level default configs."""
+
+    def test_set_and_get_resource_defaults(self, sync_limiter):
+        """Test storing and retrieving resource-level defaults."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+        ]
+        sync_limiter.set_resource_defaults("gpt-4", limits)
+
+        retrieved = sync_limiter.get_resource_defaults("gpt-4")
+        assert len(retrieved) == 2
+
+        names = {limit.name for limit in retrieved}
+        assert names == {"rpm", "tpm"}
+
+    def test_delete_resource_defaults(self, sync_limiter):
+        """Test deleting resource-level defaults."""
+        limits = [Limit.per_minute("rpm", 100)]
+        sync_limiter.set_resource_defaults("gpt-4", limits)
+
+        sync_limiter.delete_resource_defaults("gpt-4")
+
+        retrieved = sync_limiter.get_resource_defaults("gpt-4")
+        assert len(retrieved) == 0
+
+    def test_list_resources_with_defaults(self, sync_limiter):
+        """Test listing resources with configured defaults."""
+        limits = [Limit.per_minute("rpm", 100)]
+        sync_limiter.set_resource_defaults("gpt-4", limits)
+        sync_limiter.set_resource_defaults("claude-3", limits)
+
+        resources = sync_limiter.list_resources_with_defaults()
+        assert "gpt-4" in resources
+        assert "claude-3" in resources
+
+
+class TestSyncRateLimiterSystemDefaults:
+    """Tests for sync system-level default configs."""
+
+    def test_set_and_get_system_defaults(self, sync_limiter):
+        """Test storing and retrieving system-level defaults."""
+        limits = [
+            Limit.per_minute("rpm", 50),
+            Limit.per_minute("tpm", 5_000),
+        ]
+        sync_limiter.set_system_defaults(limits)
+
+        retrieved, on_unavailable = sync_limiter.get_system_defaults()
+        assert len(retrieved) == 2
+
+        names = {limit.name for limit in retrieved}
+        assert names == {"rpm", "tpm"}
+        assert on_unavailable is None
+
+    def test_set_system_defaults_with_on_unavailable(self, sync_limiter):
+        """Test storing system defaults with on_unavailable config."""
+        from zae_limiter import OnUnavailable
+
+        limits = [Limit.per_minute("rpm", 50)]
+        sync_limiter.set_system_defaults(limits, on_unavailable=OnUnavailable.ALLOW)
+
+        retrieved, on_unavailable = sync_limiter.get_system_defaults()
+        assert len(retrieved) == 1
+        assert on_unavailable == OnUnavailable.ALLOW
+
+    def test_delete_system_defaults(self, sync_limiter):
+        """Test deleting system-level defaults."""
+        limits = [Limit.per_minute("rpm", 50)]
+        sync_limiter.set_system_defaults(limits)
+
+        sync_limiter.delete_system_defaults()
+
+        retrieved, on_unavailable = sync_limiter.get_system_defaults()
+        assert len(retrieved) == 0
+        assert on_unavailable is None
 
 
 class TestSyncRateLimiterUsageSnapshots:
@@ -425,3 +515,223 @@ class TestSyncRateLimiterListDeployed:
             result = SyncRateLimiter.list_deployed()
 
         assert result == []
+
+
+class TestSyncRateLimiterEntityManagement:
+    """Tests for SyncRateLimiter entity management methods."""
+
+    def test_get_entity(self, sync_limiter):
+        """Test getting an entity by ID."""
+        # Create entity first
+        sync_limiter.create_entity(entity_id="ent-1", name="Test Entity")
+
+        # Get it back
+        entity = sync_limiter.get_entity("ent-1")
+        assert entity is not None
+        assert entity.id == "ent-1"
+        assert entity.name == "Test Entity"
+
+    def test_get_entity_not_found(self, sync_limiter):
+        """Test getting a non-existent entity returns None."""
+        entity = sync_limiter.get_entity("nonexistent")
+        assert entity is None
+
+    def test_delete_entity(self, sync_limiter):
+        """Test deleting an entity."""
+        sync_limiter.create_entity(entity_id="ent-del", name="To Delete")
+
+        # Verify exists
+        assert sync_limiter.get_entity("ent-del") is not None
+
+        # Delete
+        sync_limiter.delete_entity("ent-del")
+
+        # Verify gone
+        assert sync_limiter.get_entity("ent-del") is None
+
+    def test_get_children(self, sync_limiter):
+        """Test getting children of a parent entity."""
+        # Create parent
+        sync_limiter.create_entity(entity_id="parent-1", name="Parent")
+
+        # Create children
+        sync_limiter.create_entity(entity_id="child-1", name="Child 1", parent_id="parent-1")
+        sync_limiter.create_entity(entity_id="child-2", name="Child 2", parent_id="parent-1")
+
+        # Get children
+        children = sync_limiter.get_children("parent-1")
+        assert len(children) == 2
+        child_ids = {c.id for c in children}
+        assert child_ids == {"child-1", "child-2"}
+
+
+class TestSyncRateLimiterCapacity:
+    """Tests for SyncRateLimiter capacity methods."""
+
+    def test_time_until_available(self, sync_limiter):
+        """Test calculating time until capacity is available."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Full capacity - should return 0
+        wait = sync_limiter.time_until_available(
+            entity_id="cap-1",
+            resource="api",
+            needed={"rpm": 50},
+            limits=limits,
+        )
+        assert wait == 0.0
+
+    def test_time_until_available_with_consumption(self, sync_limiter):
+        """Test time_until_available after consuming tokens."""
+        limits = [Limit.per_minute("rpm", 10)]
+
+        # Consume all capacity
+        with sync_limiter.acquire(
+            entity_id="cap-2",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Should need to wait for more capacity
+        wait = sync_limiter.time_until_available(
+            entity_id="cap-2",
+            resource="api",
+            needed={"rpm": 5},
+            limits=limits,
+        )
+        # Wait time should be positive since we consumed all tokens
+        assert wait > 0
+
+
+class TestSyncRateLimiterRollback:
+    """Tests for SyncRateLimiter rollback behavior."""
+
+    def test_acquire_rollback_on_exception(self, sync_limiter):
+        """Test that rollback is called when exception occurs in context."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # First acquire
+        with sync_limiter.acquire(
+            entity_id="rollback-1",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Check available after first acquire
+        available_after_first = sync_limiter.available(
+            entity_id="rollback-1",
+            resource="api",
+            limits=limits,
+        )
+
+        # Second acquire that raises exception
+        try:
+            with sync_limiter.acquire(
+                entity_id="rollback-1",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 20},
+            ):
+                raise ValueError("Simulated error")
+        except ValueError:
+            pass
+
+        # Check available after rollback - should be same as after first (rollback restores)
+        available_after_rollback = sync_limiter.available(
+            entity_id="rollback-1",
+            resource="api",
+            limits=limits,
+        )
+        # After rollback, the tokens from the failed acquire should be restored
+        assert available_after_rollback["rpm"] == available_after_first["rpm"]
+
+
+class TestSyncRateLimiterThreeTierResolution:
+    """Tests for SyncRateLimiter three-tier limit resolution."""
+
+    def test_resolution_system_level(self, sync_limiter):
+        """Test that system-level limits are resolved by sync limiter."""
+        # Set system defaults
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Acquire should resolve limits automatically
+        with sync_limiter.acquire(
+            entity_id="sync-sys-1",
+            resource="api",
+            limits=None,  # Auto-resolve
+            consume={"rpm": 1},
+        ):
+            pass
+
+    def test_resolution_resource_level(self, sync_limiter):
+        """Test that resource-level limits are resolved by sync limiter."""
+        # Set resource defaults
+        sync_limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+
+        # Acquire should resolve limits from resource config
+        with sync_limiter.acquire(
+            entity_id="sync-res-1",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+            consume={"rpm": 1},
+        ):
+            pass
+
+    def test_available_uses_resolution(self, sync_limiter):
+        """Test that sync available() uses three-tier resolution."""
+        # Set resource defaults
+        sync_limiter.set_resource_defaults("api", [Limit.per_minute("rpm", 200)])
+
+        # available() should resolve limits
+        available = sync_limiter.available(
+            entity_id="sync-avail-1",
+            resource="api",
+            limits=None,  # Auto-resolve
+        )
+        assert available["rpm"] == 200
+
+    def test_time_until_available_uses_resolution(self, sync_limiter):
+        """Test that sync time_until_available() uses three-tier resolution."""
+        # Set resource defaults
+        sync_limiter.set_resource_defaults("api2", [Limit.per_minute("rpm", 100)])
+
+        # time_until_available() should resolve limits
+        wait = sync_limiter.time_until_available(
+            entity_id="sync-wait-1",
+            resource="api2",
+            needed={"rpm": 50},
+            limits=None,  # Auto-resolve
+        )
+        assert wait == 0.0
+
+
+class TestSyncRateLimiterConfigCache:
+    """Tests for sync config cache management methods."""
+
+    def test_get_cache_stats_returns_cache_stats(self, sync_limiter):
+        """Test get_cache_stats() returns CacheStats object."""
+        stats = sync_limiter.get_cache_stats()
+
+        assert isinstance(stats, CacheStats)
+        assert stats.hits == 0
+        assert stats.misses == 0
+        assert stats.size == 0
+        assert stats.ttl_seconds == 60  # Default TTL
+
+    def test_invalidate_config_cache(self, sync_limiter):
+        """Test invalidate_config_cache() clears cache entries."""
+        from zae_limiter.config_cache import CacheEntry
+
+        # Manually populate the cache to verify invalidation
+        entry = CacheEntry(value=[], expires_at=9999999999.0)
+        sync_limiter._limiter._config_cache._resource_defaults["gpt-4"] = entry
+
+        assert sync_limiter.get_cache_stats().size == 1
+
+        sync_limiter.invalidate_config_cache()
+
+        assert sync_limiter.get_cache_stats().size == 0

@@ -2,17 +2,22 @@
 
 import asyncio
 import time
+import warnings
 from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from enum import Enum
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from .repository_protocol import RepositoryProtocol
 
 from .bucket import (
     calculate_available,
     calculate_time_until_available,
     try_consume,
 )
+from .config_cache import CacheStats, ConfigCache
 from .exceptions import (
     IncompatibleSchemaError,
     RateLimiterUnavailable,
@@ -61,7 +66,17 @@ class RateLimiter:
     - Stored limit configs
     - Usage analytics
 
-    Example:
+    Example (new API - preferred):
+        from zae_limiter import RateLimiter, Repository, StackOptions
+
+        repo = Repository(
+            name="my-app",
+            region="us-east-1",
+            stack_options=StackOptions(),
+        )
+        limiter = RateLimiter(repository=repo)
+
+    Example (old API - deprecated):
         limiter = RateLimiter(
             name="my-app",  # Creates ZAEL-my-app resources
             region="us-east-1",
@@ -71,34 +86,83 @@ class RateLimiter:
 
     def __init__(
         self,
-        name: str = "limiter",
+        # New API (preferred)
+        repository: "RepositoryProtocol | None" = None,
+        # Old API (deprecated in v0.5.0, removed in v2.0.0)
+        name: str | None = None,
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
+        # Business logic config (not deprecated)
         on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
+        config_cache_ttl: int = 60,
     ) -> None:
         """
         Initialize the rate limiter.
 
         Args:
-            name: Resource identifier (e.g., 'my-app').
-                Will be prefixed with 'ZAEL-' automatically.
-                Default: 'limiter' (creates 'ZAEL-limiter' resources)
-            region: AWS region
-            endpoint_url: DynamoDB endpoint URL (for local development)
-            stack_options: Desired infrastructure state (None = connect only, don't manage)
+            repository: Repository instance (new API, preferred).
+                Pass a Repository or any RepositoryProtocol implementation.
+            name: DEPRECATED. Resource identifier (e.g., 'my-app').
+                Use Repository(name=...) instead.
+            region: DEPRECATED. AWS region.
+                Use Repository(region=...) instead.
+            endpoint_url: DEPRECATED. DynamoDB endpoint URL.
+                Use Repository(endpoint_url=...) instead.
+            stack_options: DEPRECATED. Infrastructure state.
+                Use Repository(stack_options=...) instead.
             on_unavailable: Behavior when DynamoDB is unavailable
             auto_update: Auto-update Lambda when version mismatch detected
             strict_version: Fail if version mismatch (when auto_update is False)
             skip_version_check: Skip all version checks (dangerous)
+            config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable)
+
+        Raises:
+            ValueError: If both repository and name/region/endpoint_url/stack_options
+                are provided.
         """
         from .naming import normalize_name
 
-        # Validate and normalize name (adds ZAEL- prefix)
-        self._name = normalize_name(name)
+        # Check for conflicting parameters
+        old_params_provided = any(
+            p is not None for p in (name, region, endpoint_url, stack_options)
+        )
+
+        if repository is not None and old_params_provided:
+            raise ValueError(
+                "Cannot specify both 'repository' and 'name'/'region'/'endpoint_url'/"
+                "'stack_options'. Use Repository(...) to configure data access."
+            )
+
+        if repository is not None:
+            # New API: use provided repository
+            self._repository = repository
+            self._name = repository.stack_name
+        elif old_params_provided:
+            # Old API: emit deprecation warning
+            warnings.warn(
+                "Passing name/region/endpoint_url/stack_options directly to "
+                "RateLimiter is deprecated. Use Repository(...) instead. "
+                "This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            effective_name = name if name is not None else "limiter"
+            self._name = normalize_name(effective_name)
+            self._repository = Repository(
+                name=self._name,
+                region=region,
+                endpoint_url=endpoint_url,
+                stack_options=stack_options,
+            )
+        else:
+            # Default: silent backward compatibility
+            self._name = normalize_name("limiter")
+            self._repository = Repository(name=self._name)
+
         # Internal: stack_name and table_name for AWS resources
         self.stack_name = self._name
         self.table_name = self._name
@@ -106,14 +170,10 @@ class RateLimiter:
         self._auto_update = auto_update
         self._strict_version = strict_version
         self._skip_version_check = skip_version_check
-
-        self._stack_options = stack_options
-        self._repository = Repository(
-            stack_name=self._name,
-            region=region,
-            endpoint_url=endpoint_url,
-        )
         self._initialized = False
+
+        # Config cache (60s TTL by default, 0 disables)
+        self._config_cache = ConfigCache(ttl_seconds=config_cache_ttl)
 
     @property
     def name(self) -> str:
@@ -187,10 +247,8 @@ class RateLimiter:
         if self._initialized:
             return
 
-        if self._stack_options is not None:
-            await self._repository.create_stack(
-                stack_options=self._stack_options,
-            )
+        # Repository owns infrastructure config - it will no-op if not configured
+        await self._repository.ensure_infrastructure()
 
         # Version check (skip for local DynamoDB without CloudFormation)
         if not self._skip_version_check:
@@ -287,6 +345,47 @@ class RateLimiter:
 
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
+
+    # -------------------------------------------------------------------------
+    # Config cache management
+    # -------------------------------------------------------------------------
+
+    async def invalidate_config_cache(self) -> None:
+        """
+        Invalidate all cached config entries.
+
+        Call this after modifying config (system defaults, resource defaults,
+        or entity limits) to force an immediate refresh. Without manual
+        invalidation, changes propagate within the TTL period (default: 60s).
+
+        Example:
+            # Update config and force refresh
+            await limiter.set_system_defaults([Limit.tpm(100000)])
+            await limiter.invalidate_config_cache()
+        """
+        await self._config_cache.invalidate_async()
+
+    def get_cache_stats(self) -> CacheStats:
+        """
+        Get config cache performance statistics.
+
+        Returns statistics useful for monitoring and debugging cache behavior:
+        - hits: Number of cache hits (avoided DynamoDB reads)
+        - misses: Number of cache misses (DynamoDB reads performed)
+        - size: Number of entries currently in cache
+        - ttl: Cache TTL in seconds
+
+        Returns:
+            CacheStats object with cache metrics
+
+        Example:
+            stats = limiter.get_cache_stats()
+            total = stats.hits + stats.misses
+            hit_rate = stats.hits / total if total > 0 else 0
+            print(f"Cache hit rate: {hit_rate:.1%}")
+            print(f"Cache entries: {stats.size}")
+        """
+        return self._config_cache.get_stats()
 
     async def is_available(self, timeout: float = 1.0) -> bool:
         """
@@ -555,7 +654,7 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits: list[Limit] | None,
         consume: dict[str, int],
         cascade: bool = False,
         use_stored_limits: bool = False,
@@ -564,13 +663,17 @@ class RateLimiter:
         """
         Acquire rate limit capacity.
 
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+
         Args:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
-            limits: Default limits to apply
             consume: Amounts to consume by limit name
+            limits: Override limits (optional, falls back to stored config)
             cascade: If True, also consume from parent entity
-            use_stored_limits: If True, use stored limits if available
+            use_stored_limits: DEPRECATED - limits are now always resolved from
+                stored config. This parameter will be removed in v1.0.
             on_unavailable: Override default on_unavailable behavior
 
         Yields:
@@ -579,19 +682,31 @@ class RateLimiter:
         Raises:
             RateLimitExceeded: If any limit would be exceeded
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
+            ValidationError: If no limits found at any level and no override provided
         """
         await self._ensure_initialized()
-        mode = on_unavailable or self.on_unavailable
+
+        # Deprecation warning for use_stored_limits
+        if use_stored_limits:
+            warnings.warn(
+                "use_stored_limits is deprecated and will be removed in v1.0. "
+                "Limits are now always resolved from stored config (Entity > Resource > System). "
+                "Pass limits parameter as override if needed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # Resolve on_unavailable mode
+        mode = await self._resolve_on_unavailable(on_unavailable)
 
         # Acquire the lease (this may fail due to rate limit or infrastructure)
         try:
             lease = await self._do_acquire(
                 entity_id=entity_id,
                 resource=resource,
-                limits=limits,
+                limits_override=limits,
                 consume=consume,
                 cascade=cascade,
-                use_stored_limits=use_stored_limits,
             )
         except (RateLimitExceeded, ValidationError):
             raise
@@ -621,10 +736,9 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits_override: list[Limit] | None,
         consume: dict[str, int],
         cascade: bool,
-        use_stored_limits: bool,
     ) -> Lease:
         """Internal acquire implementation."""
         # Validate inputs at API boundary
@@ -640,25 +754,23 @@ class RateLimiter:
             if entity and entity.parent_id:
                 entity_ids.append(entity.parent_id)
 
-        # Resolve limits for each entity
+        # Resolve limits for each entity using three-tier hierarchy
         entity_limits: dict[str, list[Limit]] = {}
         for eid in entity_ids:
-            if use_stored_limits:
-                stored = await self._repository.get_limits(eid, resource)
-                if not stored:
-                    stored = await self._repository.get_limits(eid, DEFAULT_RESOURCE)
-                entity_limits[eid] = stored if stored else limits
-            else:
-                entity_limits[eid] = limits
+            entity_limits[eid] = await self._resolve_limits(eid, resource, limits_override)
 
-        # Get or create buckets for each entity/limit
+        # Fetch all buckets - use batch if available, otherwise sequential (issue #133)
+        existing_buckets = await self._fetch_buckets(entity_ids, resource, entity_limits)
+
+        # Process buckets and build lease entries
         entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
 
         for eid in entity_ids:
             for limit in entity_limits[eid]:
-                # Get existing bucket or create new one
-                state = await self._repository.get_bucket(eid, resource, limit.name)
+                # Get existing bucket from batch result or create new one
+                bucket_key = (eid, resource, limit.name)
+                state = existing_buckets.get(bucket_key)
                 if state is None:
                     state = BucketState.from_limit(eid, resource, limit, now_ms)
 
@@ -703,15 +815,156 @@ class RateLimiter:
 
         return Lease(repository=self._repository, entries=entries)
 
+    async def _fetch_buckets(
+        self,
+        entity_ids: list[str],
+        resource: str,
+        entity_limits: dict[str, list[Limit]],
+    ) -> dict[tuple[str, str, str], BucketState]:
+        """
+        Fetch buckets for all entity/resource/limit combinations.
+
+        Uses batch_get_buckets if the backend supports it (DynamoDB),
+        otherwise falls back to sequential get_buckets calls.
+
+        Args:
+            entity_ids: List of entity IDs to fetch buckets for
+            resource: Resource name
+            entity_limits: Map of entity_id -> limits for that entity
+
+        Returns:
+            Dict mapping (entity_id, resource, limit_name) to BucketState.
+            Missing buckets are not included in the result.
+        """
+        # Use batch operation if backend supports it (issue #133)
+        if self._repository.capabilities.supports_batch_operations:
+            bucket_keys: list[tuple[str, str, str]] = [
+                (eid, resource, limit.name) for eid in entity_ids for limit in entity_limits[eid]
+            ]
+            # batch_get_buckets exists when supports_batch_operations is True
+            batch_result: dict[tuple[str, str, str], BucketState] = (
+                await self._repository.batch_get_buckets(bucket_keys)  # type: ignore[attr-defined]
+            )
+            return batch_result
+
+        # Fallback: sequential get_buckets calls
+        result: dict[tuple[str, str, str], BucketState] = {}
+        for eid in entity_ids:
+            buckets = await self._repository.get_buckets(eid, resource)
+            for bucket in buckets:
+                key = (bucket.entity_id, bucket.resource, bucket.limit_name)
+                result[key] = bucket
+        return result
+
+    async def _resolve_limits(
+        self,
+        entity_id: str,
+        resource: str,
+        limits_override: list[Limit] | None,
+    ) -> list[Limit]:
+        """
+        Resolve limits using three-tier hierarchy: Entity > Resource > System > Override.
+
+        Resolution order:
+        1. Entity-level config for this resource
+        2. Resource-level defaults (if entity config is empty)
+        3. System-level defaults (if resource config is empty)
+        4. Override parameter (if all configs are empty)
+        5. ValidationError (if no limits found anywhere)
+
+        Uses config cache to reduce DynamoDB reads.
+
+        Args:
+            entity_id: Entity to resolve limits for
+            resource: Resource being accessed
+            limits_override: Optional override limits (from limits parameter)
+
+        Returns:
+            Resolved list of Limit objects
+
+        Raises:
+            ValidationError: If no limits found at any level and no override provided
+        """
+        # Try Entity level (with caching and negative caching)
+        entity_limits = await self._config_cache.get_entity_limits(
+            entity_id,
+            resource,
+            self._repository.get_limits,
+        )
+        if entity_limits:
+            return entity_limits
+
+        # Try Resource level (with caching)
+        resource_limits = await self._config_cache.get_resource_defaults(
+            resource,
+            self._repository.get_resource_defaults,
+        )
+        if resource_limits:
+            return resource_limits
+
+        # Try System level (with caching)
+        system_limits, _ = await self._config_cache.get_system_defaults(
+            self._repository.get_system_defaults,
+        )
+        if system_limits:
+            return system_limits
+
+        # Try override parameter
+        if limits_override is not None:
+            return limits_override
+
+        # No limits found anywhere
+        raise ValidationError(
+            field="limits",
+            value=f"entity={entity_id}, resource={resource}",
+            reason=(
+                f"No limits configured for entity '{entity_id}' and resource '{resource}'. "
+                "Configure limits at entity, resource, or system level, "
+                "or provide limits parameter."
+            ),
+        )
+
+    async def _resolve_on_unavailable(
+        self,
+        on_unavailable_param: OnUnavailable | None,
+    ) -> OnUnavailable:
+        """
+        Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
+
+        Uses config cache to reduce DynamoDB reads.
+
+        Args:
+            on_unavailable_param: Optional parameter override
+
+        Returns:
+            Resolved OnUnavailable enum value
+        """
+        # If parameter is provided, use it
+        if on_unavailable_param is not None:
+            return on_unavailable_param
+
+        # Try System config (with caching)
+        _, on_unavailable_str = await self._config_cache.get_system_defaults(
+            self._repository.get_system_defaults,
+        )
+        if on_unavailable_str is not None:
+            return OnUnavailable(on_unavailable_str)
+
+        # Fall back to constructor default
+        return self.on_unavailable
+
     async def available(
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
     ) -> dict[str, int]:
         """
         Check available capacity without consuming.
+
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
 
         Returns minimum available across entity (and parent if cascade).
         Can return negative values if bucket is in debt.
@@ -719,24 +972,34 @@ class RateLimiter:
         Args:
             entity_id: Entity to check
             resource: Resource to check
-            limits: Default limits
-            use_stored_limits: Use stored limits if available
+            limits: Override limits (optional, falls back to stored config)
+            use_stored_limits: DEPRECATED - limits are now always resolved from
+                stored config. This parameter will be removed in v1.0.
 
         Returns:
             Dict mapping limit_name -> available tokens
+
+        Raises:
+            ValidationError: If no limits found at any level and no override provided
         """
         await self._ensure_initialized()
         now_ms = int(time.time() * 1000)
 
-        # Resolve limits
+        # Deprecation warning for use_stored_limits
         if use_stored_limits:
-            stored = await self._repository.get_limits(entity_id, resource)
-            if not stored:
-                stored = await self._repository.get_limits(entity_id, DEFAULT_RESOURCE)
-            limits = stored if stored else limits
+            warnings.warn(
+                "use_stored_limits is deprecated and will be removed in v1.0. "
+                "Limits are now always resolved from stored config (Entity > Resource > System). "
+                "Pass limits parameter as override if needed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # Resolve limits using three-tier hierarchy
+        resolved_limits = await self._resolve_limits(entity_id, resource, limits)
 
         result: dict[str, int] = {}
-        for limit in limits:
+        for limit in resolved_limits:
             state = await self._repository.get_bucket(entity_id, resource, limit.name)
             if state is None:
                 result[limit.name] = limit.burst
@@ -749,35 +1012,48 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
         needed: dict[str, int],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
     ) -> float:
         """
         Calculate seconds until requested capacity is available.
 
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+
         Args:
             entity_id: Entity to check
             resource: Resource to check
-            limits: Default limits
             needed: Required amounts by limit name
-            use_stored_limits: Use stored limits if available
+            limits: Override limits (optional, falls back to stored config)
+            use_stored_limits: DEPRECATED - limits are now always resolved from
+                stored config. This parameter will be removed in v1.0.
 
         Returns:
             Seconds until available (0.0 if already available)
+
+        Raises:
+            ValidationError: If no limits found at any level and no override provided
         """
         await self._ensure_initialized()
         now_ms = int(time.time() * 1000)
 
-        # Resolve limits
+        # Deprecation warning for use_stored_limits
         if use_stored_limits:
-            stored = await self._repository.get_limits(entity_id, resource)
-            if not stored:
-                stored = await self._repository.get_limits(entity_id, DEFAULT_RESOURCE)
-            limits = stored if stored else limits
+            warnings.warn(
+                "use_stored_limits is deprecated and will be removed in v1.0. "
+                "Limits are now always resolved from stored config (Entity > Resource > System). "
+                "Pass limits parameter as override if needed.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # Resolve limits using three-tier hierarchy
+        resolved_limits = await self._resolve_limits(entity_id, resource, limits)
 
         max_wait = 0.0
-        for limit in limits:
+        for limit in resolved_limits:
             amount = needed.get(limit.name, 0)
             if amount <= 0:
                 continue
@@ -848,6 +1124,119 @@ class RateLimiter:
         """
         await self._ensure_initialized()
         await self._repository.delete_limits(entity_id, resource, principal=principal)
+
+    # -------------------------------------------------------------------------
+    # Resource-level defaults management
+    # -------------------------------------------------------------------------
+
+    async def set_resource_defaults(
+        self,
+        resource: str,
+        limits: list[Limit],
+        principal: str | None = None,
+    ) -> None:
+        """
+        Store default limit configs for a resource.
+
+        Resource defaults override system defaults for the specified resource.
+
+        Args:
+            resource: Resource name
+            limits: Limits to store
+            principal: Caller identity for audit logging (optional)
+        """
+        await self._ensure_initialized()
+        await self._repository.set_resource_defaults(resource, limits, principal=principal)
+
+    async def get_resource_defaults(
+        self,
+        resource: str,
+    ) -> list[Limit]:
+        """
+        Get stored default limit configs for a resource.
+
+        Args:
+            resource: Resource name
+
+        Returns:
+            List of stored limits (empty if none)
+        """
+        await self._ensure_initialized()
+        return await self._repository.get_resource_defaults(resource)
+
+    async def delete_resource_defaults(
+        self,
+        resource: str,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete stored default limit configs for a resource.
+
+        Args:
+            resource: Resource name
+            principal: Caller identity for audit logging (optional)
+        """
+        await self._ensure_initialized()
+        await self._repository.delete_resource_defaults(resource, principal=principal)
+
+    async def list_resources_with_defaults(self) -> list[str]:
+        """List all resources that have default limit configs."""
+        await self._ensure_initialized()
+        return await self._repository.list_resources_with_defaults()
+
+    # -------------------------------------------------------------------------
+    # System-level defaults management
+    # -------------------------------------------------------------------------
+
+    async def set_system_defaults(
+        self,
+        limits: list[Limit],
+        on_unavailable: OnUnavailable | None = None,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Store system-wide default limits and config.
+
+        System defaults apply to ALL resources unless overridden at resource
+        or entity level.
+
+        Args:
+            limits: Limits to store (apply globally to all resources)
+            on_unavailable: Behavior when DynamoDB unavailable (optional)
+            principal: Caller identity for audit logging (optional)
+        """
+        await self._ensure_initialized()
+        on_unavailable_str = on_unavailable.value if on_unavailable else None
+        await self._repository.set_system_defaults(
+            limits, on_unavailable=on_unavailable_str, principal=principal
+        )
+
+    async def get_system_defaults(self) -> tuple[list[Limit], OnUnavailable | None]:
+        """
+        Get system-wide default limits and config.
+
+        Returns:
+            Tuple of (limits, on_unavailable). on_unavailable may be None if not set.
+        """
+        await self._ensure_initialized()
+        limits, on_unavailable_str = await self._repository.get_system_defaults()
+        on_unavailable = None
+        if on_unavailable_str:
+            on_unavailable = OnUnavailable(on_unavailable_str)
+        return limits, on_unavailable
+
+    async def delete_system_defaults(
+        self,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete all system-wide default limits and config.
+
+        Args:
+            principal: Caller identity for audit logging (optional)
+        """
+        await self._ensure_initialized()
+        await self._repository.delete_system_defaults(principal=principal)
 
     # -------------------------------------------------------------------------
     # Capacity queries
@@ -1007,6 +1396,7 @@ class RateLimiter:
             - Identity: name, region
             - Versions: schema_version, lambda_version, client_version
             - Table metrics: table_item_count, table_size_bytes
+            - IAM Roles: app_role_arn, admin_role_arn, readonly_role_arn
 
         Example:
             Check infrastructure health::
@@ -1037,35 +1427,63 @@ class RateLimiter:
         lambda_version: str | None = None
         table_item_count: int | None = None
         table_size_bytes: int | None = None
+        app_role_arn: str | None = None
+        admin_role_arn: str | None = None
+        readonly_role_arn: str | None = None
 
-        # Get CloudFormation stack status (does not require table to exist)
+        # Get CloudFormation stack status and outputs (does not require table to exist)
         try:
             async with StackManager(
                 self.stack_name, self._repository.region, self._repository.endpoint_url
             ) as manager:
                 cfn_status = await manager.get_stack_status(self.stack_name)
+                # Get stack outputs for role ARNs if stack exists and is complete
+                if cfn_status and "COMPLETE" in cfn_status:
+                    try:
+                        client = await manager._get_client()
+                        response = await client.describe_stacks(StackName=self.stack_name)
+                        if response.get("Stacks"):
+                            outputs = response["Stacks"][0].get("Outputs", [])
+                            for output in outputs:
+                                key = output.get("OutputKey", "")
+                                value = output.get("OutputValue", "")
+                                if key == "AppRoleArn":
+                                    app_role_arn = value
+                                elif key == "AdminRoleArn":
+                                    admin_role_arn = value
+                                elif key == "ReadOnlyRoleArn":
+                                    readonly_role_arn = value
+                    except Exception:
+                        pass  # Stack outputs unavailable
         except Exception:
             pass  # Stack status unavailable
 
         # Ping DynamoDB and measure latency
+        # Note: _get_client is DynamoDB-specific, use hasattr for protocol compliance
         try:
             start_time = time.time()
-            client = await self._repository._get_client()
+            if hasattr(self._repository, "_get_client"):
+                client = await self._repository._get_client()
 
-            # Use DescribeTable to check connectivity and get table info
-            response = await client.describe_table(TableName=self.table_name)
-            latency_ms = (time.time() - start_time) * 1000
-            available = True
+                # Use DescribeTable to check connectivity and get table info
+                response = await client.describe_table(TableName=self.table_name)
+                latency_ms = (time.time() - start_time) * 1000
+                available = True
 
-            # Extract table information
-            table = response.get("Table", {})
-            table_status = table.get("TableStatus")
-            table_item_count = table.get("ItemCount")
-            table_size_bytes = table.get("TableSizeInBytes")
+                # Extract table information
+                table = response.get("Table", {})
+                table_status = table.get("TableStatus")
+                table_item_count = table.get("ItemCount")
+                table_size_bytes = table.get("TableSizeInBytes")
 
-            # Check if aggregator is enabled by looking for stream specification
-            stream_spec = table.get("StreamSpecification", {})
-            aggregator_enabled = stream_spec.get("StreamEnabled", False)
+                # Check if aggregator is enabled by looking for stream specification
+                stream_spec = table.get("StreamSpecification", {})
+                aggregator_enabled = stream_spec.get("StreamEnabled", False)
+            else:
+                # Non-DynamoDB backend: use ping() for availability check
+                available = await self._repository.ping()
+                if available:
+                    latency_ms = (time.time() - start_time) * 1000
 
         except Exception:
             pass  # DynamoDB unavailable
@@ -1093,6 +1511,9 @@ class RateLimiter:
             client_version=__version__,
             table_item_count=table_item_count,
             table_size_bytes=table_size_bytes,
+            app_role_arn=app_role_arn,
+            admin_role_arn=admin_role_arn,
+            readonly_role_arn=readonly_role_arn,
         )
 
 
@@ -1102,7 +1523,17 @@ class SyncRateLimiter:
 
     Wraps RateLimiter, running async operations in an event loop.
 
-    Example:
+    Example (new API - preferred):
+        from zae_limiter import SyncRateLimiter, Repository, StackOptions
+
+        repo = Repository(
+            name="my-app",
+            region="us-east-1",
+            stack_options=StackOptions(),
+        )
+        limiter = SyncRateLimiter(repository=repo)
+
+    Example (old API - deprecated):
         limiter = SyncRateLimiter(
             name="my-app",  # Creates ZAEL-my-app resources
             region="us-east-1",
@@ -1112,16 +1543,24 @@ class SyncRateLimiter:
 
     def __init__(
         self,
-        name: str = "limiter",
+        # New API (preferred)
+        repository: "RepositoryProtocol | None" = None,
+        # Old API (deprecated in v0.5.0, removed in v2.0.0)
+        name: str | None = None,
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
+        # Business logic config (not deprecated)
         on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
+        config_cache_ttl: int = 60,
     ) -> None:
+        # Delegate to RateLimiter with same parameters
+        # RateLimiter handles deprecation warning and validation
         self._limiter = RateLimiter(
+            repository=repository,
             name=name,
             region=region,
             endpoint_url=endpoint_url,
@@ -1130,8 +1569,14 @@ class SyncRateLimiter:
             auto_update=auto_update,
             strict_version=strict_version,
             skip_version_check=skip_version_check,
+            config_cache_ttl=config_cache_ttl,
         )
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def name(self) -> str:
+        """The resource identifier (with ZAEL- prefix)."""
+        return self._limiter.name
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Get or create an event loop."""
@@ -1154,6 +1599,28 @@ class SyncRateLimiter:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+    # -------------------------------------------------------------------------
+    # Config cache management
+    # -------------------------------------------------------------------------
+
+    def invalidate_config_cache(self) -> None:
+        """
+        Invalidate all cached config entries.
+
+        Synchronous wrapper for :meth:`RateLimiter.invalidate_config_cache`.
+        See the async version for full documentation.
+        """
+        self._limiter._config_cache.invalidate()
+
+    def get_cache_stats(self) -> CacheStats:
+        """
+        Get config cache performance statistics.
+
+        Synchronous wrapper for :meth:`RateLimiter.get_cache_stats`.
+        See the async version for full documentation.
+        """
+        return self._limiter.get_cache_stats()
 
     def is_available(self, timeout: float = 1.0) -> bool:
         """
@@ -1307,13 +1774,18 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits: list[Limit] | None,
         consume: dict[str, int],
         cascade: bool = False,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
     ) -> Iterator[SyncLease]:
-        """Acquire rate limit capacity (synchronous)."""
+        """
+        Acquire rate limit capacity (synchronous).
+
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+        """
         loop = self._get_loop()
 
         async def do_acquire() -> tuple[Lease, bool]:
@@ -1349,10 +1821,15 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
     ) -> dict[str, int]:
-        """Check available capacity without consuming."""
+        """
+        Check available capacity without consuming.
+
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+        """
         return self._run(
             self._limiter.available(
                 entity_id=entity_id,
@@ -1366,17 +1843,22 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
         needed: dict[str, int],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
     ) -> float:
-        """Calculate seconds until requested capacity is available."""
+        """
+        Calculate seconds until requested capacity is available.
+
+        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        If no stored limits found, falls back to the `limits` parameter.
+        """
         return self._run(
             self._limiter.time_until_available(
                 entity_id=entity_id,
                 resource=resource,
-                limits=limits,
                 needed=needed,
+                limits=limits,
                 use_stored_limits=use_stored_limits,
             )
         )
@@ -1411,6 +1893,66 @@ class SyncRateLimiter:
     ) -> None:
         """Delete stored limit configs for an entity."""
         self._run(self._limiter.delete_limits(entity_id, resource, principal=principal))
+
+    # -------------------------------------------------------------------------
+    # Resource-level defaults management
+    # -------------------------------------------------------------------------
+
+    def set_resource_defaults(
+        self,
+        resource: str,
+        limits: list[Limit],
+        principal: str | None = None,
+    ) -> None:
+        """Store default limit configs for a resource."""
+        self._run(self._limiter.set_resource_defaults(resource, limits, principal=principal))
+
+    def get_resource_defaults(
+        self,
+        resource: str,
+    ) -> list[Limit]:
+        """Get stored default limit configs for a resource."""
+        return self._run(self._limiter.get_resource_defaults(resource))
+
+    def delete_resource_defaults(
+        self,
+        resource: str,
+        principal: str | None = None,
+    ) -> None:
+        """Delete stored default limit configs for a resource."""
+        self._run(self._limiter.delete_resource_defaults(resource, principal=principal))
+
+    def list_resources_with_defaults(self) -> list[str]:
+        """List all resources that have default limit configs."""
+        return self._run(self._limiter.list_resources_with_defaults())
+
+    # -------------------------------------------------------------------------
+    # System-level defaults management
+    # -------------------------------------------------------------------------
+
+    def set_system_defaults(
+        self,
+        limits: list[Limit],
+        on_unavailable: OnUnavailable | None = None,
+        principal: str | None = None,
+    ) -> None:
+        """Store system-wide default limits and config."""
+        self._run(
+            self._limiter.set_system_defaults(
+                limits, on_unavailable=on_unavailable, principal=principal
+            )
+        )
+
+    def get_system_defaults(self) -> tuple[list[Limit], OnUnavailable | None]:
+        """Get system-wide default limits and config."""
+        return self._run(self._limiter.get_system_defaults())
+
+    def delete_system_defaults(
+        self,
+        principal: str | None = None,
+    ) -> None:
+        """Delete all system-wide default limits and config."""
+        self._run(self._limiter.delete_system_defaults(principal=principal))
 
     # -------------------------------------------------------------------------
     # Capacity queries

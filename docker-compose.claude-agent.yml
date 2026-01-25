@@ -1,0 +1,40 @@
+# Docker Compose for running Claude Code agent autonomously
+#
+# Usage:
+#   # Build and run the agent
+#   docker compose -f docker-compose.claude-agent.yml run --rm --build agent
+#
+#   # Or with a custom prompt
+#   docker compose -f docker-compose.claude-agent.yml run --rm agent \
+#     --dangerously-skip-permissions "Do Phase 2 only"
+#
+#   # Interactive mode (for debugging)
+#   docker compose -f docker-compose.claude-agent.yml run --rm agent
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.claude-agent
+    working_dir: /workspace
+    volumes:
+      # Mount the project directory
+      - .:/workspace
+      # Mount the parent git repo (required for worktrees)
+      - /Users/sodre/ghq/github.com/zeroae/zae-limiter/.git:/Users/sodre/ghq/github.com/zeroae/zae-limiter/.git
+      # Git config for commits
+      - ~/.gitconfig:/home/agent/.gitconfig:ro
+      # SSH keys if needed for git push
+      - ~/.ssh:/home/agent/.ssh:ro
+      # Claude credentials (OAuth tokens from Max Plan)
+      - ~/.claude:/home/agent/.claude
+      # Docker socket for LocalStack Lambda execution
+      - /var/run/docker.sock:/var/run/docker.sock
+    stdin_open: true
+    tty: true
+    # Default: run the refactor agent
+    # Entrypoint is "claude" from Dockerfile
+    command:
+      - "--dangerously-skip-permissions"
+      - "--print"
+      - "Read .claude/agents/refactor-150.md and follow those instructions exactly to implement issue #150. Start with Phase 1: Explore and Document. After each phase, commit your work and proceed to the next phase."

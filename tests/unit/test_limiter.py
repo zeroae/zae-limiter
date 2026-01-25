@@ -8,12 +8,14 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import (
+    CacheStats,
     Limit,
     LimiterInfo,
     OnUnavailable,
     RateLimiter,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    ValidationError,
 )
 from zae_limiter.exceptions import InvalidIdentifierError, InvalidNameError
 from zae_limiter.infra.discovery import InfrastructureDiscovery
@@ -171,6 +173,40 @@ class TestRateLimiterAcquire:
         )
         # Bucket should still have full capacity (no commit happened)
         assert available["rpm"] == 100
+
+    async def test_acquire_fallback_when_batch_not_supported(self, limiter, monkeypatch):
+        """Test that acquire falls back to sequential get_buckets when batch not supported."""
+        from zae_limiter.models import BackendCapabilities
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # First, create a bucket with batch operations enabled
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            assert lease.consumed == {"rpm": 1}
+
+        # Now override capabilities to disable batch operations
+        no_batch_capabilities = BackendCapabilities(
+            supports_audit_logging=True,
+            supports_usage_snapshots=True,
+            supports_infrastructure_management=True,
+            supports_change_streams=True,
+            supports_batch_operations=False,  # Disable batch
+        )
+        monkeypatch.setattr(limiter._repository, "_capabilities", no_batch_capabilities)
+
+        # Second acquire should use fallback path with existing bucket
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            assert lease.consumed == {"rpm": 1}
 
 
 class TestRateLimiterLease:
@@ -455,6 +491,289 @@ class TestRateLimiterStoredLimits:
         retrieved = await limiter.get_limits("key-1")
         assert len(retrieved) == 0
 
+    async def test_use_stored_limits_available_deprecation(self, limiter):
+        """Test that use_stored_limits in available() emits deprecation warning."""
+        import warnings
+
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_limits("key-1", limits, resource="gpt-4")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await limiter.available(
+                entity_id="key-1",
+                resource="gpt-4",
+                limits=limits,
+                use_stored_limits=True,
+            )
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "use_stored_limits is deprecated" in str(w[0].message)
+
+    async def test_use_stored_limits_time_until_available_deprecation(self, limiter):
+        """Test that use_stored_limits in time_until_available() emits deprecation warning."""
+        import warnings
+
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_limits("key-1", limits, resource="gpt-4")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await limiter.time_until_available(
+                entity_id="key-1",
+                resource="gpt-4",
+                limits=limits,
+                needed={"rpm": 1},
+                use_stored_limits=True,
+            )
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "use_stored_limits is deprecated" in str(w[0].message)
+
+
+class TestRateLimiterResourceDefaults:
+    """Tests for resource-level default configs."""
+
+    async def test_set_and_get_resource_defaults(self, limiter):
+        """Test storing and retrieving resource-level defaults."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+        ]
+        await limiter.set_resource_defaults("gpt-4", limits)
+
+        retrieved = await limiter.get_resource_defaults("gpt-4")
+        assert len(retrieved) == 2
+
+        names = {limit.name for limit in retrieved}
+        assert names == {"rpm", "tpm"}
+
+    async def test_delete_resource_defaults(self, limiter):
+        """Test deleting resource-level defaults."""
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_resource_defaults("gpt-4", limits)
+
+        await limiter.delete_resource_defaults("gpt-4")
+
+        retrieved = await limiter.get_resource_defaults("gpt-4")
+        assert len(retrieved) == 0
+
+    async def test_get_resource_defaults_empty(self, limiter):
+        """Test getting resource defaults when none exist."""
+        retrieved = await limiter.get_resource_defaults("nonexistent")
+        assert len(retrieved) == 0
+
+    async def test_list_resources_with_defaults(self, limiter):
+        """Test listing resources with configured defaults."""
+        # Initially empty
+        resources = await limiter.list_resources_with_defaults()
+        assert len(resources) == 0
+
+        # Add defaults for two resources
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_resource_defaults("gpt-4", limits)
+        await limiter.set_resource_defaults("claude-3", limits)
+
+        resources = await limiter.list_resources_with_defaults()
+        assert "gpt-4" in resources
+        assert "claude-3" in resources
+
+    async def test_resource_defaults_replace_on_update(self, limiter):
+        """Test that setting defaults replaces existing ones."""
+        # Set initial defaults
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+
+        # Replace with different defaults
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("tpm", 5000)])
+
+        retrieved = await limiter.get_resource_defaults("gpt-4")
+        assert len(retrieved) == 1
+        assert retrieved[0].name == "tpm"
+
+
+class TestRateLimiterSystemDefaults:
+    """Tests for system-level default configs."""
+
+    async def test_set_and_get_system_defaults(self, limiter):
+        """Test storing and retrieving system-level defaults."""
+        limits = [
+            Limit.per_minute("rpm", 50),
+            Limit.per_minute("tpm", 5_000),
+        ]
+        await limiter.set_system_defaults(limits)
+
+        retrieved, on_unavailable = await limiter.get_system_defaults()
+        assert len(retrieved) == 2
+
+        names = {limit.name for limit in retrieved}
+        assert names == {"rpm", "tpm"}
+        assert on_unavailable is None
+
+    async def test_set_system_defaults_with_on_unavailable(self, limiter):
+        """Test storing system defaults with on_unavailable config."""
+        from zae_limiter import OnUnavailable
+
+        limits = [Limit.per_minute("rpm", 50)]
+        await limiter.set_system_defaults(limits, on_unavailable=OnUnavailable.ALLOW)
+
+        retrieved, on_unavailable = await limiter.get_system_defaults()
+        assert len(retrieved) == 1
+        assert on_unavailable == OnUnavailable.ALLOW
+
+    async def test_delete_system_defaults(self, limiter):
+        """Test deleting system-level defaults."""
+        limits = [Limit.per_minute("rpm", 50)]
+        await limiter.set_system_defaults(limits)
+
+        await limiter.delete_system_defaults()
+
+        retrieved, on_unavailable = await limiter.get_system_defaults()
+        assert len(retrieved) == 0
+        assert on_unavailable is None
+
+    async def test_get_system_defaults_empty(self, limiter):
+        """Test getting system defaults when none exist."""
+        retrieved, on_unavailable = await limiter.get_system_defaults()
+        assert len(retrieved) == 0
+        assert on_unavailable is None
+
+    async def test_system_defaults_replace_on_update(self, limiter):
+        """Test that setting defaults replaces existing ones."""
+        # Set initial defaults
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 50)])
+
+        # Replace with different defaults
+        await limiter.set_system_defaults([Limit.per_minute("tpm", 2500)])
+
+        retrieved, _ = await limiter.get_system_defaults()
+        assert len(retrieved) == 1
+        assert retrieved[0].name == "tpm"
+
+
+class TestRateLimiterThreeTierResolution:
+    """Tests for three-tier limit resolution: Entity > Resource > System > Override."""
+
+    async def test_resolution_entity_level(self, limiter):
+        """Test that entity-level limits take precedence."""
+        # Set all three levels
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+
+        # Entity-level should be used (100 rpm)
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+            consume={"rpm": 75},  # Exceeds resource (50) and system (10), but not entity (100)
+        ):
+            pass  # Should succeed
+
+    async def test_resolution_resource_level_fallback(self, limiter):
+        """Test that resource-level limits are used when no entity limits exist."""
+        # Set system and resource levels only
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+
+        # Resource-level should be used (50 rpm)
+        async with limiter.acquire(
+            entity_id="user-2",  # No entity-level limits
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+            consume={"rpm": 25},  # Exceeds system (10), but not resource (50)
+        ):
+            pass  # Should succeed
+
+    async def test_resolution_system_level_fallback(self, limiter):
+        """Test that system-level limits are used when no entity/resource limits exist."""
+        # Set system level only
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # System-level should be used (100 rpm)
+        async with limiter.acquire(
+            entity_id="user-3",  # No entity-level limits
+            resource="claude-3",  # No resource-level limits
+            limits=None,  # Auto-resolve
+            consume={"rpm": 50},
+        ):
+            pass  # Should succeed
+
+    async def test_resolution_override_fallback(self, limiter):
+        """Test that override parameter is used when no stored config exists."""
+        # No stored config at any level
+
+        # Override parameter should be used
+        async with limiter.acquire(
+            entity_id="user-4",
+            resource="new-resource",
+            limits=[Limit.per_minute("rpm", 100)],  # Override
+            consume={"rpm": 50},
+        ):
+            pass  # Should succeed
+
+    async def test_resolution_no_limits_raises_validation_error(self, limiter):
+        """Test that ValidationError is raised when no limits found anywhere."""
+        # No stored config and no override
+
+        with pytest.raises(ValidationError) as exc_info:
+            async with limiter.acquire(
+                entity_id="user-5",
+                resource="unknown-resource",
+                limits=None,  # No override
+                consume={"rpm": 1},
+            ):
+                pass
+
+        assert "No limits configured" in str(exc_info.value)
+        assert "user-5" in str(exc_info.value)
+        assert "unknown-resource" in str(exc_info.value)
+
+    async def test_on_unavailable_resolution_from_system_config(self, limiter):
+        """Test that on_unavailable is resolved from system config."""
+        from zae_limiter import OnUnavailable
+
+        # Set system defaults with on_unavailable
+        await limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100)],
+            on_unavailable=OnUnavailable.ALLOW,
+        )
+
+        # Acquire should use the system config on_unavailable
+        async with limiter.acquire(
+            entity_id="user-6",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve limits and on_unavailable
+            consume={"rpm": 1},
+        ):
+            pass  # Should succeed
+
+    async def test_available_uses_resolution(self, limiter):
+        """Test that available() also uses three-tier resolution."""
+        # Set resource-level limits
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+
+        # available() should resolve to resource level
+        available = await limiter.available(
+            entity_id="user-7",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+        )
+        assert available["rpm"] == 100
+
+    async def test_time_until_available_uses_resolution(self, limiter):
+        """Test that time_until_available() also uses three-tier resolution."""
+        # Set resource-level limits
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+
+        # time_until_available() should resolve to resource level
+        wait_time = await limiter.time_until_available(
+            entity_id="user-8",
+            resource="gpt-4",
+            needed={"rpm": 50},
+            limits=None,  # Auto-resolve
+        )
+        assert wait_time == 0.0  # Full capacity available
+
 
 class TestRateLimiterCapacity:
     """Tests for capacity queries."""
@@ -564,10 +883,10 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ServiceUnavailable", "Message": "DynamoDB down"}},
-                "GetItem",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
 
         # Set on_unavailable to ALLOW
         limiter.on_unavailable = OnUnavailable.ALLOW
@@ -592,10 +911,10 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ProvisionedThroughputExceededException"}},
-                "Query",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
 
         # Set on_unavailable to BLOCK (default)
         limiter.on_unavailable = OnUnavailable.BLOCK
@@ -623,10 +942,10 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "InternalServerError"}},
-                "TransactWriteItems",
+                "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
 
         # Set limiter to BLOCK, but override in acquire
         limiter.on_unavailable = OnUnavailable.BLOCK
@@ -650,7 +969,7 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise Exception("DynamoDB timeout")
 
-        monkeypatch.setattr(limiter._repository, "get_bucket", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
 
         # Set limiter to ALLOW, but override in acquire
         limiter.on_unavailable = OnUnavailable.ALLOW
@@ -671,8 +990,10 @@ class TestRateLimiterStackOptions:
     """Tests for stack_options initialization."""
 
     @pytest.mark.asyncio
-    async def test_limiter_with_stack_options_calls_create_stack(self, mock_dynamodb, monkeypatch):
-        """When stack_options is provided, _ensure_initialized should call create_stack."""
+    async def test_limiter_with_stack_options_calls_ensure_infrastructure(
+        self, mock_dynamodb, monkeypatch
+    ):
+        """When stack_options is provided, _ensure_initialized calls ensure_infrastructure."""
         from unittest.mock import AsyncMock
 
         # mock_dynamodb fixture is needed to set up AWS credentials
@@ -689,23 +1010,29 @@ class TestRateLimiterStackOptions:
                 skip_version_check=True,  # Skip version check to isolate test
             )
 
-            # Mock the create_stack method to track calls
-            create_stack_mock = AsyncMock(return_value=None)
-            monkeypatch.setattr(limiter._repository, "create_stack", create_stack_mock)
+            # Mock ensure_infrastructure to track calls
+            ensure_infrastructure_mock = AsyncMock(return_value=None)
+            monkeypatch.setattr(
+                limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
+            )
 
             # Call _ensure_initialized
             await limiter._ensure_initialized()
 
-            # Verify create_stack was called with correct stack_options
-            create_stack_mock.assert_called_once_with(stack_options=stack_options)
+            # Verify ensure_infrastructure was called
+            ensure_infrastructure_mock.assert_called_once()
 
             await limiter.close()
 
     @pytest.mark.asyncio
-    async def test_limiter_without_stack_options_skips_create_stack(
+    async def test_limiter_without_stack_options_calls_ensure_infrastructure(
         self, mock_dynamodb, monkeypatch
     ):
-        """When stack_options is None, _ensure_initialized should not call create_stack."""
+        """When stack_options is None, _ensure_initialized still calls ensure_infrastructure.
+
+        The ensure_infrastructure method is always called by RateLimiter, but it's
+        a no-op when Repository was created without stack_options.
+        """
         from unittest.mock import AsyncMock
 
         # mock_dynamodb fixture is needed to set up AWS credentials
@@ -720,15 +1047,17 @@ class TestRateLimiterStackOptions:
                 skip_version_check=True,
             )
 
-            # Mock create_stack to track if it's called
-            create_stack_mock = AsyncMock(return_value=None)
-            monkeypatch.setattr(limiter._repository, "create_stack", create_stack_mock)
+            # Mock ensure_infrastructure to track if it's called
+            ensure_infrastructure_mock = AsyncMock(return_value=None)
+            monkeypatch.setattr(
+                limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
+            )
 
             # Call _ensure_initialized
             await limiter._ensure_initialized()
 
-            # Verify create_stack was NOT called
-            create_stack_mock.assert_not_called()
+            # Verify ensure_infrastructure WAS called (it's a no-op when no stack_options)
+            ensure_infrastructure_mock.assert_called_once()
 
             await limiter.close()
 
@@ -1006,6 +1335,123 @@ class TestRateLimiterGetStatus:
 
             await limiter.close()
 
+    @pytest.mark.asyncio
+    async def test_get_status_includes_iam_role_arns(self, mock_dynamodb):
+        """get_status should include IAM role ARNs when available in stack outputs."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-iam-roles-status",
+                region="us-east-1",
+            )
+
+            # Create table first
+            await limiter._repository.create_table()
+
+            # Mock StackManager to return stack status and outputs
+            mock_cfn_client = MagicMock()
+            mock_cfn_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "StackName": "ZAEL-test-iam-roles-status",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "Outputs": [
+                                {
+                                    "OutputKey": "AppRoleArn",
+                                    "OutputValue": "arn:aws:iam::123456789012:role/app-role",
+                                },
+                                {
+                                    "OutputKey": "AdminRoleArn",
+                                    "OutputValue": "arn:aws:iam::123456789012:role/admin-role",
+                                },
+                                {
+                                    "OutputKey": "ReadOnlyRoleArn",
+                                    "OutputValue": "arn:aws:iam::123456789012:role/readonly-role",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+            mock_manager._get_client = AsyncMock(return_value=mock_cfn_client)
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_status()
+
+            assert status.app_role_arn == "arn:aws:iam::123456789012:role/app-role"
+            assert status.admin_role_arn == "arn:aws:iam::123456789012:role/admin-role"
+            assert status.readonly_role_arn == "arn:aws:iam::123456789012:role/readonly-role"
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_status_role_arns_none_when_roles_disabled(self, mock_dynamodb):
+        """get_status should return None for role ARNs when IAM roles are disabled."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-no-iam-roles-status",
+                region="us-east-1",
+            )
+
+            # Create table first
+            await limiter._repository.create_table()
+
+            # Mock StackManager with no role outputs (roles disabled)
+            mock_cfn_client = MagicMock()
+            mock_cfn_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "StackName": "ZAEL-test-no-iam-roles-status",
+                            "StackStatus": "CREATE_COMPLETE",
+                            "Outputs": [
+                                {
+                                    "OutputKey": "TableName",
+                                    "OutputValue": "ZAEL-test-no-iam-roles-status",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+
+            mock_manager = MagicMock()
+            mock_manager.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+            mock_manager._get_client = AsyncMock(return_value=mock_cfn_client)
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_status()
+
+            # Role ARNs should be None when not in outputs
+            assert status.app_role_arn is None
+            assert status.admin_role_arn is None
+            assert status.readonly_role_arn is None
+
+            await limiter.close()
+
 
 class TestSyncRateLimiterGetStatus:
     """Tests for SyncRateLimiter.get_status method."""
@@ -1037,6 +1483,10 @@ class TestSyncRateLimiterGetStatus:
         assert hasattr(status, "client_version")
         assert hasattr(status, "table_item_count")
         assert hasattr(status, "table_size_bytes")
+        # IAM role ARN fields (Issue #132)
+        assert hasattr(status, "app_role_arn")
+        assert hasattr(status, "admin_role_arn")
+        assert hasattr(status, "readonly_role_arn")
 
 
 class TestRateLimiterInputValidation:
@@ -2049,3 +2499,224 @@ class TestRateLimiterListDeployed:
             mock_session.client.assert_called_once_with("cloudformation")
 
             await discovery.close()
+
+
+class TestRateLimiterRepositoryParameter:
+    """Tests for the new repository parameter in RateLimiter constructor."""
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_accepted(self, mock_dynamodb):
+        """Test RateLimiter accepts repository parameter."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            repo = Repository(
+                name="my-repo-app",
+                region="us-east-1",
+            )
+            limiter = RateLimiter(repository=repo)
+
+            assert limiter._repository is repo
+            assert limiter.stack_name == "ZAEL-my-repo-app"
+            assert limiter.name == "ZAEL-my-repo-app"
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_conflict_with_name_raises(self, mock_dynamodb):
+        """Test ValueError when both repository and name are provided."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="my-app", region="us-east-1")
+
+            with pytest.raises(ValueError) as exc_info:
+                RateLimiter(repository=repo, name="other-app")
+
+            assert "Cannot specify both 'repository'" in str(exc_info.value)
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_conflict_with_region_raises(self, mock_dynamodb):
+        """Test ValueError when both repository and region are provided."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="my-app", region="us-east-1")
+
+            with pytest.raises(ValueError) as exc_info:
+                RateLimiter(repository=repo, region="eu-west-1")
+
+            assert "Cannot specify both 'repository'" in str(exc_info.value)
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_conflict_with_endpoint_url_raises(self, mock_dynamodb):
+        """Test ValueError when both repository and endpoint_url are provided."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="my-app", region="us-east-1")
+
+            with pytest.raises(ValueError) as exc_info:
+                RateLimiter(repository=repo, endpoint_url="http://localhost:4566")
+
+            assert "Cannot specify both 'repository'" in str(exc_info.value)
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_repository_parameter_conflict_with_stack_options_raises(self, mock_dynamodb):
+        """Test ValueError when both repository and stack_options are provided."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository, StackOptions
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="my-app", region="us-east-1")
+
+            with pytest.raises(ValueError) as exc_info:
+                RateLimiter(repository=repo, stack_options=StackOptions())
+
+            assert "Cannot specify both 'repository'" in str(exc_info.value)
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_default_limiter_creates_repository(self, mock_dynamodb):
+        """Test RateLimiter with no args creates default repository."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            # No deprecation warning for default behavior
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                limiter = RateLimiter()
+                # Filter for our specific deprecation warning
+                deprecation_warnings = [x for x in w if "deprecated" in str(x.message).lower()]
+                assert len(deprecation_warnings) == 0
+
+            assert limiter.stack_name == "ZAEL-limiter"
+            assert limiter._repository is not None
+            await limiter.close()
+
+
+class TestRepositoryProtocolCompliance:
+    """Tests that Repository implements RepositoryProtocol."""
+
+    def test_repository_is_instance_of_protocol(self):
+        """Test that Repository passes isinstance check for RepositoryProtocol."""
+        from zae_limiter import Repository, RepositoryProtocol
+
+        repo = Repository(name="test", region="us-east-1")
+        assert isinstance(repo, RepositoryProtocol)
+
+    def test_repository_protocol_is_runtime_checkable(self):
+        """Test that RepositoryProtocol is runtime checkable."""
+        from zae_limiter import RepositoryProtocol
+
+        # Should have __subclasshook__ from @runtime_checkable
+        assert hasattr(RepositoryProtocol, "__subclasshook__")
+
+    def test_repository_has_capabilities_property(self):
+        """Test that Repository exposes capabilities."""
+        from zae_limiter import BackendCapabilities, Repository
+
+        repo = Repository(name="test", region="us-east-1")
+        caps = repo.capabilities
+
+        assert isinstance(caps, BackendCapabilities)
+        assert caps.supports_audit_logging is True
+        assert caps.supports_usage_snapshots is True
+        assert caps.supports_infrastructure_management is True
+        assert caps.supports_change_streams is True
+
+
+class TestLazyImports:
+    """Tests for lazy imports in __init__.py."""
+
+    def test_repository_lazy_import(self):
+        """Test Repository can be imported from zae_limiter."""
+        from zae_limiter import Repository
+
+        assert Repository is not None
+        assert Repository.__name__ == "Repository"
+
+    def test_repository_protocol_lazy_import(self):
+        """Test RepositoryProtocol can be imported from zae_limiter."""
+        from zae_limiter import RepositoryProtocol
+
+        assert RepositoryProtocol is not None
+        assert RepositoryProtocol.__name__ == "RepositoryProtocol"
+
+    def test_stack_manager_lazy_import(self):
+        """Test StackManager can be imported from zae_limiter."""
+        from zae_limiter import StackManager
+
+        assert StackManager is not None
+        assert StackManager.__name__ == "StackManager"
+
+    def test_invalid_attribute_raises(self):
+        """Test accessing invalid attribute raises AttributeError."""
+        import zae_limiter
+
+        with pytest.raises(AttributeError) as exc_info:
+            _ = zae_limiter.NonExistentClass
+
+        assert "has no attribute 'NonExistentClass'" in str(exc_info.value)
+
+
+class TestRateLimiterConfigCache:
+    """Tests for config cache management methods."""
+
+    @pytest.mark.asyncio
+    async def test_get_cache_stats_returns_cache_stats(self, mock_dynamodb):
+        """Test get_cache_stats() returns CacheStats object."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter()
+
+            stats = limiter.get_cache_stats()
+
+            assert isinstance(stats, CacheStats)
+            assert stats.hits == 0
+            assert stats.misses == 0
+            assert stats.size == 0
+            assert stats.ttl_seconds == 60  # Default TTL
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_cache_stats_with_custom_ttl(self, mock_dynamodb):
+        """Test get_cache_stats() reflects custom TTL."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(config_cache_ttl=120)
+
+            stats = limiter.get_cache_stats()
+
+            assert stats.ttl_seconds == 120
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_invalidate_config_cache(self, mock_dynamodb):
+        """Test invalidate_config_cache() clears cache entries."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.config_cache import CacheEntry
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter()
+
+            # Manually populate the cache to verify invalidation
+            entry = CacheEntry(value=[], expires_at=9999999999.0)
+            limiter._config_cache._resource_defaults["gpt-4"] = entry
+
+            assert limiter.get_cache_stats().size == 1
+
+            await limiter.invalidate_config_cache()
+
+            assert limiter.get_cache_stats().size == 0
+            await limiter.close()

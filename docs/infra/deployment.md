@@ -10,7 +10,7 @@ zae-limiter uses CloudFormation to deploy:
 - **DynamoDB Streams** - Captures changes for usage aggregation
 - **Lambda Function** - Aggregates usage into hourly/daily snapshots and archives audit events
 - **S3 Bucket** - Archives expired audit events (when audit archival is enabled)
-- **IAM Roles** - Least-privilege access for Lambda
+- **IAM Roles** - Least-privilege access for Lambda and application access (App/Admin/ReadOnly)
 - **CloudWatch Logs** - Lambda function logs
 
 ## CLI Deployment (Recommended)
@@ -41,6 +41,7 @@ zae-limiter deploy \
 | `--pitr-recovery-days` | Point-in-time recovery (1-35 days) | None (disabled) |
 | `--enable-audit-archival/--no-audit-archival` | Archive expired audit events to S3 | `true` |
 | `--audit-archive-glacier-days` | Days before Glacier IR transition | `90` |
+| `--enable-iam-roles/--no-iam-roles` | Create App/Admin/ReadOnly IAM roles | `true` |
 
 For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
@@ -125,6 +126,71 @@ The `LimiterInfo` object provides:
 ```bash
 zae-limiter delete --name limiter --region us-east-1 --yes
 ```
+
+## Admin vs Application Workflow
+
+zae-limiter supports separation of concerns between infrastructure administrators and application developers.
+
+### Admin Workflow (Infrastructure & Config)
+
+Admins deploy infrastructure and configure rate limits centrally:
+
+```bash
+# 1. Deploy infrastructure
+zae-limiter deploy --name prod --region us-east-1
+
+# 2. Configure system-wide defaults
+zae-limiter system set-defaults -l rpm:100 -l tpm:10000 --on-unavailable block
+
+# 3. Configure resource-specific limits
+zae-limiter resource set-defaults gpt-4 -l rpm:50 -l tpm:100000
+zae-limiter resource set-defaults gpt-3.5-turbo -l rpm:200 -l tpm:500000
+
+# 4. Configure premium user tiers
+zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:500 -l tpm:500000
+```
+
+### Application Workflow (Connect Only)
+
+Application code connects to existing infrastructure without managing it:
+
+```python
+from zae_limiter import RateLimiter
+
+# Connect only - no stack_options means no infrastructure changes
+limiter = RateLimiter(
+    name="prod",
+    region="us-east-1",
+    # No stack_options = connect only, no create/update
+)
+
+# Limits are automatically resolved from stored config
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="gpt-4",
+    limits=None,  # Auto-resolves: Entity > Resource > System
+    consume={"rpm": 1},
+) as lease:
+    await call_api()
+```
+
+### Benefits
+
+| Concern | Admin | Application |
+|---------|-------|-------------|
+| Infrastructure | ✓ Deploy, update, delete stacks | Connect only |
+| Rate limits | ✓ Configure at all levels | Auto-resolved |
+| Credentials | Full AWS access (or AdminRole) | DynamoDB read/write only (or AppRole) |
+| Changes | Through CLI/IaC | None |
+
+This separation allows:
+
+- **Centralized control** - Admins manage limits without code changes
+- **Simplified apps** - No hardcoded limits, automatic resolution
+- **Audit trail** - All config changes logged to DynamoDB
+- **Dynamic updates** - Change limits without redeploying apps
+
+See [Configuration Hierarchy](../guide/config-hierarchy.md) for limit resolution details.
 
 ## Stack Lifecycle Management
 
@@ -337,6 +403,75 @@ X-Ray charges based on traces recorded and retrieved. For typical usage:
 - After free tier: $5.00 per million traces recorded
 
 For high-volume deployments, consider sampling strategies or enabling tracing only for troubleshooting.
+
+## Application IAM Roles
+
+The stack creates three optional IAM roles for different access patterns. These are enabled by default and provide least-privilege access for applications, administrators, and monitoring systems.
+
+### Enabling/Disabling Roles
+
+=== "CLI"
+
+    ```bash
+    # Deploy with IAM roles (default)
+    zae-limiter deploy --name limiter --region us-east-1
+
+    # Deploy without IAM roles (for custom IAM)
+    zae-limiter deploy --name limiter --region us-east-1 --no-iam-roles
+    ```
+
+=== "Programmatic"
+
+    ```python
+    from zae_limiter import RateLimiter, StackOptions
+
+    # With IAM roles (default)
+    limiter = RateLimiter(
+        name="limiter",
+        region="us-east-1",
+        stack_options=StackOptions(),  # create_iam_roles=True by default
+    )
+
+    # Without IAM roles
+    limiter = RateLimiter(
+        name="limiter",
+        region="us-east-1",
+        stack_options=StackOptions(create_iam_roles=False),
+    )
+    ```
+
+### Role Summary
+
+| Role | Use Case | DynamoDB Permissions |
+|------|----------|---------------------|
+| `AppRole` | Applications calling `acquire()` | GetItem, Query, TransactWriteItems |
+| `AdminRole` | Ops teams managing config | App + PutItem, DeleteItem, UpdateItem, BatchWriteItem |
+| `ReadOnlyRole` | Monitoring and dashboards | GetItem, Query, Scan, DescribeTable |
+
+### Viewing Role ARNs
+
+The `status` command shows IAM role ARNs when roles are enabled:
+
+```bash
+zae-limiter status --name limiter --region us-east-1
+```
+
+Output includes:
+```
+IAM Roles
+  App:           arn:aws:iam::123456789012:role/ZAEL-limiter-app-role
+  Admin:         arn:aws:iam::123456789012:role/ZAEL-limiter-admin-role
+  ReadOnly:      arn:aws:iam::123456789012:role/ZAEL-limiter-readonly-role
+```
+
+### Role Naming
+
+- Default: `${StackName}-{app,admin,readonly}-role` (e.g., `ZAEL-limiter-app-role`)
+- With `--role-name-format`: Custom naming pattern applied to all roles
+
+Roles respect `--permission-boundary` if configured.
+
+For detailed IAM role configuration and usage examples, see [CloudFormation - Application IAM Roles](cloudformation.md#application-iam-roles).
 
 ## Next Steps
 

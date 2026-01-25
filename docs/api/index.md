@@ -11,6 +11,7 @@ The main components of the API are:
 | [`RateLimiter`](limiter.md#zae_limiter.limiter.RateLimiter) | Async rate limiter client |
 | [`SyncRateLimiter`](limiter.md#zae_limiter.limiter.SyncRateLimiter) | Synchronous rate limiter client |
 | [`Limit`](models.md#zae_limiter.models.Limit) | Rate limit configuration |
+| [`CacheStats`](models.md#zae_limiter.config_cache.CacheStats) | Cache performance statistics |
 | [`RateLimitExceeded`](exceptions.md#zae_limiter.exceptions.RateLimitExceeded) | Exception when limit is exceeded |
 
 ## Quick Reference
@@ -122,6 +123,7 @@ from zae_limiter import (
     Entity,
     LimitStatus,
     BucketState,
+    CacheStats,
 
     # Audit
     AuditEvent,

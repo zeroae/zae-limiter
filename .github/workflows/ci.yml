@@ -2,9 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'release/v*'
+      - 'release/[0-9]*'
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - 'release/v*'
+      - 'release/[0-9]*'
 
 permissions:
   contents: write
@@ -20,29 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-      - name: Set up Python
-        run: uv python install 3.12
-      - name: Install dependencies
-        run: uv sync --extra dev
-      - name: Lint with ruff
-        run: uv run ruff check .
-      - name: Check formatting
-        run: uv run ruff format --check .
-      - name: Lint CloudFormation template
-        run: uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-      - name: Set up Python
-        run: uv python install 3.12
-      - name: Install dependencies
-        run: uv sync --extra dev
-      - name: Type check with mypy
-        run: uv run mypy src/zae_limiter
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: pre-commit/action@v3.0.1
 
   unit:
     runs-on: ubuntu-latest
@@ -83,13 +70,14 @@ jobs:
         python-version: ["3.11", "3.12"]
     services:
       localstack:
-        image: localstack/localstack:latest
+        image: localstack/localstack:4
         ports:
           - 4566:4566
         env:
-          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3
           DEBUG: 0
           DOCKER_HOST: unix:///var/run/docker.sock
+          DYNAMODB_REMOVE_EXPIRED_ITEMS: 1
         volumes:
           - /var/run/docker.sock:/var/run/docker.sock
         options: >-
@@ -136,13 +124,14 @@ jobs:
         python-version: ["3.11", "3.12"]
     services:
       localstack:
-        image: localstack/localstack:latest
+        image: localstack/localstack:4
         ports:
           - 4566:4566
         env:
-          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3
           DEBUG: 0
           DOCKER_HOST: unix:///var/run/docker.sock
+          DYNAMODB_REMOVE_EXPIRED_ITEMS: 1
         volumes:
           - /var/run/docker.sock:/var/run/docker.sock
         options: >-
@@ -186,13 +175,14 @@ jobs:
     runs-on: ubuntu-latest
     services:
       localstack:
-        image: localstack/localstack:latest
+        image: localstack/localstack:4
         ports:
           - 4566:4566
         env:
-          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs
+          SERVICES: dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3
           DEBUG: 0
           DOCKER_HOST: unix:///var/run/docker.sock
+          DYNAMODB_REMOVE_EXPIRED_ITEMS: 1
         volumes:
           - /var/run/docker.sock:/var/run/docker.sock
         options: >-

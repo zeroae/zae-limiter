@@ -1,72 +1,38 @@
 ---
-description: Create and review Architecture Decision Records. Use `/adr create <title>` to create a new ADR or `/adr review` to check an existing one.
-argument-hint: create <title> | review [file]
-allowed-tools: Glob, Read, Write, AskUserQuestion
+description: Create and review Architecture Decision Records. Use `/adr create <title>` to create a new ADR, `/adr review` to check an existing one, `/adr audit` to validate code compliance, `/adr consistency` to check ADRs for conflicts, `/adr list` to show all ADRs, `/adr accept <number>` to mark as accepted, or `/adr supersede <old> <new>` to mark an ADR as superseded.
+argument-hint: create <title> | review [file] | audit [--base <branch>] | consistency | list | accept <number> | supersede <old> <new>
+allowed-tools: Glob, Grep, Read, Write, Edit, Bash, AskUserQuestion, Task
 ---
 
 # ADR Skill
 
-Create and review Architecture Decision Records.
+Create, review, and audit Architecture Decision Records.
+
+**Format rules:** See `docs/adr/000-adr-format-standard.md` for size limits, required sections, and excluded content.
 
 ## Arguments
 
-- `$ARGUMENTS`: Either `create <title>` or `review [file]`
+- `$ARGUMENTS`: One of:
+  - `create <title>` - Create a new ADR
+  - `review [file]` - Review an existing ADR
+  - `audit [--base <branch>]` - Validate code against ADR decisions
+  - `consistency` - Check ADRs for conflicts and ambiguities
+  - `list` - List all ADRs with status and title
+  - `accept <number>` - Transition ADR status to Accepted
+  - `supersede <old> <new>` - Mark old ADR as superseded by new one
 
-## Create Mode
+## Subcommand Instructions
 
-When arguments start with `create`:
+Each subcommand has detailed instructions in a separate file:
 
-1. List `docs/adr/` to find the next ADR number
-2. Ask the user (via AskUserQuestion):
-   - What problem are you solving? (Context)
-   - What did you decide? (Decision - one sentence)
-   - What alternatives did you reject and why?
-3. Generate ADR under 100 lines with this structure:
+| Command | Instructions |
+|---------|--------------|
+| `create` | See `create.md` |
+| `review` | See `review.md` |
+| `audit` | See `audit.md` |
+| `consistency` | See `consistency.md` |
+| `list` | See `list.md` |
+| `accept` | See `accept.md` |
+| `supersede` | See `supersede.md` |
 
-```markdown
-# ADR-NNN: <Title>
-
-**Status:** Proposed
-**Date:** <today>
-**Issue:** [#NNN](link) (if applicable)
-
-## Context
-
-<2-3 paragraphs max>
-
-## Decision
-
-<1-2 sentences>
-
-## Consequences
-
-**Positive:**
-- <benefit>
-
-**Negative:**
-- <trade-off>
-
-## Alternatives Considered
-
-### <Alternative 1>
-Rejected because: <one sentence>
-```
-
-4. Do NOT include: code examples, checklists, API signatures, test cases, cost calculations
-
-## Review Mode
-
-When arguments start with `review`:
-
-1. If no file specified, list `docs/adr/` and ask which to review
-2. Check the ADR against these criteria:
-
-| Check | Pass Criteria |
-|-------|---------------|
-| Length | Under 100 lines |
-| Single decision | One architectural decision, not multiple |
-| No implementation | No code, checklists, test cases |
-| Clear decision | Decision section is 1-2 sentences |
-| Required sections | Context, Decision, Consequences, Alternatives |
-
-3. Report as checklist with specific fix suggestions
+Read the appropriate file based on the first argument, then follow its instructions.

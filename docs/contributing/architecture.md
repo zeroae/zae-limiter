@@ -10,7 +10,9 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 |-------------|----|----|
 | Entity metadata | `ENTITY#{id}` | `#META` |
 | Bucket | `ENTITY#{id}` | `#BUCKET#{resource}#{limit_name}` |
-| Limit config | `ENTITY#{id}` | `#LIMIT#{resource}#{limit_name}` |
+| Entity limit config | `ENTITY#{id}` | `#LIMIT#{resource}#{limit_name}` |
+| Resource limit config | `RESOURCE#{resource}` | `#LIMIT#{resource}#{limit_name}` |
+| System limit config | `SYSTEM#` | `#LIMIT#{resource}#{limit_name}` |
 | Usage snapshot | `ENTITY#{id}` | `#USAGE#{resource}#{window_key}` |
 | System version | `SYSTEM#` | `#VERSION` |
 | Audit events | `AUDIT#{entity_id}` | `#AUDIT#{timestamp}` |
@@ -28,11 +30,33 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 |---------|-------|
 | Get entity | `PK=ENTITY#{id}, SK=#META` |
 | Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
+| Batch get buckets | `BatchGetItem` with multiple PK/SK pairs |
 | Get children | GSI1: `GSI1PK=PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
+| Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#{resource}#` |
+| Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#{resource}#` |
+| Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+
+### Optimized Read Patterns
+
+The `acquire()` operation uses `BatchGetItem` to fetch all required buckets in a
+single DynamoDB round trip (see [Issue #133](https://github.com/zeroae/zae-limiter/issues/133)):
+
+```python
+# Before: N sequential GetItem calls
+for entity_id, resource, limit_name in bucket_keys:
+    bucket = await get_bucket(entity_id, resource, limit_name)
+
+# After: 1 BatchGetItem call
+buckets = await batch_get_buckets(bucket_keys)
+```
+
+This optimization is particularly beneficial for cascade scenarios where both
+entity and parent buckets are fetched together, reducing latency from
+2×N round trips to 1.
 
 ### Item Structure
 
@@ -107,6 +131,36 @@ Snapshots require atomic upsert (create-or-update) with ADD counters for usage
 aggregation, so they use a flat structure to enable single-call atomic updates.
 
 See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
+
+**Limit config records also use FLAT structure** (v0.5.0+):
+
+```python
+# System/Resource/Entity limit config (FLAT structure):
+{
+    "PK": "RESOURCE#gpt-4",           # or SYSTEM# or ENTITY#{id}
+    "SK": "#LIMIT#gpt-4#tpm",
+    "resource": "gpt-4",               # Top-level
+    "limit_name": "tpm",               # Top-level
+    "capacity": 100000,                # Top-level
+    "burst": 100000,                   # Top-level
+    "refill_amount": 100000,           # Top-level
+    "refill_period_seconds": 60        # Top-level
+}
+```
+
+Limit configs use three-level precedence: **Entity > Resource > System > Constructor defaults**.
+
+**Key builders:**
+
+- `pk_system()` - Returns `SYSTEM#`
+- `pk_resource(resource)` - Returns `RESOURCE#{resource}`
+- `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
+- `sk_limit(resource, limit_name)` - Returns `#LIMIT#{resource}#{limit_name}`
+
+**Audit entity IDs for config levels** (see [ADR-106](../adr/106-audit-entity-ids-for-config.md)):
+
+- System config: Uses `$SYSTEM` as entity_id
+- Resource config: Uses `$RESOURCE:{resource_name}` (e.g., `$RESOURCE:gpt-4`)
 
 ## Token Bucket Implementation
 

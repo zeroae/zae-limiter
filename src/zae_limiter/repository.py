@@ -1,9 +1,9 @@
 """DynamoDB repository for rate limiter data."""
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-import aioboto3  # type: ignore[import-untyped]
+import aioboto3
 from botocore.exceptions import ClientError
 from ulid import ULID
 
@@ -12,6 +12,7 @@ from .exceptions import EntityExistsError
 from .models import (
     AuditAction,
     AuditEvent,
+    BackendCapabilities,
     BucketState,
     Entity,
     Limit,
@@ -19,6 +20,7 @@ from .models import (
     UsageSnapshot,
     UsageSummary,
     validate_identifier,
+    validate_name,
 )
 from .naming import normalize_stack_name
 
@@ -30,26 +32,58 @@ class Repository:
     Handles all DynamoDB operations including entities, buckets,
     limit configs, and transactions.
 
-    The stack_name is automatically prefixed with 'ZAEL-' if not already present.
-    The table_name is always identical to the stack_name.
+    Args:
+        name: Resource identifier (e.g., "my-app"). Automatically prefixed
+            with 'ZAEL-' to form stack_name and table_name.
+        region: AWS region (e.g., "us-east-1").
+        endpoint_url: Custom endpoint URL (e.g., LocalStack).
+        stack_options: Configuration for CloudFormation infrastructure.
+            Pass StackOptions to enable declarative infrastructure management.
+
+    Example:
+        # Basic usage
+        repo = Repository(name="my-app", region="us-east-1")
+
+        # With infrastructure management (ADR-108)
+        repo = Repository(
+            name="my-app",
+            region="us-east-1",
+            stack_options=StackOptions(lambda_memory=512, enable_alarms=True),
+        )
     """
 
     def __init__(
         self,
-        stack_name: str,
+        name: str,
         region: str | None = None,
         endpoint_url: str | None = None,
+        stack_options: StackOptions | None = None,
     ) -> None:
-        # Validate and normalize stack name (adds ZAEL- prefix)
-        self.stack_name = normalize_stack_name(stack_name)
+        # Validate and normalize name (adds ZAEL- prefix)
+        self.stack_name = normalize_stack_name(name)
         # Table name is always identical to stack name
         self.table_name = self.stack_name
         self.region = region
         self.endpoint_url = endpoint_url
+        self._stack_options = stack_options
         self._session: aioboto3.Session | None = None
         self._client: Any = None
         self._caller_identity_arn: str | None = None
         self._caller_identity_fetched = False
+
+        # DynamoDB supports all extended features
+        self._capabilities = BackendCapabilities(
+            supports_audit_logging=True,
+            supports_usage_snapshots=True,
+            supports_infrastructure_management=True,
+            supports_change_streams=True,
+            supports_batch_operations=True,
+        )
+
+    @property
+    def capabilities(self) -> BackendCapabilities:
+        """Declare which extended features this backend supports."""
+        return self._capabilities
 
     async def _get_client(self) -> Any:
         """Get or create the DynamoDB client."""
@@ -128,6 +162,24 @@ class Repository:
             if e.response["Error"]["Code"] != "ResourceNotFoundException":
                 raise
 
+    async def ensure_infrastructure(self) -> None:
+        """
+        Ensure DynamoDB infrastructure exists.
+
+        Creates CloudFormation stack using stack_options passed to the constructor.
+        No-op if stack_options was not provided.
+
+        Raises:
+            StackCreationError: If CloudFormation stack creation fails
+        """
+        if self._stack_options is None:
+            return
+
+        from .infra.stack_manager import StackManager
+
+        async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
+            await manager.create_stack(stack_options=self._stack_options)
+
     async def create_stack(
         self,
         stack_options: StackOptions | None = None,
@@ -135,18 +187,37 @@ class Repository:
         """
         Create DynamoDB infrastructure via CloudFormation.
 
+        .. deprecated:: 0.6.0
+            Use :meth:`ensure_infrastructure` instead. Pass stack_options
+            to the Repository constructor. Will be removed in v2.0.0.
+
         Args:
-            stack_options: Configuration for CloudFormation stack
+            stack_options: Configuration for CloudFormation stack.
+                If None, uses the stack_options passed to the constructor.
 
         Raises:
             StackCreationError: If CloudFormation stack creation fails
         """
-        from .infra.stack_manager import StackManager
+        import warnings
 
-        async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
-            await manager.create_stack(
-                stack_options=stack_options,
-            )
+        warnings.warn(
+            "create_stack() is deprecated. Use ensure_infrastructure() instead. "
+            "Pass stack_options to the Repository constructor. "
+            "This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        if stack_options is not None:
+            # Temporarily override stack_options for this call
+            saved = self._stack_options
+            self._stack_options = stack_options
+            try:
+                await self.ensure_infrastructure()
+            finally:
+                self._stack_options = saved
+        else:
+            await self.ensure_infrastructure()
 
     # -------------------------------------------------------------------------
     # Entity operations
@@ -365,6 +436,114 @@ class Repository:
 
         return [self._deserialize_bucket(item) for item in response.get("Items", [])]
 
+    async def batch_get_buckets(
+        self,
+        keys: list[tuple[str, str, str]],
+    ) -> dict[tuple[str, str, str], BucketState]:
+        """
+        Batch get multiple buckets in a single DynamoDB call.
+
+        Uses BatchGetItem to reduce round trips when fetching buckets for
+        multiple entity/resource/limit combinations (e.g., cascade scenarios).
+
+        Args:
+            keys: List of (entity_id, resource, limit_name) tuples
+
+        Returns:
+            Dict mapping (entity_id, resource, limit_name) to BucketState.
+            Missing buckets are not included in the result.
+
+        Note:
+            DynamoDB BatchGetItem supports up to 100 items per request.
+            For larger batches, this method automatically chunks the requests.
+        """
+        if not keys:
+            return {}
+
+        client = await self._get_client()
+        result: dict[tuple[str, str, str], BucketState] = {}
+
+        # Build request keys (deduplicate)
+        unique_keys = list(set(keys))
+
+        # BatchGetItem supports max 100 items per request
+        for i in range(0, len(unique_keys), 100):
+            chunk = unique_keys[i : i + 100]
+
+            request_keys = [
+                {
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource, limit_name)},
+                }
+                for entity_id, resource, limit_name in chunk
+            ]
+
+            response = await client.batch_get_item(
+                RequestItems={
+                    self.table_name: {
+                        "Keys": request_keys,
+                    }
+                }
+            )
+
+            # Process responses
+            items = response.get("Responses", {}).get(self.table_name, [])
+            for item in items:
+                bucket = self._deserialize_bucket(item)
+                key = (bucket.entity_id, bucket.resource, bucket.limit_name)
+                result[key] = bucket
+
+            # Handle unprocessed keys (retry with exponential backoff if needed)
+            # For simplicity, we don't retry here - the caller can handle missing keys
+            # In production, consider adding retry logic for UnprocessedKeys
+
+        return result
+
+    async def get_or_create_bucket(
+        self,
+        entity_id: str,
+        resource: str,
+        limit: Limit,
+    ) -> BucketState:
+        """
+        Get an existing bucket or create a new one with the given limit.
+
+        If the bucket exists, it is returned. If not, a new bucket is created
+        with capacity set to the limit's capacity.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name (e.g., "gpt-4")
+            limit: Limit configuration for the bucket
+
+        Returns:
+            Existing or newly created BucketState
+        """
+        existing = await self.get_bucket(entity_id, resource, limit.name)
+        if existing is not None:
+            return existing
+
+        # Create new bucket at full capacity
+        now_ms = self._now_ms()
+        state = BucketState(
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=limit.name,
+            tokens_milli=limit.capacity * 1000,
+            last_refill_ms=now_ms,
+            capacity_milli=limit.capacity * 1000,
+            burst_milli=limit.burst * 1000,
+            refill_amount_milli=limit.refill_amount * 1000,
+            refill_period_ms=limit.refill_period_seconds * 1000,
+            total_consumed_milli=0,
+        )
+
+        # Write bucket to DynamoDB
+        put_item = self.build_bucket_put_item(state)
+        await self.transact_write([put_item])
+
+        return state
+
     def build_bucket_put_item(
         self,
         state: BucketState,
@@ -506,6 +685,7 @@ class Repository:
         """Get stored limit configs for an entity."""
         client = await self._get_client()
 
+        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
         response = await client.query(
             TableName=self.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
@@ -513,6 +693,7 @@ class Repository:
                 ":pk": {"S": schema.pk_entity(entity_id)},
                 ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
             },
+            ConsistentRead=False,
         )
 
         limits = []
@@ -579,6 +760,419 @@ class Repository:
         for i in range(0, len(delete_requests), 25):
             chunk = delete_requests[i : i + 25]
             await client.batch_write_item(RequestItems={self.table_name: chunk})
+
+    # -------------------------------------------------------------------------
+    # Resource-level limit config operations (flat schema)
+    # -------------------------------------------------------------------------
+
+    async def set_resource_defaults(
+        self,
+        resource: str,
+        limits: list[Limit],
+        principal: str | None = None,
+    ) -> None:
+        """
+        Store default limit configs for a resource (flat schema).
+
+        Args:
+            resource: Resource name
+            limits: List of Limit configurations to store
+            principal: Caller identity for audit logging
+        """
+        validate_name(resource, "resource")
+        client = await self._get_client()
+
+        # Delete existing limits for this resource
+        await self._delete_resource_defaults_internal(resource)
+
+        # Write new limits with FLAT schema (no nested data.M)
+        # SK uses sk_resource_limit (no resource in SK since PK has it)
+        for limit in limits:
+            item = {
+                "PK": {"S": schema.pk_resource(resource)},
+                "SK": {"S": schema.sk_resource_limit(limit.name)},
+                "resource": {"S": resource},
+                "limit_name": {"S": limit.name},
+                "capacity": {"N": str(limit.capacity)},
+                "burst": {"N": str(limit.burst)},
+                "refill_amount": {"N": str(limit.refill_amount)},
+                "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
+                "config_version": {"N": "1"},  # Initial version for future caching
+            }
+            await client.put_item(TableName=self.table_name, Item=item)
+
+        # Log audit event with special prefix
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
+            details={"limits": [limit.to_dict() for limit in limits]},
+        )
+
+    async def get_resource_defaults(
+        self,
+        resource: str,
+    ) -> list[Limit]:
+        """Get stored default limit configs for a resource."""
+        validate_name(resource, "resource")
+        client = await self._get_client()
+
+        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
+        response = await client.query(
+            TableName=self.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_resource(resource)},
+                ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
+            },
+            ConsistentRead=False,
+        )
+
+        limits = []
+        for item in response.get("Items", []):
+            # Flat schema - fields are top-level
+            limits.append(
+                Limit(
+                    name=item.get("limit_name", {}).get("S", ""),
+                    capacity=int(item.get("capacity", {}).get("N", "0")),
+                    burst=int(item.get("burst", {}).get("N", "0")),
+                    refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
+                    refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
+                )
+            )
+
+        return limits
+
+    async def delete_resource_defaults(
+        self,
+        resource: str,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete stored default limit configs for a resource.
+
+        Args:
+            resource: Resource name
+            principal: Caller identity for audit logging
+        """
+        validate_name(resource, "resource")
+        await self._delete_resource_defaults_internal(resource)
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_DELETED,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
+        )
+
+    async def _delete_resource_defaults_internal(self, resource: str) -> None:
+        """Delete all default limits for a resource (internal, no audit)."""
+        client = await self._get_client()
+
+        # Query with pagination to handle large result sets
+        all_items: list[dict[str, Any]] = []
+        next_key: dict[str, Any] | None = None
+
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk_prefix)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": schema.pk_resource(resource)},
+                    ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
+                },
+                "ProjectionExpression": "PK, SK",
+            }
+            if next_key:
+                params["ExclusiveStartKey"] = next_key
+
+            response = await client.query(**params)
+            all_items.extend(response.get("Items", []))
+
+            next_key = response.get("LastEvaluatedKey")
+            if next_key is None:
+                break
+
+        if not all_items:
+            return
+
+        delete_requests = [
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in all_items
+        ]
+
+        for i in range(0, len(delete_requests), 25):
+            chunk = delete_requests[i : i + 25]
+            await client.batch_write_item(RequestItems={self.table_name: chunk})
+
+    async def list_resources_with_defaults(self) -> list[str]:
+        """List all resources that have default limit configs."""
+        client = await self._get_client()
+
+        # Query for all items with PK starting with RESOURCE#
+        # This requires a scan since we don't have a GSI for this pattern
+        # Use pagination to handle large result sets (>1MB)
+        resources: set[str] = set()
+        next_key: dict[str, Any] | None = None
+
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "FilterExpression": "begins_with(PK, :prefix)",
+                "ExpressionAttributeValues": {
+                    ":prefix": {"S": schema.RESOURCE_PREFIX},
+                },
+                "ProjectionExpression": "PK",
+            }
+            if next_key:
+                params["ExclusiveStartKey"] = next_key
+
+            response = await client.scan(**params)
+
+            # Extract unique resource names from partition keys
+            for item in response.get("Items", []):
+                pk = item.get("PK", {}).get("S", "")
+                if pk.startswith(schema.RESOURCE_PREFIX):
+                    resource = pk[len(schema.RESOURCE_PREFIX) :]
+                    resources.add(resource)
+
+            next_key = response.get("LastEvaluatedKey")
+            if next_key is None:
+                break
+
+        return sorted(resources)
+
+    # -------------------------------------------------------------------------
+    # System-level default config operations (flat schema)
+    # -------------------------------------------------------------------------
+
+    async def set_system_defaults(
+        self,
+        limits: list[Limit],
+        on_unavailable: str | None = None,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Store system-wide default limits and config (flat schema).
+
+        System defaults apply to ALL resources unless overridden at resource
+        or entity level.
+
+        Args:
+            limits: List of Limit configurations (apply to all resources)
+            on_unavailable: Behavior when DynamoDB unavailable ("allow" or "block")
+            principal: Caller identity for audit logging
+        """
+        client = await self._get_client()
+
+        # Delete existing system limits
+        await self._delete_system_limits_internal()
+
+        # Write new limits with FLAT schema (no resource in SK)
+        for limit in limits:
+            item = {
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_system_limit(limit.name)},
+                "limit_name": {"S": limit.name},
+                "capacity": {"N": str(limit.capacity)},
+                "burst": {"N": str(limit.burst)},
+                "refill_amount": {"N": str(limit.refill_amount)},
+                "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
+                "config_version": {"N": "1"},  # Initial version for future caching
+            }
+            await client.put_item(TableName=self.table_name, Item=item)
+
+            # Log audit event per limit (ADR-106: use $SYSTEM for all system-level events)
+            await self._log_audit_event(
+                action=AuditAction.LIMITS_SET,
+                entity_id="$SYSTEM",
+                principal=principal,
+                details={"limit": limit.to_dict()},
+            )
+
+        # Store system config (on_unavailable, etc.) if provided
+        if on_unavailable is not None:
+            await self._set_system_config(on_unavailable=on_unavailable, principal=principal)
+
+    async def get_system_defaults(self) -> tuple[list[Limit], str | None]:
+        """
+        Get system-wide default limits and config.
+
+        Returns:
+            Tuple of (limits, on_unavailable). on_unavailable may be None if not set.
+        """
+        client = await self._get_client()
+
+        # Get all system limits
+        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
+        response = await client.query(
+            TableName=self.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_system()},
+                ":sk_prefix": {"S": schema.sk_system_limit_prefix()},
+            },
+            ConsistentRead=False,
+        )
+
+        limits = []
+        for item in response.get("Items", []):
+            # Skip the config record (SK=#CONFIG)
+            sk = item.get("SK", {}).get("S", "")
+            if sk == schema.sk_config():
+                continue
+            # Skip version record
+            if sk == schema.sk_version():
+                continue
+
+            # Flat schema - fields are top-level
+            limit_name = item.get("limit_name", {}).get("S", "")
+            if limit_name:  # Only add if it's a valid limit record
+                limits.append(
+                    Limit(
+                        name=limit_name,
+                        capacity=int(item.get("capacity", {}).get("N", "0")),
+                        burst=int(item.get("burst", {}).get("N", "0")),
+                        refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
+                        refill_period_seconds=int(
+                            item.get("refill_period_seconds", {}).get("N", "0")
+                        ),
+                    )
+                )
+
+        # Get system config
+        on_unavailable = await self._get_system_config_value("on_unavailable")
+
+        return limits, on_unavailable
+
+    async def delete_system_defaults(
+        self,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete all system-wide default limits and config.
+
+        Args:
+            principal: Caller identity for audit logging
+        """
+        # Get existing limits for audit logging
+        limits, _ = await self.get_system_defaults()
+
+        await self._delete_system_limits_internal()
+        await self._delete_system_config()
+
+        # Log audit event (ADR-106: use $SYSTEM for all system-level events)
+        for limit in limits:
+            await self._log_audit_event(
+                action=AuditAction.LIMITS_DELETED,
+                entity_id="$SYSTEM",
+                principal=principal,
+                details={"limit": limit.name},
+            )
+
+    async def _delete_system_limits_internal(self) -> None:
+        """Delete all system-level limits (internal, no audit)."""
+        client = await self._get_client()
+
+        response = await client.query(
+            TableName=self.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_system()},
+                ":sk_prefix": {"S": schema.sk_system_limit_prefix()},
+            },
+            ProjectionExpression="PK, SK",
+        )
+
+        items = response.get("Items", [])
+        # Filter out config and version records
+        limit_items = [
+            item
+            for item in items
+            if item.get("SK", {}).get("S", "") not in (schema.sk_config(), schema.sk_version())
+        ]
+
+        if not limit_items:
+            return
+
+        delete_requests = [
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in limit_items
+        ]
+
+        for i in range(0, len(delete_requests), 25):
+            chunk = delete_requests[i : i + 25]
+            await client.batch_write_item(RequestItems={self.table_name: chunk})
+
+    async def _set_system_config(
+        self,
+        on_unavailable: str | None = None,
+        principal: str | None = None,
+    ) -> None:
+        """Store system behavior config (on_unavailable, etc.)."""
+        client = await self._get_client()
+
+        item: dict[str, Any] = {
+            "PK": {"S": schema.pk_system()},
+            "SK": {"S": schema.sk_config()},
+            "config_version": {"N": "1"},
+        }
+
+        if on_unavailable is not None:
+            item["on_unavailable"] = {"S": on_unavailable}
+
+        await client.put_item(TableName=self.table_name, Item=item)
+
+        # Log audit event (ADR-106: use $SYSTEM for all system-level events)
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,  # Using LIMITS_SET for config changes too
+            entity_id="$SYSTEM",
+            principal=principal,
+            details={"on_unavailable": on_unavailable},
+        )
+
+    async def _get_system_config_value(self, field: str) -> str | None:
+        """Get a specific system config value."""
+        client = await self._get_client()
+
+        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+            ConsistentRead=False,
+        )
+
+        item = response.get("Item")
+        if not item:
+            return None
+
+        field_value = item.get(field, {})
+        result: str | None = field_value.get("S") if field_value else None
+        return result
+
+    async def _delete_system_config(self) -> None:
+        """Delete system config record."""
+        client = await self._get_client()
+
+        await client.delete_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+    async def get_system_limits(self) -> list[Limit]:
+        """Get system-wide default limits (without config).
+
+        This is a convenience method that returns only the limits.
+        Use get_system_defaults() to also get on_unavailable config.
+        """
+        limits, _ = await self.get_system_defaults()
+        return limits
 
     # -------------------------------------------------------------------------
     # Version record operations
@@ -1158,7 +1752,7 @@ class Repository:
                 result[key] = {"S": value}
             elif isinstance(value, bool):
                 result[key] = {"BOOL": value}
-            elif isinstance(value, (int, float)):
+            elif isinstance(value, int | float):
                 result[key] = {"N": str(value)}
             elif isinstance(value, dict):
                 result[key] = {"M": self._serialize_map(value)}
@@ -1174,7 +1768,7 @@ class Repository:
             return {"S": value}
         elif isinstance(value, bool):
             return {"BOOL": value}
-        elif isinstance(value, (int, float)):
+        elif isinstance(value, int | float):
             return {"N": str(value)}
         elif isinstance(value, dict):
             return {"M": self._serialize_map(value)}
@@ -1238,3 +1832,11 @@ class Repository:
             refill_period_ms=int(data.get("refill_period_ms", 0)),
             total_consumed_milli=total_consumed_milli,
         )
+
+
+# Type assertion: Repository implements RepositoryProtocol
+# This is verified at type-check time by mypy, not at runtime
+if TYPE_CHECKING:
+    from .repository_protocol import RepositoryProtocol
+
+    _: RepositoryProtocol = cast(Repository, None)

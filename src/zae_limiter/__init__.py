@@ -7,15 +7,17 @@ This library provides a token bucket rate limiter with:
 - Cascade mode (consume from entity + parent)
 - Stored limit configs
 - Usage analytics via Lambda aggregator
+- Pluggable backends via RepositoryProtocol
 
-Example:
-    from zae_limiter import RateLimiter, Limit, StackOptions
+Example (new API - preferred):
+    from zae_limiter import RateLimiter, Repository, Limit, StackOptions
 
-    limiter = RateLimiter(
+    repo = Repository(
         name="my-app",  # ZAEL-my-app resources
         region="us-east-1",
         stack_options=StackOptions(),  # Declare desired infrastructure state
     )
+    limiter = RateLimiter(repository=repo)
 
     async with limiter.acquire(
         entity_id="key-abc",
@@ -28,6 +30,13 @@ Example:
     ) as lease:
         response = await llm_call()
         await lease.adjust(tpm=response.usage.total_tokens - 500)
+
+Example (old API - deprecated):
+    limiter = RateLimiter(
+        name="my-app",
+        region="us-east-1",
+        stack_options=StackOptions(),
+    )
 """
 
 # ---------------------------------------------------------------------------
@@ -49,6 +58,7 @@ Example:
 # ---------------------------------------------------------------------------
 from typing import TYPE_CHECKING
 
+from .config_cache import CacheStats
 from .exceptions import (
     EntityError,
     EntityExistsError,
@@ -72,6 +82,7 @@ from .lease import Lease, SyncLease
 from .models import (
     AuditAction,
     AuditEvent,
+    BackendCapabilities,
     BucketState,
     Entity,
     EntityCapacity,
@@ -93,9 +104,11 @@ if TYPE_CHECKING:
     from .limiter import OnUnavailable as OnUnavailable
     from .limiter import RateLimiter as RateLimiter
     from .limiter import SyncRateLimiter as SyncRateLimiter
+    from .repository import Repository as Repository
+    from .repository_protocol import RepositoryProtocol as RepositoryProtocol
 
 try:
-    from ._version import __version__  # type: ignore[import-not-found]
+    from ._version import __version__
 except ImportError:
     __version__ = "0.0.0+unknown"
 
@@ -105,6 +118,8 @@ __all__ = [
     # Main classes
     "RateLimiter",
     "SyncRateLimiter",
+    "Repository",
+    "RepositoryProtocol",
     "Lease",
     "SyncLease",
     "StackManager",
@@ -120,7 +135,9 @@ __all__ = [
     "ResourceCapacity",
     "EntityCapacity",
     "StackOptions",
+    "BackendCapabilities",
     "Status",
+    "CacheStats",
     # Audit
     "AuditEvent",
     "AuditAction",
@@ -189,4 +206,12 @@ def __getattr__(name: str) -> type:
         from .infra.stack_manager import StackManager
 
         return StackManager
+    if name == "Repository":
+        from .repository import Repository
+
+        return Repository
+    if name == "RepositoryProtocol":
+        from .repository_protocol import RepositoryProtocol
+
+        return RepositoryProtocol
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

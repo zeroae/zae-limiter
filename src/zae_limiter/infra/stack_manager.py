@@ -3,7 +3,7 @@
 from importlib.resources import files
 from typing import Any, cast
 
-import aioboto3  # type: ignore
+import aioboto3
 from botocore.exceptions import ClientError
 
 from ..exceptions import StackAlreadyExistsError, StackCreationError
@@ -130,6 +130,7 @@ class StackManager:
             "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
             "base_name": "BaseName",
             "enable_tracing": "EnableTracing",
+            "enable_iam_roles": "EnableIAMRoles",
         }
 
         for key, value in parameters.items():

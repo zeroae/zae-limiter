@@ -1,6 +1,6 @@
 # ADR-105: Eventually Consistent Reads for Config
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-18
 **Issue:** [#129](https://github.com/zeroae/zae-limiter/issues/129)
 

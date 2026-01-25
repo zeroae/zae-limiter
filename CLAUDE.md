@@ -16,8 +16,8 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 
 ```bash
 # Setup (one-time)
-git submodule update --init --recursive
 uv sync --all-extras
+pre-commit install  # Install git hooks for linting
 
 # Deploy infrastructure (CloudFormation)
 # Uses ZAEL- prefix: "limiter" becomes "ZAEL-limiter" resources
@@ -29,9 +29,12 @@ uv run pytest
 # Type check
 uv run mypy src/zae_limiter
 
-# Lint
+# Lint (or let pre-commit run automatically on commit)
 uv run ruff check --fix .
 uv run ruff format .
+
+# Run all pre-commit hooks manually
+pre-commit run --all-files
 
 # Lint CloudFormation template (after modifying cfn_template.yaml)
 uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
@@ -41,7 +44,6 @@ uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 
 ```bash
 # Setup (one-time)
-git submodule update --init --recursive
 conda create -n zae-limiter python=3.12
 conda activate zae-limiter
 pip install -e ".[dev]"
@@ -86,7 +88,7 @@ All changes to the codebase must go through pull requests. Direct commits to the
 
 ### Release Planning
 
-See `.claude/rules/zeroae/github.md` for issue types, labels, milestone queries, and workflow.
+See `.claude/skills/issue/conventions.md` for issue types, labels, and milestone conventions.
 
 **Milestone assignment:** Every issue MUST be assigned to a milestone. Before assigning, query milestone descriptions to find the best thematic fit:
 
@@ -156,6 +158,17 @@ zae-limiter deploy --name my-app --no-audit-archival
 
 # Deploy with AWS X-Ray tracing enabled
 zae-limiter deploy --name my-app --enable-tracing
+
+# Deploy without IAM roles (for custom IAM)
+zae-limiter deploy --name my-app --no-iam-roles
+
+# Status shows IAM role ARNs when enabled
+zae-limiter status --name my-app
+# Output includes:
+# IAM Roles
+#   App:           arn:aws:iam::123456789012:role/ZAEL-my-app-app-role
+#   Admin:         arn:aws:iam::123456789012:role/ZAEL-my-app-admin-role
+#   ReadOnly:      arn:aws:iam::123456789012:role/ZAEL-my-app-readonly-role
 
 # Export template for custom deployment
 zae-limiter cfn-template > template.yaml
@@ -235,6 +248,13 @@ limiter = RateLimiter(
     region="us-east-1",
     stack_options=StackOptions(enable_tracing=True),
 )
+
+# Disable IAM role creation (for custom IAM policies)
+limiter = RateLimiter(
+    name="my-app",
+    region="us-east-1",
+    stack_options=StackOptions(create_iam_roles=False),
+)
 ```
 
 **When to use `StackOptions` vs CLI:**
@@ -274,15 +294,17 @@ docker compose down
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError
+├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
+├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError, EntityNotFoundError, InfrastructureNotFoundError
 ├── naming.py          # Resource name validation and ZAEL- prefix logic
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders
+├── repository_protocol.py # RepositoryProtocol for backend abstraction
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
-├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, version, upgrade, check, audit, usage)
+├── config_cache.py    # Client-side config caching with TTL (CacheStats)
+├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
@@ -294,13 +316,43 @@ src/zae_limiter/
 ├── visualization/     # Usage snapshot formatting and display
 │   ├── __init__.py    # UsageFormatter enum, format_usage_snapshots()
 │   ├── factory.py     # Formatter factory
-│   └── formatters.py  # TableFormatter, PlotFormatter (ASCII charts)
+│   ├── formatters.py  # PlotFormatter (ASCII charts)
+│   └── table.py       # TableFormatter for tabular output
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
     ├── lambda_builder.py   # Lambda deployment package builder
     ├── discovery.py        # Multi-stack discovery and listing
     └── cfn_template.yaml   # CloudFormation template
 ```
+
+### Repository Pattern (v0.5.0+)
+
+The `Repository` class owns data access and infrastructure management. `RateLimiter` owns business logic.
+
+```python
+from zae_limiter import RateLimiter, Repository, StackOptions
+
+# New pattern (preferred): Repository with stack_options
+repo = Repository(
+    name="my-app",
+    region="us-east-1",
+    stack_options=StackOptions(lambda_memory=512),  # Pass to constructor
+)
+await repo.ensure_infrastructure()  # Creates stack using stored options
+limiter = RateLimiter(repository=repo)
+
+# Old pattern (deprecated, emits DeprecationWarning):
+# repo.create_stack(stack_options=StackOptions())  # Don't use
+
+# RateLimiter._ensure_initialized() calls repo.ensure_infrastructure() automatically
+```
+
+**Key API methods:**
+- `Repository(stack_options=...)` - Pass infrastructure config to constructor
+- `repo.ensure_infrastructure()` - Create/update stack using stored options (no-op if None)
+- `repo.create_stack()` - **Deprecated**. Will be removed in v2.0.0
+
+See [ADR-108](docs/adr/108-repository-protocol.md) and [ADR-110](docs/adr/110-deprecation-constructor.md) for details.
 
 ## Naming Convention
 
@@ -462,10 +514,87 @@ pytest --cov=zae_limiter --cov-report=html
 open htmlcov/index.html
 ```
 
+### Benchmark Workflow
+
+Performance-sensitive operations require benchmarking to detect regressions. Benchmarks are stored in `tests/benchmark/` and track latency, throughput, and DynamoDB capacity metrics.
+
+**Benchmark Categories:**
+
+| Type | File | Backend | Use Case |
+|------|------|---------|----------|
+| **Operations** | `test_operations.py` | moto (mocked) | Fast local iteration (< 5s) |
+| **LocalStack** | `test_localstack.py` | DynamoDB emulation | Realistic network latency |
+| **Latency** | `test_latency.py` | moto | p50/p95/p99 breakdown |
+| **Throughput** | `test_throughput.py` | moto | Sequential/concurrent ops |
+| **Capacity** | `test_capacity.py` | moto | RCU/WCU tracking |
+| **AWS** | `test_aws.py` | Real AWS | Production metrics |
+
+**Workflow:**
+
+1. **Baseline before optimization:**
+   ```bash
+   # Run baseline benchmarks and save
+   uv run pytest tests/benchmark/test_operations.py -v \
+     --benchmark-json=baseline.json
+   ```
+
+2. **Make changes (e.g., config caching, BatchGetItem optimization)**
+
+3. **Compare against baseline:**
+   ```bash
+   # Run new benchmarks
+   uv run pytest tests/benchmark/test_operations.py -v \
+     --benchmark-compare=baseline.json
+   ```
+
+4. **LocalStack benchmarks (realistic latency):**
+   ```bash
+   # Start LocalStack with Docker
+   docker compose up -d
+
+   # Run with environment vars
+   export AWS_ENDPOINT_URL=http://localhost:4566
+   export AWS_ACCESS_KEY_ID=test
+   export AWS_SECRET_ACCESS_KEY=test
+   export AWS_DEFAULT_REGION=us-east-1
+   uv run pytest tests/benchmark/test_localstack.py -v \
+     --benchmark-json=baseline-ls.json
+
+   # Stop when done
+   docker compose down
+   ```
+
+**Key Benchmarks:**
+
+| Test | Purpose | Expected |
+|------|---------|----------|
+| `test_acquire_release_single_limit` | Baseline acquire (single limit) | Regression-free |
+| `test_acquire_with_cached_config` | Config cache hit | < 5ms overhead |
+| `test_acquire_cold_config` | Config cache miss | < 20ms overhead |
+| `test_cascade_with_batchgetitem_optimization` | BatchGetItem optimization | 10-20% reduction |
+| `test_cascade_with_config_cache_optimization` | Combined optimizations | Best-case performance |
+
+**Pytest-Benchmark Output:**
+- `mean`: Average latency
+- `std dev`: Consistency (lower is better)
+- `min/max`: Range of observed values
+- `PASS`: No regression detected
+- `FAIL`: Performance degraded (investigate before merging)
+
+**Storing Baselines:**
+
+Save benchmark results for comparison across versions:
+```bash
+# Save baseline for this version
+cp baseline.json docs/benchmark-v0.11.0.json
+git add docs/benchmark-v0.11.0.json
+```
+
 ## Code Style
 
 - Use `ruff` for linting and formatting
 - Use `mypy` for type checking (strict mode)
+- Pre-commit hooks run ruff, mypy, and cfn-lint automatically on commit
 - All public APIs must have docstrings
 - Async is primary, sync is wrapper
 
@@ -599,9 +728,9 @@ When implementing features that derive data from state changes (like consumption
 
 ## Commit Messages
 
-Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/main/docs/commits.md).
+Follow the [commit conventions](.claude/rules/commits.md).
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `test`, `benchmark`
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`
 
 **Examples:**
 ```bash
@@ -625,25 +754,70 @@ Follow the ZeroAE [commit conventions](https://github.com/zeroae/.github/blob/ma
 |---------|-------|
 | Get entity | `PK=ENTITY#{id}, SK=#META` |
 | Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
+| Batch get buckets | `BatchGetItem` with multiple PK/SK pairs (issue #133) |
 | Get children | GSI1: `GSI1PK=PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
 | Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
-| Get system config | `PK=SYSTEM#, SK begins_with #LIMIT#` |
-| Get resource config | `PK=RESOURCE#{name}, SK begins_with #LIMIT#` |
-| Get entity config | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+| Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#` |
+| Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#` |
+| Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+
+**Optimized read patterns (issue #133):**
+- `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
+- This reduces cascade scenarios from N sequential GetItem calls to 1 BatchGetItem call
+
+**Key builders for config records:**
+- `pk_system()` - Returns `SYSTEM#`
+- `pk_resource(resource)` - Returns `RESOURCE#{resource}`
+- `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
+- `sk_system_limit(limit_name)` - Returns `#LIMIT#{limit_name}` (no resource)
+- `sk_resource_limit(limit_name)` - Returns `#LIMIT#{limit_name}` (no resource in SK since PK has it)
+- `sk_limit(resource, limit_name)` - Returns `#LIMIT#{resource}#{limit_name}`
+
+**Audit entity IDs for config levels** (ADR-106):
+- System config: Audit events use `$SYSTEM` as entity_id
+- Resource config: Audit events use `$RESOURCE:{resource_name}` (e.g., `$RESOURCE:gpt-4`)
 
 ### Centralized Configuration (v0.5.0+)
 
-Config uses a three-level hierarchy with precedence: **Entity > Resource > System > Constructor defaults**.
+Limit configs use a three-level hierarchy with precedence: **Entity > Resource > System > Constructor defaults**.
+
+**API methods for managing stored limits:**
+
+| Level | Set | Get | Delete | List |
+|-------|-----|-----|--------|------|
+| System | `set_system_defaults(limits, on_unavailable)` | `get_system_defaults()` | `delete_system_defaults()` | - |
+| Resource | `set_resource_defaults(resource, limits)` | `get_resource_defaults(resource)` | `delete_resource_defaults(resource)` | `list_resources_with_defaults()` |
+| Entity | `set_limits(entity_id, limits, resource)` | `get_limits(entity_id, resource)` | `delete_limits(entity_id, resource)` | - |
+
+**CLI commands for managing stored limits:**
+
+```bash
+# System-level defaults (apply to ALL resources unless overridden)
+zae-limiter system set-defaults -l tpm:100000 -l rpm:1000 --on-unavailable allow
+zae-limiter system get-defaults
+zae-limiter system delete-defaults --yes
+
+# Resource-level limits (apply to specific resource)
+zae-limiter resource set-defaults gpt-4 -l tpm:50000 -l rpm:500
+zae-limiter resource get-defaults gpt-4
+zae-limiter resource delete-defaults gpt-4 --yes
+zae-limiter resource list
+
+# Entity-level limits (highest precedence)
+zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
+zae-limiter entity get-limits user-123 --resource gpt-4
+zae-limiter entity delete-limits user-123 --resource gpt-4 --yes
+```
 
 Config fields are stored alongside limits in existing `#LIMIT#` records using **flat schema** (no nested `data.M`):
 
 | Level | PK | SK | Purpose |
 |-------|----|----|---------|
-| System | `SYSTEM#` | `#LIMIT#{resource}#{limit_name}` | Global defaults |
+| System | `SYSTEM#` | `#LIMIT#{limit_name}` | Global defaults (all resources) |
 | Resource | `RESOURCE#{resource}` | `#LIMIT#{resource}#{limit_name}` | Resource-specific |
 | Entity | `ENTITY#{id}` | `#LIMIT#{resource}#{limit_name}` | Entity-specific (existing) |
 
@@ -673,11 +847,11 @@ Config fields are stored alongside limits in existing `#LIMIT#` records using **
 - `auto_update` (bool): Auto-update Lambda on version mismatch
 - `strict_version` (bool): Fail on version mismatch
 
-**Caching:** 60s TTL in-memory cache per RateLimiter instance. Use `invalidate_config_cache()` for immediate refresh. Negative caching for entities without custom config.
+**Caching:** 60s TTL in-memory cache per RateLimiter instance (configurable via `config_cache_ttl` parameter, 0 to disable). Use `invalidate_config_cache()` for immediate refresh. Use `get_cache_stats()` for monitoring. Negative caching for entities without custom config.
 
 **Cost impact:** 3 RCU per cache miss (one per level). With caching and negative caching, ~2.1 RCU per request for typical deployments (20K users, 5% with custom limits).
 
-See [ADR-001](docs/adr/001-centralized-config.md) for full design details.
+See [ADR-100](docs/adr/100-centralized-config.md) for full design details.
 
 ### Schema Design Notes
 
@@ -749,7 +923,7 @@ to enable single-call atomic updates. See: https://github.com/zeroae/zae-limiter
 
 **Optional extras:**
 - `[plot]`: `asciichartpy` for ASCII chart visualization of usage snapshots
-- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy)
+- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit)
 - `[docs]`: MkDocs documentation generation
 - `[cdk]`: AWS CDK constructs
 - `[lambda]`: Lambda Powertools

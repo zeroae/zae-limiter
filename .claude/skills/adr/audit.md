@@ -23,10 +23,25 @@ Audit ADR-NNN compliance for this codebase.
 **Mode:** [diff against <branch> | full scan]
 **Files to check:** [list of files or "all src/**/*.py"]
 
-Instructions:
-1. Read the ADR and extract the Decision section
-2. Check if the specified files comply with the Decision
-3. Return findings in this format:
+## Compliance Criteria (CRITICAL - follow exactly)
+
+A violation exists ONLY when:
+1. The Decision section contains explicit prose requirements (e.g., "must use X", "Repository owns Y")
+2. The code contradicts that explicit requirement
+
+A violation does NOT exist when:
+- Code has additional methods/parameters not mentioned in the ADR
+- Implementation differs from illustrative examples (per ADR-000, code examples are excluded from ADRs)
+- The ADR describes patterns without mandating specific implementations
+
+## Instructions
+
+1. Read the ADR Decision section
+2. Extract ONLY explicit requirements stated in prose (ignore any code examples)
+3. For each requirement, verify the code follows the stated pattern
+4. Report ONLY clear contradictions to explicit requirements
+
+Return findings in this format:
 
 | File | Line | ADR | Violation |
 |------|------|-----|-----------|
