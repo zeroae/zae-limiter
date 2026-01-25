@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 
 # Current schema version - increment when schema changes
-CURRENT_SCHEMA_VERSION = "1.0.0"
+CURRENT_SCHEMA_VERSION = "1.1.0"
 
 
 @dataclass(frozen=True, order=False)

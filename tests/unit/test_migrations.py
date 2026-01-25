@@ -173,3 +173,165 @@ class TestMigrationDataclass:
         )
 
         assert migration.rollback is None
+
+
+class TestMigrationV110:
+    """Tests for v1.1.0 schema flattening migration."""
+
+    def test_v110_registered(self):
+        """v1.1.0 migration should be registered."""
+        migrations = get_migrations()
+        versions = [m.version for m in migrations]
+        assert "1.1.0" in versions
+
+    def test_v110_between_100_and_200(self):
+        """v1.1.0 migration should be included when upgrading from 1.0.0 to 2.0.0."""
+        result = get_migrations_between("1.0.0", "2.0.0")
+        versions = [m.version for m in result]
+        assert "1.1.0" in versions
+
+    def test_v110_not_reversible(self):
+        """v1.1.0 migration should not be reversible."""
+        migrations = get_migrations()
+        v110 = next(m for m in migrations if m.version == "1.1.0")
+        assert v110.reversible is False
+        assert v110.rollback is None
+
+    @pytest.mark.asyncio
+    async def test_v110_flattens_entity(self, limiter):
+        """v1.1.0 migration should flatten entity metadata records."""
+        from zae_limiter import schema
+        from zae_limiter.migrations.v1_1_0 import migrate_v1_1_0
+
+        repository = limiter._repository
+        client = await repository._get_client()
+
+        # Insert entity in nested format
+        await client.put_item(
+            TableName=repository.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("test-entity")},
+                "SK": {"S": schema.sk_meta()},
+                "entity_id": {"S": "test-entity"},
+                "data": {
+                    "M": {
+                        "name": {"S": "Test"},
+                        "parent_id": {"NULL": True},
+                        "metadata": {"M": {}},
+                        "created_at": {"S": "2024-01-01T00:00:00Z"},
+                    }
+                },
+            },
+        )
+
+        # Run migration
+        await migrate_v1_1_0(repository)
+
+        # Verify entity was flattened
+        response = await client.get_item(
+            TableName=repository.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("test-entity")},
+                "SK": {"S": schema.sk_meta()},
+            },
+        )
+        item = response["Item"]
+        assert "data" not in item
+        assert item["name"]["S"] == "Test"
+        assert "NULL" in item["parent_id"]
+        assert item["created_at"]["S"] == "2024-01-01T00:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_v110_flattens_version_record(self, limiter):
+        """v1.1.0 migration should flatten version records."""
+        from zae_limiter import schema
+        from zae_limiter.migrations.v1_1_0 import migrate_v1_1_0
+
+        repository = limiter._repository
+        client = await repository._get_client()
+
+        # Insert version record in nested format
+        await client.put_item(
+            TableName=repository.table_name,
+            Item={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_version()},
+                "data": {
+                    "M": {
+                        "schema_version": {"S": "1.0.0"},
+                        "lambda_version": {"NULL": True},
+                        "client_min_version": {"S": "0.1.0"},
+                        "updated_at": {"S": "2024-01-01T00:00:00Z"},
+                        "updated_by": {"S": "test"},
+                    }
+                },
+            },
+        )
+
+        await migrate_v1_1_0(repository)
+
+        response = await client.get_item(
+            TableName=repository.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_version()},
+            },
+        )
+        item = response["Item"]
+        assert "data" not in item
+        assert item["schema_version"]["S"] == "1.0.0"
+        assert item["updated_by"]["S"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_v110_idempotent(self, limiter):
+        """Running migration twice should be safe."""
+        from zae_limiter import schema
+        from zae_limiter.migrations.v1_1_0 import migrate_v1_1_0
+
+        repository = limiter._repository
+        client = await repository._get_client()
+
+        # Insert entity in nested format
+        await client.put_item(
+            TableName=repository.table_name,
+            Item={
+                "PK": {"S": schema.pk_entity("idem-entity")},
+                "SK": {"S": schema.sk_meta()},
+                "entity_id": {"S": "idem-entity"},
+                "data": {
+                    "M": {
+                        "name": {"S": "Idempotent"},
+                        "parent_id": {"NULL": True},
+                        "metadata": {"M": {}},
+                        "created_at": {"S": "2024-01-01T00:00:00Z"},
+                    }
+                },
+            },
+        )
+
+        # Run migration twice
+        await migrate_v1_1_0(repository)
+        await migrate_v1_1_0(repository)  # Should be no-op
+
+        # Verify still correct
+        entity = await repository.get_entity("idem-entity")
+        assert entity is not None
+        assert entity.name == "Idempotent"
+
+    @pytest.mark.asyncio
+    async def test_v110_skips_already_flat(self, limiter):
+        """Already flat items should be skipped."""
+        from zae_limiter.migrations.v1_1_0 import migrate_v1_1_0
+
+        repository = limiter._repository
+
+        # Create entity via normal API (writes flat format)
+        await repository.create_entity("flat-entity", name="Already Flat")
+
+        # Run migration — should skip this item
+        await migrate_v1_1_0(repository)
+
+        # Verify unchanged
+        entity = await repository.get_entity("flat-entity")
+        assert entity is not None
+        assert entity.name == "Already Flat"

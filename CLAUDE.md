@@ -308,7 +308,8 @@ src/zae_limiter/
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   ├── __init__.py    # Migration registry and runner
-│   └── v1_0_0.py      # Initial schema baseline
+│   ├── v1_0_0.py      # Initial schema baseline
+│   └── v1_1_0.py      # Flatten nested data.M to top-level attributes
 ├── aggregator/        # Lambda for usage snapshots and audit archival
 │   ├── handler.py     # Lambda entry point
 │   ├── processor.py   # Stream processing logic for usage snapshots
@@ -855,43 +856,31 @@ See [ADR-100](docs/adr/100-centralized-config.md) for full design details.
 
 ### Schema Design Notes
 
-**Most record types use nested `data.M` maps:**
-- Entity metadata: `data: {name, parent_id, metadata, created_at}`
-- Bucket state: `data: {resource, limit_name, tokens_milli, ...}`
-- Audit events: `data: {action, principal, details, ...}`
+**All record types use flat schema (v0.6.0+, schema v1.1.0):**
 
-**Config records (v0.5.0+) use FLAT schema:**
-- Centralized config at System/Resource/Entity levels uses flat schema
-- Enables atomic `config_version` counter increments
-- See Centralized Configuration section above
+All DynamoDB records store fields as top-level attributes. The nested `data.M` wrapper used prior to v0.6.0 has been removed. Deserialization accepts both flat and legacy nested formats for backward compatibility. Serialization always writes flat format. See [ADR-111](docs/adr/111-flatten-all-records.md) and issue [#180](https://github.com/zeroae/zae-limiter/issues/180).
 
-**v0.6.0 recommendation:** Flatten all existing record types (entities, limits, audit, version) for consistency. See ADR-001 and issue #180.
-
-**Bucket records have a hybrid schema:** Most fields are nested in `data.M`, but
-`total_consumed_milli` is stored as a **flat top-level attribute** to enable
-accurate consumption tracking by the aggregator Lambda. See issue #179.
+**DynamoDB reserved words:** Flat attribute names `name`, `resource`, `action`, `timestamp`, and `data` (used in REMOVE expressions during migration) are DynamoDB reserved words. All expressions referencing these must use `ExpressionAttributeNames` aliases.
 
 ```python
-# Bucket item structure (HYBRID):
+# Bucket item structure (FLAT, v0.6.0+):
 {
     "PK": "ENTITY#user-1",
     "SK": "#BUCKET#gpt-4#tpm",
     "entity_id": "user-1",
-    "data": {
-        "M": {
-            "resource": "gpt-4",
-            "limit_name": "tpm",
-            "tokens_milli": 9500000,
-            # ... other bucket fields
-        }
-    },
-    "total_consumed_milli": 500000,  # FLAT - net consumption counter (issue #179)
+    "resource": "gpt-4",
+    "limit_name": "tpm",
+    "tokens_milli": 9500000,
+    "last_refill_ms": 1234567890000,
+    "capacity_milli": 10000000,
+    "burst_milli": 10000000,
+    "refill_amount_milli": 10000000,
+    "refill_period_ms": 60000,
+    "total_consumed_milli": 500000,
     "GSI2PK": "RESOURCE#gpt-4",
     "ttl": 1234567890
 }
 ```
-
-**Exception: Usage snapshots use FLAT schema (no nested `data` map):**
 
 ```python
 # Snapshot item structure (FLAT):
@@ -899,21 +888,17 @@ accurate consumption tracking by the aggregator Lambda. See issue #179.
     "PK": "ENTITY#user-1",
     "SK": "#USAGE#gpt-4#2024-01-01T14:00:00Z",
     "entity_id": "user-1",
-    "resource": "gpt-4",        # Top-level, not data.resource
-    "window": "hourly",         # Top-level, not data.window
-    "window_start": "...",      # Top-level
-    "tpm": 5000,                # Counter at top-level
-    "total_events": 10,         # Counter at top-level
+    "resource": "gpt-4",
+    "window": "hourly",
+    "window_start": "...",
+    "tpm": 5000,
+    "total_events": 10,
     "GSI2PK": "RESOURCE#gpt-4",
     "ttl": 1234567890
 }
 ```
 
-**Why snapshots are flat:** DynamoDB has a limitation where you cannot SET a map path
-(`#data = if_not_exists(#data, :map)`) AND ADD to paths within it (`#data.counter`)
-in the same UpdateExpression - it fails with "overlapping document paths" error.
-Snapshots require atomic upsert with ADD counters, so they use a flat structure
-to enable single-call atomic updates. See: https://github.com/zeroae/zae-limiter/issues/168
+**Migration:** The v1.1.0 migration (`migrations/v1_1_0.py`) scans for items with `attribute_exists(data)` and promotes nested fields to top level. This migration is optional — lazy dual-format reads handle old records indefinitely.
 
 ## Dependencies
 

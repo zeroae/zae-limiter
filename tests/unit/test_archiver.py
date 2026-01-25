@@ -71,15 +71,15 @@ class TestExtractAuditEvent:
 
         assert result is None
 
-    def test_handle_missing_data_map(self) -> None:
-        """Handle records with missing data map."""
+    def test_handle_missing_data_map_and_no_flat_fields(self) -> None:
+        """Handle records with missing data map and no flat fields."""
         record = {
             "eventName": "REMOVE",
             "dynamodb": {
                 "OldImage": {
                     "PK": {"S": "AUDIT#user-123"},
                     "SK": {"S": "#AUDIT#01HQJK123456789"},
-                    # Missing data.M
+                    # No data.M and no flat action field
                 }
             },
         }
@@ -87,6 +87,26 @@ class TestExtractAuditEvent:
         result = extract_audit_event(record)
 
         assert result is None
+
+    def test_nested_format_backward_compat(self) -> None:
+        """Extract audit event from old nested data.M format."""
+        record = self._make_audit_record(
+            event_name="REMOVE",
+            entity_id="legacy-user",
+            event_id="01LEGACY0000000",
+            action="entity_created",
+            timestamp="2024-01-01T00:00:00Z",
+            principal="admin",
+            nested=True,
+        )
+
+        result = extract_audit_event(record)
+
+        assert result is not None
+        assert result["event_id"] == "01LEGACY0000000"
+        assert result["entity_id"] == "legacy-user"
+        assert result["action"] == "entity_created"
+        assert result["principal"] == "admin"
 
     def test_extract_with_nested_details(self) -> None:
         """Extract event with nested details map."""
@@ -147,40 +167,63 @@ class TestExtractAuditEvent:
         principal: str | None = "admin@example.com",
         resource: str | None = None,
         details: dict | None = None,
+        nested: bool = False,
     ) -> dict:
-        """Helper to create audit stream records."""
-        data_map: dict = {
-            "event_id": {"S": event_id},
+        """Helper to create audit stream records.
+
+        Set nested=True to produce old nested data.M format for backward-compat tests.
+        """
+        if nested:
+            data_map: dict = {
+                "event_id": {"S": event_id},
+                "entity_id": {"S": entity_id},
+                "action": {"S": action},
+                "timestamp": {"S": timestamp},
+            }
+            if principal is not None:
+                data_map["principal"] = {"S": principal}
+            else:
+                data_map["principal"] = {"NULL": True}
+            if resource is not None:
+                data_map["resource"] = {"S": resource}
+            else:
+                data_map["resource"] = {"NULL": True}
+            if details is not None:
+                data_map["details"] = details
+            else:
+                data_map["details"] = {"M": {}}
+
+            return {
+                "eventName": event_name,
+                "dynamodb": {
+                    "OldImage": {
+                        "PK": {"S": f"AUDIT#{entity_id}"},
+                        "SK": {"S": f"#AUDIT#{event_id}"},
+                        "entity_id": {"S": entity_id},
+                        "data": {"M": data_map},
+                        "ttl": {"N": "1705330200"},
+                    }
+                },
+            }
+
+        # Flat format (v1.1.0+)
+        old_image: dict = {
+            "PK": {"S": f"AUDIT#{entity_id}"},
+            "SK": {"S": f"#AUDIT#{event_id}"},
             "entity_id": {"S": entity_id},
+            "event_id": {"S": event_id},
             "action": {"S": action},
             "timestamp": {"S": timestamp},
+            "principal": {"S": principal} if principal is not None else {"NULL": True},
+            "resource": {"S": resource} if resource is not None else {"NULL": True},
+            "details": details if details is not None else {"M": {}},
+            "ttl": {"N": "1705330200"},
         }
-
-        if principal is not None:
-            data_map["principal"] = {"S": principal}
-        else:
-            data_map["principal"] = {"NULL": True}
-
-        if resource is not None:
-            data_map["resource"] = {"S": resource}
-        else:
-            data_map["resource"] = {"NULL": True}
-
-        if details is not None:
-            data_map["details"] = details
-        else:
-            data_map["details"] = {"M": {}}
 
         return {
             "eventName": event_name,
             "dynamodb": {
-                "OldImage": {
-                    "PK": {"S": f"AUDIT#{entity_id}"},
-                    "SK": {"S": f"#AUDIT#{event_id}"},
-                    "entity_id": {"S": entity_id},
-                    "data": {"M": data_map},
-                    "ttl": {"N": "1705330200"},
-                }
+                "OldImage": old_image,
             },
         }
 
@@ -617,7 +660,7 @@ class TestArchiveAuditEvents:
         timestamp: str = "2024-01-15T14:30:00Z",
         principal: str = "admin@example.com",
     ) -> dict:
-        """Helper to create audit stream records."""
+        """Helper to create audit stream records (flat format v1.1.0+)."""
         return {
             "eventName": "REMOVE",
             "dynamodb": {
@@ -625,17 +668,12 @@ class TestArchiveAuditEvents:
                     "PK": {"S": f"AUDIT#{entity_id}"},
                     "SK": {"S": f"#AUDIT#{event_id}"},
                     "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "event_id": {"S": event_id},
-                            "entity_id": {"S": entity_id},
-                            "action": {"S": action},
-                            "timestamp": {"S": timestamp},
-                            "principal": {"S": principal},
-                            "resource": {"NULL": True},
-                            "details": {"M": {}},
-                        }
-                    },
+                    "event_id": {"S": event_id},
+                    "action": {"S": action},
+                    "timestamp": {"S": timestamp},
+                    "principal": {"S": principal},
+                    "resource": {"NULL": True},
+                    "details": {"M": {}},
                     "ttl": {"N": "1705330200"},
                 }
             },
