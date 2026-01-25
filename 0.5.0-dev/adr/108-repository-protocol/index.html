@@ -2593,8 +2593,11 @@
 - <code>get_limits</code>, <code>set_limits</code> - Limit configuration
 - <code>close</code> - Resource cleanup
 - <code>name</code> property - Backend identifier</p>
+<p><strong>Required (infrastructure):</strong>
+- <code>ensure_infrastructure()</code> - Ensures backend infrastructure exists. For DynamoDB,
+  creates CloudFormation stack using <code>stack_options</code> from constructor. No-op if
+  <code>stack_options</code> was not provided.</p>
 <p><strong>Optional (backend-specific, not in protocol):</strong>
-- <code>ensure_infrastructure()</code> - DynamoDB CloudFormation stack
 - <code>get_audit_events()</code> - Audit logging (DynamoDB-specific schema)
 - <code>get_usage_snapshots()</code> - Usage aggregation (requires Lambda)</p>
 <p><strong>Capability-gated optimizations (detected via <code>capabilities</code> property):</strong>
@@ -2613,7 +2616,7 @@
 <p>Optional methods are accessed via backend-specific types, not the protocol.</p>
 <h3 id="4-infrastructure-management-belongs-in-repository">4. Infrastructure Management Belongs in Repository<a class="headerlink" href="#4-infrastructure-management-belongs-in-repository" title="Permanent link">&para;</a></h3>
 <p><code>StackOptions</code> moves from <code>RateLimiter</code> to <code>Repository</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Repository owns infrastructure</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Repository owns infrastructure - pass stack_options to constructor</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">repo</span> <span class="o">=</span> <span class="n">Repository</span><span class="p">(</span>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
@@ -2623,12 +2626,19 @@
 </span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="p">),</span>
 </span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="p">)</span>
 </span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="c1"># RateLimiter owns business logic only</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">,</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>    <span class="n">on_unavailable</span><span class="o">=</span><span class="n">OnUnavailable</span><span class="o">.</span><span class="n">BLOCK</span><span class="p">,</span>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="p">)</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="c1"># Ensure infrastructure exists (uses stored stack_options)</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">ensure_infrastructure</span><span class="p">()</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="c1"># RateLimiter owns business logic only</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">,</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>    <span class="n">on_unavailable</span><span class="o">=</span><span class="n">OnUnavailable</span><span class="o">.</span><span class="n">BLOCK</span><span class="p">,</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="p">)</span>
 </span></code></pre></div>
+<p><strong>Key API change:</strong> <code>ensure_infrastructure()</code> replaces <code>create_stack()</code>:
+- <code>stack_options</code> is passed to the Repository constructor, not to the method
+- <code>ensure_infrastructure()</code> is a no-op if <code>stack_options</code> is <code>None</code>
+- <code>create_stack()</code> is deprecated and emits <code>DeprecationWarning</code></p>
 <p>This separation enables:
 - Redis backends that don't need CloudFormation
 - In-memory backends for testing with zero infrastructure
