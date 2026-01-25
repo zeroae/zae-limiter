@@ -139,6 +139,43 @@ class TestRepositoryBucketOperations:
         expected_expr = "SET #data.#tokens = :tokens, #data.#refill = :refill"
         assert update_spec["UpdateExpression"] == expected_expr
 
+    @pytest.mark.asyncio
+    async def test_batch_get_buckets_empty_keys(self, repo):
+        """batch_get_buckets should return empty dict for empty keys list."""
+        result = await repo.batch_get_buckets([])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_bucket_creates_new(self, repo):
+        """get_or_create_bucket should create a new bucket if it doesn't exist."""
+        from zae_limiter import Limit
+
+        limit = Limit.per_minute("rpm", 100)
+        bucket = await repo.get_or_create_bucket("entity-1", "gpt-4", limit)
+
+        assert bucket is not None
+        assert bucket.entity_id == "entity-1"
+        assert bucket.resource == "gpt-4"
+        assert bucket.limit_name == "rpm"
+        assert bucket.tokens_milli == 100000  # 100 * 1000
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_bucket_returns_existing(self, repo):
+        """get_or_create_bucket should return existing bucket if it exists."""
+        from zae_limiter import Limit
+
+        limit = Limit.per_minute("rpm", 100)
+
+        # Create first
+        bucket1 = await repo.get_or_create_bucket("entity-2", "gpt-4", limit)
+
+        # Get again - should return existing
+        bucket2 = await repo.get_or_create_bucket("entity-2", "gpt-4", limit)
+
+        assert bucket1.entity_id == bucket2.entity_id
+        assert bucket1.resource == bucket2.resource
+        assert bucket1.limit_name == bucket2.limit_name
+
 
 class TestRepositoryResourceAggregation:
     """Tests for GSI2 resource queries."""
@@ -1145,5 +1182,39 @@ class TestRepositoryDeprecation:
                 msg = str(deprecation_warnings[0].message)
                 assert "ensure_infrastructure" in msg
                 assert "v2.0.0" in msg
+
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_create_stack_without_options_uses_constructor_options(self):
+        """create_stack() without args should use constructor-provided stack_options."""
+        import warnings
+        from unittest.mock import AsyncMock, patch
+
+        from zae_limiter import StackOptions
+
+        # Create repo with stack_options in constructor
+        repo = Repository(
+            name="test-constructor-opts",
+            region="us-east-1",
+            stack_options=StackOptions(lambda_memory=512),
+        )
+
+        with patch("zae_limiter.infra.stack_manager.StackManager") as mock_manager_class:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+            mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
+            mock_manager_class.return_value = mock_manager
+
+            # Suppress the deprecation warning - we're testing the functionality
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                await repo.create_stack()  # No stack_options arg
+
+            # Verify create_stack was called with the constructor-provided options
+            mock_manager.create_stack.assert_called_once()
+            call_kwargs = mock_manager.create_stack.call_args[1]
+            assert call_kwargs["stack_options"].lambda_memory == 512
 
         await repo.close()

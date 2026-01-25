@@ -81,6 +81,11 @@ class TestSyncRateLimiter:
         assert len(retrieved) == 1
         assert retrieved[0].name == "rpm"
 
+    def test_name_property(self, sync_limiter):
+        """Test that the name property returns the stack name."""
+        # The name should be the ZAEL-prefixed stack name
+        assert sync_limiter.name.startswith("ZAEL-")
+
 
 class TestSyncRateLimiterIsAvailable:
     """Tests for sync is_available() health check method."""

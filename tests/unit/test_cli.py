@@ -3360,3 +3360,456 @@ class TestSystemCommandsEdgeCases:
 
         assert result.exit_code == 1
         assert "Invalid resource name" in result.output
+
+
+class TestEntityCommands:
+    """Test entity CLI commands."""
+
+    def test_entity_help(self, runner: CliRunner) -> None:
+        """Test entity command group help."""
+        result = runner.invoke(cli, ["entity", "--help"])
+        assert result.exit_code == 0
+        assert "Entity-level limit configuration commands" in result.output
+
+    def test_entity_set_limits_help(self, runner: CliRunner) -> None:
+        """Test entity set-limits command help."""
+        result = runner.invoke(cli, ["entity", "set-limits", "--help"])
+        assert result.exit_code == 0
+        assert "Set limits for a specific entity and resource" in result.output
+        assert "--limit" in result.output
+        assert "--resource" in result.output
+        assert "ENTITY_ID" in result.output
+
+    def test_entity_get_limits_help(self, runner: CliRunner) -> None:
+        """Test entity get-limits command help."""
+        result = runner.invoke(cli, ["entity", "get-limits", "--help"])
+        assert result.exit_code == 0
+        assert "Get limits for a specific entity and resource" in result.output
+        assert "--resource" in result.output
+        assert "ENTITY_ID" in result.output
+
+    def test_entity_delete_limits_help(self, runner: CliRunner) -> None:
+        """Test entity delete-limits command help."""
+        result = runner.invoke(cli, ["entity", "delete-limits", "--help"])
+        assert result.exit_code == 0
+        assert "Delete limits for a specific entity and resource" in result.output
+        assert "--yes" in result.output
+        assert "--resource" in result.output
+
+    def test_entity_set_limits_requires_entity_id(self, runner: CliRunner) -> None:
+        """Test entity set-limits requires ENTITY_ID argument."""
+        result = runner.invoke(cli, ["entity", "set-limits", "-r", "gpt-4", "-l", "tpm:10000"])
+        assert result.exit_code != 0
+        assert "ENTITY_ID" in result.output
+
+    def test_entity_set_limits_requires_resource(self, runner: CliRunner) -> None:
+        """Test entity set-limits requires --resource option."""
+        result = runner.invoke(cli, ["entity", "set-limits", "user-123", "-l", "tpm:10000"])
+        assert result.exit_code != 0
+        assert "resource" in result.output.lower()
+
+    def test_entity_set_limits_requires_limit(self, runner: CliRunner) -> None:
+        """Test entity set-limits requires at least one --limit."""
+        result = runner.invoke(cli, ["entity", "set-limits", "user-123", "-r", "gpt-4"])
+        assert result.exit_code != 0
+        assert "limit" in result.output.lower()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_limits_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity set-limits with valid limits."""
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "entity",
+                "set-limits",
+                "user-123",
+                "-r",
+                "gpt-4",
+                "-l",
+                "tpm:10000",
+                "-l",
+                "rpm:500:1000",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Set 2 limit(s) for entity 'user-123'" in result.output
+        assert "gpt-4" in result.output
+        assert "tpm: 10,000/min (burst: 10,000)" in result.output
+        assert "rpm: 500/min (burst: 1,000)" in result.output
+
+        # Verify repository was called correctly
+        mock_repo.set_limits.assert_called_once()
+        call_args = mock_repo.set_limits.call_args
+        assert call_args[0][0] == "user-123"
+        limits = call_args[0][1]
+        assert len(limits) == 2
+        assert limits[0].name == "tpm"
+        assert limits[0].capacity == 10000
+        assert limits[1].name == "rpm"
+        assert limits[1].capacity == 500
+        assert limits[1].burst == 1000
+        assert call_args[1]["resource"] == "gpt-4"
+
+    def test_entity_set_limits_invalid_limit_format(self, runner: CliRunner) -> None:
+        """Test entity set-limits with invalid limit format."""
+        result = runner.invoke(
+            cli, ["entity", "set-limits", "user-123", "-r", "gpt-4", "-l", "invalid"]
+        )
+
+        assert result.exit_code == 1
+        assert "Invalid limit format" in result.output
+
+    def test_entity_set_limits_invalid_limit_values(self, runner: CliRunner) -> None:
+        """Test entity set-limits with non-numeric limit values."""
+        result = runner.invoke(
+            cli, ["entity", "set-limits", "user-123", "-r", "gpt-4", "-l", "tpm:abc"]
+        )
+
+        assert result.exit_code == 1
+        assert "Invalid limit values" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_limits_validation_error(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity set-limits handles ValidationError."""
+        from zae_limiter.exceptions import ValidationError
+
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(
+            side_effect=ValidationError(
+                field="entity_id", value="user-123", reason="Invalid entity ID"
+            )
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["entity", "set-limits", "user-123", "-r", "gpt-4", "-l", "tpm:10000"]
+        )
+
+        assert result.exit_code == 1
+        assert "Invalid entity ID" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_limits_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity set-limits handles unexpected exceptions."""
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["entity", "set-limits", "user-123", "-r", "gpt-4", "-l", "tpm:10000"]
+        )
+
+        assert result.exit_code == 1
+        assert "Failed to set entity limits" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_with_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity get-limits displays limits."""
+        from zae_limiter.models import Limit
+
+        mock_limits = [
+            Limit(
+                name="tpm",
+                capacity=10000,
+                burst=10000,
+                refill_amount=10000,
+                refill_period_seconds=60,
+            ),
+            Limit(
+                name="rpm",
+                capacity=500,
+                burst=1000,
+                refill_amount=500,
+                refill_period_seconds=60,
+            ),
+        ]
+
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(return_value=mock_limits)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Limits for entity 'user-123'" in result.output
+        assert "gpt-4" in result.output
+        assert "tpm: 10,000/min (burst: 10,000)" in result.output
+        assert "rpm: 500/min (burst: 1,000)" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity get-limits when no limits configured."""
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "No limits configured for entity 'user-123'" in result.output
+        assert "gpt-4" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_validation_error(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity get-limits handles ValidationError."""
+        from zae_limiter.exceptions import ValidationError
+
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(
+            side_effect=ValidationError(
+                field="entity_id", value="user-123", reason="Invalid entity ID"
+            )
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 1
+        assert "Invalid entity ID" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity get-limits handles unexpected exceptions."""
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(side_effect=Exception("Connection failed"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 1
+        assert "Failed to get entity limits" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_delete_limits_with_confirmation(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity delete-limits with user confirmation."""
+        mock_repo = Mock()
+        mock_repo.delete_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["entity", "delete-limits", "user-123", "-r", "gpt-4"], input="y\n"
+        )
+
+        assert result.exit_code == 0
+        assert "Deleted limits for entity 'user-123'" in result.output
+        assert "gpt-4" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_delete_limits_cancelled(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity delete-limits cancelled by user."""
+        result = runner.invoke(
+            cli, ["entity", "delete-limits", "user-123", "-r", "gpt-4"], input="n\n"
+        )
+
+        assert result.exit_code == 0
+        assert "Cancelled" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_delete_limits_with_yes_flag(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity delete-limits with --yes flag skips confirmation."""
+        mock_repo = Mock()
+        mock_repo.delete_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "delete-limits", "user-123", "-r", "gpt-4", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Deleted limits for entity 'user-123'" in result.output
+        assert "gpt-4" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_delete_limits_validation_error(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity delete-limits handles ValidationError."""
+        from zae_limiter.exceptions import ValidationError
+
+        mock_repo = Mock()
+        mock_repo.delete_limits = AsyncMock(
+            side_effect=ValidationError(
+                field="entity_id", value="user-123", reason="Invalid entity ID"
+            )
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "delete-limits", "user-123", "-r", "gpt-4", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Invalid entity ID" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_delete_limits_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity delete-limits handles unexpected exceptions."""
+        mock_repo = Mock()
+        mock_repo.delete_limits = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "delete-limits", "user-123", "-r", "gpt-4", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Failed to delete entity limits" in result.output
+
+
+class TestEntityCommandsEdgeCases:
+    """Test edge cases for entity CLI commands."""
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_limits_with_custom_name(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity set-limits with custom stack name."""
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "entity",
+                "set-limits",
+                "user-123",
+                "-r",
+                "gpt-4",
+                "-l",
+                "tpm:10000",
+                "--name",
+                "custom-stack",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify Repository was called with custom name
+        mock_repo_class.assert_called_once_with("custom-stack", None, None)
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_limits_with_region(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity set-limits with region."""
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "entity",
+                "set-limits",
+                "user-123",
+                "-r",
+                "gpt-4",
+                "-l",
+                "tpm:10000",
+                "--region",
+                "us-west-2",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify Repository was called with region
+        mock_repo_class.assert_called_once_with("limiter", "us-west-2", None)
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_limits_with_endpoint_url(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity set-limits with endpoint URL."""
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            [
+                "entity",
+                "set-limits",
+                "user-123",
+                "-r",
+                "gpt-4",
+                "-l",
+                "tpm:10000",
+                "--endpoint-url",
+                "http://localhost:4566",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify Repository was called with endpoint_url
+        mock_repo_class.assert_called_once_with("limiter", None, "http://localhost:4566")
+
+    def test_entity_set_limits_repo_init_validation_error(self, runner: CliRunner) -> None:
+        """Test entity set-limits handles ValidationError during Repository init."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid_name", reason="Invalid name format"
+            )
+
+            result = runner.invoke(
+                cli, ["entity", "set-limits", "user-123", "-r", "gpt-4", "-l", "tpm:10000"]
+            )
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    def test_entity_get_limits_repo_init_validation_error(self, runner: CliRunner) -> None:
+        """Test entity get-limits handles ValidationError during Repository init."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid_name", reason="Invalid name format"
+            )
+
+            result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    def test_entity_delete_limits_repo_init_validation_error(self, runner: CliRunner) -> None:
+        """Test entity delete-limits handles ValidationError during Repository init."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid_name", reason="Invalid name format"
+            )
+
+            result = runner.invoke(
+                cli, ["entity", "delete-limits", "user-123", "-r", "gpt-4", "--yes"]
+            )
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output

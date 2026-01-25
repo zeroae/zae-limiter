@@ -491,6 +491,45 @@ class TestRateLimiterStoredLimits:
         retrieved = await limiter.get_limits("key-1")
         assert len(retrieved) == 0
 
+    async def test_use_stored_limits_available_deprecation(self, limiter):
+        """Test that use_stored_limits in available() emits deprecation warning."""
+        import warnings
+
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_limits("key-1", limits, resource="gpt-4")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await limiter.available(
+                entity_id="key-1",
+                resource="gpt-4",
+                limits=limits,
+                use_stored_limits=True,
+            )
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "use_stored_limits is deprecated" in str(w[0].message)
+
+    async def test_use_stored_limits_time_until_available_deprecation(self, limiter):
+        """Test that use_stored_limits in time_until_available() emits deprecation warning."""
+        import warnings
+
+        limits = [Limit.per_minute("rpm", 100)]
+        await limiter.set_limits("key-1", limits, resource="gpt-4")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await limiter.time_until_available(
+                entity_id="key-1",
+                resource="gpt-4",
+                limits=limits,
+                needed={"rpm": 1},
+                use_stored_limits=True,
+            )
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "use_stored_limits is deprecated" in str(w[0].message)
+
 
 class TestRateLimiterResourceDefaults:
     """Tests for resource-level default configs."""
