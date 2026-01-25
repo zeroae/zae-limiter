@@ -1099,9 +1099,7 @@ class TestRepositoryDeprecation:
         repo = Repository(name="test-deprecation", region="us-east-1")
 
         # Mock StackManager to avoid actual CloudFormation calls
-        with patch(
-            "zae_limiter.infra.stack_manager.StackManager"
-        ) as mock_manager_class:
+        with patch("zae_limiter.infra.stack_manager.StackManager") as mock_manager_class:
             mock_manager = AsyncMock()
             mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
             mock_manager.__aexit__ = AsyncMock(return_value=None)
@@ -1126,9 +1124,7 @@ class TestRepositoryDeprecation:
 
         repo = Repository(name="test-deprecation-msg", region="us-east-1")
 
-        with patch(
-            "zae_limiter.infra.stack_manager.StackManager"
-        ) as mock_manager_class:
+        with patch("zae_limiter.infra.stack_manager.StackManager") as mock_manager_class:
             mock_manager = AsyncMock()
             mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
             mock_manager.__aexit__ = AsyncMock(return_value=None)
@@ -1142,9 +1138,7 @@ class TestRepositoryDeprecation:
                 await repo.create_stack(stack_options=StackOptions())
 
                 # Should have exactly one deprecation warning
-                deprecation_warnings = [
-                    x for x in w if issubclass(x.category, DeprecationWarning)
-                ]
+                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
                 assert len(deprecation_warnings) == 1
 
                 # Message should mention ensure_infrastructure
