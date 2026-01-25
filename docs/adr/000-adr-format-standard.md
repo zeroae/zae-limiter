@@ -26,6 +26,10 @@ All ADRs must follow this format:
    - Test cases
    - Phased rollout plans
    - Detailed cost calculations
+5. **Enforceable decisions** - Write decisions that can be deterministically verified:
+   - Use explicit prose requirements ("must use X", "Y owns Z")
+   - Avoid vague language ("should", "ideally", "consider")
+   - Link to issues for implementation details and examples
 
 ## Consequences
 
