@@ -951,8 +951,10 @@ class TestRateLimiterStackOptions:
     """Tests for stack_options initialization."""
 
     @pytest.mark.asyncio
-    async def test_limiter_with_stack_options_calls_create_stack(self, mock_dynamodb, monkeypatch):
-        """When stack_options is provided, _ensure_initialized should call create_stack."""
+    async def test_limiter_with_stack_options_calls_ensure_infrastructure(
+        self, mock_dynamodb, monkeypatch
+    ):
+        """When stack_options is provided, _ensure_initialized calls ensure_infrastructure."""
         from unittest.mock import AsyncMock
 
         # mock_dynamodb fixture is needed to set up AWS credentials
@@ -969,23 +971,29 @@ class TestRateLimiterStackOptions:
                 skip_version_check=True,  # Skip version check to isolate test
             )
 
-            # Mock the create_stack method to track calls
-            create_stack_mock = AsyncMock(return_value=None)
-            monkeypatch.setattr(limiter._repository, "create_stack", create_stack_mock)
+            # Mock ensure_infrastructure to track calls
+            ensure_infrastructure_mock = AsyncMock(return_value=None)
+            monkeypatch.setattr(
+                limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
+            )
 
             # Call _ensure_initialized
             await limiter._ensure_initialized()
 
-            # Verify create_stack was called with correct stack_options
-            create_stack_mock.assert_called_once_with(stack_options=stack_options)
+            # Verify ensure_infrastructure was called
+            ensure_infrastructure_mock.assert_called_once()
 
             await limiter.close()
 
     @pytest.mark.asyncio
-    async def test_limiter_without_stack_options_skips_create_stack(
+    async def test_limiter_without_stack_options_calls_ensure_infrastructure(
         self, mock_dynamodb, monkeypatch
     ):
-        """When stack_options is None, _ensure_initialized should not call create_stack."""
+        """When stack_options is None, _ensure_initialized still calls ensure_infrastructure.
+
+        The ensure_infrastructure method is always called by RateLimiter, but it's
+        a no-op when Repository was created without stack_options.
+        """
         from unittest.mock import AsyncMock
 
         # mock_dynamodb fixture is needed to set up AWS credentials
@@ -1000,15 +1008,17 @@ class TestRateLimiterStackOptions:
                 skip_version_check=True,
             )
 
-            # Mock create_stack to track if it's called
-            create_stack_mock = AsyncMock(return_value=None)
-            monkeypatch.setattr(limiter._repository, "create_stack", create_stack_mock)
+            # Mock ensure_infrastructure to track if it's called
+            ensure_infrastructure_mock = AsyncMock(return_value=None)
+            monkeypatch.setattr(
+                limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
+            )
 
             # Call _ensure_initialized
             await limiter._ensure_initialized()
 
-            # Verify create_stack was NOT called
-            create_stack_mock.assert_not_called()
+            # Verify ensure_infrastructure WAS called (it's a no-op when no stack_options)
+            ensure_infrastructure_mock.assert_called_once()
 
             await limiter.close()
 

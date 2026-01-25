@@ -162,12 +162,34 @@ class Repository:
             if e.response["Error"]["Code"] != "ResourceNotFoundException":
                 raise
 
+    async def ensure_infrastructure(self) -> None:
+        """
+        Ensure DynamoDB infrastructure exists.
+
+        Creates CloudFormation stack using stack_options passed to the constructor.
+        No-op if stack_options was not provided.
+
+        Raises:
+            StackCreationError: If CloudFormation stack creation fails
+        """
+        if self._stack_options is None:
+            return
+
+        from .infra.stack_manager import StackManager
+
+        async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
+            await manager.create_stack(stack_options=self._stack_options)
+
     async def create_stack(
         self,
         stack_options: StackOptions | None = None,
     ) -> None:
         """
         Create DynamoDB infrastructure via CloudFormation.
+
+        .. deprecated:: 0.6.0
+            Use :meth:`ensure_infrastructure` instead. Pass stack_options
+            to the Repository constructor. Will be removed in v2.0.0.
 
         Args:
             stack_options: Configuration for CloudFormation stack.
@@ -176,15 +198,26 @@ class Repository:
         Raises:
             StackCreationError: If CloudFormation stack creation fails
         """
-        from .infra.stack_manager import StackManager
+        import warnings
 
-        # Use constructor-provided options if none specified
-        options = stack_options if stack_options is not None else self._stack_options
+        warnings.warn(
+            "create_stack() is deprecated. Use ensure_infrastructure() instead. "
+            "Pass stack_options to the Repository constructor. "
+            "This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-        async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
-            await manager.create_stack(
-                stack_options=options,
-            )
+        if stack_options is not None:
+            # Temporarily override stack_options for this call
+            saved = self._stack_options
+            self._stack_options = stack_options
+            try:
+                await self.ensure_infrastructure()
+            finally:
+                self._stack_options = saved
+        else:
+            await self.ensure_infrastructure()
 
     # -------------------------------------------------------------------------
     # Entity operations

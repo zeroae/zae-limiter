@@ -180,6 +180,11 @@ repo = Repository(
     ),
 )
 limiter = RateLimiter(repository=repo)
+
+# Note: Infrastructure is created automatically on first use via
+# RateLimiter._ensure_initialized() which calls repo.ensure_infrastructure().
+# You can also call it explicitly:
+await repo.ensure_infrastructure()
 ```
 
 ### LocalStack Development

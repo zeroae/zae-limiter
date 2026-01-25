@@ -92,8 +92,12 @@ Protocol is more Pythonic: any object with the right methods satisfies the proto
 - `close` - Resource cleanup
 - `name` property - Backend identifier
 
+**Required (infrastructure):**
+- `ensure_infrastructure()` - Ensures backend infrastructure exists. For DynamoDB,
+  creates CloudFormation stack using `stack_options` from constructor. No-op if
+  `stack_options` was not provided.
+
 **Optional (backend-specific, not in protocol):**
-- `ensure_infrastructure()` - DynamoDB CloudFormation stack
 - `get_audit_events()` - Audit logging (DynamoDB-specific schema)
 - `get_usage_snapshots()` - Usage aggregation (requires Lambda)
 
@@ -121,7 +125,7 @@ Optional methods are accessed via backend-specific types, not the protocol.
 `StackOptions` moves from `RateLimiter` to `Repository`:
 
 ```python
-# Repository owns infrastructure
+# Repository owns infrastructure - pass stack_options to constructor
 repo = Repository(
     name="my-app",
     region="us-east-1",
@@ -131,12 +135,20 @@ repo = Repository(
     ),
 )
 
+# Ensure infrastructure exists (uses stored stack_options)
+await repo.ensure_infrastructure()
+
 # RateLimiter owns business logic only
 limiter = RateLimiter(
     repository=repo,
     on_unavailable=OnUnavailable.BLOCK,
 )
 ```
+
+**Key API change:** `ensure_infrastructure()` replaces `create_stack()`:
+- `stack_options` is passed to the Repository constructor, not to the method
+- `ensure_infrastructure()` is a no-op if `stack_options` is `None`
+- `create_stack()` is deprecated and emits `DeprecationWarning`
 
 This separation enables:
 - Redis backends that don't need CloudFormation

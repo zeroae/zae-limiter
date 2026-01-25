@@ -141,7 +141,6 @@ class RateLimiter:
             # New API: use provided repository
             self._repository = repository
             self._name = repository.stack_name
-            self._stack_options = None  # Repository owns infrastructure
         elif old_params_provided:
             # Old API: emit deprecation warning
             warnings.warn(
@@ -153,7 +152,6 @@ class RateLimiter:
             )
             effective_name = name if name is not None else "limiter"
             self._name = normalize_name(effective_name)
-            self._stack_options = stack_options
             self._repository = Repository(
                 name=self._name,
                 region=region,
@@ -163,7 +161,6 @@ class RateLimiter:
         else:
             # Default: silent backward compatibility
             self._name = normalize_name("limiter")
-            self._stack_options = None
             self._repository = Repository(name=self._name)
 
         # Internal: stack_name and table_name for AWS resources
@@ -250,10 +247,8 @@ class RateLimiter:
         if self._initialized:
             return
 
-        if self._stack_options is not None:
-            await self._repository.create_stack(
-                stack_options=self._stack_options,
-            )
+        # Repository owns infrastructure config - it will no-op if not configured
+        await self._repository.ensure_infrastructure()
 
         # Version check (skip for local DynamoDB without CloudFormation)
         if not self._skip_version_check:
