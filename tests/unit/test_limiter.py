@@ -940,7 +940,7 @@ class TestRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set on_unavailable to ALLOW
         limiter.on_unavailable = OnUnavailable.ALLOW
@@ -968,7 +968,7 @@ class TestRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set on_unavailable to BLOCK (default)
         limiter.on_unavailable = OnUnavailable.BLOCK
@@ -999,7 +999,7 @@ class TestRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set limiter to BLOCK, but override in acquire
         limiter.on_unavailable = OnUnavailable.BLOCK
@@ -1023,7 +1023,7 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise Exception("DynamoDB timeout")
 
-        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set limiter to ALLOW, but override in acquire
         limiter.on_unavailable = OnUnavailable.ALLOW

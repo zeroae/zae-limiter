@@ -750,21 +750,30 @@ class RateLimiter:
 
         now_ms = int(time.time() * 1000)
 
-        # Determine which entities to check.
-        # Cascade is a per-entity config: if the entity has cascade=True
-        # and a parent_id, also consume from the parent.
+        # Phase 1: Resolve child limits, then fetch child META + child buckets
+        # in a single BatchGetItem call (no separate get_entity round trip).
+        child_limits = await self._resolve_limits(entity_id, resource, limits_override)
+
+        entity, child_buckets = await self._fetch_entity_and_buckets(
+            entity_id, resource, child_limits
+        )
+
+        # Determine cascade
         entity_ids = [entity_id]
-        entity = await self._repository.get_entity(entity_id)
+        existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
+        entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}
+
         if entity and entity.cascade and entity.parent_id:
-            entity_ids.append(entity.parent_id)
+            parent_id = entity.parent_id
+            entity_ids.append(parent_id)
 
-        # Resolve limits for each entity using three-tier hierarchy
-        entity_limits: dict[str, list[Limit]] = {}
-        for eid in entity_ids:
-            entity_limits[eid] = await self._resolve_limits(eid, resource, limits_override)
-
-        # Fetch all buckets - use batch if available, otherwise sequential (issue #133)
-        existing_buckets = await self._fetch_buckets(entity_ids, resource, entity_limits)
+            # Phase 2: Resolve parent limits + fetch parent buckets
+            parent_limits = await self._resolve_limits(parent_id, resource, limits_override)
+            entity_limits[parent_id] = parent_limits
+            parent_buckets = await self._fetch_buckets(
+                [parent_id], resource, {parent_id: parent_limits}
+            )
+            existing_buckets.update(parent_buckets)
 
         # Process buckets and build lease entries
         entries: list[LeaseEntry] = []
@@ -818,6 +827,36 @@ class RateLimiter:
             raise RateLimitExceeded(statuses)
 
         return Lease(repository=self._repository, entries=entries)
+
+    async def _fetch_entity_and_buckets(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+    ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
+        """
+        Fetch entity metadata and its buckets in a single call.
+
+        Uses batch_get_entity_and_buckets if the backend supports batch
+        operations, otherwise falls back to separate get_entity + get_buckets.
+        """
+        if self._repository.capabilities.supports_batch_operations:
+            bucket_keys = [(entity_id, resource, limit.name) for limit in limits]
+            # batch_get_entity_and_buckets exists when supports_batch_operations is True
+            result: tuple[
+                Entity | None, dict[tuple[str, str, str], BucketState]
+            ] = await self._repository.batch_get_entity_and_buckets(  # type: ignore[attr-defined]
+                entity_id, bucket_keys
+            )
+            return result
+
+        # Fallback: sequential calls
+        entity = await self._repository.get_entity(entity_id)
+        buckets = await self._repository.get_buckets(entity_id, resource)
+        bucket_dict: dict[tuple[str, str, str], BucketState] = {
+            (b.entity_id, b.resource, b.limit_name): b for b in buckets
+        }
+        return entity, bucket_dict
 
     async def _fetch_buckets(
         self,

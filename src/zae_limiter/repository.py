@@ -500,6 +500,73 @@ class Repository:
 
         return result
 
+    async def batch_get_entity_and_buckets(
+        self,
+        entity_id: str,
+        bucket_keys: list[tuple[str, str, str]],
+    ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
+        """
+        Fetch entity metadata and buckets in a single BatchGetItem call.
+
+        Includes the entity's #META record alongside bucket records to avoid
+        a separate get_entity() round trip.
+
+        Args:
+            entity_id: Entity whose META record to include
+            bucket_keys: List of (entity_id, resource, limit_name) for buckets
+
+        Returns:
+            Tuple of (entity_or_none, bucket_dict)
+
+        Note:
+            DynamoDB BatchGetItem supports up to 100 items per request.
+            The META key counts toward that limit.
+        """
+        client = await self._get_client()
+
+        # Build all keys: META key + bucket keys
+        meta_key = {
+            "PK": {"S": schema.pk_entity(entity_id)},
+            "SK": {"S": schema.sk_meta()},
+        }
+
+        request_keys = [meta_key]
+        unique_bucket_keys = list(set(bucket_keys))
+        for eid, resource, limit_name in unique_bucket_keys:
+            request_keys.append(
+                {
+                    "PK": {"S": schema.pk_entity(eid)},
+                    "SK": {"S": schema.sk_bucket(resource, limit_name)},
+                }
+            )
+
+        entity: Entity | None = None
+        buckets: dict[tuple[str, str, str], BucketState] = {}
+
+        # BatchGetItem in chunks of 100
+        for i in range(0, len(request_keys), 100):
+            chunk = request_keys[i : i + 100]
+
+            response = await client.batch_get_item(
+                RequestItems={
+                    self.table_name: {
+                        "Keys": chunk,
+                    }
+                }
+            )
+
+            items = response.get("Responses", {}).get(self.table_name, [])
+            for item in items:
+                sk = item.get("SK", {}).get("S", "")
+                if sk == schema.sk_meta():
+                    entity = self._deserialize_entity(item)
+                else:
+                    bucket = self._deserialize_bucket(item)
+                    key = (bucket.entity_id, bucket.resource, bucket.limit_name)
+                    buckets[key] = bucket
+
+        return entity, buckets
+
     async def get_or_create_bucket(
         self,
         entity_id: str,
