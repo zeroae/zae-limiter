@@ -4,10 +4,9 @@ Migration: v1.1.0 (Flatten DynamoDB schema)
 Promotes nested data.M fields to flat top-level attributes for all record
 types: entities, buckets, limits, audit events, and version records.
 
-This migration is optional for operators who want immediate consistency.
-The v1.1.0 code reads both flat and nested formats (dual-format
-deserialization), so records will be lazily migrated on next write even
-without running this migration.
+This migration is **required** before upgrading to v0.6.0. Starting with
+v0.6.0, deserialization reads flat format only — nested ``data.M`` records
+will not be read correctly without running this migration first.
 
 Schema changes:
 - Entity metadata: name, parent_id, metadata, created_at → top-level

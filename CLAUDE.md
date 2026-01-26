@@ -849,7 +849,7 @@ See [ADR-100](docs/adr/100-centralized-config.md) for full design details.
 
 **All record types use flat schema (v0.6.0+, schema v1.1.0):**
 
-All DynamoDB records store fields as top-level attributes. The nested `data.M` wrapper used prior to v0.6.0 has been removed. Deserialization accepts both flat and legacy nested formats for backward compatibility. Serialization always writes flat format. See [ADR-111](docs/adr/111-flatten-all-records.md) and issue [#180](https://github.com/zeroae/zae-limiter/issues/180).
+All DynamoDB records store fields as top-level attributes. The nested `data.M` wrapper used prior to v0.6.0 has been removed. Deserialization reads flat format only (no backward-compatible nested fallback). Serialization always writes flat format. The v1.1.0 migration **must be run before upgrading to v0.6.0**. See [ADR-111](docs/adr/111-flatten-all-records.md) and issue [#180](https://github.com/zeroae/zae-limiter/issues/180).
 
 **DynamoDB reserved words:** Flat attribute names `name`, `resource`, `action`, `timestamp`, and `data` (used in REMOVE expressions during migration) are DynamoDB reserved words. All expressions referencing these must use `ExpressionAttributeNames` aliases.
 
@@ -889,7 +889,7 @@ All DynamoDB records store fields as top-level attributes. The nested `data.M` w
 }
 ```
 
-**Migration:** The v1.1.0 migration (`migrations/v1_1_0.py`) scans for items with `attribute_exists(data)` and promotes nested fields to top level. This migration is optional — lazy dual-format reads handle old records indefinitely.
+**Migration:** The v1.1.0 migration (`migrations/v1_1_0.py`) scans for items with `attribute_exists(data)` and promotes nested fields to top level. This migration is **required** before upgrading to v0.6.0 — flat-only deserialization does not read nested `data.M` records.
 
 ## Dependencies
 

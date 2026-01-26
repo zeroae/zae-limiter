@@ -222,13 +222,7 @@ def extract_delta(record: dict[str, Any]) -> ConsumptionDelta | None:
     new_counter = int(new_counter_attr["N"])
     old_counter = int(old_counter_attr["N"])
 
-    # Get timestamp: try flat format first, fall back to nested data.M
-    flat_refill = new_image.get("last_refill_ms", {}).get("N")
-    if flat_refill is not None:
-        new_refill_ms = int(flat_refill)
-    else:
-        new_data = new_image.get("data", {}).get("M", {})
-        new_refill_ms = int(new_data.get("last_refill_ms", {}).get("N", "0"))
+    new_refill_ms = int(new_image.get("last_refill_ms", {}).get("N", "0"))
 
     # Calculate delta: new - old = net consumption since last update
     # Positive = consumed, negative = returned (via release/adjust)

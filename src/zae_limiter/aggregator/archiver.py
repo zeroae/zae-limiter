@@ -148,7 +148,7 @@ def extract_audit_event(record: dict[str, Any]) -> dict[str, Any] | None:
     Extract audit event from a DynamoDB stream REMOVE record.
 
     Only processes REMOVE events with PK starting with AUDIT#.
-    Deserializes the nested data.M map to a plain dictionary.
+    Reads flat top-level attributes (v1.1.0+ schema).
 
     Args:
         record: DynamoDB stream record
@@ -168,25 +168,18 @@ def extract_audit_event(record: dict[str, Any]) -> dict[str, Any] | None:
     if not pk.startswith(AUDIT_PREFIX):
         return None
 
-    # Flat format: action at top level (v1.1.0+)
-    if "action" in old_image and "S" in old_image.get("action", {}):
-        result: dict[str, Any] = {}
-        for key in ("event_id", "entity_id", "action", "timestamp", "principal", "resource"):
-            if key in old_image:
-                result[key] = _deserialize_value(old_image[key])
-        # Details is a map
-        details_raw = old_image.get("details", {})
-        result["details"] = _deserialize_map(details_raw.get("M", {})) if "M" in details_raw else {}
-        return result
-
-    # Nested format: fields inside data.M
-    data_map = old_image.get("data", {}).get("M", {})
-    if not data_map:
-        logger.warning("Audit record missing data map", pk=pk)
+    if "action" not in old_image or "S" not in old_image.get("action", {}):
+        logger.warning("Audit record missing action field", pk=pk)
         return None
 
-    # Deserialize to plain dict
-    return _deserialize_map(data_map)
+    result: dict[str, Any] = {}
+    for key in ("event_id", "entity_id", "action", "timestamp", "principal", "resource"):
+        if key in old_image:
+            result[key] = _deserialize_value(old_image[key])
+    # Details is a map
+    details_raw = old_image.get("details", {})
+    result["details"] = _deserialize_map(details_raw.get("M", {})) if "M" in details_raw else {}
+    return result
 
 
 def _deserialize_map(ddb_map: dict[str, Any]) -> dict[str, Any]:

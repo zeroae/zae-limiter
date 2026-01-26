@@ -683,31 +683,15 @@ class Repository:
 
         limits = []
         for item in response.get("Items", []):
-            # Flat format: capacity at top level
-            if "capacity" in item and "N" in item.get("capacity", {}):
-                limits.append(
-                    Limit(
-                        name=item.get("limit_name", {}).get("S", ""),
-                        capacity=int(item["capacity"]["N"]),
-                        burst=int(item.get("burst", {}).get("N", "0")),
-                        refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
-                        refill_period_seconds=int(
-                            item.get("refill_period_seconds", {}).get("N", "0")
-                        ),
-                    )
+            limits.append(
+                Limit(
+                    name=item.get("limit_name", {}).get("S", ""),
+                    capacity=int(item["capacity"]["N"]),
+                    burst=int(item.get("burst", {}).get("N", "0")),
+                    refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
+                    refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
                 )
-            else:
-                # Nested format: fields inside data.M
-                data = self._deserialize_map(item.get("data", {}).get("M", {}))
-                limits.append(
-                    Limit(
-                        name=data["limit_name"],
-                        capacity=int(data["capacity"]),
-                        burst=int(data["burst"]),
-                        refill_amount=int(data["refill_amount"]),
-                        refill_period_seconds=int(data["refill_period_seconds"]),
-                    )
-                )
+            )
 
         return limits
 
@@ -1200,22 +1184,17 @@ class Repository:
         if not item:
             return None
 
-        # Flat format: schema_version at top level
-        if "schema_version" in item and "S" in item.get("schema_version", {}):
-            result: dict[str, Any] = {}
-            for key in (
-                "schema_version",
-                "lambda_version",
-                "client_min_version",
-                "updated_at",
-                "updated_by",
-            ):
-                if key in item:
-                    result[key] = self._deserialize_value(item[key])
-            return result
-
-        # Nested format: fields inside data.M
-        return self._deserialize_map(item.get("data", {}).get("M", {}))
+        result: dict[str, Any] = {}
+        for key in (
+            "schema_version",
+            "lambda_version",
+            "client_min_version",
+            "updated_at",
+            "updated_by",
+        ):
+            if key in item:
+                result[key] = self._deserialize_value(item[key])
+        return result
 
     async def ping(self) -> bool:
         """
@@ -1395,39 +1374,22 @@ class Repository:
         return events
 
     def _deserialize_audit_event(self, item: dict[str, Any]) -> AuditEvent | None:
-        """Deserialize a DynamoDB item to AuditEvent.
-
-        Supports both flat (v1.1.0+) and nested data.M (v1.0.0) formats.
-        """
-        # Flat format: action at top level
-        if "action" in item and "S" in item.get("action", {}):
-            details_raw = item.get("details", {})
-            details = self._deserialize_map(details_raw.get("M", {})) if "M" in details_raw else {}
-            principal = self._deserialize_value(item["principal"]) if "principal" in item else None
-            resource = self._deserialize_value(item["resource"]) if "resource" in item else None
-            return AuditEvent(
-                event_id=item.get("event_id", {}).get("S", ""),
-                timestamp=item.get("timestamp", {}).get("S", ""),
-                action=item["action"]["S"],
-                entity_id=item.get("entity_id", {}).get("S", ""),
-                principal=principal,
-                resource=resource,
-                details=details,
-            )
-
-        # Nested format: fields inside data.M
-        data = self._deserialize_map(item.get("data", {}).get("M", {}))
-        if not data:
+        """Deserialize a DynamoDB item to AuditEvent (flat format only)."""
+        if "action" not in item or "S" not in item.get("action", {}):
             return None
 
+        details_raw = item.get("details", {})
+        details = self._deserialize_map(details_raw.get("M", {})) if "M" in details_raw else {}
+        principal = self._deserialize_value(item["principal"]) if "principal" in item else None
+        resource = self._deserialize_value(item["resource"]) if "resource" in item else None
         return AuditEvent(
-            event_id=data.get("event_id", ""),
-            timestamp=data.get("timestamp", ""),
-            action=data.get("action", ""),
-            entity_id=data.get("entity_id", ""),
-            principal=data.get("principal"),
-            resource=data.get("resource"),
-            details=data.get("details", {}),
+            event_id=item.get("event_id", {}).get("S", ""),
+            timestamp=item.get("timestamp", {}).get("S", ""),
+            action=item["action"]["S"],
+            entity_id=item.get("entity_id", {}).get("S", ""),
+            principal=principal,
+            resource=resource,
+            details=details,
         )
 
     # -------------------------------------------------------------------------
@@ -1810,29 +1772,16 @@ class Repository:
         return None
 
     def _deserialize_entity(self, item: dict[str, Any]) -> Entity:
-        """Deserialize a DynamoDB item to Entity.
-
-        Supports both flat (v1.1.0+) and nested data.M (v1.0.0) formats.
-        """
+        """Deserialize a DynamoDB item to Entity (flat format only)."""
         entity_id = item.get("entity_id", {}).get("S", "")
-
-        # Flat format: fields at top level
-        if "name" in item and "S" in item.get("name", {}):
-            name_val = item["name"].get("S")
-            parent_val = self._deserialize_value(item["parent_id"]) if "parent_id" in item else None
-            metadata_val = (
-                self._deserialize_map(item["metadata"].get("M", {}))
-                if "metadata" in item and "M" in item.get("metadata", {})
-                else {}
-            )
-            created_val = item.get("created_at", {}).get("S")
-        else:
-            # Nested format: fields inside data.M
-            data = self._deserialize_map(item.get("data", {}).get("M", {}))
-            name_val = data.get("name")
-            parent_val = data.get("parent_id")
-            metadata_val = data.get("metadata", {})
-            created_val = data.get("created_at")
+        name_val = item["name"].get("S") if "name" in item else None
+        parent_val = self._deserialize_value(item["parent_id"]) if "parent_id" in item else None
+        metadata_val = (
+            self._deserialize_map(item["metadata"].get("M", {}))
+            if "metadata" in item and "M" in item.get("metadata", {})
+            else {}
+        )
+        created_val = item.get("created_at", {}).get("S")
 
         return Entity(
             id=entity_id,
@@ -1843,43 +1792,22 @@ class Repository:
         )
 
     def _deserialize_bucket(self, item: dict[str, Any]) -> BucketState:
-        """Deserialize a DynamoDB item to BucketState.
-
-        Supports both flat (v1.1.0+) and nested data.M (v1.0.0) formats.
-        total_consumed_milli is always a flat top-level attribute.
-        """
-        # Counter is stored as FLAT top-level attribute (not in data.M).
+        """Deserialize a DynamoDB item to BucketState (flat format only)."""
+        # Counter is stored as FLAT top-level attribute.
         # None if not present (old bucket without counter). See issue #179.
         counter_attr = item.get("total_consumed_milli", {})
         total_consumed_milli = int(counter_attr["N"]) if "N" in counter_attr else None
 
-        # Flat format: tokens_milli at top level
-        if "tokens_milli" in item and "N" in item.get("tokens_milli", {}):
-            return BucketState(
-                entity_id=item.get("entity_id", {}).get("S", ""),
-                resource=item.get("resource", {}).get("S", ""),
-                limit_name=item.get("limit_name", {}).get("S", ""),
-                tokens_milli=int(item["tokens_milli"]["N"]),
-                last_refill_ms=int(item.get("last_refill_ms", {}).get("N", "0")),
-                capacity_milli=int(item.get("capacity_milli", {}).get("N", "0")),
-                burst_milli=int(item.get("burst_milli", {}).get("N", "0")),
-                refill_amount_milli=int(item.get("refill_amount_milli", {}).get("N", "0")),
-                refill_period_ms=int(item.get("refill_period_ms", {}).get("N", "0")),
-                total_consumed_milli=total_consumed_milli,
-            )
-
-        # Nested format: fields inside data.M
-        data = self._deserialize_map(item.get("data", {}).get("M", {}))
         return BucketState(
             entity_id=item.get("entity_id", {}).get("S", ""),
-            resource=data.get("resource", ""),
-            limit_name=data.get("limit_name", ""),
-            tokens_milli=int(data.get("tokens_milli", 0)),
-            last_refill_ms=int(data.get("last_refill_ms", 0)),
-            capacity_milli=int(data.get("capacity_milli", 0)),
-            burst_milli=int(data.get("burst_milli", 0)),
-            refill_amount_milli=int(data.get("refill_amount_milli", 0)),
-            refill_period_ms=int(data.get("refill_period_ms", 0)),
+            resource=item.get("resource", {}).get("S", ""),
+            limit_name=item.get("limit_name", {}).get("S", ""),
+            tokens_milli=int(item["tokens_milli"]["N"]),
+            last_refill_ms=int(item.get("last_refill_ms", {}).get("N", "0")),
+            capacity_milli=int(item.get("capacity_milli", {}).get("N", "0")),
+            burst_milli=int(item.get("burst_milli", {}).get("N", "0")),
+            refill_amount_milli=int(item.get("refill_amount_milli", {}).get("N", "0")),
+            refill_period_ms=int(item.get("refill_period_ms", {}).get("N", "0")),
             total_consumed_milli=total_consumed_milli,
         )
 

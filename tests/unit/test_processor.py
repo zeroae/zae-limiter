@@ -68,53 +68,26 @@ class TestExtractDelta:
         last_refill_ms: int = 1704067200000,
         old_counter: int | None = 0,
         new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
-        nested: bool = False,
     ) -> dict:
         """Helper to create a stream record.
 
         The counter values (old_counter, new_counter) track consumption in millitokens.
         Set both to None to simulate old buckets without counter (issue #179).
-        Set nested=True to produce old nested data.M format for backward-compat tests.
         """
-        if nested:
-            new_image: dict = {
-                "PK": {"S": f"ENTITY#{entity_id}"},
-                "SK": {"S": sk},
-                "entity_id": {"S": entity_id},
-                "data": {
-                    "M": {
-                        "tokens_milli": {"N": str(new_tokens)},
-                        "last_refill_ms": {"N": str(last_refill_ms)},
-                    }
-                },
-            }
-            old_image: dict = {
-                "PK": {"S": f"ENTITY#{entity_id}"},
-                "SK": {"S": sk},
-                "entity_id": {"S": entity_id},
-                "data": {
-                    "M": {
-                        "tokens_milli": {"N": str(old_tokens)},
-                        "last_refill_ms": {"N": str(last_refill_ms - 1000)},
-                    }
-                },
-            }
-        else:
-            # Flat format (v1.1.0+)
-            new_image = {
-                "PK": {"S": f"ENTITY#{entity_id}"},
-                "SK": {"S": sk},
-                "entity_id": {"S": entity_id},
-                "tokens_milli": {"N": str(new_tokens)},
-                "last_refill_ms": {"N": str(last_refill_ms)},
-            }
-            old_image = {
-                "PK": {"S": f"ENTITY#{entity_id}"},
-                "SK": {"S": sk},
-                "entity_id": {"S": entity_id},
-                "tokens_milli": {"N": str(old_tokens)},
-                "last_refill_ms": {"N": str(last_refill_ms - 1000)},
-            }
+        new_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "tokens_milli": {"N": str(new_tokens)},
+            "last_refill_ms": {"N": str(last_refill_ms)},
+        }
+        old_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "tokens_milli": {"N": str(old_tokens)},
+            "last_refill_ms": {"N": str(last_refill_ms - 1000)},
+        }
 
         record: dict = {
             "eventName": "MODIFY",
@@ -123,7 +96,7 @@ class TestExtractDelta:
                 "OldImage": old_image,
             },
         }
-        # Add counter as FLAT top-level attribute (not in data.M) - issue #179
+        # Add counter as FLAT top-level attribute - issue #179
         if new_counter is not None:
             record["dynamodb"]["NewImage"]["total_consumed_milli"] = {"N": str(new_counter)}
         if old_counter is not None:
@@ -234,27 +207,6 @@ class TestExtractDelta:
         delta = extract_delta(record)
         assert delta is not None  # counter delta is 1000000
         assert delta.tokens_delta == 1000000
-
-    def test_nested_format_backward_compat(self) -> None:
-        """Nested data.M format should still extract deltas correctly."""
-        record = self._make_record(
-            sk="#BUCKET#gpt-4#tpm",
-            entity_id="legacy-entity",
-            old_tokens=10000,
-            new_tokens=5000,
-            last_refill_ms=1704067200000,
-            old_counter=0,
-            new_counter=5000000,
-            nested=True,
-        )
-
-        delta = extract_delta(record)
-        assert delta is not None
-        assert delta.entity_id == "legacy-entity"
-        assert delta.resource == "gpt-4"
-        assert delta.limit_name == "tpm"
-        assert delta.tokens_delta == 5000000
-        assert delta.timestamp_ms == 1704067200000
 
     def test_missing_dynamodb_key(self) -> None:
         """Missing dynamodb key returns None."""

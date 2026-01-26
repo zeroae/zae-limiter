@@ -12,7 +12,7 @@ The mixed patterns create inconsistency in serialization/deserialization code, c
 
 ## Decision
 
-All DynamoDB record types must use flat schema (top-level attributes, no nested `data.M` wrapper). Deserialization must accept both flat and nested formats indefinitely for backward compatibility. Serialization must produce only flat format. A v1.1.0 migration is provided for operators who want immediate consistency.
+All DynamoDB record types must use flat schema (top-level attributes, no nested `data.M` wrapper). Deserialization reads flat format only. Pre-1.0.0 semver allows breaking changes. Serialization produces only flat format. The v1.1.0 migration is **required** before upgrading to v0.6.0.
 
 ## Consequences
 
@@ -21,10 +21,10 @@ All DynamoDB record types must use flat schema (top-level attributes, no nested 
 - Simpler serialization code without `data.M` wrapper construction
 - Aggregator Lambda reads flat attributes directly instead of navigating nested paths
 - Enables atomic operations on any attribute without "overlapping paths" errors
-- Lazy migration means zero-downtime rollout with no mandatory data migration
+- No branching logic in deserializers
 
 **Negative:**
-- Dual-format deserialization adds branching logic to 5 deserializers
+- v1.1.0 migration is mandatory before upgrading to v0.6.0
 - Schema version bump (1.0.0 to 1.1.0) required
 - DynamoDB reserved words (`name`, `resource`, `action`, `timestamp`) require `ExpressionAttributeNames` aliases in all expressions
 
@@ -34,7 +34,7 @@ All DynamoDB record types must use flat schema (top-level attributes, no nested 
 Rejected because: Perpetuates schema inconsistency; ADR-101 already committed to flattening in v0.6.0.
 
 ### Big-bang migration (write stops until all records migrated)
-Rejected because: Requires downtime; lazy dual-format reads achieve the same result with zero-downtime rollout.
+Rejected because: Requires downtime; the v1.1.0 migration can run online with no write stops.
 
 ### Flatten only on read (no serialization changes)
 Rejected because: Leaves old-format records indefinitely; new writes would still produce nested format, preventing convergence.
