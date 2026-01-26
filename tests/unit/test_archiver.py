@@ -71,15 +71,15 @@ class TestExtractAuditEvent:
 
         assert result is None
 
-    def test_handle_missing_data_map(self) -> None:
-        """Handle records with missing data map."""
+    def test_handle_missing_action_field(self) -> None:
+        """Handle records with missing action field."""
         record = {
             "eventName": "REMOVE",
             "dynamodb": {
                 "OldImage": {
                     "PK": {"S": "AUDIT#user-123"},
                     "SK": {"S": "#AUDIT#01HQJK123456789"},
-                    # Missing data.M
+                    # No data.M and no flat action field
                 }
             },
         }
@@ -148,39 +148,24 @@ class TestExtractAuditEvent:
         resource: str | None = None,
         details: dict | None = None,
     ) -> dict:
-        """Helper to create audit stream records."""
-        data_map: dict = {
-            "event_id": {"S": event_id},
+        """Helper to create audit stream records (flat format v0.6.0+)."""
+        old_image: dict = {
+            "PK": {"S": f"AUDIT#{entity_id}"},
+            "SK": {"S": f"#AUDIT#{event_id}"},
             "entity_id": {"S": entity_id},
+            "event_id": {"S": event_id},
             "action": {"S": action},
             "timestamp": {"S": timestamp},
+            "principal": {"S": principal} if principal is not None else {"NULL": True},
+            "resource": {"S": resource} if resource is not None else {"NULL": True},
+            "details": details if details is not None else {"M": {}},
+            "ttl": {"N": "1705330200"},
         }
-
-        if principal is not None:
-            data_map["principal"] = {"S": principal}
-        else:
-            data_map["principal"] = {"NULL": True}
-
-        if resource is not None:
-            data_map["resource"] = {"S": resource}
-        else:
-            data_map["resource"] = {"NULL": True}
-
-        if details is not None:
-            data_map["details"] = details
-        else:
-            data_map["details"] = {"M": {}}
 
         return {
             "eventName": event_name,
             "dynamodb": {
-                "OldImage": {
-                    "PK": {"S": f"AUDIT#{entity_id}"},
-                    "SK": {"S": f"#AUDIT#{event_id}"},
-                    "entity_id": {"S": entity_id},
-                    "data": {"M": data_map},
-                    "ttl": {"N": "1705330200"},
-                }
+                "OldImage": old_image,
             },
         }
 
@@ -617,7 +602,7 @@ class TestArchiveAuditEvents:
         timestamp: str = "2024-01-15T14:30:00Z",
         principal: str = "admin@example.com",
     ) -> dict:
-        """Helper to create audit stream records."""
+        """Helper to create audit stream records (flat format v0.6.0+)."""
         return {
             "eventName": "REMOVE",
             "dynamodb": {
@@ -625,17 +610,12 @@ class TestArchiveAuditEvents:
                     "PK": {"S": f"AUDIT#{entity_id}"},
                     "SK": {"S": f"#AUDIT#{event_id}"},
                     "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "event_id": {"S": event_id},
-                            "entity_id": {"S": entity_id},
-                            "action": {"S": action},
-                            "timestamp": {"S": timestamp},
-                            "principal": {"S": principal},
-                            "resource": {"NULL": True},
-                            "details": {"M": {}},
-                        }
-                    },
+                    "event_id": {"S": event_id},
+                    "action": {"S": action},
+                    "timestamp": {"S": timestamp},
+                    "principal": {"S": principal},
+                    "resource": {"NULL": True},
+                    "details": {"M": {}},
                     "ttl": {"N": "1705330200"},
                 }
             },

@@ -98,12 +98,12 @@ class TestRepositoryBucketOperations:
         assert "Update" in update_item
         update_spec = update_item["Update"]
 
-        # Check update expression
-        expected_expr = "SET #data.#tokens = :tokens, #data.#refill = :refill"
+        # Check update expression (flat paths, no #data prefix)
+        expected_expr = "SET #tokens = :tokens, #refill = :refill"
         assert update_spec["UpdateExpression"] == expected_expr
 
-        # Check attribute names
-        assert update_spec["ExpressionAttributeNames"]["#data"] == "data"
+        # Check attribute names (no #data key)
+        assert "#data" not in update_spec["ExpressionAttributeNames"]
         assert update_spec["ExpressionAttributeNames"]["#tokens"] == "tokens_milli"
         assert update_spec["ExpressionAttributeNames"]["#refill"] == "last_refill_ms"
 
@@ -112,8 +112,8 @@ class TestRepositoryBucketOperations:
         assert update_spec["ExpressionAttributeValues"][":refill"] == {"N": "1234567890"}
         assert update_spec["ExpressionAttributeValues"][":expected"] == {"N": "100000"}
 
-        # Check condition
-        assert update_spec["ConditionExpression"] == "#data.#tokens = :expected"
+        # Check condition (flat path)
+        assert update_spec["ConditionExpression"] == "#tokens = :expected"
 
     @pytest.mark.asyncio
     async def test_build_bucket_update_without_optimistic_locking(self, repo):
@@ -135,8 +135,8 @@ class TestRepositoryBucketOperations:
         assert "ConditionExpression" not in update_spec
         assert ":expected" not in update_spec["ExpressionAttributeValues"]
 
-        # Verify update expression is still correct
-        expected_expr = "SET #data.#tokens = :tokens, #data.#refill = :refill"
+        # Verify update expression is flat (no #data prefix)
+        expected_expr = "SET #tokens = :tokens, #refill = :refill"
         assert update_spec["UpdateExpression"] == expected_expr
 
     @pytest.mark.asyncio
@@ -227,7 +227,7 @@ class TestRepositoryTransactions:
 
     @pytest.mark.asyncio
     async def test_build_bucket_put_item_structure(self, repo):
-        """build_bucket_put_item should create correct DynamoDB structure."""
+        """build_bucket_put_item should create flat DynamoDB structure."""
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("entity-1", "gpt-4", limit, now_ms)
@@ -246,15 +246,17 @@ class TestRepositoryTransactions:
         assert put_spec["Item"]["PK"]["S"] == "ENTITY#entity-1"
         assert put_spec["Item"]["SK"]["S"] == "#BUCKET#gpt-4#rpm"
 
-        # Verify data structure
-        assert "data" in put_spec["Item"]
-        data = put_spec["Item"]["data"]["M"]
+        # Verify flat structure (no data.M wrapper)
+        assert "data" not in put_spec["Item"]
+        item = put_spec["Item"]
 
-        assert data["tokens_milli"]["N"] == str(100_000)  # burst capacity
-        assert data["capacity_milli"]["N"] == str(100_000)
-        assert data["burst_milli"]["N"] == str(100_000)
-        assert data["refill_amount_milli"]["N"] == str(100_000)
-        assert data["refill_period_ms"]["N"] == str(60_000)
+        assert item["tokens_milli"]["N"] == str(100_000)  # burst capacity
+        assert item["capacity_milli"]["N"] == str(100_000)
+        assert item["burst_milli"]["N"] == str(100_000)
+        assert item["refill_amount_milli"]["N"] == str(100_000)
+        assert item["refill_period_ms"]["N"] == str(60_000)
+        assert item["resource"]["S"] == "gpt-4"
+        assert item["limit_name"]["S"] == "rpm"
 
     @pytest.mark.asyncio
     async def test_batch_delete_pagination_over_25_items(self, repo):

@@ -260,14 +260,10 @@ class Repository:
             "PK": {"S": schema.pk_entity(entity_id)},
             "SK": {"S": schema.sk_meta()},
             "entity_id": {"S": entity_id},
-            "data": {
-                "M": {
-                    "name": {"S": name or entity_id},
-                    "parent_id": {"S": parent_id} if parent_id else {"NULL": True},
-                    "metadata": {"M": self._serialize_map(metadata or {})},
-                    "created_at": {"S": now},
-                }
-            },
+            "name": {"S": name or entity_id},
+            "parent_id": {"S": parent_id} if parent_id else {"NULL": True},
+            "metadata": {"M": self._serialize_map(metadata or {})},
+            "created_at": {"S": now},
         }
 
         # Add GSI1 keys for parent lookup if this is a child
@@ -555,24 +551,18 @@ class Repository:
             "PK": {"S": schema.pk_entity(state.entity_id)},
             "SK": {"S": schema.sk_bucket(state.resource, state.limit_name)},
             "entity_id": {"S": state.entity_id},
-            "data": {
-                "M": {
-                    "resource": {"S": state.resource},
-                    "limit_name": {"S": state.limit_name},
-                    "tokens_milli": {"N": str(state.tokens_milli)},
-                    "last_refill_ms": {"N": str(state.last_refill_ms)},
-                    "capacity_milli": {"N": str(state.capacity_milli)},
-                    "burst_milli": {"N": str(state.burst_milli)},
-                    "refill_amount_milli": {"N": str(state.refill_amount_milli)},
-                    "refill_period_ms": {"N": str(state.refill_period_ms)},
-                }
-            },
+            "resource": {"S": state.resource},
+            "limit_name": {"S": state.limit_name},
+            "tokens_milli": {"N": str(state.tokens_milli)},
+            "last_refill_ms": {"N": str(state.last_refill_ms)},
+            "capacity_milli": {"N": str(state.capacity_milli)},
+            "burst_milli": {"N": str(state.burst_milli)},
+            "refill_amount_milli": {"N": str(state.refill_amount_milli)},
+            "refill_period_ms": {"N": str(state.refill_period_ms)},
             "GSI2PK": {"S": schema.gsi2_pk_resource(state.resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(state.entity_id, state.limit_name)},
             "ttl": {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))},
         }
-        # Add consumption counter as FLAT top-level attribute (not in data.M)
-        # to enable atomic ADD operations. See issue #179.
         if state.total_consumed_milli is not None:
             item["total_consumed_milli"] = {"N": str(state.total_consumed_milli)}
         return {"Put": {"TableName": self.table_name, "Item": item}}
@@ -594,9 +584,8 @@ class Repository:
                     "PK": {"S": schema.pk_entity(entity_id)},
                     "SK": {"S": schema.sk_bucket(resource, limit_name)},
                 },
-                "UpdateExpression": "SET #data.#tokens = :tokens, #data.#refill = :refill",
+                "UpdateExpression": "SET #tokens = :tokens, #refill = :refill",
                 "ExpressionAttributeNames": {
-                    "#data": "data",
                     "#tokens": "tokens_milli",
                     "#refill": "last_refill_ms",
                 },
@@ -609,7 +598,7 @@ class Repository:
 
         # Add optimistic locking condition if provided
         if expected_tokens_milli is not None:
-            update["Update"]["ConditionExpression"] = "#data.#tokens = :expected"
+            update["Update"]["ConditionExpression"] = "#tokens = :expected"
             update["Update"]["ExpressionAttributeValues"][":expected"] = {
                 "N": str(expected_tokens_milli)
             }
@@ -649,22 +638,18 @@ class Repository:
         # Delete existing limits for this resource first
         await self._delete_limits_for_resource(entity_id, resource)
 
-        # Write new limits
+        # Write new limits (flat schema)
         for limit in limits:
             item = {
                 "PK": {"S": schema.pk_entity(entity_id)},
                 "SK": {"S": schema.sk_limit(resource, limit.name)},
                 "entity_id": {"S": entity_id},
-                "data": {
-                    "M": {
-                        "resource": {"S": resource},
-                        "limit_name": {"S": limit.name},
-                        "capacity": {"N": str(limit.capacity)},
-                        "burst": {"N": str(limit.burst)},
-                        "refill_amount": {"N": str(limit.refill_amount)},
-                        "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
-                    }
-                },
+                "resource": {"S": resource},
+                "limit_name": {"S": limit.name},
+                "capacity": {"N": str(limit.capacity)},
+                "burst": {"N": str(limit.burst)},
+                "refill_amount": {"N": str(limit.refill_amount)},
+                "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
             }
             await client.put_item(TableName=self.table_name, Item=item)
 
@@ -698,14 +683,13 @@ class Repository:
 
         limits = []
         for item in response.get("Items", []):
-            data = self._deserialize_map(item.get("data", {}).get("M", {}))
             limits.append(
                 Limit(
-                    name=data["limit_name"],
-                    capacity=int(data["capacity"]),
-                    burst=int(data["burst"]),
-                    refill_amount=int(data["refill_amount"]),
-                    refill_period_seconds=int(data["refill_period_seconds"]),
+                    name=item.get("limit_name", {}).get("S", ""),
+                    capacity=int(item["capacity"]["N"]),
+                    burst=int(item.get("burst", {}).get("N", "0")),
+                    refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
+                    refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
                 )
             )
 
@@ -1200,7 +1184,17 @@ class Repository:
         if not item:
             return None
 
-        return self._deserialize_map(item.get("data", {}).get("M", {}))
+        result: dict[str, Any] = {}
+        for key in (
+            "schema_version",
+            "lambda_version",
+            "client_min_version",
+            "updated_at",
+            "updated_by",
+        ):
+            if key in item:
+                result[key] = self._deserialize_value(item[key])
+        return result
 
     async def ping(self) -> bool:
         """
@@ -1244,26 +1238,15 @@ class Repository:
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        data: dict[str, Any] = {
+        # Flat schema (v0.6.0+)
+        item: dict[str, Any] = {
+            "PK": {"S": schema.pk_system()},
+            "SK": {"S": schema.sk_version()},
             "schema_version": {"S": schema_version},
             "client_min_version": {"S": client_min_version},
             "updated_at": {"S": now},
-        }
-
-        if lambda_version:
-            data["lambda_version"] = {"S": lambda_version}
-        else:
-            data["lambda_version"] = {"NULL": True}
-
-        if updated_by:
-            data["updated_by"] = {"S": updated_by}
-        else:
-            data["updated_by"] = {"NULL": True}
-
-        item = {
-            "PK": {"S": schema.pk_system()},
-            "SK": {"S": schema.sk_version()},
-            "data": {"M": data},
+            "lambda_version": {"S": lambda_version} if lambda_version else {"NULL": True},
+            "updated_by": {"S": updated_by} if updated_by else {"NULL": True},
         }
 
         await client.put_item(TableName=self.table_name, Item=item)
@@ -1327,34 +1310,17 @@ class Repository:
             details=details or {},
         )
 
-        # Build DynamoDB item
-        data: dict[str, Any] = {
-            "event_id": {"S": event_id},
-            "timestamp": {"S": now},
-            "action": {"S": action},
-            "entity_id": {"S": entity_id},
-        }
-
-        if principal:
-            data["principal"] = {"S": principal}
-        else:
-            data["principal"] = {"NULL": True}
-
-        if resource:
-            data["resource"] = {"S": resource}
-        else:
-            data["resource"] = {"NULL": True}
-
-        if details:
-            data["details"] = {"M": self._serialize_map(details)}
-        else:
-            data["details"] = {"M": {}}
-
-        item = {
+        # Build DynamoDB item (flat schema v0.6.0+)
+        item: dict[str, Any] = {
             "PK": {"S": schema.pk_audit(entity_id)},
             "SK": {"S": schema.sk_audit(event_id)},
             "entity_id": {"S": entity_id},
-            "data": {"M": data},
+            "event_id": {"S": event_id},
+            "timestamp": {"S": now},
+            "action": {"S": action},
+            "principal": {"S": principal} if principal else {"NULL": True},
+            "resource": {"S": resource} if resource else {"NULL": True},
+            "details": {"M": self._serialize_map(details or {})},
             "ttl": {"N": str(schema.calculate_ttl(self._now_ms(), ttl_seconds))},
         }
 
@@ -1408,19 +1374,22 @@ class Repository:
         return events
 
     def _deserialize_audit_event(self, item: dict[str, Any]) -> AuditEvent | None:
-        """Deserialize a DynamoDB item to AuditEvent."""
-        data = self._deserialize_map(item.get("data", {}).get("M", {}))
-        if not data:
+        """Deserialize a DynamoDB item to AuditEvent (flat format only)."""
+        if "action" not in item or "S" not in item.get("action", {}):
             return None
 
+        details_raw = item.get("details", {})
+        details = self._deserialize_map(details_raw.get("M", {})) if "M" in details_raw else {}
+        principal = self._deserialize_value(item["principal"]) if "principal" in item else None
+        resource = self._deserialize_value(item["resource"]) if "resource" in item else None
         return AuditEvent(
-            event_id=data.get("event_id", ""),
-            timestamp=data.get("timestamp", ""),
-            action=data.get("action", ""),
-            entity_id=data.get("entity_id", ""),
-            principal=data.get("principal"),
-            resource=data.get("resource"),
-            details=data.get("details", {}),
+            event_id=item.get("event_id", {}).get("S", ""),
+            timestamp=item.get("timestamp", {}).get("S", ""),
+            action=item["action"]["S"],
+            entity_id=item.get("entity_id", {}).get("S", ""),
+            principal=principal,
+            resource=resource,
+            details=details,
         )
 
     # -------------------------------------------------------------------------
@@ -1803,33 +1772,42 @@ class Repository:
         return None
 
     def _deserialize_entity(self, item: dict[str, Any]) -> Entity:
-        """Deserialize a DynamoDB item to Entity."""
-        data = self._deserialize_map(item.get("data", {}).get("M", {}))
+        """Deserialize a DynamoDB item to Entity (flat format only)."""
+        entity_id = item.get("entity_id", {}).get("S", "")
+        name_val = item["name"].get("S") if "name" in item else None
+        parent_val = self._deserialize_value(item["parent_id"]) if "parent_id" in item else None
+        metadata_val = (
+            self._deserialize_map(item["metadata"].get("M", {}))
+            if "metadata" in item and "M" in item.get("metadata", {})
+            else {}
+        )
+        created_val = item.get("created_at", {}).get("S")
+
         return Entity(
-            id=item.get("entity_id", {}).get("S", ""),
-            name=data.get("name"),
-            parent_id=data.get("parent_id"),
-            metadata=data.get("metadata", {}),
-            created_at=data.get("created_at"),
+            id=entity_id,
+            name=name_val,
+            parent_id=parent_val,
+            metadata=metadata_val,
+            created_at=created_val,
         )
 
     def _deserialize_bucket(self, item: dict[str, Any]) -> BucketState:
-        """Deserialize a DynamoDB item to BucketState."""
-        data = self._deserialize_map(item.get("data", {}).get("M", {}))
-        # Counter is stored as FLAT top-level attribute (not in data.M).
+        """Deserialize a DynamoDB item to BucketState (flat format only)."""
+        # Counter is stored as FLAT top-level attribute.
         # None if not present (old bucket without counter). See issue #179.
         counter_attr = item.get("total_consumed_milli", {})
         total_consumed_milli = int(counter_attr["N"]) if "N" in counter_attr else None
+
         return BucketState(
             entity_id=item.get("entity_id", {}).get("S", ""),
-            resource=data.get("resource", ""),
-            limit_name=data.get("limit_name", ""),
-            tokens_milli=int(data.get("tokens_milli", 0)),
-            last_refill_ms=int(data.get("last_refill_ms", 0)),
-            capacity_milli=int(data.get("capacity_milli", 0)),
-            burst_milli=int(data.get("burst_milli", 0)),
-            refill_amount_milli=int(data.get("refill_amount_milli", 0)),
-            refill_period_ms=int(data.get("refill_period_ms", 0)),
+            resource=item.get("resource", {}).get("S", ""),
+            limit_name=item.get("limit_name", {}).get("S", ""),
+            tokens_milli=int(item["tokens_milli"]["N"]),
+            last_refill_ms=int(item.get("last_refill_ms", {}).get("N", "0")),
+            capacity_milli=int(item.get("capacity_milli", {}).get("N", "0")),
+            burst_milli=int(item.get("burst_milli", {}).get("N", "0")),
+            refill_amount_milli=int(item.get("refill_amount_milli", {}).get("N", "0")),
+            refill_period_ms=int(item.get("refill_period_ms", {}).get("N", "0")),
             total_consumed_milli=total_consumed_milli,
         )
 
