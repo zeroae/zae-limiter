@@ -12,7 +12,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 |-----------|------|------|-------|
 | `acquire()` - single limit | 1 | 1 | BatchGetItem + TransactWrite |
 | `acquire()` - N limits | N | N | 1 BatchGetItem + TransactWrite(N items) |
-| `acquire(cascade=True)` | N×2 | N×2 | 1 GetEntity + 1 BatchGetItem + TransactWrite |
+| `acquire()` with cascade entity | N×2 | N×2 | 1 GetEntity + 1 BatchGetItem + TransactWrite |
 | `acquire(use_stored_limits=True)` | +2 | 0 | +2 Query operations for limits |
 | `available()` | 1 per limit | 0 | Read-only, no transaction |
 | `get_limits()` | 1 | 0 | Query operation |
@@ -176,26 +176,84 @@ async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
 #### Cascade Optimization
 
 ```python
-# Only use cascade when hierarchical limits are actually needed
-async with limiter.acquire(
-    "api-key",
-    "llm-api",
-    limits,
-    {"rpm": 1},
-    cascade=False,  # Saves 1 GetEntity + parent bucket operations
-):
-    pass
+# Entity without cascade (default) — saves 1 GetEntity + parent bucket operations
+await limiter.create_entity(entity_id="api-key", parent_id="project-1")
 
-# Use cascade for hierarchical enforcement
-async with limiter.acquire(
-    "api-key",
-    "llm-api",
-    limits,
-    {"rpm": 1},
-    cascade=True,  # Checks and updates parent limits too
-):
-    pass
+async with limiter.acquire("api-key", "llm-api", limits, {"rpm": 1}):
+    pass  # Only checks api-key's limits
+
+# Entity with cascade — checks and updates parent limits too
+await limiter.create_entity(entity_id="api-key", parent_id="project-1", cascade=True)
+
+async with limiter.acquire("api-key", "llm-api", limits, {"rpm": 1}):
+    pass  # Checks both api-key AND project-1 limits
 ```
+
+#### Write Sharding for High-Fanout Parents
+
+When a parent entity has many children (1000+) with `cascade=True`, the parent partition may experience write throttling. DynamoDB limits throughput per partition to ~1,000 WCU (or ~3,000 RCU).
+
+**Manual Write Sharding Solution:**
+
+Instead of one parent, distribute ownership across multiple sharded parent entities:
+
+```python
+# OLD: Single parent becomes a hotspot
+# ├── project-1 (parent)
+# │   ├── api-key-1 (child, cascade=True)
+# │   ├── api-key-2 (child, cascade=True)
+# │   └── ... (1000+ children)
+
+# NEW: Distribute across shards (e.g., 10 shards = 10x capacity)
+num_shards = 10
+api_key_id = "api-key-12345"
+shard_id = hash(api_key_id) % num_shards
+parent_id = f"project-1-shard-{shard_id}"
+
+# Create shard parents once during setup
+for shard in range(num_shards):
+    parent_id = f"project-1-shard-{shard}"
+    await limiter.create_entity(entity_id=parent_id, parent_id="project-1")
+    # Set the same limits on all shards
+    await limiter.set_limits(
+        parent_id,
+        [
+            Limit.per_minute("rpm", capacity=10000),
+            Limit.per_minute("tpm", capacity=100000),
+        ],
+        resource="llm-api"
+    )
+
+# For each child, assign to a random shard
+shard_id = hash(api_key_id) % num_shards
+sharded_parent = f"project-1-shard-{shard_id}"
+await limiter.create_entity(
+    entity_id=api_key_id,
+    parent_id=sharded_parent,
+    cascade=True
+)
+
+# On acquire, use the same sharding logic
+shard_id = hash(api_key_id) % num_shards
+sharded_parent = f"project-1-shard-{shard_id}"
+async with limiter.acquire(api_key_id, "llm-api", limits, {"rpm": 1}):
+    pass  # Cascades to sharded parent instead of single hotspot
+```
+
+**Benefits:**
+- Distributes parent write traffic across N partitions
+- With 10 shards: ~10x capacity improvement
+- Only requires application-level sharding logic
+
+**Drawbacks:**
+- More parent entities to manage
+- Limits checked per shard (not globally across all shards)
+- Requires hash consistency in sharding logic
+
+**When to use:**
+- Parent has >500 API keys with `cascade=True` and hitting throttling
+- Cost-effective alternative to on-demand billing
+- Temporary solution before implementing more sophisticated load distribution
 
 #### Stored Limits Optimization
 
@@ -239,7 +297,7 @@ Latencies vary by environment and depend on network conditions, DynamoDB utiliza
 |-----------|----------|----------------|---------|
 | `acquire()` - single limit | 14ms | 36ms | 36ms |
 | `acquire()` - two limits | 30ms | 52ms | 43ms |
-| `acquire(cascade=True)` | 28ms | 57ms | 51ms |
+| `acquire()` with cascade entity | 28ms | 57ms | 51ms |
 | `available()` check | 1ms | 9ms | 8ms |
 
 !!! note "Environment Differences"
@@ -405,8 +463,9 @@ Total (provisioned with auto-scaling): ~$45/month
 #### 1. Disable Unused Features
 
 ```python
-# Skip cascade if not needed (saves 1-2 WCUs per request)
-async with limiter.acquire("entity", "api", limits, {"rpm": 1}, cascade=False):
+# Create entity without cascade if not needed (saves 1-2 WCUs per request)
+await limiter.create_entity(entity_id="entity", parent_id="parent")  # cascade=False by default
+async with limiter.acquire("entity", "api", limits, {"rpm": 1}):
     pass
 
 # Disable stored limits if static (saves 2 RCUs per request)

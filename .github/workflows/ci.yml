@@ -11,6 +11,8 @@ on:
       - main
       - 'release/v*'
       - 'release/[0-9]*'
+      - 'milestone/v*'
+      - 'milestone/[0-9]*'
 
 permissions:
   contents: write

@@ -110,7 +110,7 @@ class TestAWSLatencyBenchmarks:
         """Setup parent-child hierarchy for cascade tests."""
         aws_benchmark_limiter.create_entity("aws-cascade-parent", name="Parent")
         aws_benchmark_limiter.create_entity(
-            "aws-cascade-child", name="Child", parent_id="aws-cascade-parent"
+            "aws-cascade-child", name="Child", parent_id="aws-cascade-parent", cascade=True
         )
         return aws_benchmark_limiter
 
@@ -129,7 +129,6 @@ class TestAWSLatencyBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -402,6 +401,7 @@ class TestAWSCascadeBenchmarks:
                     f"aws-cascade-child-{i}",
                     name=f"Child {i}",
                     parent_id="aws-cascade-root",
+                    cascade=True,
                 )
             yield limiter
 
@@ -427,7 +427,6 @@ class TestAWSCascadeBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -464,7 +463,6 @@ class TestAWSCascadeBenchmarks:
                         resource="api",
                         limits=limits,
                         consume={"rpm": 1},
-                        cascade=True,
                     ):
                         successes += 1
                 except Exception as e:

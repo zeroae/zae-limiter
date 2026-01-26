@@ -87,6 +87,70 @@ class TestSyncRateLimiter:
         assert sync_limiter.name.startswith("ZAEL-")
 
 
+class TestSyncRateLimiterCascade:
+    """Tests for cascade functionality (entity-level cascade) via sync API."""
+
+    def test_cascade_consumes_parent(self, sync_limiter):
+        """Test that entity with cascade=True consumes from parent too."""
+        sync_limiter.create_entity(entity_id="proj-1")
+        sync_limiter.create_entity(entity_id="key-1", parent_id="proj-1", cascade=True)
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with sync_limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Check both entities have consumed
+        child_available = sync_limiter.available(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+        parent_available = sync_limiter.available(
+            entity_id="proj-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+
+        assert child_available["rpm"] == 99
+        assert parent_available["rpm"] == 99
+
+    def test_no_cascade_by_default(self, sync_limiter):
+        """Test that entities without cascade=True do NOT cascade."""
+        sync_limiter.create_entity(entity_id="proj-1")
+        sync_limiter.create_entity(entity_id="key-1", parent_id="proj-1")
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with sync_limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Child consumed, parent should NOT have consumed
+        child_available = sync_limiter.available(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+        parent_available = sync_limiter.available(
+            entity_id="proj-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+
+        assert child_available["rpm"] == 99
+        assert parent_available["rpm"] == 100  # Parent untouched
+
+
 class TestSyncRateLimiterIsAvailable:
     """Tests for sync is_available() health check method."""
 
@@ -144,7 +208,9 @@ class TestSyncRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(
+            sync_limiter._limiter._repository, "batch_get_entity_and_buckets", mock_error
+        )
 
         # Set on_unavailable to ALLOW
         sync_limiter._limiter.on_unavailable = OnUnavailable.ALLOW
@@ -171,7 +237,9 @@ class TestSyncRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(
+            sync_limiter._limiter._repository, "batch_get_entity_and_buckets", mock_error
+        )
 
         # Set on_unavailable to BLOCK (default)
         sync_limiter._limiter.on_unavailable = OnUnavailable.BLOCK
@@ -201,7 +269,9 @@ class TestSyncRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(
+            sync_limiter._limiter._repository, "batch_get_entity_and_buckets", mock_error
+        )
 
         # Set limiter to BLOCK, but override in acquire
         sync_limiter._limiter.on_unavailable = OnUnavailable.BLOCK
@@ -224,7 +294,9 @@ class TestSyncRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise Exception("DynamoDB timeout")
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(
+            sync_limiter._limiter._repository, "batch_get_entity_and_buckets", mock_error
+        )
 
         # Set limiter to ALLOW, but override in acquire
         sync_limiter._limiter.on_unavailable = OnUnavailable.ALLOW

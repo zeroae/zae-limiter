@@ -15,7 +15,7 @@ flowchart TD
 
     A1 --> CHECK1[Query bucket in DynamoDB]
     A2 --> CHECK2[Query entity metadata]
-    A3 --> CHECK3[Verify parent_id and cascade=True]
+    A3 --> CHECK3[Verify parent_id and entity cascade setting]
 
     CHECK1 --> FIX1{Bucket state?}
     FIX1 -->|Depleted| WAIT[Wait for refill or reset]
@@ -126,14 +126,23 @@ aws dynamodb get-item --table-name ZAEL-<name> \
 # Check the "parent_id" attribute in response
 ```
 
-**Step 3: Ensure `cascade=True` in acquire call:**
+**Step 3: Ensure entity was created with `cascade=True`:**
+
+```bash
+# Check the entity's cascade setting in its metadata
+aws dynamodb get-item --table-name ZAEL-<name> \
+  --key '{"PK": {"S": "ENTITY#<child_id>"}, "SK": {"S": "#META"}}'
+# Check the "cascade" attribute in response — should be true
+```
+
+If cascade is not enabled, recreate the entity with cascade:
 
 ```python
-async with limiter.acquire(
+await limiter.create_entity(
     entity_id="child-id",
-    cascade=True,  # Must be True to check parent
-    ...
-):
+    parent_id="parent-id",
+    cascade=True,  # Entity property — applies to all acquire() calls
+)
 ```
 
 ### Verification

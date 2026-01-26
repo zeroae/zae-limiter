@@ -541,6 +541,7 @@ class TestE2ELocalStackFullWorkflow:
             "api-key-123",
             name="Production API Key",
             parent_id="org-acme",
+            cascade=True,
         )
         assert child.parent_id == "org-acme"
 
@@ -562,7 +563,6 @@ class TestE2ELocalStackFullWorkflow:
             resource="gpt-4",
             limits=limits,
             consume={"rph": 1, "tph": 500},
-            cascade=True,
         ) as lease:
             # With cascade, consumes from both child and parent
             assert lease.consumed["rph"] == 2  # 1 from child + 1 from parent

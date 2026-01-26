@@ -124,6 +124,7 @@ class TestE2EAWSFullWorkflow:
             "aws-child",
             name="AWS Child Key",
             parent_id="aws-parent",
+            cascade=True,
         )
 
         # Set limits
@@ -137,7 +138,6 @@ class TestE2EAWSFullWorkflow:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 await asyncio.sleep(0.5)  # Small delay
 

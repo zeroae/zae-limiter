@@ -138,6 +138,7 @@ class RepositoryProtocol(Protocol):
         entity_id: str,
         name: str | None = None,
         parent_id: str | None = None,
+        cascade: bool = False,
         metadata: dict[str, str] | None = None,
         principal: str | None = None,
     ) -> "Entity":
@@ -148,6 +149,7 @@ class RepositoryProtocol(Protocol):
             entity_id: Unique identifier for the entity
             name: Human-readable name (defaults to entity_id)
             parent_id: Parent entity ID for hierarchical limits
+            cascade: If True, acquire() will also consume from parent entity
             metadata: Additional key-value metadata
             principal: Caller identity for audit logging
 

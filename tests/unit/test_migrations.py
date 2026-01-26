@@ -25,12 +25,24 @@ class TestMigrationRegistry:
 
     def test_register_migration_sorts_by_version(self):
         """Test that migrations are sorted by version after registration."""
-        # The v1_0_0 migration should already be registered
-        migrations = get_migrations()
-        if len(migrations) > 1:
-            # Verify sorted order
-            for i in range(len(migrations) - 1):
-                assert migrations[i].version <= migrations[i + 1].version
+
+        async def noop(repository):  # noqa: ARG001
+            pass
+
+        m1 = Migration(version="2.0.0", description="Second", reversible=False, migrate=noop)
+        m2 = Migration(version="1.0.0", description="First", reversible=False, migrate=noop)
+
+        register_migration(m1)
+        register_migration(m2)
+
+        try:
+            migrations = get_migrations()
+            versions = [m.version for m in migrations]
+            assert versions.index("1.0.0") < versions.index("2.0.0")
+        finally:
+            from zae_limiter.migrations import _MIGRATIONS
+
+            _MIGRATIONS[:] = [m for m in _MIGRATIONS if m.version not in ("1.0.0", "2.0.0")]
 
 
 class TestGetMigrationsBetween:
@@ -47,12 +59,9 @@ class TestGetMigrationsBetween:
         assert result == []
 
     def test_migrations_for_upgrade(self):
-        """Test that correct migrations returned for upgrade."""
-        # v1_0_0 migration is registered by default
+        """Test that no migrations returned when none are registered."""
         result = get_migrations_between("0.9.0", "1.0.0")
-        # Should include the v1_0_0 migration
-        versions = [m.version for m in result]
-        assert "1.0.0" in versions
+        assert result == []
 
 
 class TestApplyMigrations:

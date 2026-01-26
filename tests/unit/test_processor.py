@@ -74,34 +74,29 @@ class TestExtractDelta:
         The counter values (old_counter, new_counter) track consumption in millitokens.
         Set both to None to simulate old buckets without counter (issue #179).
         """
+        new_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "tokens_milli": {"N": str(new_tokens)},
+            "last_refill_ms": {"N": str(last_refill_ms)},
+        }
+        old_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "tokens_milli": {"N": str(old_tokens)},
+            "last_refill_ms": {"N": str(last_refill_ms - 1000)},
+        }
+
         record: dict = {
             "eventName": "MODIFY",
             "dynamodb": {
-                "NewImage": {
-                    "PK": {"S": f"ENTITY#{entity_id}"},
-                    "SK": {"S": sk},
-                    "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "tokens_milli": {"N": str(new_tokens)},
-                            "last_refill_ms": {"N": str(last_refill_ms)},
-                        }
-                    },
-                },
-                "OldImage": {
-                    "PK": {"S": f"ENTITY#{entity_id}"},
-                    "SK": {"S": sk},
-                    "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "tokens_milli": {"N": str(old_tokens)},
-                            "last_refill_ms": {"N": str(last_refill_ms - 1000)},
-                        }
-                    },
-                },
+                "NewImage": new_image,
+                "OldImage": old_image,
             },
         }
-        # Add counter as FLAT top-level attribute (not in data.M) - issue #179
+        # Add counter as FLAT top-level attribute - issue #179
         if new_counter is not None:
             record["dynamodb"]["NewImage"]["total_consumed_milli"] = {"N": str(new_counter)}
         if old_counter is not None:
@@ -206,8 +201,8 @@ class TestExtractDelta:
     def test_missing_data_uses_defaults(self) -> None:
         """Missing data fields default to 0 (but counter still works)."""
         record = self._make_record(old_counter=0, new_counter=1000000)
-        del record["dynamodb"]["NewImage"]["data"]["M"]["tokens_milli"]
-        del record["dynamodb"]["OldImage"]["data"]["M"]["tokens_milli"]
+        del record["dynamodb"]["NewImage"]["tokens_milli"]
+        del record["dynamodb"]["OldImage"]["tokens_milli"]
 
         delta = extract_delta(record)
         assert delta is not None  # counter delta is 1000000
@@ -500,7 +495,7 @@ class TestProcessStreamRecords:
         old_counter: int | None = 0,
         new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
     ) -> dict:
-        """Helper to create a stream record with counter (issue #179)."""
+        """Helper to create a stream record with flat format (v0.6.0+)."""
         record: dict = {
             "eventName": event_name,
             "dynamodb": {
@@ -508,23 +503,15 @@ class TestProcessStreamRecords:
                     "PK": {"S": f"ENTITY#{entity_id}"},
                     "SK": {"S": sk},
                     "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "tokens_milli": {"N": str(new_tokens)},
-                            "last_refill_ms": {"N": "1704067200000"},
-                        }
-                    },
+                    "tokens_milli": {"N": str(new_tokens)},
+                    "last_refill_ms": {"N": "1704067200000"},
                 },
                 "OldImage": {
                     "PK": {"S": f"ENTITY#{entity_id}"},
                     "SK": {"S": sk},
                     "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "tokens_milli": {"N": str(old_tokens)},
-                            "last_refill_ms": {"N": "1704067199000"},
-                        }
-                    },
+                    "tokens_milli": {"N": str(old_tokens)},
+                    "last_refill_ms": {"N": "1704067199000"},
                 },
             },
         }
@@ -773,7 +760,7 @@ class TestStructuredLoggingIntegration:
         old_counter: int | None = 0,
         new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
     ) -> dict:
-        """Helper to create a stream record with counter (issue #179)."""
+        """Helper to create a stream record with flat format (v0.6.0+)."""
         record: dict = {
             "eventName": event_name,
             "dynamodb": {
@@ -781,23 +768,15 @@ class TestStructuredLoggingIntegration:
                     "PK": {"S": f"ENTITY#{entity_id}"},
                     "SK": {"S": sk},
                     "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "tokens_milli": {"N": str(new_tokens)},
-                            "last_refill_ms": {"N": "1704067200000"},
-                        }
-                    },
+                    "tokens_milli": {"N": str(new_tokens)},
+                    "last_refill_ms": {"N": "1704067200000"},
                 },
                 "OldImage": {
                     "PK": {"S": f"ENTITY#{entity_id}"},
                     "SK": {"S": sk},
                     "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "tokens_milli": {"N": str(old_tokens)},
-                            "last_refill_ms": {"N": "1704067199000"},
-                        }
-                    },
+                    "tokens_milli": {"N": str(old_tokens)},
+                    "last_refill_ms": {"N": "1704067199000"},
                 },
             },
         }
