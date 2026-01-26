@@ -731,6 +731,7 @@ Follow the [commit conventions](.claude/rules/commits.md).
 3. **Cascade is optional**: Parent is only checked if `cascade=True`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
 5. **Transactions are atomic**: Multi-entity updates succeed or fail together
+6. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources × limits) must stay within this limit
 
 ## DynamoDB Access Patterns
 
@@ -752,6 +753,11 @@ Follow the [commit conventions](.claude/rules/commits.md).
 **Optimized read patterns (issue #133):**
 - `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
 - This reduces cascade scenarios from N sequential GetItem calls to 1 BatchGetItem call
+
+**Hot partition risk with cascade (issue #116):**
+- When cascade is per-entity config (default-on), parent entities receive read/write traffic proportional to child count
+- High-fanout parents (e.g., a project with 1,000+ API keys) risk exceeding DynamoDB per-partition throughput (~3,000 RCU / 1,000 WCU)
+- Mitigations: DAX or client-side caching for parent reads, write sharding for high-fanout parents, monitoring per-partition throttling
 
 **Key builders for config records:**
 - `pk_system()` - Returns `SYSTEM#`

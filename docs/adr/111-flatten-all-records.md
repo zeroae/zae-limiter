@@ -1,6 +1,6 @@
 # ADR-111: Flatten All DynamoDB Records to Top-Level Attributes
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-25
 **Issue:** [#180](https://github.com/zeroae/zae-limiter/issues/180)
 
