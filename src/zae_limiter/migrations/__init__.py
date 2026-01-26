@@ -108,8 +108,3 @@ async def apply_migrations(
             ) from e
 
     return applied
-
-
-# Import built-in migrations to register them
-from . import v1_0_0 as _v1_0_0  # noqa: F401, E402
-from . import v1_1_0 as _v1_1_0  # noqa: F401, E402

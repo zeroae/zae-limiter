@@ -307,9 +307,7 @@ src/zae_limiter/
 ├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
-│   ├── __init__.py    # Migration registry and runner
-│   ├── v1_0_0.py      # Initial schema baseline
-│   └── v1_1_0.py      # Flatten nested data.M to top-level attributes
+│   └── __init__.py    # Migration registry and runner
 ├── aggregator/        # Lambda for usage snapshots and audit archival
 │   ├── handler.py     # Lambda entry point
 │   ├── processor.py   # Stream processing logic for usage snapshots
@@ -698,12 +696,6 @@ When reviewing PRs, check the following based on files changed:
 - Schema changes require version bumps, migrations, and careful rollout planning
 - Only update version.py if schema change is unavoidable
 
-### Migrations (changes to migrations/)
-- Verify migration follows protocol (async, Repository param)
-- Check backward compatibility
-- Validate CURRENT_VERSION in version.py matches
-- Flag breaking changes needing major version bump
-
 ### DynamoDB Schema (changes to schema.py, repository.py)
 - Verify key builders follow single-table patterns
 - Check GSI usage matches access patterns
@@ -849,9 +841,9 @@ See [ADR-100](docs/adr/100-centralized-config.md) for full design details.
 
 **All record types use flat schema (v0.6.0+, schema v1.1.0):**
 
-All DynamoDB records store fields as top-level attributes. The nested `data.M` wrapper used prior to v0.6.0 has been removed. Deserialization reads flat format only (no backward-compatible nested fallback). Serialization always writes flat format. The v1.1.0 migration **must be run before upgrading to v0.6.0**. See [ADR-111](docs/adr/111-flatten-all-records.md) and issue [#180](https://github.com/zeroae/zae-limiter/issues/180).
+All DynamoDB records store fields as top-level attributes. The nested `data.M` wrapper used prior to v0.6.0 has been removed. Deserialization reads flat format only (no backward-compatible nested fallback). Serialization always writes flat format. See [ADR-111](docs/adr/111-flatten-all-records.md) and issue [#180](https://github.com/zeroae/zae-limiter/issues/180).
 
-**DynamoDB reserved words:** Flat attribute names `name`, `resource`, `action`, `timestamp`, and `data` (used in REMOVE expressions during migration) are DynamoDB reserved words. All expressions referencing these must use `ExpressionAttributeNames` aliases.
+**DynamoDB reserved words:** Flat attribute names `name`, `resource`, `action`, and `timestamp` are DynamoDB reserved words. All expressions referencing these must use `ExpressionAttributeNames` aliases.
 
 ```python
 # Bucket item structure (FLAT, v0.6.0+):
@@ -888,8 +880,6 @@ All DynamoDB records store fields as top-level attributes. The nested `data.M` w
     "ttl": 1234567890
 }
 ```
-
-**Migration:** The v1.1.0 migration (`migrations/v1_1_0.py`) scans for items with `attribute_exists(data)` and promotes nested fields to top level. This migration is **required** before upgrading to v0.6.0 — flat-only deserialization does not read nested `data.M` records.
 
 ## Dependencies
 
