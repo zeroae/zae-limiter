@@ -374,12 +374,12 @@ class TestRateLimiterLeaseCounter:
 
 
 class TestRateLimiterCascade:
-    """Tests for cascade functionality."""
+    """Tests for cascade functionality (entity-level cascade)."""
 
     async def test_cascade_consumes_parent(self, limiter):
-        """Test that cascade consumes from parent too."""
+        """Test that entity with cascade=True consumes from parent too."""
         await limiter.create_entity(entity_id="proj-1")
-        await limiter.create_entity(entity_id="key-1", parent_id="proj-1")
+        await limiter.create_entity(entity_id="key-1", parent_id="proj-1", cascade=True)
 
         limits = [Limit.per_minute("rpm", 100)]
 
@@ -388,7 +388,6 @@ class TestRateLimiterCascade:
             resource="gpt-4",
             limits=limits,
             consume={"rpm": 1},
-            cascade=True,
         ):
             pass
 
@@ -407,10 +406,40 @@ class TestRateLimiterCascade:
         assert child_available["rpm"] == 99
         assert parent_available["rpm"] == 99
 
-    async def test_cascade_parent_limit_exceeded(self, limiter):
-        """Test that parent limit can block child."""
+    async def test_no_cascade_by_default(self, limiter):
+        """Test that entities without cascade=True do NOT cascade."""
         await limiter.create_entity(entity_id="proj-1")
         await limiter.create_entity(entity_id="key-1", parent_id="proj-1")
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Child consumed, parent should NOT have consumed
+        child_available = await limiter.available(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+        parent_available = await limiter.available(
+            entity_id="proj-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+
+        assert child_available["rpm"] == 99
+        assert parent_available["rpm"] == 100  # Parent untouched
+
+    async def test_cascade_parent_limit_exceeded(self, limiter):
+        """Test that parent limit can block child when cascade is enabled."""
+        await limiter.create_entity(entity_id="proj-1")
+        await limiter.create_entity(entity_id="key-1", parent_id="proj-1", cascade=True)
 
         # Child has high limit, parent has low limit
         child_limits = [Limit.per_minute("rpm", 100)]
@@ -435,14 +464,39 @@ class TestRateLimiterCascade:
                 resource="gpt-4",
                 limits=child_limits,
                 consume={"rpm": 1},
-                cascade=True,
-                use_stored_limits=True,
             ):
                 pass
 
         # The violation should be on the parent
         exc = exc_info.value
         assert any(v.entity_id == "proj-1" for v in exc.violations)
+
+    async def test_cascade_entity_without_parent(self, limiter):
+        """Test that cascade=True on entity without parent is harmless."""
+        await limiter.create_entity(entity_id="orphan-1", cascade=True)
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="orphan-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        available = await limiter.available(
+            entity_id="orphan-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+        assert available["rpm"] == 99
+
+    async def test_backward_compat_missing_cascade_field(self, limiter):
+        """Test that entities without cascade field default to False."""
+        # Create entity normally (cascade defaults to False)
+        entity = await limiter.create_entity(entity_id="legacy-1", parent_id=None)
+        assert entity.cascade is False
 
 
 class TestRateLimiterStoredLimits:
@@ -886,7 +940,7 @@ class TestRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set on_unavailable to ALLOW
         limiter.on_unavailable = OnUnavailable.ALLOW
@@ -914,7 +968,7 @@ class TestRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set on_unavailable to BLOCK (default)
         limiter.on_unavailable = OnUnavailable.BLOCK
@@ -945,7 +999,7 @@ class TestRateLimiterOnUnavailable:
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set limiter to BLOCK, but override in acquire
         limiter.on_unavailable = OnUnavailable.BLOCK
@@ -969,7 +1023,7 @@ class TestRateLimiterOnUnavailable:
         async def mock_error(*args, **kwargs):
             raise Exception("DynamoDB timeout")
 
-        monkeypatch.setattr(limiter._repository, "batch_get_buckets", mock_error)
+        monkeypatch.setattr(limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set limiter to ALLOW, but override in acquire
         limiter.on_unavailable = OnUnavailable.ALLOW

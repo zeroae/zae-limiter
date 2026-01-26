@@ -143,7 +143,7 @@ def generate_capacity_summary(_results: dict[str, Any] | None = None) -> str:
         "|-----------|------|------|-----------|",
         "| `acquire()` - single limit | 1 | 1 | See test_capacity.py |",
         "| `acquire()` - N limits | N | N | See test_capacity.py |",
-        "| `acquire(cascade=True)` | 3 | 2 | See test_capacity.py |",
+        "| `acquire()` with cascade entity | 3 | 2 | See test_capacity.py |",
         "| `acquire(use_stored_limits)` | +2 | 0 | See test_capacity.py |",
         "| `available()` | 1/limit | 0 | See test_capacity.py |",
         "| `set_limits()` | 1 | N+1 | See test_capacity.py |",

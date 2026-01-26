@@ -55,15 +55,14 @@ async with limiter.acquire(
 # Hierarchical entities: create project with stored limits, then API key under it
 await limiter.create_entity(entity_id="proj-1", name="Production")
 await limiter.set_limits("proj-1", [Limit.per_minute("tpm", 100_000)])  # Project-level
-await limiter.create_entity(entity_id="api-key-456", parent_id="proj-1")
+await limiter.create_entity(entity_id="api-key-456", parent_id="proj-1", cascade=True)
 
-# cascade=True enforces both key AND project limits
+# cascade is an entity property — acquire() auto-cascades to parent
 with sync_limiter.acquire(
     entity_id="api-key-456",
     resource="gpt-4",
     limits=default_limits,
     consume={"rpm": 1, "tpm": 500},
-    cascade=True,  # Also checks parent's stored limits
     use_stored_limits=True,  # Uses proj-1's 100k tpm limit
 ):
     call_api()

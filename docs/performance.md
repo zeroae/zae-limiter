@@ -12,7 +12,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 |-----------|------|------|-------|
 | `acquire()` - single limit | 1 | 1 | BatchGetItem + TransactWrite |
 | `acquire()` - N limits | N | N | 1 BatchGetItem + TransactWrite(N items) |
-| `acquire(cascade=True)` | N×2 | N×2 | 1 GetEntity + 1 BatchGetItem + TransactWrite |
+| `acquire()` with cascade entity | N×2 | N×2 | 1 GetEntity + 1 BatchGetItem + TransactWrite |
 | `acquire(use_stored_limits=True)` | +2 | 0 | +2 Query operations for limits |
 | `available()` | 1 per limit | 0 | Read-only, no transaction |
 | `get_limits()` | 1 | 0 | Query operation |
@@ -176,25 +176,17 @@ async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
 #### Cascade Optimization
 
 ```python
-# Only use cascade when hierarchical limits are actually needed
-async with limiter.acquire(
-    "api-key",
-    "llm-api",
-    limits,
-    {"rpm": 1},
-    cascade=False,  # Saves 1 GetEntity + parent bucket operations
-):
-    pass
+# Entity without cascade (default) — saves 1 GetEntity + parent bucket operations
+await limiter.create_entity(entity_id="api-key", parent_id="project-1")
 
-# Use cascade for hierarchical enforcement
-async with limiter.acquire(
-    "api-key",
-    "llm-api",
-    limits,
-    {"rpm": 1},
-    cascade=True,  # Checks and updates parent limits too
-):
-    pass
+async with limiter.acquire("api-key", "llm-api", limits, {"rpm": 1}):
+    pass  # Only checks api-key's limits
+
+# Entity with cascade — checks and updates parent limits too
+await limiter.create_entity(entity_id="api-key", parent_id="project-1", cascade=True)
+
+async with limiter.acquire("api-key", "llm-api", limits, {"rpm": 1}):
+    pass  # Checks both api-key AND project-1 limits
 ```
 
 #### Stored Limits Optimization
@@ -239,7 +231,7 @@ Latencies vary by environment and depend on network conditions, DynamoDB utiliza
 |-----------|----------|----------------|---------|
 | `acquire()` - single limit | 14ms | 36ms | 36ms |
 | `acquire()` - two limits | 30ms | 52ms | 43ms |
-| `acquire(cascade=True)` | 28ms | 57ms | 51ms |
+| `acquire()` with cascade entity | 28ms | 57ms | 51ms |
 | `available()` check | 1ms | 9ms | 8ms |
 
 !!! note "Environment Differences"
@@ -405,8 +397,9 @@ Total (provisioned with auto-scaling): ~$45/month
 #### 1. Disable Unused Features
 
 ```python
-# Skip cascade if not needed (saves 1-2 WCUs per request)
-async with limiter.acquire("entity", "api", limits, {"rpm": 1}, cascade=False):
+# Create entity without cascade if not needed (saves 1-2 WCUs per request)
+await limiter.create_entity(entity_id="entity", parent_id="parent")  # cascade=False by default
+async with limiter.acquire("entity", "api", limits, {"rpm": 1}):
     pass
 
 # Disable stored limits if static (saves 2 RCUs per request)

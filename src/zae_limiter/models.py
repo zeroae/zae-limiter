@@ -297,6 +297,7 @@ class Entity:
     id: str
     name: str | None = None
     parent_id: str | None = None
+    cascade: bool = False
     metadata: dict[str, str] = field(default_factory=dict)
     created_at: str | None = None
 

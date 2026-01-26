@@ -72,6 +72,7 @@ async def main() -> None:
                 entity_id=key_id,
                 name=key_name,
                 parent_id="proj-acme",  # Link to parent
+                cascade=True,  # Enable cascade to parent
             )
             print(f"Created API key: {key.id} (parent: {key.parent_id})")
         except EntityExistsError:
@@ -90,8 +91,8 @@ async def main() -> None:
     # Default limits for all entities
     default_limits = [Limit.per_minute("rpm", 100)]
 
-    # Make requests with cascade=True
-    # This consumes from BOTH the API key AND the project
+    # Make requests - cascade is enabled on the entity, so
+    # this consumes from BOTH the API key AND the project
     for i in range(3):
         try:
             async with limiter.acquire(
@@ -99,7 +100,6 @@ async def main() -> None:
                 resource="api",
                 limits=default_limits,
                 consume={"rpm": 1},
-                cascade=True,  # Also consume from parent (proj-acme)
             ) as lease:
                 print(f"Request {i + 1} from key-alice: consumed {lease.consumed}")
         except RateLimitExceeded as e:
@@ -133,7 +133,6 @@ async def main() -> None:
                 resource="api",
                 limits=[Limit.per_minute("rpm", 100)],  # Key's own limit
                 consume={"rpm": 1},
-                cascade=True,
                 use_stored_limits=True,  # Use project's stored limits
             ) as lease:
                 print(f"Request {i + 1} from key-bob: OK")

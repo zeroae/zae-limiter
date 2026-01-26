@@ -44,6 +44,7 @@ async def seed_data() -> None:
                 entity_id=key_id,
                 name=name,
                 parent_id="proj-demo",
+                cascade=True,
             )
             print(f"  Created API key: {key_id}")
         except EntityExistsError:

@@ -86,7 +86,7 @@ class TestLatencyBenchmarks:
         # Setup hierarchy once
         sync_limiter.create_entity("latency-cascade-parent", name="Parent")
         sync_limiter.create_entity(
-            "latency-cascade-child", name="Child", parent_id="latency-cascade-parent"
+            "latency-cascade-child", name="Child", parent_id="latency-cascade-parent", cascade=True
         )
 
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -97,7 +97,6 @@ class TestLatencyBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -186,7 +185,6 @@ class TestLatencyComparison:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=False,
             ):
                 pass
 
@@ -194,13 +192,16 @@ class TestLatencyComparison:
 
     @pytest.mark.benchmark(group="cascade-comparison")
     def test_with_cascade(self, benchmark, sync_limiter):
-        """With cascade: acquire with cascade=True.
+        """With cascade: acquire with cascade entity.
 
         Compare with test_baseline_no_cascade to measure cascade overhead.
         """
         sync_limiter.create_entity("compare-cascade2-parent", name="Parent")
         sync_limiter.create_entity(
-            "compare-cascade2-child", name="Child", parent_id="compare-cascade2-parent"
+            "compare-cascade2-child",
+            name="Child",
+            parent_id="compare-cascade2-parent",
+            cascade=True,
         )
 
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -211,7 +212,6 @@ class TestLatencyComparison:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
