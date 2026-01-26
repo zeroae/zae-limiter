@@ -1,8 +1,5 @@
 # Hierarchical Limits
 
-!!! warning "API Changes Planned"
-    The cascade API is being redesigned. The `cascade` parameter will move from `acquire()` to `create_entity()`, making cascade behavior a property of the entity rather than each call site. This prevents accidental bypass when multiple libraries share a limiter. See [issue #116](https://github.com/zeroae/zae-limiter/issues/116) for details.
-
 zae-limiter supports two-level hierarchies for rate limiting, enabling patterns like:
 
 - **Project → API Keys**: Limit total project usage while also limiting individual keys
@@ -18,25 +15,35 @@ await limiter.create_entity(
     name="Production Project",
 )
 
-# Create child entities (API keys)
+# Create child entities (API keys) with cascade enabled
 await limiter.create_entity(
     entity_id="key-abc",
     parent_id="project-1",
     name="Web Application Key",
+    cascade=True,  # Enforce parent limits on every acquire
 )
 
 await limiter.create_entity(
     entity_id="key-xyz",
     parent_id="project-1",
     name="Mobile App Key",
+    cascade=True,
 )
 ```
 
 ## Cascade Mode
 
-Use `cascade=True` to apply rate limits to both the child and parent:
+Create entities with `cascade=True` to apply rate limits to both the child and parent on every `acquire()` call:
 
 ```python
+# Cascade is set once at entity creation
+await limiter.create_entity(
+    entity_id="key-abc",
+    parent_id="project-1",
+    cascade=True,  # All acquire() calls will also check parent
+)
+
+# acquire() automatically cascades to parent — no flag needed
 async with limiter.acquire(
     entity_id="key-abc",
     resource="gpt-4",
@@ -44,7 +51,6 @@ async with limiter.acquire(
         Limit.per_minute("tpm", 10_000),  # Per-key limit
     ],
     consume={"tpm": 500},
-    cascade=True,  # Also applies to parent (project-1)
 ) as lease:
     await call_api()
 ```
@@ -80,13 +86,12 @@ await limiter.set_limits(
     ],
 )
 
-# Use stored limits with cascade
+# acquire() auto-cascades because key-abc was created with cascade=True
 async with limiter.acquire(
     entity_id="key-abc",
     resource="gpt-4",
     limits=[Limit.per_minute("tpm", 5_000)],  # Default
     consume={"tpm": 500},
-    cascade=True,
     use_stored_limits=True,  # Uses stored limits for both levels
 ) as lease:
     await call_api()
@@ -97,13 +102,15 @@ async with limiter.acquire(
 ### Without Cascade
 
 ```python
+# Entity created without cascade (default)
+await limiter.create_entity(entity_id="key-abc", parent_id="project-1")
+
 # Only checks/consumes from key-abc
 async with limiter.acquire(
     entity_id="key-abc",
     resource="gpt-4",
     limits=[Limit.per_minute("tpm", 10_000)],
     consume={"tpm": 500},
-    cascade=False,  # Default
 ) as lease:
     ...
 ```
@@ -111,26 +118,27 @@ async with limiter.acquire(
 ### With Cascade
 
 ```python
+# Entity created with cascade enabled
+await limiter.create_entity(entity_id="key-abc", parent_id="project-1", cascade=True)
+
 # Checks/consumes from BOTH key-abc AND project-1
 async with limiter.acquire(
     entity_id="key-abc",
     resource="gpt-4",
     limits=[Limit.per_minute("tpm", 10_000)],
     consume={"tpm": 500},
-    cascade=True,
 ) as lease:
     ...
 ```
 
 ## Error Handling with Hierarchies
 
-When using cascade mode, `RateLimitExceeded` includes statuses for all entities:
+When an entity has cascade enabled, `RateLimitExceeded` includes statuses for all entities:
 
 ```python
 try:
     async with limiter.acquire(
-        entity_id="key-abc",
-        cascade=True,
+        entity_id="key-abc",  # Has cascade=True from create_entity()
         ...
     ):
         ...
@@ -153,16 +161,18 @@ await limiter.set_limits(
     limits=[Limit.per_day("tpd", 1_000_000)],
 )
 
+# Create user under tenant with cascade enabled
+await limiter.create_entity(entity_id="user-123", parent_id="tenant-acme", cascade=True)
+
 # Each user gets 100k tokens/day
 await limiter.set_limits(
     entity_id="user-123",
     limits=[Limit.per_day("tpd", 100_000)],
 )
 
-# Rate limit user, cascade to tenant
+# Rate limit user — auto-cascades to tenant
 async with limiter.acquire(
     entity_id="user-123",
-    cascade=True,
     use_stored_limits=True,
     ...
 ):
@@ -195,7 +205,7 @@ await limiter.set_limits(
 
 - **Two levels only**: Parent → Child (no grandparents)
 - **Single parent**: Each entity can have at most one parent
-- **Cascade is optional**: Must be explicitly enabled per call
+- **Cascade is per-entity**: Set `cascade=True` on `create_entity()` to enable; it applies to all `acquire()` calls for that entity
 
 ## Next Steps
 

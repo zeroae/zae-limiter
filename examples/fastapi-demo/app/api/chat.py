@@ -59,7 +59,6 @@ async def chat_completions(
             resource=request.model,
             limits=DEFAULT_LIMITS,
             consume={"rpm": 1, "tpm": estimated_total},
-            cascade=True,  # Apply to parent project as well
             use_stored_limits=True,  # Use entity-specific limits if set
         ) as lease:
             # Simulate LLM completion

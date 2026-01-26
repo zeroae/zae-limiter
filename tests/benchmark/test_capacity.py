@@ -96,7 +96,7 @@ class TestCapacityConsumption:
         )
 
     def test_acquire_with_cascade_capacity(self, sync_limiter, capacity_counter):
-        """Verify: acquire(cascade=True) batches child + parent bucket reads.
+        """Verify: acquire() with cascade entity batches child + parent bucket reads.
 
         Expected calls (with BatchGetItem optimization - issue #133):
         - GetItem for entity lookup, version check
@@ -109,7 +109,7 @@ class TestCapacityConsumption:
         # Setup hierarchy
         sync_limiter.create_entity("cap-cascade-parent", name="Parent")
         sync_limiter.create_entity(
-            "cap-cascade-child", name="Child", parent_id="cap-cascade-parent"
+            "cap-cascade-child", name="Child", parent_id="cap-cascade-parent", cascade=True
         )
 
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -123,7 +123,6 @@ class TestCapacityConsumption:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 

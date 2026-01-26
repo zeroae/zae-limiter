@@ -228,6 +228,7 @@ class Repository:
         entity_id: str,
         name: str | None = None,
         parent_id: str | None = None,
+        cascade: bool = False,
         metadata: dict[str, str] | None = None,
         principal: str | None = None,
     ) -> Entity:
@@ -238,6 +239,7 @@ class Repository:
             entity_id: Unique identifier for the entity
             name: Optional display name (defaults to entity_id)
             parent_id: Optional parent entity ID (for hierarchical limits)
+            cascade: If True, acquire() will also consume from parent entity
             metadata: Optional key-value metadata
             principal: Caller identity for audit logging
 
@@ -262,6 +264,7 @@ class Repository:
             "entity_id": {"S": entity_id},
             "name": {"S": name or entity_id},
             "parent_id": {"S": parent_id} if parent_id else {"NULL": True},
+            "cascade": {"BOOL": cascade},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
         }
@@ -290,6 +293,7 @@ class Repository:
             details={
                 "name": name or entity_id,
                 "parent_id": parent_id,
+                "cascade": cascade,
                 "metadata": metadata or {},
             },
         )
@@ -298,6 +302,7 @@ class Repository:
             id=entity_id,
             name=name or entity_id,
             parent_id=parent_id,
+            cascade=cascade,
             metadata=metadata or {},
             created_at=now,
         )
@@ -1776,6 +1781,7 @@ class Repository:
         entity_id = item.get("entity_id", {}).get("S", "")
         name_val = item["name"].get("S") if "name" in item else None
         parent_val = self._deserialize_value(item["parent_id"]) if "parent_id" in item else None
+        cascade_val = item.get("cascade", {}).get("BOOL", False)
         metadata_val = (
             self._deserialize_map(item["metadata"].get("M", {}))
             if "metadata" in item and "M" in item.get("metadata", {})
@@ -1787,6 +1793,7 @@ class Repository:
             id=entity_id,
             name=name_val,
             parent_id=parent_val,
+            cascade=cascade_val,
             metadata=metadata_val,
             created_at=created_val,
         )

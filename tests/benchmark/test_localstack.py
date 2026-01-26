@@ -55,7 +55,7 @@ class TestLocalStackBenchmarks:
         """Setup parent-child hierarchy for cascade tests."""
         sync_localstack_limiter.create_entity("ls-cascade-parent", name="Parent")
         sync_localstack_limiter.create_entity(
-            "ls-cascade-child", name="Child", parent_id="ls-cascade-parent"
+            "ls-cascade-child", name="Child", parent_id="ls-cascade-parent", cascade=True
         )
         return sync_localstack_limiter
 
@@ -72,7 +72,6 @@ class TestLocalStackBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -138,7 +137,7 @@ class TestLocalStackLatencyBenchmarks:
         """Setup parent-child hierarchy for cascade latency tests."""
         sync_localstack_limiter.create_entity("ls-latency-parent", name="Parent")
         sync_localstack_limiter.create_entity(
-            "ls-latency-child", name="Child", parent_id="ls-latency-parent"
+            "ls-latency-child", name="Child", parent_id="ls-latency-parent", cascade=True
         )
         return sync_localstack_limiter
 
@@ -161,7 +160,6 @@ class TestLocalStackLatencyBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -207,8 +205,12 @@ class TestCascadeOptimizationBenchmarks:
     def deep_hierarchy(self, sync_localstack_limiter):
         """Setup deeper hierarchy for cascade optimization testing."""
         sync_localstack_limiter.create_entity("opt-root", name="Root")
-        sync_localstack_limiter.create_entity("opt-level1", name="Level 1", parent_id="opt-root")
-        sync_localstack_limiter.create_entity("opt-level2", name="Level 2", parent_id="opt-level1")
+        sync_localstack_limiter.create_entity(
+            "opt-level1", name="Level 1", parent_id="opt-root", cascade=True
+        )
+        sync_localstack_limiter.create_entity(
+            "opt-level2", name="Level 2", parent_id="opt-level1", cascade=True
+        )
         return sync_localstack_limiter
 
     @pytest.mark.benchmark(group="cascade-optimization")
@@ -228,7 +230,6 @@ class TestCascadeOptimizationBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -252,7 +253,6 @@ class TestCascadeOptimizationBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1, "tpm": 100},
-                cascade=True,
             ):
                 pass
 
@@ -269,6 +269,7 @@ class TestCascadeOptimizationBenchmarks:
             "opt-config-child",
             name="Child",
             parent_id="opt-config-root",
+            cascade=True,
         )
 
         # Set stored limits to exercise config cache + cascade
@@ -294,7 +295,6 @@ class TestCascadeOptimizationBenchmarks:
             resource="api",
             limits=limits,
             consume={"rpm": 1},
-            cascade=True,
         ):
             pass
 
@@ -304,7 +304,6 @@ class TestCascadeOptimizationBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -323,7 +322,7 @@ class TestLocalStackOptimizationComparison:
         """Setup hierarchy for cache-disabled comparison."""
         sync_localstack_limiter_no_cache.create_entity("ls-cmp-nocache-parent", name="Parent")
         sync_localstack_limiter_no_cache.create_entity(
-            "ls-cmp-nocache-child", name="Child", parent_id="ls-cmp-nocache-parent"
+            "ls-cmp-nocache-child", name="Child", parent_id="ls-cmp-nocache-parent", cascade=True
         )
         return sync_localstack_limiter_no_cache
 
@@ -332,7 +331,7 @@ class TestLocalStackOptimizationComparison:
         """Setup hierarchy for cache-enabled comparison."""
         sync_localstack_limiter.create_entity("ls-cmp-cache-parent", name="Parent")
         sync_localstack_limiter.create_entity(
-            "ls-cmp-cache-child", name="Child", parent_id="ls-cmp-cache-parent"
+            "ls-cmp-cache-child", name="Child", parent_id="ls-cmp-cache-parent", cascade=True
         )
         return sync_localstack_limiter
 
@@ -354,7 +353,6 @@ class TestLocalStackOptimizationComparison:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -379,7 +377,6 @@ class TestLocalStackOptimizationComparison:
             resource="api",
             limits=limits,
             consume={"rpm": 1},
-            cascade=True,
         ):
             pass
 
@@ -389,7 +386,6 @@ class TestLocalStackOptimizationComparison:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 

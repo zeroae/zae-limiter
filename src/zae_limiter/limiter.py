@@ -423,6 +423,7 @@ class RateLimiter:
         entity_id: str,
         name: str | None = None,
         parent_id: str | None = None,
+        cascade: bool = False,
         metadata: dict[str, str] | None = None,
         principal: str | None = None,
     ) -> Entity:
@@ -433,6 +434,7 @@ class RateLimiter:
             entity_id: Unique identifier for the entity
             name: Human-readable name (defaults to entity_id)
             parent_id: Parent entity ID (None for root/project entities)
+            cascade: If True, acquire() will also consume from parent entity
             metadata: Additional metadata to store
             principal: Caller identity for audit logging (optional)
 
@@ -447,6 +449,7 @@ class RateLimiter:
             entity_id=entity_id,
             name=name,
             parent_id=parent_id,
+            cascade=cascade,
             metadata=metadata,
             principal=principal,
         )
@@ -656,7 +659,6 @@ class RateLimiter:
         resource: str,
         limits: list[Limit] | None,
         consume: dict[str, int],
-        cascade: bool = False,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
     ) -> AsyncIterator[Lease]:
@@ -666,12 +668,15 @@ class RateLimiter:
         Limits are resolved using three-tier hierarchy: Entity > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
 
+        Cascade behavior is controlled by the entity's ``cascade`` flag, set at
+        entity creation time via ``create_entity(cascade=True)``. When enabled,
+        acquire() automatically consumes from both the entity and its parent.
+
         Args:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
             consume: Amounts to consume by limit name
             limits: Override limits (optional, falls back to stored config)
-            cascade: If True, also consume from parent entity
             use_stored_limits: DEPRECATED - limits are now always resolved from
                 stored config. This parameter will be removed in v1.0.
             on_unavailable: Override default on_unavailable behavior
@@ -706,7 +711,6 @@ class RateLimiter:
                 resource=resource,
                 limits_override=limits,
                 consume=consume,
-                cascade=cascade,
             )
         except (RateLimitExceeded, ValidationError):
             raise
@@ -738,7 +742,6 @@ class RateLimiter:
         resource: str,
         limits_override: list[Limit] | None,
         consume: dict[str, int],
-        cascade: bool,
     ) -> Lease:
         """Internal acquire implementation."""
         # Validate inputs at API boundary
@@ -747,12 +750,13 @@ class RateLimiter:
 
         now_ms = int(time.time() * 1000)
 
-        # Determine which entities to check
+        # Determine which entities to check.
+        # Cascade is a per-entity config: if the entity has cascade=True
+        # and a parent_id, also consume from the parent.
         entity_ids = [entity_id]
-        if cascade:
-            entity = await self._repository.get_entity(entity_id)
-            if entity and entity.parent_id:
-                entity_ids.append(entity.parent_id)
+        entity = await self._repository.get_entity(entity_id)
+        if entity and entity.cascade and entity.parent_id:
+            entity_ids.append(entity.parent_id)
 
         # Resolve limits for each entity using three-tier hierarchy
         entity_limits: dict[str, list[Limit]] = {}
@@ -1658,6 +1662,7 @@ class SyncRateLimiter:
         entity_id: str,
         name: str | None = None,
         parent_id: str | None = None,
+        cascade: bool = False,
         metadata: dict[str, str] | None = None,
         principal: str | None = None,
     ) -> Entity:
@@ -1667,6 +1672,7 @@ class SyncRateLimiter:
                 entity_id=entity_id,
                 name=name,
                 parent_id=parent_id,
+                cascade=cascade,
                 metadata=metadata,
                 principal=principal,
             )
@@ -1776,7 +1782,6 @@ class SyncRateLimiter:
         resource: str,
         limits: list[Limit] | None,
         consume: dict[str, int],
-        cascade: bool = False,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
     ) -> Iterator[SyncLease]:
@@ -1785,6 +1790,9 @@ class SyncRateLimiter:
 
         Limits are resolved using three-tier hierarchy: Entity > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
+
+        Cascade behavior is controlled by the entity's ``cascade`` flag, set at
+        entity creation time via ``create_entity(cascade=True)``.
         """
         loop = self._get_loop()
 
@@ -1794,7 +1802,6 @@ class SyncRateLimiter:
                 resource=resource,
                 limits=limits,
                 consume=consume,
-                cascade=cascade,
                 use_stored_limits=use_stored_limits,
                 on_unavailable=on_unavailable,
             )

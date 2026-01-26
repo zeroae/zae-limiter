@@ -119,7 +119,12 @@ class TestCascadeOverheadBenchmarks:
     def hierarchy_limiter(self, sync_limiter):
         """Setup parent-child hierarchy for cascade tests."""
         sync_limiter.create_entity("cascade-parent", name="Parent")
-        sync_limiter.create_entity("cascade-child", name="Child", parent_id="cascade-parent")
+        sync_limiter.create_entity(
+            "cascade-child",
+            name="Child",
+            parent_id="cascade-parent",
+            cascade=True,
+        )
         return sync_limiter
 
     def test_acquire_without_cascade(self, benchmark, hierarchy_limiter):
@@ -135,7 +140,6 @@ class TestCascadeOverheadBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=False,
             ):
                 pass
 
@@ -154,7 +158,6 @@ class TestCascadeOverheadBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -177,7 +180,6 @@ class TestCascadeOverheadBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
                 use_stored_limits=True,
             ):
                 pass
@@ -270,7 +272,7 @@ class TestConfigLookupBenchmarks:
         # Create hierarchy and set limits
         sync_limiter.create_entity("config-cascade-parent", name="Parent")
         sync_limiter.create_entity(
-            "config-cascade-child", name="Child", parent_id="config-cascade-parent"
+            "config-cascade-child", name="Child", parent_id="config-cascade-parent", cascade=True
         )
         sync_limiter.set_limits("config-cascade-parent", limits)
         sync_limiter.set_limits("config-cascade-child", limits)
@@ -281,7 +283,6 @@ class TestConfigLookupBenchmarks:
             resource="api",
             limits=limits,
             consume={"rpm": 1},
-            cascade=True,
         ):
             pass
 
@@ -291,7 +292,6 @@ class TestConfigLookupBenchmarks:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -366,7 +366,7 @@ class TestOptimizationComparison:
         # Setup hierarchy
         sync_limiter_no_cache.create_entity("cmp-nocache-parent", name="Parent")
         sync_limiter_no_cache.create_entity(
-            "cmp-nocache-child", name="Child", parent_id="cmp-nocache-parent"
+            "cmp-nocache-child", name="Child", parent_id="cmp-nocache-parent", cascade=True
         )
         sync_limiter_no_cache.set_limits("cmp-nocache-parent", limits)
         sync_limiter_no_cache.set_limits("cmp-nocache-child", limits)
@@ -377,7 +377,6 @@ class TestOptimizationComparison:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -394,7 +393,12 @@ class TestOptimizationComparison:
 
         # Setup hierarchy
         sync_limiter.create_entity("cmp-cache-parent", name="Parent")
-        sync_limiter.create_entity("cmp-cache-child", name="Child", parent_id="cmp-cache-parent")
+        sync_limiter.create_entity(
+            "cmp-cache-child",
+            name="Child",
+            parent_id="cmp-cache-parent",
+            cascade=True,
+        )
         sync_limiter.set_limits("cmp-cache-parent", limits)
         sync_limiter.set_limits("cmp-cache-child", limits)
 
@@ -404,7 +408,6 @@ class TestOptimizationComparison:
             resource="api",
             limits=limits,
             consume={"rpm": 1},
-            cascade=True,
         ):
             pass
 
@@ -414,7 +417,6 @@ class TestOptimizationComparison:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 

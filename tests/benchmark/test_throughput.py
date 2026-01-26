@@ -277,6 +277,7 @@ class TestThroughputWithHierarchy:
                 f"throughput-child-{i}",
                 name=f"Child {i}",
                 parent_id="throughput-parent",
+                cascade=True,
             )
         return sync_limiter
 
@@ -298,7 +299,6 @@ class TestThroughputWithHierarchy:
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
-                cascade=True,
             ):
                 pass
 
@@ -335,7 +335,6 @@ class TestThroughputWithHierarchy:
                         resource="api",
                         limits=limits,
                         consume={"rpm": 1},
-                        cascade=True,
                     ):
                         successes += 1
                 except Exception:

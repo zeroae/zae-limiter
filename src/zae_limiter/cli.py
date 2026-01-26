@@ -1977,6 +1977,142 @@ def entity() -> None:
     pass
 
 
+@entity.command("create")
+@click.argument("entity_id")
+@click.option(
+    "--display-name",
+    default=None,
+    help="Human-readable name (defaults to entity_id)",
+)
+@click.option(
+    "--parent",
+    default=None,
+    help="Parent entity ID (for hierarchical limits)",
+)
+@click.option(
+    "--cascade/--no-cascade",
+    default=False,
+    help="Enable cascade: acquire() also consumes from parent entity",
+)
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def entity_create(
+    entity_id: str,
+    display_name: str | None,
+    parent: str | None,
+    cascade: bool,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """Create a new entity.
+
+    ENTITY_ID is the unique identifier for the entity (e.g., 'user-123', 'api-key-abc').
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _create() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            entity = await repo.create_entity(
+                entity_id=entity_id,
+                name=display_name,
+                parent_id=parent,
+                cascade=cascade,
+            )
+            click.echo(f"Created entity '{entity.id}'")
+            if entity.name and entity.name != entity.id:
+                click.echo(f"  Name:    {entity.name}")
+            if entity.parent_id:
+                click.echo(f"  Parent:  {entity.parent_id}")
+            click.echo(f"  Cascade: {entity.cascade}")
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_create())
+
+
+@entity.command("show")
+@click.argument("entity_id")
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def entity_show(
+    entity_id: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """Show details for an entity.
+
+    ENTITY_ID is the entity to query (e.g., 'user-123', 'api-key-abc').
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _show() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            entity = await repo.get_entity(entity_id)
+            if entity is None:
+                click.echo(f"Entity '{entity_id}' not found", err=True)
+                sys.exit(1)
+
+            click.echo(f"Entity: {entity.id}")
+            if entity.name and entity.name != entity.id:
+                click.echo(f"  Name:       {entity.name}")
+            click.echo(f"  Parent:     {entity.parent_id or '(none)'}")
+            click.echo(f"  Cascade:    {entity.cascade}")
+            if entity.created_at:
+                click.echo(f"  Created:    {entity.created_at}")
+            if entity.metadata:
+                click.echo(f"  Metadata:   {entity.metadata}")
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_show())
+
+
 @entity.command("set-limits")
 @click.argument("entity_id")
 @click.option(

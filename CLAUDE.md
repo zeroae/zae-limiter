@@ -728,7 +728,7 @@ Follow the [commit conventions](.claude/rules/commits.md).
 
 1. **Lease commits only on success**: If any exception occurs in the context, changes are rolled back
 2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
-3. **Cascade is optional**: Parent is only checked if `cascade=True`
+3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
 5. **Transactions are atomic**: Multi-entity updates succeed or fail together
 6. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources × limits) must stay within this limit
