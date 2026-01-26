@@ -12,7 +12,7 @@ The mixed patterns create inconsistency in serialization/deserialization code, c
 
 ## Decision
 
-All DynamoDB record types must use flat schema (top-level attributes, no nested `data.M` wrapper). Deserialization reads flat format only. Pre-1.0.0 semver allows breaking changes. Serialization produces only flat format. The v1.1.0 migration is **required** before upgrading to v0.6.0.
+All DynamoDB record types must use flat schema (top-level attributes, no nested `data.M` wrapper). Deserialization reads flat format only. Pre-1.0.0 semver allows breaking changes without migration — existing nested records are not supported. Serialization produces only flat format.
 
 ## Consequences
 
@@ -24,8 +24,7 @@ All DynamoDB record types must use flat schema (top-level attributes, no nested 
 - No branching logic in deserializers
 
 **Negative:**
-- v1.1.0 migration is mandatory before upgrading to v0.6.0
-- Schema version bump (1.0.0 to 1.1.0) required
+- Existing nested `data.M` records from pre-0.6.0 deployments must be recreated (no migration path provided pre-1.0.0)
 - DynamoDB reserved words (`name`, `resource`, `action`, `timestamp`) require `ExpressionAttributeNames` aliases in all expressions
 
 ## Alternatives Considered
@@ -34,7 +33,7 @@ All DynamoDB record types must use flat schema (top-level attributes, no nested 
 Rejected because: Perpetuates schema inconsistency; ADR-101 already committed to flattening in v0.6.0.
 
 ### Big-bang migration (write stops until all records migrated)
-Rejected because: Requires downtime; the v1.1.0 migration can run online with no write stops.
+Rejected because: Requires downtime; pre-1.0.0 semver makes migration unnecessary — breaking changes are expected.
 
 ### Flatten only on read (no serialization changes)
 Rejected because: Leaves old-format records indefinitely; new writes would still produce nested format, preventing convergence.
