@@ -1087,6 +1087,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#write-sharding-for-high-fanout-parents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write Sharding for High-Fanout Parents
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#stored-limits-optimization" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2962,6 +2973,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#write-sharding-for-high-fanout-parents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write Sharding for High-Fanout Parents
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#stored-limits-optimization" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3390,7 +3412,7 @@
 <td>1 BatchGetItem + TransactWrite(N items)</td>
 </tr>
 <tr>
-<td><code>acquire(cascade=True)</code></td>
+<td><code>acquire()</code> with cascade entity</td>
 <td>N×2</td>
 <td>N×2</td>
 <td>1 GetEntity + 1 BatchGetItem + TransactWrite</td>
@@ -3661,49 +3683,98 @@ with a separate <code>GetItem</code> call.</p>
 </span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>        <span class="k">pass</span>
 </span></code></pre></div>
 <h4 id="cascade-optimization">Cascade Optimization<a class="headerlink" href="#cascade-optimization" title="Permanent link">&para;</a></h4>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Only use cascade when hierarchical limits are actually needed</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="s2">&quot;api-key&quot;</span><span class="p">,</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">limits</span><span class="p">,</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>  <span class="c1"># Saves 1 GetEntity + parent bucket operations</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="p">):</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    <span class="k">pass</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1"># Use cascade for hierarchical enforcement</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>    <span class="s2">&quot;api-key&quot;</span><span class="p">,</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>    <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>    <span class="n">limits</span><span class="p">,</span>
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>    <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Checks and updates parent limits too</span>
-</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="p">):</span>
-</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>    <span class="k">pass</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Entity without cascade (default) — saves 1 GetEntity + parent bucket operations</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;api-key&quot;</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">)</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;api-key&quot;</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}):</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="k">pass</span>  <span class="c1"># Only checks api-key&#39;s limits</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># Entity with cascade — checks and updates parent limits too</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;api-key&quot;</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;api-key&quot;</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}):</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    <span class="k">pass</span>  <span class="c1"># Checks both api-key AND project-1 limits</span>
 </span></code></pre></div>
-<h4 id="stored-limits-optimization">Stored Limits Optimization<a class="headerlink" href="#stored-limits-optimization" title="Permanent link">&para;</a></h4>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Default: No stored limits lookup (saves 2 RCUs per acquire)</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span>
+<h4 id="write-sharding-for-high-fanout-parents">Write Sharding for High-Fanout Parents<a class="headerlink" href="#write-sharding-for-high-fanout-parents" title="Permanent link">&para;</a></h4>
+<p>When a parent entity has many children (1000+) with <code>cascade=True</code>, the parent partition may experience write throttling. DynamoDB limits throughput per partition to ~1,000 WCU (or ~3,000 RCU).</p>
+<p><strong>Manual Write Sharding Solution:</strong></p>
+<p>Instead of one parent, distribute ownership across multiple sharded parent entities:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># OLD: Single parent becomes a hotspot</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="c1"># ├── project-1 (parent)</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># │   ├── api-key-1 (child, cascade=True)</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># │   ├── api-key-2 (child, cascade=True)</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1"># │   └── ... (1000+ children)</span>
 </span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Enable only when limits vary per entity</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>    <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># +2 Queries per acquire</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="p">)</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># NEW: Distribute across shards (e.g., 10 shards = 10x capacity)</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="n">num_shards</span> <span class="o">=</span> <span class="mi">10</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">api_key_id</span> <span class="o">=</span> <span class="s2">&quot;api-key-12345&quot;</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="n">shard_id</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">)</span> <span class="o">%</span> <span class="n">num_shards</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="n">parent_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard_id</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="c1"># Create shard parents once during setup</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="k">for</span> <span class="n">shard</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_shards</span><span class="p">):</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    <span class="n">parent_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="n">parent_id</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">)</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>    <span class="c1"># Set the same limits on all shards</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>        <span class="n">parent_id</span><span class="p">,</span>
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>        <span class="p">[</span>
+</span><span id="__span-7-21"><a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="n">capacity</span><span class="o">=</span><span class="mi">10000</span><span class="p">),</span>
+</span><span id="__span-7-22"><a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="n">capacity</span><span class="o">=</span><span class="mi">100000</span><span class="p">),</span>
+</span><span id="__span-7-23"><a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>        <span class="p">],</span>
+</span><span id="__span-7-24"><a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;llm-api&quot;</span>
+</span><span id="__span-7-25"><a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a>    <span class="p">)</span>
+</span><span id="__span-7-26"><a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a>
+</span><span id="__span-7-27"><a id="__codelineno-7-27" name="__codelineno-7-27" href="#__codelineno-7-27"></a><span class="c1"># For each child, assign to a random shard</span>
+</span><span id="__span-7-28"><a id="__codelineno-7-28" name="__codelineno-7-28" href="#__codelineno-7-28"></a><span class="n">shard_id</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">)</span> <span class="o">%</span> <span class="n">num_shards</span>
+</span><span id="__span-7-29"><a id="__codelineno-7-29" name="__codelineno-7-29" href="#__codelineno-7-29"></a><span class="n">sharded_parent</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard_id</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-7-30"><a id="__codelineno-7-30" name="__codelineno-7-30" href="#__codelineno-7-30"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
+</span><span id="__span-7-31"><a id="__codelineno-7-31" name="__codelineno-7-31" href="#__codelineno-7-31"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="n">api_key_id</span><span class="p">,</span>
+</span><span id="__span-7-32"><a id="__codelineno-7-32" name="__codelineno-7-32" href="#__codelineno-7-32"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="n">sharded_parent</span><span class="p">,</span>
+</span><span id="__span-7-33"><a id="__codelineno-7-33" name="__codelineno-7-33" href="#__codelineno-7-33"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span>
+</span><span id="__span-7-34"><a id="__codelineno-7-34" name="__codelineno-7-34" href="#__codelineno-7-34"></a><span class="p">)</span>
+</span><span id="__span-7-35"><a id="__codelineno-7-35" name="__codelineno-7-35" href="#__codelineno-7-35"></a>
+</span><span id="__span-7-36"><a id="__codelineno-7-36" name="__codelineno-7-36" href="#__codelineno-7-36"></a><span class="c1"># On acquire, use the same sharding logic</span>
+</span><span id="__span-7-37"><a id="__codelineno-7-37" name="__codelineno-7-37" href="#__codelineno-7-37"></a><span class="n">shard_id</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">)</span> <span class="o">%</span> <span class="n">num_shards</span>
+</span><span id="__span-7-38"><a id="__codelineno-7-38" name="__codelineno-7-38" href="#__codelineno-7-38"></a><span class="n">sharded_parent</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard_id</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-7-39"><a id="__codelineno-7-39" name="__codelineno-7-39" href="#__codelineno-7-39"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}):</span>
+</span><span id="__span-7-40"><a id="__codelineno-7-40" name="__codelineno-7-40" href="#__codelineno-7-40"></a>    <span class="k">pass</span>  <span class="c1"># Cascades to sharded parent instead of single hotspot</span>
+</span></code></pre></div>
+<p><strong>Benefits:</strong>
+- Distributes parent write traffic across N partitions
+- With 10 shards: ~10x capacity improvement
+- Only requires application-level sharding logic</p>
+<p><strong>Drawbacks:</strong>
+- More parent entities to manage
+- Limits checked per shard (not globally across all shards)
+- Requires hash consistency in sharding logic</p>
+<p><strong>When to use:</strong>
+- Parent has &gt;500 API keys with <code>cascade=True</code> and hitting throttling
+- Cost-effective alternative to on-demand billing
+- Temporary solution before implementing more sophisticated load distribution</p>
+<h4 id="stored-limits-optimization">Stored Limits Optimization<a class="headerlink" href="#stored-limits-optimization" title="Permanent link">&para;</a></h4>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Default: No stored limits lookup (saves 2 RCUs per acquire)</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="p">)</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1"># Enable only when limits vary per entity</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># +2 Queries per acquire</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="bulk-operations">Bulk Operations<a class="headerlink" href="#bulk-operations" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Efficient bulk limit setup</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span><span class="s2">&quot;entity-1&quot;</span><span class="p">,</span> <span class="p">[</span><span class="n">rpm_limit</span><span class="p">,</span> <span class="n">tpm_limit</span><span class="p">],</span> <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;llm-api&quot;</span><span class="p">)</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span><span class="s2">&quot;entity-2&quot;</span><span class="p">,</span> <span class="p">[</span><span class="n">rpm_limit</span><span class="p">,</span> <span class="n">tpm_limit</span><span class="p">],</span> <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;llm-api&quot;</span><span class="p">)</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Runs 2 Queries + 2×2 PutItems</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># Entity deletion (automatically batched in 25-item chunks)</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">delete_entity</span><span class="p">(</span><span class="s2">&quot;entity-id&quot;</span><span class="p">)</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="c1"># Runs 1 Query + BatchWrite (up to 25 WCUs per chunk)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Efficient bulk limit setup</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span><span class="s2">&quot;entity-1&quot;</span><span class="p">,</span> <span class="p">[</span><span class="n">rpm_limit</span><span class="p">,</span> <span class="n">tpm_limit</span><span class="p">],</span> <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;llm-api&quot;</span><span class="p">)</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span><span class="s2">&quot;entity-2&quot;</span><span class="p">,</span> <span class="p">[</span><span class="n">rpm_limit</span><span class="p">,</span> <span class="n">tpm_limit</span><span class="p">],</span> <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;llm-api&quot;</span><span class="p">)</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># Runs 2 Queries + 2×2 PutItems</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="c1"># Entity deletion (automatically batched in 25-item chunks)</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">delete_entity</span><span class="p">(</span><span class="s2">&quot;entity-id&quot;</span><span class="p">)</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="c1"># Runs 1 Query + BatchWrite (up to 25 WCUs per chunk)</span>
 </span></code></pre></div>
 <hr />
 <h2 id="4-expected-latencies">4. Expected Latencies<a class="headerlink" href="#4-expected-latencies" title="Permanent link">&para;</a></h2>
@@ -3732,7 +3803,7 @@ with a separate <code>GetItem</code> call.</p>
 <td>43ms</td>
 </tr>
 <tr>
-<td><code>acquire(cascade=True)</code></td>
+<td><code>acquire()</code> with cascade entity</td>
 <td>28ms</td>
 <td>57ms</td>
 <td>51ms</td>
@@ -3755,11 +3826,11 @@ with a separate <code>GetItem</code> call.</p>
 </div>
 <h3 id="latency-breakdown">Latency Breakdown<a class="headerlink" href="#latency-breakdown" title="Permanent link">&para;</a></h3>
 <p>Typical <code>acquire()</code> latency breakdown for a single limit:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>acquire() latency breakdown:
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>├── DynamoDB GetItem (bucket)     ~5-15ms   (network + read)
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>├── Token bucket calculation      &lt;1ms      (in-memory math)
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>├── TransactWriteItems            ~10-25ms  (network + write + condition check)
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>└── Network overhead              variable  (region, instance type)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>acquire() latency breakdown:
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>├── DynamoDB GetItem (bucket)     ~5-15ms   (network + read)
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>├── Token bucket calculation      &lt;1ms      (in-memory math)
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>├── TransactWriteItems            ~10-25ms  (network + write + condition check)
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>└── Network overhead              variable  (region, instance type)
 </span></code></pre></div>
 <h3 id="environment-selection">Environment Selection<a class="headerlink" href="#environment-selection" title="Permanent link">&para;</a></h3>
 <table>
@@ -3789,16 +3860,16 @@ with a separate <code>GetItem</code> call.</p>
 </tbody>
 </table>
 <p>Run benchmarks to measure your specific environment:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Moto benchmarks (fast)</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/benchmark/test_latency.py<span class="w"> </span>-v<span class="w"> </span>--benchmark-json<span class="o">=</span>latency.json
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># LocalStack benchmarks (requires Docker)</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_ENDPOINT_URL</span><span class="o">=</span>http://localhost:4566
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/benchmark/test_localstack.py<span class="w"> </span>-v<span class="w"> </span>--benchmark-json<span class="o">=</span>latency.json
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="c1"># AWS benchmarks (requires credentials)</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/benchmark/test_aws.py<span class="w"> </span>--run-aws<span class="w"> </span>-v
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># Moto benchmarks (fast)</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/benchmark/test_latency.py<span class="w"> </span>-v<span class="w"> </span>--benchmark-json<span class="o">=</span>latency.json
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># LocalStack benchmarks (requires Docker)</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_ENDPOINT_URL</span><span class="o">=</span>http://localhost:4566
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/benchmark/test_localstack.py<span class="w"> </span>-v<span class="w"> </span>--benchmark-json<span class="o">=</span>latency.json
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="c1"># AWS benchmarks (requires credentials)</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/benchmark/test_aws.py<span class="w"> </span>--run-aws<span class="w"> </span>-v
 </span></code></pre></div>
 <hr />
 <h2 id="5-throughput-benchmarks">5. Throughput Benchmarks<a class="headerlink" href="#5-throughput-benchmarks" title="Permanent link">&para;</a></h2>
@@ -3842,46 +3913,46 @@ with a separate <code>GetItem</code> call.</p>
 </table>
 <h3 id="contention-analysis">Contention Analysis<a class="headerlink" href="#contention-analysis" title="Permanent link">&para;</a></h3>
 <p>When multiple requests update the same bucket concurrently, DynamoDB's optimistic locking causes transaction retries:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>Concurrent updates to same bucket:
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>├── Request A: Read bucket version=1
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>├── Request B: Read bucket version=1
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>├── Request A: Write with condition version=1 → SUCCESS, version=2
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>├── Request B: Write with condition version=1 → FAIL (ConditionalCheckFailed)
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>└── Request B: Retry with version=2 → SUCCESS
+<div class="language-text highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>Concurrent updates to same bucket:
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>├── Request A: Read bucket version=1
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>├── Request B: Read bucket version=1
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>├── Request A: Write with condition version=1 → SUCCESS, version=2
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>├── Request B: Write with condition version=1 → FAIL (ConditionalCheckFailed)
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>└── Request B: Retry with version=2 → SUCCESS
 </span></code></pre></div>
 <p>Each retry adds ~10-30ms latency.</p>
 <h3 id="mitigation-strategies">Mitigation Strategies<a class="headerlink" href="#mitigation-strategies" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Strategy 1: Larger bucket windows (reduces update frequency)</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="n">rpm_limit</span> <span class="o">=</span> <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="n">capacity</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">window_seconds</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># Strategy 2: Distribute load across entities</span>
-</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="c1"># Instead of one shared entity, use sharded entities:</span>
-</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="n">shard</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">request_id</span><span class="p">)</span> <span class="o">%</span> <span class="mi">10</span>
-</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="n">entity_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;api-key-shard-</span><span class="si">{</span><span class="n">shard</span><span class="si">}</span><span class="s2">&quot;</span>
-</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>
-</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="c1"># Strategy 3: Client-side rate limiting before acquire</span>
-</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="c1"># Reduce concurrent requests to the same entity</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># Strategy 1: Larger bucket windows (reduces update frequency)</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="n">rpm_limit</span> <span class="o">=</span> <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="n">capacity</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">window_seconds</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="c1"># Strategy 2: Distribute load across entities</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="c1"># Instead of one shared entity, use sharded entities:</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="n">shard</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">request_id</span><span class="p">)</span> <span class="o">%</span> <span class="mi">10</span>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="n">entity_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;api-key-shard-</span><span class="si">{</span><span class="n">shard</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>
+</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="c1"># Strategy 3: Client-side rate limiting before acquire</span>
+</span><span id="__span-13-10"><a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="c1"># Reduce concurrent requests to the same entity</span>
 </span></code></pre></div>
 <h3 id="running-benchmarks">Running Benchmarks<a class="headerlink" href="#running-benchmarks" title="Permanent link">&para;</a></h3>
 <p>Use the automated benchmark runner:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># Run all benchmarks (moto + LocalStack)</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>python<span class="w"> </span>scripts/run_benchmarks.py
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="c1"># Include AWS benchmarks</span>
-</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
-</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>
-</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="c1"># Skip LocalStack (moto only)</span>
-</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--skip-localstack
-</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>
-</span><span id="__span-13-10"><a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="c1"># Custom output directory</span>
-</span><span id="__span-13-11"><a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--output-dir<span class="w"> </span>./results
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Run all benchmarks (moto + LocalStack)</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>python<span class="w"> </span>scripts/run_benchmarks.py
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="c1"># Include AWS benchmarks</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="c1"># Skip LocalStack (moto only)</span>
+</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--skip-localstack
+</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>
+</span><span id="__span-14-10"><a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="c1"># Custom output directory</span>
+</span><span id="__span-14-11"><a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--output-dir<span class="w"> </span>./results
 </span></code></pre></div>
 <p>Or run individual test suites:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Throughput tests</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/benchmark/test_throughput.py<span class="w"> </span>-v
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="c1"># Analyze results</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import json; print(json.load(open(&#39;benchmark.json&#39;))[&#39;benchmarks&#39;])&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Throughput tests</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/benchmark/test_throughput.py<span class="w"> </span>-v
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># Analyze results</span>
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import json; print(json.load(open(&#39;benchmark.json&#39;))[&#39;benchmarks&#39;])&quot;</span>
 </span></code></pre></div>
 <hr />
 <h2 id="6-cost-optimization-strategies">6. Cost Optimization Strategies<a class="headerlink" href="#6-cost-optimization-strategies" title="Permanent link">&para;</a></h2>
@@ -3925,45 +3996,46 @@ with a separate <code>GetItem</code> call.</p>
 </table>
 <h3 id="cost-estimation-examples">Cost Estimation Examples<a class="headerlink" href="#cost-estimation-examples" title="Permanent link">&para;</a></h3>
 <h4 id="low-volume-10k-requestsday">Low Volume: 10K requests/day<a class="headerlink" href="#low-volume-10k-requestsday" title="Permanent link">&para;</a></h4>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>DynamoDB:
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>  Writes: 10K × 2 limits × 30 days = 600K WCUs = $0.38
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>  Reads:  10K × 2 limits × 30 days = 600K RCUs = $0.08
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>  Streams: 600K events                         = $0.12
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>Lambda: 600K invocations                       ≈ $0.12 + duration
-</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>Storage: ~10 MB                                = negligible
-</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>─────────────────────────────────────────────────────────
-</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>Total: ~$0.70/month
+<div class="language-text highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>DynamoDB:
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>  Writes: 10K × 2 limits × 30 days = 600K WCUs = $0.38
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>  Reads:  10K × 2 limits × 30 days = 600K RCUs = $0.08
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>  Streams: 600K events                         = $0.12
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>Lambda: 600K invocations                       ≈ $0.12 + duration
+</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>Storage: ~10 MB                                = negligible
+</span><span id="__span-16-7"><a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>─────────────────────────────────────────────────────────
+</span><span id="__span-16-8"><a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>Total: ~$0.70/month
 </span></code></pre></div>
 <h4 id="medium-volume-1m-requestsday">Medium Volume: 1M requests/day<a class="headerlink" href="#medium-volume-1m-requestsday" title="Permanent link">&para;</a></h4>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>DynamoDB:
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>  Writes: 1M × 2 × 30 = 60M WCUs               = $37.50
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>  Reads:  1M × 2 × 30 = 60M RCUs               = $7.50
-</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>  Streams: 60M events                          = $12.00
-</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>Lambda: 60M invocations                        ≈ $12.00 + duration
-</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>─────────────────────────────────────────────────────────
-</span><span id="__span-16-7"><a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>Total (on-demand): ~$70/month
-</span><span id="__span-16-8"><a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>Total (provisioned with auto-scaling): ~$45/month
+<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>DynamoDB:
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>  Writes: 1M × 2 × 30 = 60M WCUs               = $37.50
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>  Reads:  1M × 2 × 30 = 60M RCUs               = $7.50
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>  Streams: 60M events                          = $12.00
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>Lambda: 60M invocations                        ≈ $12.00 + duration
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>─────────────────────────────────────────────────────────
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>Total (on-demand): ~$70/month
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>Total (provisioned with auto-scaling): ~$45/month
 </span></code></pre></div>
 <h3 id="cost-reduction-strategies">Cost Reduction Strategies<a class="headerlink" href="#cost-reduction-strategies" title="Permanent link">&para;</a></h3>
 <h4 id="1-disable-unused-features">1. Disable Unused Features<a class="headerlink" href="#1-disable-unused-features" title="Permanent link">&para;</a></h4>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># Skip cascade if not needed (saves 1-2 WCUs per request)</span>
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;entity&quot;</span><span class="p">,</span> <span class="s2">&quot;api&quot;</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>    <span class="k">pass</span>
-</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>
-</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="c1"># Disable stored limits if static (saves 2 RCUs per request)</span>
-</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># Create entity without cascade if not needed (saves 1-2 WCUs per request)</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;entity&quot;</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;parent&quot;</span><span class="p">)</span>  <span class="c1"># cascade=False by default</span>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;entity&quot;</span><span class="p">,</span> <span class="s2">&quot;api&quot;</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}):</span>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    <span class="k">pass</span>
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="c1"># Disable stored limits if static (saves 2 RCUs per request)</span>
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span>
 </span></code></pre></div>
 <h4 id="2-optimize-ttl-settings">2. Optimize TTL Settings<a class="headerlink" href="#2-optimize-ttl-settings" title="Permanent link">&para;</a></h4>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># Shorter TTL = faster cleanup = less storage</span>
-</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span>
-</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
-</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>    <span class="n">bucket_ttl_seconds</span><span class="o">=</span><span class="mi">3600</span><span class="p">,</span>  <span class="c1"># 1 hour vs 24 hour default</span>
-</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># Shorter TTL = faster cleanup = less storage</span>
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;rate_limits&quot;</span><span class="p">,</span>
+</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
+</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>    <span class="n">bucket_ttl_seconds</span><span class="o">=</span><span class="mi">3600</span><span class="p">,</span>  <span class="c1"># 1 hour vs 24 hour default</span>
+</span><span id="__span-19-6"><a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a><span class="p">)</span>
 </span></code></pre></div>
 <h4 id="3-reduce-snapshot-granularity">3. Reduce Snapshot Granularity<a class="headerlink" href="#3-reduce-snapshot-granularity" title="Permanent link">&para;</a></h4>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># Deploy without aggregator if usage tracking not needed</span>
-</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span>--no-aggregator
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="c1"># Deploy without aggregator if usage tracking not needed</span>
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span>--no-aggregator
 </span></code></pre></div>
 <h4 id="4-switch-to-provisioned-at-scale">4. Switch to Provisioned at Scale<a class="headerlink" href="#4-switch-to-provisioned-at-scale" title="Permanent link">&para;</a></h4>
 <ul>
@@ -3972,14 +4044,14 @@ with a separate <code>GetItem</code> call.</p>
 <li>Consider reserved capacity for &gt;20M ops/month</li>
 </ul>
 <h4 id="5-batch-similar-operations">5. Batch Similar Operations<a class="headerlink" href="#5-batch-similar-operations" title="Permanent link">&para;</a></h4>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="c1"># Combine multiple limits into single acquire</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>    <span class="s2">&quot;entity&quot;</span><span class="p">,</span>
-</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="s2">&quot;api&quot;</span><span class="p">,</span>
-</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>    <span class="p">[</span><span class="n">rpm_limit</span><span class="p">,</span> <span class="n">tpm_limit</span><span class="p">,</span> <span class="n">daily_limit</span><span class="p">],</span>
-</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>    <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>  <span class="c1"># 1 transaction vs 3</span>
-</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a><span class="p">):</span>
-</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>    <span class="k">pass</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="c1"># Combine multiple limits into single acquire</span>
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>    <span class="s2">&quot;entity&quot;</span><span class="p">,</span>
+</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>    <span class="s2">&quot;api&quot;</span><span class="p">,</span>
+</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>    <span class="p">[</span><span class="n">rpm_limit</span><span class="p">,</span> <span class="n">tpm_limit</span><span class="p">,</span> <span class="n">daily_limit</span><span class="p">],</span>
+</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>    <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>  <span class="c1"># 1 transaction vs 3</span>
+</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="p">):</span>
+</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>    <span class="k">pass</span>
 </span></code></pre></div>
 <h3 id="cost-monitoring">Cost Monitoring<a class="headerlink" href="#cost-monitoring" title="Permanent link">&para;</a></h3>
 <p>Set up CloudWatch metrics for cost tracking:</p>
@@ -3997,39 +4069,39 @@ with a separate <code>GetItem</code> call.</p>
 <li><code>ConcurrentExecutions</code></li>
 </ul>
 <p><strong>Recommended Alerts:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="c1"># Deploy with alarms for cost anomalies</span>
-</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span>--alarm-sns-topic<span class="w"> </span>arn:aws:sns:us-east-1:123456789012:billing-alerts
-</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>
-</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="c1"># Set AWS Budgets alert at 80% of expected monthly cost</span>
-</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>aws<span class="w"> </span>budgets<span class="w"> </span>create-budget<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="w">  </span>--account-id<span class="w"> </span><span class="m">123456789012</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a><span class="w">  </span>--budget<span class="w"> </span>file://budget.json<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="w">  </span>--notifications-with-subscribers<span class="w"> </span>file://notifications.json
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="c1"># Deploy with alarms for cost anomalies</span>
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--table-name<span class="w"> </span>rate_limits<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">  </span>--alarm-sns-topic<span class="w"> </span>arn:aws:sns:us-east-1:123456789012:billing-alerts
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a>
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="c1"># Set AWS Budgets alert at 80% of expected monthly cost</span>
+</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>aws<span class="w"> </span>budgets<span class="w"> </span>create-budget<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="w">  </span>--account-id<span class="w"> </span><span class="m">123456789012</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-8"><a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a><span class="w">  </span>--budget<span class="w"> </span>file://budget.json<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-9"><a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a><span class="w">  </span>--notifications-with-subscribers<span class="w"> </span>file://notifications.json
 </span></code></pre></div>
 <hr />
 <h2 id="7-config-cache-tuning">7. Config Cache Tuning<a class="headerlink" href="#7-config-cache-tuning" title="Permanent link">&para;</a></h2>
 <p>The config cache reduces DynamoDB reads by caching system defaults, resource defaults, and entity limits. This section covers tuning the cache for your workload.</p>
 <h3 id="cache-configuration">Cache Configuration<a class="headerlink" href="#cache-configuration" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Repository</span>
-</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>
-</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="c1"># Default: 60-second TTL (recommended for most workloads)</span>
-</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
-</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span>  <span class="c1"># Default</span>
-</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="p">)</span>
-</span><span id="__span-22-8"><a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>
-</span><span id="__span-22-9"><a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a><span class="c1"># High-frequency updates: Shorter TTL for faster propagation</span>
-</span><span id="__span-22-10"><a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-22-11"><a id="__codelineno-22-11" name="__codelineno-22-11" href="#__codelineno-22-11"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
-</span><span id="__span-22-12"><a id="__codelineno-22-12" name="__codelineno-22-12" href="#__codelineno-22-12"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>  <span class="c1"># 10 seconds - faster updates, more cache misses</span>
-</span><span id="__span-22-13"><a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a><span class="p">)</span>
-</span><span id="__span-22-14"><a id="__codelineno-22-14" name="__codelineno-22-14" href="#__codelineno-22-14"></a>
-</span><span id="__span-22-15"><a id="__codelineno-22-15" name="__codelineno-22-15" href="#__codelineno-22-15"></a><span class="c1"># Disable caching: For testing or when config changes must be immediate</span>
-</span><span id="__span-22-16"><a id="__codelineno-22-16" name="__codelineno-22-16" href="#__codelineno-22-16"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
-</span><span id="__span-22-17"><a id="__codelineno-22-17" name="__codelineno-22-17" href="#__codelineno-22-17"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
-</span><span id="__span-22-18"><a id="__codelineno-22-18" name="__codelineno-22-18" href="#__codelineno-22-18"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>  <span class="c1"># Disabled - every acquire reads from DynamoDB</span>
-</span><span id="__span-22-19"><a id="__codelineno-22-19" name="__codelineno-22-19" href="#__codelineno-22-19"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Repository</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="c1"># Default: 60-second TTL (recommended for most workloads)</span>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
+</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span>  <span class="c1"># Default</span>
+</span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="p">)</span>
+</span><span id="__span-23-8"><a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a>
+</span><span id="__span-23-9"><a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a><span class="c1"># High-frequency updates: Shorter TTL for faster propagation</span>
+</span><span id="__span-23-10"><a id="__codelineno-23-10" name="__codelineno-23-10" href="#__codelineno-23-10"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-23-11"><a id="__codelineno-23-11" name="__codelineno-23-11" href="#__codelineno-23-11"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
+</span><span id="__span-23-12"><a id="__codelineno-23-12" name="__codelineno-23-12" href="#__codelineno-23-12"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>  <span class="c1"># 10 seconds - faster updates, more cache misses</span>
+</span><span id="__span-23-13"><a id="__codelineno-23-13" name="__codelineno-23-13" href="#__codelineno-23-13"></a><span class="p">)</span>
+</span><span id="__span-23-14"><a id="__codelineno-23-14" name="__codelineno-23-14" href="#__codelineno-23-14"></a>
+</span><span id="__span-23-15"><a id="__codelineno-23-15" name="__codelineno-23-15" href="#__codelineno-23-15"></a><span class="c1"># Disable caching: For testing or when config changes must be immediate</span>
+</span><span id="__span-23-16"><a id="__codelineno-23-16" name="__codelineno-23-16" href="#__codelineno-23-16"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span>
+</span><span id="__span-23-17"><a id="__codelineno-23-17" name="__codelineno-23-17" href="#__codelineno-23-17"></a>    <span class="n">repository</span><span class="o">=</span><span class="n">Repository</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">),</span>
+</span><span id="__span-23-18"><a id="__codelineno-23-18" name="__codelineno-23-18" href="#__codelineno-23-18"></a>    <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>  <span class="c1"># Disabled - every acquire reads from DynamoDB</span>
+</span><span id="__span-23-19"><a id="__codelineno-23-19" name="__codelineno-23-19" href="#__codelineno-23-19"></a><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="cost-impact">Cost Impact<a class="headerlink" href="#cost-impact" title="Permanent link">&para;</a></h3>
 <p>Without caching, each <code>acquire()</code> call performs 3 DynamoDB reads to resolve limits:</p>
@@ -4068,19 +4140,19 @@ with a separate <code>GetItem</code> call.</p>
 <p><strong>Negative caching</strong> also helps: When an entity has no custom config (95%+ of entities typically), the cache remembers this to avoid repeated lookups.</p>
 <h3 id="manual-invalidation">Manual Invalidation<a class="headerlink" href="#manual-invalidation" title="Permanent link">&para;</a></h3>
 <p>After modifying config, you can force immediate refresh:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="c1"># Update config</span>
-</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">([</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)])</span>
-</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>
-</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="c1"># Force immediate cache refresh (optional)</span>
-</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">invalidate_config_cache</span><span class="p">()</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="c1"># Update config</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">([</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)])</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="c1"># Force immediate cache refresh (optional)</span>
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">invalidate_config_cache</span><span class="p">()</span>
 </span></code></pre></div>
 <p>Without manual invalidation, changes propagate within the TTL period (max 60 seconds by default).</p>
 <h3 id="monitoring-cache-performance">Monitoring Cache Performance<a class="headerlink" href="#monitoring-cache-performance" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="c1"># Get cache statistics</span>
-</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="n">stats</span> <span class="o">=</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_cache_stats</span><span class="p">()</span>
-</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cache hit rate: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">stats</span><span class="o">.</span><span class="n">misses</span><span class="p">)</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cache entries: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;TTL: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">ttl</span><span class="si">}</span><span class="s2">s&quot;</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="c1"># Get cache statistics</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="n">stats</span> <span class="o">=</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_cache_stats</span><span class="p">()</span>
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cache hit rate: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">stats</span><span class="o">.</span><span class="n">misses</span><span class="p">)</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-25-4"><a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cache entries: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span><span id="__span-25-5"><a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;TTL: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">ttl</span><span class="si">}</span><span class="s2">s&quot;</span><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="ttl-selection-guidelines">TTL Selection Guidelines<a class="headerlink" href="#ttl-selection-guidelines" title="Permanent link">&para;</a></h3>
 <table>
@@ -4156,7 +4228,7 @@ with a separate <code>GetItem</code> call.</p>
 </tbody>
 </table>
 <p>For detailed benchmark data, run:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
 </span></code></pre></div></p>
 
 

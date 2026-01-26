@@ -3074,7 +3074,7 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 <ol>
 <li><strong>Lease commits only on success</strong>: If any exception occurs in the context, changes are rolled back</li>
 <li><strong>Bucket can go negative</strong>: <code>lease.adjust()</code> never throws, allows debt</li>
-<li><strong>Cascade is optional</strong>: Parent is only checked if <code>cascade=True</code></li>
+<li><strong>Cascade is per-entity config</strong>: Set <code>cascade=True</code> on <code>create_entity()</code> to auto-cascade to parent on every <code>acquire()</code></li>
 <li><strong>Stored limits override defaults</strong>: When <code>use_stored_limits=True</code></li>
 <li><strong>Transactions are atomic</strong>: Multi-entity updates succeed or fail together</li>
 </ol>

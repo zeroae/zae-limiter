@@ -2319,6 +2319,167 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#per-partition-monitoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-Partition Monitoring
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Per-Partition Monitoring">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#understanding-hot-partitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Understanding Hot Partitions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#contributor-insights-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contributor Insights Setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Contributor Insights Setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enable-contributor-insights" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enable Contributor Insights
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#view-contributor-insights-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        View Contributor Insights Data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interpreting-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interpreting Results
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#identifying-cascade-hot-partitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identifying Cascade Hot Partitions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mitigations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mitigations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Mitigations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-write-sharding-recommended-for-cascade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Write Sharding (Recommended for Cascade)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-reduce-cascade-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Reduce Cascade Usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-switch-to-on-demand-billing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Switch to On-Demand Billing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-distributed-load-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Distributed Load Strategy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#monitoring-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Monitoring Checklist
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#related" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2412,10 +2573,8 @@
 </span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span>--statistics<span class="w"> </span>Sum
 </span></code></pre></div>
-<p><strong>Identify hot partitions (if Contributor Insights enabled):</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-contributor-insights<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;
-</span></code></pre></div>
+<p><strong>Identify hot partitions with Contributor Insights:</strong></p>
+<p>See <a href="#per-partition-monitoring">Per-Partition Monitoring</a> below for detailed setup and troubleshooting.</p>
 <h3 id="throttling">Throttling<a class="headerlink" href="#throttling" title="Permanent link">&para;</a></h3>
 <h4 id="common-causes-and-solutions">Common Causes and Solutions<a class="headerlink" href="#common-causes-and-solutions" title="Permanent link">&para;</a></h4>
 <table>
@@ -2446,26 +2605,26 @@
 </table>
 <h4 id="read-throttling">Read Throttling<a class="headerlink" href="#read-throttling" title="Permanent link">&para;</a></h4>
 <p><strong>Check which operations are throttling:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--metric-name<span class="w"> </span>ThrottledRequests<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>Operation,Value<span class="o">=</span>GetItem<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span>--statistics<span class="w"> </span>Sum
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--metric-name<span class="w"> </span>ThrottledRequests<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>Operation,Value<span class="o">=</span>GetItem<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span>--statistics<span class="w"> </span>Sum
 </span></code></pre></div>
 <h4 id="write-throttling">Write Throttling<a class="headerlink" href="#write-throttling" title="Permanent link">&para;</a></h4>
 <p>Write throttling typically occurs during high-volume rate limiting or when the aggregator Lambda is processing many stream events.</p>
 <p><strong>Check write patterns:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--metric-name<span class="w"> </span>ConsumedWriteCapacityUnits<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">60</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span>--statistics<span class="w"> </span>Sum
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--metric-name<span class="w"> </span>ConsumedWriteCapacityUnits<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">60</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span>--statistics<span class="w"> </span>Sum
 </span></code></pre></div>
 <h3 id="capacity-planning">Capacity Planning<a class="headerlink" href="#capacity-planning" title="Permanent link">&para;</a></h3>
 <p>For detailed capacity calculations, see the <a href="../../performance/#1-dynamodb-capacity-planning">Performance Tuning Guide</a>.</p>
@@ -2508,27 +2667,27 @@
 <p class="admonition-title">Billing Impact</p>
 <p>On-demand pricing is typically 5-7x more expensive than provisioned capacity at steady state, but has no throttling.</p>
 </div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--billing-mode<span class="w"> </span>PAY_PER_REQUEST
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--billing-mode<span class="w"> </span>PAY_PER_REQUEST
 </span></code></pre></div>
 <p><strong>Increase provisioned capacity:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--provisioned-throughput<span class="w"> </span><span class="nv">ReadCapacityUnits</span><span class="o">=</span><span class="m">1000</span>,WriteCapacityUnits<span class="o">=</span><span class="m">500</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--provisioned-throughput<span class="w"> </span><span class="nv">ReadCapacityUnits</span><span class="o">=</span><span class="m">1000</span>,WriteCapacityUnits<span class="o">=</span><span class="m">500</span>
 </span></code></pre></div>
 <h3 id="scaling-procedures">Scaling Procedures<a class="headerlink" href="#scaling-procedures" title="Permanent link">&para;</a></h3>
 <h4 id="planned-capacity-scaling">Planned Capacity Scaling<a class="headerlink" href="#planned-capacity-scaling" title="Permanent link">&para;</a></h4>
 <p><strong>Step 1: Analyze current usage</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Get average consumption over last 24 hours</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--metric-name<span class="w"> </span>ConsumedReadCapacityUnits<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;24 hours ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">3600</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">  </span>--statistics<span class="w"> </span>Average
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Get average consumption over last 24 hours</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--metric-name<span class="w"> </span>ConsumedReadCapacityUnits<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;24 hours ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">3600</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="w">  </span>--statistics<span class="w"> </span>Average
 </span></code></pre></div>
 <p><strong>Step 2: Calculate required capacity</strong></p>
 <p>Use the formulas from <a href="../../performance/">Performance Tuning</a>:</p>
@@ -2538,46 +2697,46 @@
 </ul>
 <p>Add 20% headroom for bursts.</p>
 <p><strong>Step 3: Apply changes</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--provisioned-throughput<span class="w"> </span><span class="nv">ReadCapacityUnits</span><span class="o">=</span>&lt;new_rcu&gt;,WriteCapacityUnits<span class="o">=</span>&lt;new_wcu&gt;
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--provisioned-throughput<span class="w"> </span><span class="nv">ReadCapacityUnits</span><span class="o">=</span>&lt;new_rcu&gt;,WriteCapacityUnits<span class="o">=</span>&lt;new_wcu&gt;
 </span></code></pre></div>
 <p><strong>Step 4: Verify</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-table<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">&#39;Table.ProvisionedThroughput&#39;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-table<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--query<span class="w"> </span><span class="s1">&#39;Table.ProvisionedThroughput&#39;</span>
 </span></code></pre></div>
 <h4 id="enable-auto-scaling">Enable Auto-Scaling<a class="headerlink" href="#enable-auto-scaling" title="Permanent link">&para;</a></h4>
 <p><strong>Create scaling targets:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Register read capacity target</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>aws<span class="w"> </span>application-autoscaling<span class="w"> </span>register-scalable-target<span class="w"> </span><span class="se">\</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Register read capacity target</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>aws<span class="w"> </span>application-autoscaling<span class="w"> </span>register-scalable-target<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span>--service-namespace<span class="w"> </span>dynamodb<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span>--resource-id<span class="w"> </span><span class="s2">&quot;table/ZAEL-&lt;name&gt;&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span>--scalable-dimension<span class="w"> </span><span class="s2">&quot;dynamodb:table:ReadCapacityUnits&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span>--min-capacity<span class="w"> </span><span class="m">5</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span>--max-capacity<span class="w"> </span><span class="m">1000</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="c1"># Register write capacity target</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>aws<span class="w"> </span>application-autoscaling<span class="w"> </span>register-scalable-target<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">  </span>--service-namespace<span class="w"> </span>dynamodb<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">  </span>--resource-id<span class="w"> </span><span class="s2">&quot;table/ZAEL-&lt;name&gt;&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="w">  </span>--scalable-dimension<span class="w"> </span><span class="s2">&quot;dynamodb:table:WriteCapacityUnits&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="w">  </span>--min-capacity<span class="w"> </span><span class="m">5</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="w">  </span>--max-capacity<span class="w"> </span><span class="m">500</span>
+</span></code></pre></div>
+<p><strong>Create scaling policies:</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Read capacity policy (target 70% utilization)</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>aws<span class="w"> </span>application-autoscaling<span class="w"> </span>put-scaling-policy<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--service-namespace<span class="w"> </span>dynamodb<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span>--resource-id<span class="w"> </span><span class="s2">&quot;table/ZAEL-&lt;name&gt;&quot;</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span>--scalable-dimension<span class="w"> </span><span class="s2">&quot;dynamodb:table:ReadCapacityUnits&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">  </span>--min-capacity<span class="w"> </span><span class="m">5</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span>--max-capacity<span class="w"> </span><span class="m">1000</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="c1"># Register write capacity target</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>aws<span class="w"> </span>application-autoscaling<span class="w"> </span>register-scalable-target<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">  </span>--service-namespace<span class="w"> </span>dynamodb<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">  </span>--resource-id<span class="w"> </span><span class="s2">&quot;table/ZAEL-&lt;name&gt;&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">  </span>--scalable-dimension<span class="w"> </span><span class="s2">&quot;dynamodb:table:WriteCapacityUnits&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">  </span>--min-capacity<span class="w"> </span><span class="m">5</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">  </span>--max-capacity<span class="w"> </span><span class="m">500</span>
-</span></code></pre></div>
-<p><strong>Create scaling policies:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># Read capacity policy (target 70% utilization)</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>aws<span class="w"> </span>application-autoscaling<span class="w"> </span>put-scaling-policy<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--service-namespace<span class="w"> </span>dynamodb<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span>--resource-id<span class="w"> </span><span class="s2">&quot;table/ZAEL-&lt;name&gt;&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">  </span>--scalable-dimension<span class="w"> </span><span class="s2">&quot;dynamodb:table:ReadCapacityUnits&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">  </span>--policy-name<span class="w"> </span><span class="s2">&quot;ZAEL-&lt;name&gt;-read-scaling&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">  </span>--policy-type<span class="w"> </span><span class="s2">&quot;TargetTrackingScaling&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">  </span>--target-tracking-scaling-policy-configuration<span class="w"> </span><span class="s1">&#39;{</span>
-</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="s1">    &quot;TargetValue&quot;: 70.0,</span>
-</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="s1">    &quot;PredefinedMetricSpecification&quot;: {</span>
-</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="s1">      &quot;PredefinedMetricType&quot;: &quot;DynamoDBReadCapacityUtilization&quot;</span>
-</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="s1">    }</span>
-</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="s1">  }&#39;</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">  </span>--policy-name<span class="w"> </span><span class="s2">&quot;ZAEL-&lt;name&gt;-read-scaling&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span>--policy-type<span class="w"> </span><span class="s2">&quot;TargetTrackingScaling&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">  </span>--target-tracking-scaling-policy-configuration<span class="w"> </span><span class="s1">&#39;{</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="s1">    &quot;TargetValue&quot;: 70.0,</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="s1">    &quot;PredefinedMetricSpecification&quot;: {</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="s1">      &quot;PredefinedMetricType&quot;: &quot;DynamoDBReadCapacityUtilization&quot;</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="s1">    }</span>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="s1">  }&#39;</span>
 </span></code></pre></div>
 <h4 id="switch-to-on-demand">Switch to On-Demand<a class="headerlink" href="#switch-to-on-demand" title="Permanent link">&para;</a></h4>
 <p><strong>When to use on-demand:</strong></p>
@@ -2587,31 +2746,213 @@
 <li>Cost is less important than avoiding throttling</li>
 </ul>
 <p><strong>Switch from provisioned to on-demand:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--billing-mode<span class="w"> </span>PAY_PER_REQUEST
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--billing-mode<span class="w"> </span>PAY_PER_REQUEST
 </span></code></pre></div>
 <p><strong>Switch back to provisioned:</strong></p>
 <div class="admonition warning">
 <p class="admonition-title">Cooldown Period</p>
 <p>You can only switch billing modes once per 24 hours.</p>
 </div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>--billing-mode<span class="w"> </span>PROVISIONED<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">  </span>--provisioned-throughput<span class="w"> </span><span class="nv">ReadCapacityUnits</span><span class="o">=</span><span class="m">100</span>,WriteCapacityUnits<span class="o">=</span><span class="m">50</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--billing-mode<span class="w"> </span>PROVISIONED<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span>--provisioned-throughput<span class="w"> </span><span class="nv">ReadCapacityUnits</span><span class="o">=</span><span class="m">100</span>,WriteCapacityUnits<span class="o">=</span><span class="m">50</span>
 </span></code></pre></div>
 <h3 id="verification">Verification<a class="headerlink" href="#verification" title="Permanent link">&para;</a></h3>
 <p>After capacity changes, monitor for 15-30 minutes:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Watch throttle events</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>watch<span class="w"> </span>-n<span class="w"> </span><span class="m">30</span><span class="w"> </span><span class="s2">&quot;aws cloudwatch get-metric-statistics \</span>
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="s2">  --namespace AWS/DynamoDB \</span>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="s2">  --metric-name ReadThrottleEvents \</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="s2">  --dimensions Name=TableName,Value=ZAEL-&lt;name&gt; \</span>
-</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="s2">  --start-time \$(date -u -d &#39;30 minutes ago&#39; +%Y-%m-%dT%H:%M:%SZ) \</span>
-</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="s2">  --end-time \$(date -u +%Y-%m-%dT%H:%M:%SZ) \</span>
-</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="s2">  --period 60 \</span>
-</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="s2">  --statistics Sum&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># Watch throttle events</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>watch<span class="w"> </span>-n<span class="w"> </span><span class="m">30</span><span class="w"> </span><span class="s2">&quot;aws cloudwatch get-metric-statistics \</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="s2">  --namespace AWS/DynamoDB \</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="s2">  --metric-name ReadThrottleEvents \</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="s2">  --dimensions Name=TableName,Value=ZAEL-&lt;name&gt; \</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="s2">  --start-time \$(date -u -d &#39;30 minutes ago&#39; +%Y-%m-%dT%H:%M:%SZ) \</span>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="s2">  --end-time \$(date -u +%Y-%m-%dT%H:%M:%SZ) \</span>
+</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="s2">  --period 60 \</span>
+</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="s2">  --statistics Sum&quot;</span>
+</span></code></pre></div>
+<h2 id="per-partition-monitoring">Per-Partition Monitoring<a class="headerlink" href="#per-partition-monitoring" title="Permanent link">&para;</a></h2>
+<h3 id="understanding-hot-partitions">Understanding Hot Partitions<a class="headerlink" href="#understanding-hot-partitions" title="Permanent link">&para;</a></h3>
+<p>DynamoDB distributes data across multiple internal partitions. Each partition has its own throughput quota:</p>
+<ul>
+<li><strong>Per-partition read limit</strong>: ~3,000 RCU</li>
+<li><strong>Per-partition write limit</strong>: ~1,000 WCU</li>
+</ul>
+<p>If a single partition receives most traffic (e.g., a high-fanout parent entity with 1,000+ children and <code>cascade=True</code>), that partition throttles while others are idle. This is called a <strong>hot partition</strong>.</p>
+<p>Typical symptoms:
+- High latency on specific operations
+- CloudWatch shows <code>ReadThrottleEvents</code> or <code>WriteThrottleEvents</code>
+- Some entity IDs throttle but others don't
+- Table-level capacity looks fine but requests still throttle</p>
+<h3 id="contributor-insights-setup">Contributor Insights Setup<a class="headerlink" href="#contributor-insights-setup" title="Permanent link">&para;</a></h3>
+<p><strong>DynamoDB Contributor Insights</strong> identifies which partition keys consume the most throughput, helping you spot hot partitions.</p>
+<h4 id="enable-contributor-insights">Enable Contributor Insights<a class="headerlink" href="#enable-contributor-insights" title="Permanent link">&para;</a></h4>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Enable for main table</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-contributor-insights<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span>--contributor-insights-action<span class="w"> </span>ENABLE
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="c1"># Enable for GSI (if needed)</span>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-contributor-insights<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="w">  </span>--contributor-insights-action<span class="w"> </span>ENABLE<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-10"><a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="w">  </span>--index-name<span class="w"> </span>GSI1
+</span></code></pre></div>
+<p><strong>Cost:</strong> ~$0.10 per table per day (minimal). Monitoring is available after ~30 minutes of data collection.</p>
+<h4 id="view-contributor-insights-data">View Contributor Insights Data<a class="headerlink" href="#view-contributor-insights-data" title="Permanent link">&para;</a></h4>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Check if enabled</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>describe-contributor-insights<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="c1"># Get top partition keys by throughput</span>
+</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>get-metric-statistics<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span>--metric-name<span class="w"> </span>ConributorValue<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>Contributor,Value<span class="o">=</span>PK<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-10"><a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span>--start-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>-d<span class="w"> </span><span class="s1">&#39;1 hour ago&#39;</span><span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-11"><a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">  </span>--end-time<span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y-%m-%dT%H:%M:%SZ<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-12"><a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-13"><a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">  </span>--statistics<span class="w"> </span>Sum<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-14"><a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="w">  </span>--max-records<span class="w"> </span><span class="m">10</span>
+</span></code></pre></div>
+<p>Or use the AWS Console:</p>
+<ol>
+<li>Go to DynamoDB → Tables → <code>ZAEL-&lt;name&gt;</code> → Contributor Insights</li>
+<li>Review "Top Keys" to identify which partition keys consume most throughput</li>
+<li>Cross-reference with your entity IDs to find the hot entity</li>
+</ol>
+<h4 id="interpreting-results">Interpreting Results<a class="headerlink" href="#interpreting-results" title="Permanent link">&para;</a></h4>
+<p><strong>If you see:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Meaning</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>One entity ID consuming 70%+ of throughput</td>
+<td>Hot parent with cascade</td>
+<td>Implement write sharding</td>
+</tr>
+<tr>
+<td>Multiple entity IDs evenly distributed</td>
+<td>Normal load distribution</td>
+<td>No action needed</td>
+</tr>
+<tr>
+<td>Spike on specific entity at specific time</td>
+<td>Burst traffic on one user</td>
+<td>Monitor or rate limit</td>
+</tr>
+<tr>
+<td>GSI1 showing skewed distribution</td>
+<td>Parent lookup imbalance</td>
+<td>Review parent structure</td>
+</tr>
+</tbody>
+</table>
+<h3 id="identifying-cascade-hot-partitions">Identifying Cascade Hot Partitions<a class="headerlink" href="#identifying-cascade-hot-partitions" title="Permanent link">&para;</a></h3>
+<p>When using <code>cascade=True</code> with high-fanout parents, check for these patterns:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># Query: Which parent entities have the most children?</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="c1"># This is NOT a built-in query, but you can estimate from operation patterns:</span>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="c1"># 1. Enable Contributor Insights (as above)</span>
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="c1"># 2. In CloudWatch, look at top PK values during peak traffic</span>
+</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="c1"># 3. If top 3-5 PK values account for &gt;50% of writes, those are likely high-fanout parents</span>
+</span></code></pre></div>
+<p><strong>Example diagnosis:</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>Top 5 Partition Keys (by write throughput):
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>1. ENTITY#project-123  → 45% of writes (HIGH FANOUT - HOTSPOT!)
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>2. ENTITY#project-456  → 12% of writes
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>3. ENTITY#project-789  → 10% of writes
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>4. ENTITY#api-key-999  → 8% of writes
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>5. ENTITY#...          → remainder
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>Analysis:
+</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>- project-123 likely has 1000+ API keys with cascade=True
+</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>- This parent partition can handle ~1,000 WCU max
+</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>- If concurrent writes exceed this, throttling occurs
+</span></code></pre></div>
+<h3 id="mitigations">Mitigations<a class="headerlink" href="#mitigations" title="Permanent link">&para;</a></h3>
+<p>Once you've identified a hot partition:</p>
+<h4 id="1-write-sharding-recommended-for-cascade">1. Write Sharding (Recommended for Cascade)<a class="headerlink" href="#1-write-sharding-recommended-for-cascade" title="Permanent link">&para;</a></h4>
+<p>Split high-fanout parent into sharded parents. See <a href="../../performance/#write-sharding-for-high-fanout-parents">Write Sharding Guide</a> for detailed example.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># Instead of:</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="c1">#   API Key → project-123 (1000+ children, hotspot)</span>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="c1">#</span>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="c1"># Create:</span>
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="c1">#   API Key → project-123-shard-0 through project-123-shard-N</span>
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="c1">#   (Distribute API keys across N shards)</span>
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a><span class="c1"># This spreads writes across N partitions, multiplying capacity</span>
+</span></code></pre></div>
+<p><strong>Effectiveness:</strong> 10x shards = ~10x capacity improvement (linear)</p>
+<h4 id="2-reduce-cascade-usage">2. Reduce Cascade Usage<a class="headerlink" href="#2-reduce-cascade-usage" title="Permanent link">&para;</a></h4>
+<p>If hot partition is detected and write sharding isn't feasible:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># Create entities without cascade</span>
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;api-key&quot;</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>
+</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="c1"># Then manually check parent limits if needed</span>
+</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">available</span><span class="p">(</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="p">[</span><span class="n">parent_rpm_limit</span><span class="p">])</span>
+</span></code></pre></div>
+<p><strong>Trade-off:</strong> Parent limits no longer automatically enforced; you must check them explicitly.</p>
+<h4 id="3-switch-to-on-demand-billing">3. Switch to On-Demand Billing<a class="headerlink" href="#3-switch-to-on-demand-billing" title="Permanent link">&para;</a></h4>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>update-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="w">  </span>--billing-mode<span class="w"> </span>PAY_PER_REQUEST
+</span></code></pre></div>
+<p><strong>Cost:</strong> 5-7x more expensive, but no throttling and no partition limits.</p>
+<h4 id="4-distributed-load-strategy">4. Distributed Load Strategy<a class="headerlink" href="#4-distributed-load-strategy" title="Permanent link">&para;</a></h4>
+<p>For enterprise deployments with many customers:</p>
+<ul>
+<li>Create one parent per customer tenant instead of one global parent</li>
+<li>Distribute high-fanout parents across multiple tables (region sharding)</li>
+<li>Use AWS Global Tables for multi-region replication</li>
+</ul>
+<h3 id="monitoring-checklist">Monitoring Checklist<a class="headerlink" href="#monitoring-checklist" title="Permanent link">&para;</a></h3>
+<p>Add these CloudWatch alarms to catch hot partitions early:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="c1"># Alert on write throttling</span>
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>put-metric-alarm<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span>--alarm-name<span class="w"> </span><span class="s2">&quot;ZAEL-&lt;name&gt;-write-throttle&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">  </span>--alarm-description<span class="w"> </span><span class="s2">&quot;Alert when write throttling occurs&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="w">  </span>--metric-name<span class="w"> </span>WriteThrottleEvents<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a><span class="w">  </span>--statistic<span class="w"> </span>Sum<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a><span class="w">  </span>--threshold<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-11"><a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a><span class="w">  </span>--comparison-operator<span class="w"> </span>GreaterThanOrEqualToThreshold<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-12"><a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a><span class="w">  </span>--alarm-actions<span class="w"> </span>arn:aws:sns:us-east-1:123456789012:alerts
+</span><span id="__span-21-13"><a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a>
+</span><span id="__span-21-14"><a id="__codelineno-21-14" name="__codelineno-21-14" href="#__codelineno-21-14"></a><span class="c1"># Alert on read throttling</span>
+</span><span id="__span-21-15"><a id="__codelineno-21-15" name="__codelineno-21-15" href="#__codelineno-21-15"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>put-metric-alarm<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-16"><a id="__codelineno-21-16" name="__codelineno-21-16" href="#__codelineno-21-16"></a><span class="w">  </span>--alarm-name<span class="w"> </span><span class="s2">&quot;ZAEL-&lt;name&gt;-read-throttle&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-17"><a id="__codelineno-21-17" name="__codelineno-21-17" href="#__codelineno-21-17"></a><span class="w">  </span>--alarm-description<span class="w"> </span><span class="s2">&quot;Alert when read throttling occurs&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-18"><a id="__codelineno-21-18" name="__codelineno-21-18" href="#__codelineno-21-18"></a><span class="w">  </span>--metric-name<span class="w"> </span>ReadThrottleEvents<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-19"><a id="__codelineno-21-19" name="__codelineno-21-19" href="#__codelineno-21-19"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-20"><a id="__codelineno-21-20" name="__codelineno-21-20" href="#__codelineno-21-20"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-21"><a id="__codelineno-21-21" name="__codelineno-21-21" href="#__codelineno-21-21"></a><span class="w">  </span>--statistic<span class="w"> </span>Sum<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-22"><a id="__codelineno-21-22" name="__codelineno-21-22" href="#__codelineno-21-22"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-23"><a id="__codelineno-21-23" name="__codelineno-21-23" href="#__codelineno-21-23"></a><span class="w">  </span>--threshold<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-24"><a id="__codelineno-21-24" name="__codelineno-21-24" href="#__codelineno-21-24"></a><span class="w">  </span>--comparison-operator<span class="w"> </span>GreaterThanOrEqualToThreshold<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-25"><a id="__codelineno-21-25" name="__codelineno-21-25" href="#__codelineno-21-25"></a><span class="w">  </span>--alarm-actions<span class="w"> </span>arn:aws:sns:us-east-1:123456789012:alerts
+</span><span id="__span-21-26"><a id="__codelineno-21-26" name="__codelineno-21-26" href="#__codelineno-21-26"></a>
+</span><span id="__span-21-27"><a id="__codelineno-21-27" name="__codelineno-21-27" href="#__codelineno-21-27"></a><span class="c1"># Alert on high consumed capacity (warning before throttle)</span>
+</span><span id="__span-21-28"><a id="__codelineno-21-28" name="__codelineno-21-28" href="#__codelineno-21-28"></a>aws<span class="w"> </span>cloudwatch<span class="w"> </span>put-metric-alarm<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-29"><a id="__codelineno-21-29" name="__codelineno-21-29" href="#__codelineno-21-29"></a><span class="w">  </span>--alarm-name<span class="w"> </span><span class="s2">&quot;ZAEL-&lt;name&gt;-high-capacity&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-30"><a id="__codelineno-21-30" name="__codelineno-21-30" href="#__codelineno-21-30"></a><span class="w">  </span>--alarm-description<span class="w"> </span><span class="s2">&quot;Warning: approaching provisioned capacity&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-31"><a id="__codelineno-21-31" name="__codelineno-21-31" href="#__codelineno-21-31"></a><span class="w">  </span>--metric-name<span class="w"> </span>ConsumedWriteCapacityUnits<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-32"><a id="__codelineno-21-32" name="__codelineno-21-32" href="#__codelineno-21-32"></a><span class="w">  </span>--namespace<span class="w"> </span>AWS/DynamoDB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-33"><a id="__codelineno-21-33" name="__codelineno-21-33" href="#__codelineno-21-33"></a><span class="w">  </span>--dimensions<span class="w"> </span><span class="nv">Name</span><span class="o">=</span>TableName,Value<span class="o">=</span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-34"><a id="__codelineno-21-34" name="__codelineno-21-34" href="#__codelineno-21-34"></a><span class="w">  </span>--statistic<span class="w"> </span>Average<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-35"><a id="__codelineno-21-35" name="__codelineno-21-35" href="#__codelineno-21-35"></a><span class="w">  </span>--period<span class="w"> </span><span class="m">300</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-36"><a id="__codelineno-21-36" name="__codelineno-21-36" href="#__codelineno-21-36"></a><span class="w">  </span>--threshold<span class="w"> </span><span class="m">800</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-37"><a id="__codelineno-21-37" name="__codelineno-21-37" href="#__codelineno-21-37"></a><span class="w">  </span>--comparison-operator<span class="w"> </span>GreaterThanThreshold<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-21-38"><a id="__codelineno-21-38" name="__codelineno-21-38" href="#__codelineno-21-38"></a><span class="w">  </span>--alarm-actions<span class="w"> </span>arn:aws:sns:us-east-1:123456789012:warnings
 </span></code></pre></div>
 <h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
 <ul>

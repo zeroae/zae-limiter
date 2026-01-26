@@ -4503,7 +4503,7 @@ else:
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.create_entity" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4568,6 +4568,22 @@ else:
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cascade</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If True, acquire() will also consume from parent entity</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -5339,7 +5355,7 @@ print(f"Snapshots: {summary.snapshot_count}")</p>
   </span>
 
 <a href="#zae_limiter.limiter.RateLimiter.acquire" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">acquire</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">acquire</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -5347,6 +5363,9 @@ print(f"Snapshots: {summary.snapshot_count}")</p>
         <p>Acquire rate limit capacity.</p>
 <p>Limits are resolved using three-tier hierarchy: Entity &gt; Resource &gt; System.
 If no stored limits found, falls back to the <code>limits</code> parameter.</p>
+<p>Cascade behavior is controlled by the entity's <code>cascade</code> flag, set at
+entity creation time via <code>create_entity(cascade=True)</code>. When enabled,
+acquire() automatically consumes from both the entity and its parent.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5427,22 +5446,6 @@ If no stored limits found, falls back to the <code>limits</code> parameter.</p>
             </td>
             <td>
                 <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>cascade</code>
-            </td>
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>If True, also consume from parent entity</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -7332,7 +7335,7 @@ else:
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.create_entity" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7532,7 +7535,7 @@ See the async version for full documentation.</p>
 
 
 <a href="#zae_limiter.limiter.SyncRateLimiter.acquire" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">acquire</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">acquire</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">use_stored_limits</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7540,6 +7543,8 @@ See the async version for full documentation.</p>
         <p>Acquire rate limit capacity (synchronous).</p>
 <p>Limits are resolved using three-tier hierarchy: Entity &gt; Resource &gt; System.
 If no stored limits found, falls back to the <code>limits</code> parameter.</p>
+<p>Cascade behavior is controlled by the entity's <code>cascade</code> flag, set at
+entity creation time via <code>create_entity(cascade=True)</code>.</p>
 
 
     </div>

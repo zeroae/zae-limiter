@@ -12,7 +12,7 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/operations/rate-limits/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/111-flatten-all-records/">
       
       
       
@@ -25,7 +25,7 @@
     
     
       
-        <title>Rate Limit Operations - zae-limiter</title>
+        <title>ADR-111: Flatten All DynamoDB Records to Top-Level Attributes - zae-limiter</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#rate-limit-operations" class="md-skip">
+        <a href="#adr-111-flatten-all-dynamodb-records-to-top-level-attributes" class="md-skip">
           Skip to content
         </a>
       
@@ -118,7 +118,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Rate Limit Operations
+              ADR-111: Flatten All DynamoDB Records to Top-Level Attributes
             
           </span>
         </div>
@@ -730,7 +730,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../" class="md-nav__link">
+      <a href="../../operations/" class="md-nav__link">
         
   
   
@@ -1386,7 +1386,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/001-single-table-dynamodb/" class="md-nav__link">
+      <a href="../001-single-table-dynamodb/" class="md-nav__link">
         
   
   
@@ -1414,7 +1414,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/002-integer-arithmetic-millitokens/" class="md-nav__link">
+      <a href="../002-integer-arithmetic-millitokens/" class="md-nav__link">
         
   
   
@@ -1442,7 +1442,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/003-cloudformation-infrastructure/" class="md-nav__link">
+      <a href="../003-cloudformation-infrastructure/" class="md-nav__link">
         
   
   
@@ -1470,7 +1470,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/004-declarative-stack-options/" class="md-nav__link">
+      <a href="../004-declarative-stack-options/" class="md-nav__link">
         
   
   
@@ -1498,7 +1498,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/005-exception-hierarchy/" class="md-nav__link">
+      <a href="../005-exception-hierarchy/" class="md-nav__link">
         
   
   
@@ -1526,7 +1526,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/006-flat-schema-snapshots/" class="md-nav__link">
+      <a href="../006-flat-schema-snapshots/" class="md-nav__link">
         
   
   
@@ -1554,7 +1554,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/007-input-validation/" class="md-nav__link">
+      <a href="../007-input-validation/" class="md-nav__link">
         
   
   
@@ -1582,7 +1582,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/008-security-audit-logging/" class="md-nav__link">
+      <a href="../008-security-audit-logging/" class="md-nav__link">
         
   
   
@@ -1610,7 +1610,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/009-version-migration-system/" class="md-nav__link">
+      <a href="../009-version-migration-system/" class="md-nav__link">
         
   
   
@@ -1638,7 +1638,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/010-total-consumed-counter/" class="md-nav__link">
+      <a href="../010-total-consumed-counter/" class="md-nav__link">
         
   
   
@@ -1666,7 +1666,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/011-api-cli-parity/" class="md-nav__link">
+      <a href="../011-api-cli-parity/" class="md-nav__link">
         
   
   
@@ -1749,7 +1749,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/100-centralized-config/" class="md-nav__link">
+      <a href="../100-centralized-config/" class="md-nav__link">
         
   
   
@@ -1777,7 +1777,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/101-flat-schema-config/" class="md-nav__link">
+      <a href="../101-flat-schema-config/" class="md-nav__link">
         
   
   
@@ -1805,7 +1805,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/102-config-hierarchy/" class="md-nav__link">
+      <a href="../102-config-hierarchy/" class="md-nav__link">
         
   
   
@@ -1833,7 +1833,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/103-config-caching/" class="md-nav__link">
+      <a href="../103-config-caching/" class="md-nav__link">
         
   
   
@@ -1861,7 +1861,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/104-stored-limits-default/" class="md-nav__link">
+      <a href="../104-stored-limits-default/" class="md-nav__link">
         
   
   
@@ -1889,7 +1889,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/105-eventual-consistency/" class="md-nav__link">
+      <a href="../105-eventual-consistency/" class="md-nav__link">
         
   
   
@@ -1917,7 +1917,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/106-audit-entity-ids-for-config/" class="md-nav__link">
+      <a href="../106-audit-entity-ids-for-config/" class="md-nav__link">
         
   
   
@@ -2000,7 +2000,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/108-repository-protocol/" class="md-nav__link">
+      <a href="../108-repository-protocol/" class="md-nav__link">
         
   
   
@@ -2028,7 +2028,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/109-backend-capability-matrix/" class="md-nav__link">
+      <a href="../109-backend-capability-matrix/" class="md-nav__link">
         
   
   
@@ -2056,7 +2056,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/110-deprecation-constructor/" class="md-nav__link">
+      <a href="../110-deprecation-constructor/" class="md-nav__link">
         
   
   
@@ -2119,10 +2119,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#decision-tree" class="md-nav__link">
+  <a href="#context" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Decision Tree
+        Context
       
     </span>
   </a>
@@ -2130,22 +2130,44 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
+  <a href="#decision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Troubleshooting
+        Decision
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Troubleshooting">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#symptoms" class="md-nav__link">
+  <a href="#keep-nested-datam-for-existing-records" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Symptoms
+        Keep nested data.M for existing records
       
     </span>
   </a>
@@ -2153,10 +2175,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#diagnostic-steps" class="md-nav__link">
+  <a href="#big-bang-migration-write-stops-until-all-records-migrated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Diagnostic Steps
+        Big-bang migration (write stops until all records migrated)
       
     </span>
   </a>
@@ -2164,43 +2186,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#unexpected-ratelimitexceeded" class="md-nav__link">
+  <a href="#flatten-only-on-read-no-serialization-changes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Unexpected RateLimitExceeded
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#limits-not-enforcing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Limits Not Enforcing
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#cascade-not-working" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cascade Not Working
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verification" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verification
+        Flatten only on read (no serialization changes)
       
     </span>
   </a>
@@ -2209,117 +2198,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#procedures" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Procedures
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Procedures">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#adjust-limits-at-runtime" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adjust Limits at Runtime
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Adjust Limits at Runtime">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#programmatic-adjustment" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Programmatic Adjustment
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#direct-dynamodb-update" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Direct DynamoDB Update
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#reset-bucket-state" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Reset Bucket State
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#debug-bucket-state" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Debug Bucket State
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verification-after-changes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verification After Changes
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#dynamodb-key-patterns" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DynamoDB Key Patterns
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#related" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Related
-      
-    </span>
-  </a>
   
 </li>
       
@@ -2340,7 +2218,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/operations/rate-limits.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/111-flatten-all-records.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2348,300 +2226,32 @@
   
 
 
-<h1 id="rate-limit-operations">Rate Limit Operations<a class="headerlink" href="#rate-limit-operations" title="Permanent link">&para;</a></h1>
-<p>This guide covers troubleshooting rate limit enforcement issues and procedures for adjusting limits at runtime.</p>
-<h2 id="decision-tree">Decision Tree<a class="headerlink" href="#decision-tree" title="Permanent link">&para;</a></h2>
-<div class="mermaid">flowchart TD
-    START([Rate Limit Issue]) --&gt; Q1{What's happening?}
-
-    Q1 --&gt;|Unexpected RateLimitExceeded| A1[Check bucket state]
-    Q1 --&gt;|Limits not enforcing| A2[Check entity exists]
-    Q1 --&gt;|Cascade not working| A3[Check parent entity]
-    Q1 --&gt;|Need to adjust limits| A4[Runtime adjustment]
-
-    A1 --&gt; CHECK1[Query bucket in DynamoDB]
-    A2 --&gt; CHECK2[Query entity metadata]
-    A3 --&gt; CHECK3[Verify parent_id and entity cascade setting]
-
-    CHECK1 --&gt; FIX1{Bucket state?}
-    FIX1 --&gt;|Depleted| WAIT[Wait for refill or reset]
-    FIX1 --&gt;|Has capacity| CONFIG[Check limit configuration]
-
-    CHECK2 --&gt; FIX2{Entity exists?}
-    FIX2 --&gt;|No| CREATE[Create entity first]
-    FIX2 --&gt;|Yes| LIMITS[Check use_stored_limits]
-
-    click A1 "#unexpected-ratelimitexceeded" "Diagnose unexpected limits"
-    click A2 "#limits-not-enforcing" "Check entity setup"
-    click A3 "#cascade-not-working" "Check parent setup"
-    click A4 "#adjust-limits-at-runtime" "Adjust limits"
-    click WAIT "#reset-bucket-state" "Reset bucket"
-    click CHECK1 "#debug-bucket-state" "Query bucket state"</div>
-<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
-<h3 id="symptoms">Symptoms<a class="headerlink" href="#symptoms" title="Permanent link">&para;</a></h3>
-<ul>
-<li>Requests succeed when they should be rate limited</li>
-<li><code>RateLimitExceeded</code> raised unexpectedly</li>
-<li>Cascade to parent entity not working</li>
-<li>Bucket state appears incorrect</li>
-</ul>
-<h3 id="diagnostic-steps">Diagnostic Steps<a class="headerlink" href="#diagnostic-steps" title="Permanent link">&para;</a></h3>
-<p><strong>Check entity and bucket state:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Query entity metadata</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Query bucket state for a specific limit</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#BUCKET#&lt;resource&gt;#&lt;limit_name&gt;&quot;}}&#39;</span>
-</span></code></pre></div>
-<p><strong>Verify stored limits (if using <code>use_stored_limits=True</code>):</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>query<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--key-condition-expression<span class="w"> </span><span class="s2">&quot;PK = :pk AND begins_with(SK, :sk)&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--expression-attribute-values<span class="w"> </span><span class="s1">&#39;{&quot;:pk&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;:sk&quot;: {&quot;S&quot;: &quot;#LIMIT#&quot;}}&#39;</span>
-</span></code></pre></div>
-<h3 id="unexpected-ratelimitexceeded">Unexpected RateLimitExceeded<a class="headerlink" href="#unexpected-ratelimitexceeded" title="Permanent link">&para;</a></h3>
-<p><strong>Possible causes:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Cause</th>
-<th>Diagnosis</th>
-<th>Solution</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Bucket depleted</td>
-<td>Check bucket <code>tokens</code> value</td>
-<td>Wait for refill or increase limit</td>
-</tr>
-<tr>
-<td>Limit too restrictive</td>
-<td>Compare limit capacity vs usage</td>
-<td>Increase capacity</td>
-</tr>
-<tr>
-<td>Cascade triggered</td>
-<td>Check <code>violations</code> array</td>
-<td>Increase parent limit</td>
-</tr>
-<tr>
-<td>Clock skew</td>
-<td>Compare server time with bucket <code>last_update</code></td>
-<td>Sync NTP</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Check bucket state:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#BUCKET#&lt;resource&gt;#&lt;limit_name&gt;&quot;}}&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--projection-expression<span class="w"> </span><span class="s2">&quot;tokens, last_update, capacity&quot;</span>
-</span></code></pre></div>
-<p><strong>Interpret the response:</strong></p>
-<ul>
-<li><code>tokens</code>: Current token count (in millitokens, divide by 1000)</li>
-<li><code>last_update</code>: Unix timestamp of last access</li>
-<li><code>capacity</code>: Maximum bucket capacity (in millitokens)</li>
-</ul>
-<h3 id="limits-not-enforcing">Limits Not Enforcing<a class="headerlink" href="#limits-not-enforcing" title="Permanent link">&para;</a></h3>
-<p><strong>Common causes:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Cause</th>
-<th>Solution</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Entity not created</strong></td>
-<td>Create entity before rate limiting: <code>await limiter.create_entity(...)</code></td>
-</tr>
-<tr>
-<td><strong>Wrong <code>use_stored_limits</code> setting</strong></td>
-<td>Set <code>use_stored_limits=True</code> if limits are in DynamoDB</td>
-</tr>
-<tr>
-<td><strong>Stale bucket state</strong></td>
-<td>Bucket refills over time; tokens may have refilled</td>
-</tr>
-<tr>
-<td><strong>Limit configuration mismatch</strong></td>
-<td>Verify limit <code>capacity</code>, <code>burst</code>, and <code>refill_rate</code> match expectations</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Verify entity exists:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span></code></pre></div>
-<h3 id="cascade-not-working">Cascade Not Working<a class="headerlink" href="#cascade-not-working" title="Permanent link">&para;</a></h3>
-<p>If cascade to parent is not enforced:</p>
-<p><strong>Step 1: Verify parent entity exists:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;parent_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span></code></pre></div>
-<p><strong>Step 2: Verify child has <code>parent_id</code> set:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;child_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1"># Check the &quot;parent_id&quot; attribute in response</span>
-</span></code></pre></div>
-<p><strong>Step 3: Ensure entity was created with <code>cascade=True</code>:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Check the entity&#39;s cascade setting in its metadata</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;child_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Check the &quot;cascade&quot; attribute in response — should be true</span>
-</span></code></pre></div>
-<p>If cascade is not enabled, recreate the entity with cascade:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;child-id&quot;</span><span class="p">,</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;parent-id&quot;</span><span class="p">,</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Entity property — applies to all acquire() calls</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="verification">Verification<a class="headerlink" href="#verification" title="Permanent link">&para;</a></h3>
-<p>Test that rate limiting is working correctly:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span><span class="p">,</span> <span class="n">RateLimitExceeded</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;&lt;name&gt;&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;&lt;region&gt;&quot;</span><span class="p">)</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># Consume all capacity</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">):</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="k">try</span><span class="p">:</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>        <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>            <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;test-entity&quot;</span><span class="p">,</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>            <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;test&quot;</span><span class="p">,</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>            <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>            <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>        <span class="p">):</span>
-</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>            <span class="k">pass</span>
-</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>    <span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rate limited after </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2"> requests, retry_after=</span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="si">}</span><span class="s2">s&quot;</span><span class="p">)</span>
-</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>        <span class="k">break</span>
-</span></code></pre></div>
-<h2 id="procedures">Procedures<a class="headerlink" href="#procedures" title="Permanent link">&para;</a></h2>
-<h3 id="adjust-limits-at-runtime">Adjust Limits at Runtime<a class="headerlink" href="#adjust-limits-at-runtime" title="Permanent link">&para;</a></h3>
-<h4 id="programmatic-adjustment">Programmatic Adjustment<a class="headerlink" href="#programmatic-adjustment" title="Permanent link">&para;</a></h4>
-<p>Update stored limits for an entity without redeployment:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;&lt;name&gt;&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;&lt;region&gt;&quot;</span><span class="p">)</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="c1"># Update limits for an entity</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;api-key-123&quot;</span><span class="p">,</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>  <span class="c1"># Resource these limits apply to</span>
-</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1000</span><span class="p">),</span>      <span class="c1"># Requests per minute</span>
-</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>   <span class="c1"># Tokens per minute</span>
-</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="p">],</span>
-</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="p">)</span>
-</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>
-</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Limits updated successfully&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<h4 id="direct-dynamodb-update">Direct DynamoDB Update<a class="headerlink" href="#direct-dynamodb-update" title="Permanent link">&para;</a></h4>
-<div class="admonition warning">
-<p class="admonition-title">Advanced</p>
-<p>Direct DynamoDB updates bypass validation. Use programmatic API when possible.</p>
-</div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Update a stored limit</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>put-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--item<span class="w"> </span><span class="s1">&#39;{</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="s1">    &quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;},</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="s1">    &quot;SK&quot;: {&quot;S&quot;: &quot;#LIMIT#&lt;resource&gt;#&lt;limit_name&gt;&quot;},</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="s1">    &quot;capacity&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="s1">    &quot;burst&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="s1">    &quot;refill_amount&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="s1">    &quot;refill_period&quot;: {&quot;N&quot;: &quot;60&quot;}</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="s1">  }&#39;</span>
-</span></code></pre></div>
-<h3 id="reset-bucket-state">Reset Bucket State<a class="headerlink" href="#reset-bucket-state" title="Permanent link">&para;</a></h3>
-<p>Reset a bucket to restore full capacity:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># Delete the bucket (will be recreated on next acquire with full capacity)</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>delete-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#BUCKET#&lt;resource&gt;#&lt;limit_name&gt;&quot;}}&#39;</span>
-</span></code></pre></div>
-<h3 id="debug-bucket-state">Debug Bucket State<a class="headerlink" href="#debug-bucket-state" title="Permanent link">&para;</a></h3>
-<p>Query all buckets for an entity:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>query<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--key-condition-expression<span class="w"> </span><span class="s2">&quot;PK = :pk AND begins_with(SK, :sk)&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--expression-attribute-values<span class="w"> </span><span class="s1">&#39;{&quot;:pk&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;:sk&quot;: {&quot;S&quot;: &quot;#BUCKET#&quot;}}&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span>--projection-expression<span class="w"> </span><span class="s2">&quot;SK, tokens, capacity, last_update&quot;</span>
-</span></code></pre></div>
-<p><strong>Interpret bucket values:</strong></p>
-<p>All token values are stored as <strong>millitokens</strong> (multiply by 1000):</p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Description</th>
-<th>Example</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>tokens</code></td>
-<td>Current available tokens × 1000</td>
-<td><code>50000</code> = 50 tokens</td>
-</tr>
-<tr>
-<td><code>capacity</code></td>
-<td>Maximum bucket size × 1000</td>
-<td><code>100000</code> = 100 tokens</td>
-</tr>
-<tr>
-<td><code>last_update</code></td>
-<td>Unix timestamp</td>
-<td><code>1705312800</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="verification-after-changes">Verification After Changes<a class="headerlink" href="#verification-after-changes" title="Permanent link">&para;</a></h3>
-<p>After adjusting limits, verify:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># Check available capacity</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="n">available</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">available</span><span class="p">(</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;&lt;entity_id&gt;&quot;</span><span class="p">,</span>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;&lt;resource&gt;&quot;</span><span class="p">,</span>
-</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;&lt;limit_name&gt;&quot;</span><span class="p">,</span> <span class="o">&lt;</span><span class="n">capacity</span><span class="o">&gt;</span><span class="p">)],</span>
-</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="p">)</span>
-</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>
-</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Available: </span><span class="si">{</span><span class="n">available</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="c1"># Output: {&#39;&lt;limit_name&gt;&#39;: &lt;available_tokens&gt;}</span>
-</span></code></pre></div>
-<h2 id="dynamodb-key-patterns">DynamoDB Key Patterns<a class="headerlink" href="#dynamodb-key-patterns" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Pattern</th>
-<th>Key</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Entity metadata</td>
-<td><code>PK=ENTITY#&lt;id&gt;, SK=#META</code></td>
-<td>Entity configuration</td>
-</tr>
-<tr>
-<td>Bucket state</td>
-<td><code>PK=ENTITY#&lt;id&gt;, SK=#BUCKET#&lt;resource&gt;#&lt;limit&gt;</code></td>
-<td>Token bucket</td>
-</tr>
-<tr>
-<td>Stored limit</td>
-<td><code>PK=ENTITY#&lt;id&gt;, SK=#LIMIT#&lt;resource&gt;#&lt;limit&gt;</code></td>
-<td>Limit configuration</td>
-</tr>
-</tbody>
-</table>
-<h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="../recovery/">Recovery &amp; Rollback</a> - Reset corrupted buckets</li>
-<li><a href="../../performance/">Performance Tuning</a> - Capacity planning for rate limits</li>
-<li><a href="../../guide/hierarchical/">Hierarchical Limits</a> - Cascade configuration</li>
-</ul>
+<h1 id="adr-111-flatten-all-dynamodb-records-to-top-level-attributes">ADR-111: Flatten All DynamoDB Records to Top-Level Attributes<a class="headerlink" href="#adr-111-flatten-all-dynamodb-records-to-top-level-attributes" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Accepted
+<strong>Date:</strong> 2026-01-25
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/180">#180</a></p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>The codebase accumulated three DynamoDB schema patterns: nested <code>data.M</code> maps (entities, limits, audit events, version records), hybrid (buckets with one flat counter), and flat (usage snapshots and config records). ADR-006 and ADR-010 introduced flat attributes to solve DynamoDB's "overlapping document paths" limitation. ADR-101 standardized flat schema for all new config records and explicitly recommended flattening existing record types in v0.6.0.</p>
+<p>The mixed patterns create inconsistency in serialization/deserialization code, complicate the aggregator Lambda (which must navigate nested paths), and make the codebase harder to maintain. Every new feature must decide which pattern to use, adding cognitive overhead.</p>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<p>All DynamoDB record types must use flat schema (top-level attributes, no nested <code>data.M</code> wrapper). Deserialization reads flat format only. Pre-1.0.0 semver allows breaking changes without migration — existing nested records are not supported. Serialization produces only flat format.</p>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<p><strong>Positive:</strong>
+- Uniform schema across all record types eliminates pattern inconsistency
+- Simpler serialization code without <code>data.M</code> wrapper construction
+- Aggregator Lambda reads flat attributes directly instead of navigating nested paths
+- Enables atomic operations on any attribute without "overlapping paths" errors
+- No branching logic in deserializers</p>
+<p><strong>Negative:</strong>
+- Existing nested <code>data.M</code> records from pre-0.6.0 deployments must be recreated (no migration path provided pre-1.0.0)
+- DynamoDB reserved words (<code>name</code>, <code>resource</code>, <code>action</code>, <code>timestamp</code>) require <code>ExpressionAttributeNames</code> aliases in all expressions</p>
+<h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
+<h3 id="keep-nested-datam-for-existing-records">Keep nested <code>data.M</code> for existing records<a class="headerlink" href="#keep-nested-datam-for-existing-records" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Perpetuates schema inconsistency; ADR-101 already committed to flattening in v0.6.0.</p>
+<h3 id="big-bang-migration-write-stops-until-all-records-migrated">Big-bang migration (write stops until all records migrated)<a class="headerlink" href="#big-bang-migration-write-stops-until-all-records-migrated" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Requires downtime; pre-1.0.0 semver makes migration unnecessary — breaking changes are expected.</p>
+<h3 id="flatten-only-on-read-no-serialization-changes">Flatten only on read (no serialization changes)<a class="headerlink" href="#flatten-only-on-read-no-serialization-changes" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Leaves old-format records indefinitely; new writes would still produce nested format, preventing convergence.</p>
 
 
 
