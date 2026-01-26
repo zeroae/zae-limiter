@@ -70,12 +70,9 @@ aws cloudwatch get-metric-statistics \
   --statistics Sum
 ```
 
-**Identify hot partitions (if Contributor Insights enabled):**
+**Identify hot partitions with Contributor Insights:**
 
-```bash
-aws dynamodb describe-contributor-insights \
-  --table-name ZAEL-<name>
-```
+See [Per-Partition Monitoring](#per-partition-monitoring) below for detailed setup and troubleshooting.
 
 ### Throttling
 
@@ -280,6 +277,207 @@ watch -n 30 "aws cloudwatch get-metric-statistics \
   --end-time \$(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 60 \
   --statistics Sum"
+```
+
+## Per-Partition Monitoring
+
+### Understanding Hot Partitions
+
+DynamoDB distributes data across multiple internal partitions. Each partition has its own throughput quota:
+
+- **Per-partition read limit**: ~3,000 RCU
+- **Per-partition write limit**: ~1,000 WCU
+
+If a single partition receives most traffic (e.g., a high-fanout parent entity with 1,000+ children and `cascade=True`), that partition throttles while others are idle. This is called a **hot partition**.
+
+Typical symptoms:
+- High latency on specific operations
+- CloudWatch shows `ReadThrottleEvents` or `WriteThrottleEvents`
+- Some entity IDs throttle but others don't
+- Table-level capacity looks fine but requests still throttle
+
+### Contributor Insights Setup
+
+**DynamoDB Contributor Insights** identifies which partition keys consume the most throughput, helping you spot hot partitions.
+
+#### Enable Contributor Insights
+
+```bash
+# Enable for main table
+aws dynamodb update-contributor-insights \
+  --table-name ZAEL-<name> \
+  --contributor-insights-action ENABLE
+
+# Enable for GSI (if needed)
+aws dynamodb update-contributor-insights \
+  --table-name ZAEL-<name> \
+  --contributor-insights-action ENABLE \
+  --index-name GSI1
+```
+
+**Cost:** ~$0.10 per table per day (minimal). Monitoring is available after ~30 minutes of data collection.
+
+#### View Contributor Insights Data
+
+```bash
+# Check if enabled
+aws dynamodb describe-contributor-insights \
+  --table-name ZAEL-<name>
+
+# Get top partition keys by throughput
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/DynamoDB \
+  --metric-name ConributorValue \
+  --dimensions Name=TableName,Value=ZAEL-<name> Name=Contributor,Value=PK \
+  --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --period 300 \
+  --statistics Sum \
+  --max-records 10
+```
+
+Or use the AWS Console:
+
+1. Go to DynamoDB → Tables → `ZAEL-<name>` → Contributor Insights
+2. Review "Top Keys" to identify which partition keys consume most throughput
+3. Cross-reference with your entity IDs to find the hot entity
+
+#### Interpreting Results
+
+**If you see:**
+
+| Pattern | Meaning | Action |
+|---------|---------|--------|
+| One entity ID consuming 70%+ of throughput | Hot parent with cascade | Implement write sharding |
+| Multiple entity IDs evenly distributed | Normal load distribution | No action needed |
+| Spike on specific entity at specific time | Burst traffic on one user | Monitor or rate limit |
+| GSI1 showing skewed distribution | Parent lookup imbalance | Review parent structure |
+
+### Identifying Cascade Hot Partitions
+
+When using `cascade=True` with high-fanout parents, check for these patterns:
+
+```bash
+# Query: Which parent entities have the most children?
+# This is NOT a built-in query, but you can estimate from operation patterns:
+
+# 1. Enable Contributor Insights (as above)
+# 2. In CloudWatch, look at top PK values during peak traffic
+# 3. If top 3-5 PK values account for >50% of writes, those are likely high-fanout parents
+```
+
+**Example diagnosis:**
+
+```
+Top 5 Partition Keys (by write throughput):
+1. ENTITY#project-123  → 45% of writes (HIGH FANOUT - HOTSPOT!)
+2. ENTITY#project-456  → 12% of writes
+3. ENTITY#project-789  → 10% of writes
+4. ENTITY#api-key-999  → 8% of writes
+5. ENTITY#...          → remainder
+
+Analysis:
+- project-123 likely has 1000+ API keys with cascade=True
+- This parent partition can handle ~1,000 WCU max
+- If concurrent writes exceed this, throttling occurs
+```
+
+### Mitigations
+
+Once you've identified a hot partition:
+
+#### 1. Write Sharding (Recommended for Cascade)
+
+Split high-fanout parent into sharded parents. See [Write Sharding Guide](../performance.md#write-sharding-for-high-fanout-parents) for detailed example.
+
+```python
+# Instead of:
+#   API Key → project-123 (1000+ children, hotspot)
+#
+# Create:
+#   API Key → project-123-shard-0 through project-123-shard-N
+#   (Distribute API keys across N shards)
+
+# This spreads writes across N partitions, multiplying capacity
+```
+
+**Effectiveness:** 10x shards = ~10x capacity improvement (linear)
+
+#### 2. Reduce Cascade Usage
+
+If hot partition is detected and write sharding isn't feasible:
+
+```python
+# Create entities without cascade
+await limiter.create_entity(entity_id="api-key", parent_id="project-1", cascade=False)
+
+# Then manually check parent limits if needed
+await limiter.available("project-1", "llm-api", [parent_rpm_limit])
+```
+
+**Trade-off:** Parent limits no longer automatically enforced; you must check them explicitly.
+
+#### 3. Switch to On-Demand Billing
+
+```bash
+aws dynamodb update-table \
+  --table-name ZAEL-<name> \
+  --billing-mode PAY_PER_REQUEST
+```
+
+**Cost:** 5-7x more expensive, but no throttling and no partition limits.
+
+#### 4. Distributed Load Strategy
+
+For enterprise deployments with many customers:
+
+- Create one parent per customer tenant instead of one global parent
+- Distribute high-fanout parents across multiple tables (region sharding)
+- Use AWS Global Tables for multi-region replication
+
+### Monitoring Checklist
+
+Add these CloudWatch alarms to catch hot partitions early:
+
+```bash
+# Alert on write throttling
+aws cloudwatch put-metric-alarm \
+  --alarm-name "ZAEL-<name>-write-throttle" \
+  --alarm-description "Alert when write throttling occurs" \
+  --metric-name WriteThrottleEvents \
+  --namespace AWS/DynamoDB \
+  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --statistic Sum \
+  --period 300 \
+  --threshold 1 \
+  --comparison-operator GreaterThanOrEqualToThreshold \
+  --alarm-actions arn:aws:sns:us-east-1:123456789012:alerts
+
+# Alert on read throttling
+aws cloudwatch put-metric-alarm \
+  --alarm-name "ZAEL-<name>-read-throttle" \
+  --alarm-description "Alert when read throttling occurs" \
+  --metric-name ReadThrottleEvents \
+  --namespace AWS/DynamoDB \
+  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --statistic Sum \
+  --period 300 \
+  --threshold 1 \
+  --comparison-operator GreaterThanOrEqualToThreshold \
+  --alarm-actions arn:aws:sns:us-east-1:123456789012:alerts
+
+# Alert on high consumed capacity (warning before throttle)
+aws cloudwatch put-metric-alarm \
+  --alarm-name "ZAEL-<name>-high-capacity" \
+  --alarm-description "Warning: approaching provisioned capacity" \
+  --metric-name ConsumedWriteCapacityUnits \
+  --namespace AWS/DynamoDB \
+  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --statistic Average \
+  --period 300 \
+  --threshold 800 \
+  --comparison-operator GreaterThanThreshold \
+  --alarm-actions arn:aws:sns:us-east-1:123456789012:warnings
 ```
 
 ## Related

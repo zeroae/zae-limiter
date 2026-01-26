@@ -376,6 +376,22 @@ Users provide a short identifier (e.g., `my-app`), and the system automatically 
 - `my.app` ❌ (periods not allowed)
 - `123app` ❌ (must start with letter)
 
+### Hot Partition Risk Mitigation (Issue #116)
+
+When cascade is enabled (`cascade=True`), parent entities receive read/write traffic proportional to their child count. High-fanout parents (1000+ children) risk exceeding per-partition throughput limits (~3,000 RCU / 1,000 WCU).
+
+**Primary Mitigation:** Cascade defaults to `False`. Only enable when hierarchical enforcement is needed.
+
+**For high-fanout scenarios:**
+1. **Write Sharding** (Recommended) - Distribute across multiple parent shards to multiply capacity. See [Performance Guide: Write Sharding](docs/performance.md#write-sharding-for-high-fanout-parents)
+2. **Monitoring** - Enable DynamoDB Contributor Insights to detect hot partitions. See [Operations Guide: Per-Partition Monitoring](docs/operations/dynamodb.md#per-partition-monitoring)
+3. **Billing Mode** - Switch to on-demand if throttling persists (5-7x cost but no limits)
+
+**Decision tree:**
+- 0-500 children with cascade: Safe, no action needed
+- 500-1000 children with cascade: Monitor with Contributor Insights
+- 1000+ children with cascade: Implement write sharding or disable cascade
+
 ## Key Design Decisions
 
 ### Integer Arithmetic for Precision
@@ -756,9 +772,10 @@ Follow the [commit conventions](.claude/rules/commits.md).
 - This reduces cascade scenarios from N sequential GetItem calls to 1 BatchGetItem call
 
 **Hot partition risk with cascade (issue #116):**
-- When cascade is per-entity config (default-on), parent entities receive read/write traffic proportional to child count
+- When cascade is enabled (`cascade=True`), parent entities receive read/write traffic proportional to child count
 - High-fanout parents (e.g., a project with 1,000+ API keys) risk exceeding DynamoDB per-partition throughput (~3,000 RCU / 1,000 WCU)
-- Mitigations: DAX or client-side caching for parent reads, write sharding for high-fanout parents, monitoring per-partition throttling
+- Cascade defaults to `False` (primary defense); enable only when hierarchical enforcement is needed
+- For high-fanout scenarios, see [Cascade Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above
 
 **Key builders for config records:**
 - `pk_system()` - Returns `SYSTEM#`
