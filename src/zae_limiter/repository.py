@@ -857,7 +857,7 @@ class Repository:
             }
             await client.put_item(TableName=self.table_name, Item=item)
 
-        # Add resource to the registry using atomic SET ADD operation
+        # Add resource to the registry using atomic ADD operation
         await client.update_item(
             TableName=self.table_name,
             Key={
@@ -975,7 +975,7 @@ class Repository:
             chunk = delete_requests[i : i + 25]
             await client.batch_write_item(RequestItems={self.table_name: chunk})
 
-        # Remove resource from the registry using atomic SET DELETE operation
+        # Remove resource from the registry using atomic DELETE operation
         await client.update_item(
             TableName=self.table_name,
             Key={
