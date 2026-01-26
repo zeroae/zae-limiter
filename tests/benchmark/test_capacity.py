@@ -30,10 +30,10 @@ class TestCapacityConsumption:
     def test_acquire_single_limit_capacity(self, sync_limiter, capacity_counter):
         """Verify: acquire() with single limit uses BatchGetItem for bucket reads.
 
-        Expected calls (with BatchGetItem optimization - issue #133):
-        - 2 GetItem (entity lookup, version check)
+        Expected calls (with META folded into BatchGetItem - issue #116):
+        - 1 GetItem (version check)
         - 4 Query (three-tier limit resolution: entity, resource, system + parent check)
-        - 1 BatchGetItem with 1 key = bucket read
+        - 1 BatchGetItem with 2 keys = entity META + 1 bucket
         - 1 TransactWriteItems with 1 item
 
         Note: Query operations will be reduced by config caching (issue #130).
@@ -49,12 +49,12 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify BatchGetItem optimization (issue #133)
-        # Bucket reads now use BatchGetItem instead of individual GetItem
+        # Verify BatchGetItem optimization (issue #133 + #116)
+        # Entity META + bucket reads folded into single BatchGetItem
         assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
-        assert capacity_counter.batch_get_item[0] == 1, "BatchGetItem should fetch 1 bucket"
-        # Additional GetItem calls for entity/version lookup remain
-        assert capacity_counter.get_item >= 1, "Should have GetItem for entity/version lookup"
+        assert capacity_counter.batch_get_item[0] == 2, (
+            "BatchGetItem should fetch 1 bucket + 1 META"
+        )
         assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
         assert capacity_counter.transact_write_items[0] == 1, "Transaction should write 1 item"
 
@@ -62,10 +62,10 @@ class TestCapacityConsumption:
     def test_acquire_multiple_limits_capacity(self, sync_limiter, capacity_counter, num_limits):
         """Verify: acquire() with N limits uses single BatchGetItem for all buckets.
 
-        Expected calls (with BatchGetItem optimization - issue #133):
-        - 2 GetItem (entity lookup, version check)
+        Expected calls (with META folded into BatchGetItem - issue #116):
+        - 1 GetItem (version check)
         - 4 Query (three-tier limit resolution + parent check)
-        - 1 BatchGetItem with N keys = bucket reads batched together
+        - 1 BatchGetItem with N+1 keys = entity META + N buckets
         - 1 TransactWriteItems with N items = N WCUs
 
         Note: Query operations will be reduced by config caching (issue #130).
@@ -82,29 +82,29 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify BatchGetItem optimization (issue #133)
-        # All bucket reads batched into single call regardless of limit count
+        # Verify BatchGetItem optimization (issue #133 + #116)
+        # Entity META + all bucket reads folded into single BatchGetItem
         assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
-        assert capacity_counter.batch_get_item[0] == num_limits, (
-            f"BatchGetItem should fetch {num_limits} buckets"
+        assert capacity_counter.batch_get_item[0] == num_limits + 1, (
+            f"BatchGetItem should fetch {num_limits} buckets + 1 META"
         )
-        # Additional GetItem calls for entity/version lookup remain
-        assert capacity_counter.get_item >= 1, "Should have GetItem for entity/version lookup"
         assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
         assert capacity_counter.transact_write_items[0] == num_limits, (
             f"Transaction should write {num_limits} items"
         )
 
     def test_acquire_with_cascade_capacity(self, sync_limiter, capacity_counter):
-        """Verify: acquire() with cascade entity batches child + parent bucket reads.
+        """Verify: acquire() with cascade uses 2 BatchGetItem calls.
 
-        Expected calls (with BatchGetItem optimization - issue #133):
-        - GetItem for entity lookup, version check
-        - Query for limit resolution + parent lookup
-        - 1 BatchGetItem with 2 keys (child + parent buckets)
+        Expected calls (with META folded into BatchGetItem - issue #116):
+        - GetItem for version check
+        - Query for limit resolution
+        - 1 BatchGetItem with 2 keys (child META + child bucket)
+        - 1 BatchGetItem with 1 key (parent bucket)
         - 1 TransactWriteItems with 2 items (child + parent buckets) = 2 WCUs
 
-        Note: Query operations will be reduced by config caching (issue #130).
+        The cascade path uses 2 BatchGetItem calls because the parent is
+        only discovered after reading the child's META record.
         """
         # Setup hierarchy
         sync_limiter.create_entity("cap-cascade-parent", name="Parent")
@@ -126,14 +126,17 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify BatchGetItem optimization (issue #133)
-        # Child and parent bucket reads batched together
-        assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
-        assert capacity_counter.batch_get_item[0] == 2, (
-            "BatchGetItem should fetch 2 buckets (child + parent)"
+        # Verify two-phase BatchGetItem (issue #116)
+        # Phase 1: child META + child bucket; Phase 2: parent bucket
+        assert len(capacity_counter.batch_get_item) == 2, (
+            "Should have 2 BatchGetItem calls (child META+bucket, parent bucket)"
         )
-        # GetItem calls for entity/version lookup remain
-        assert capacity_counter.get_item >= 1, "Should have GetItem for entity/version lookup"
+        assert capacity_counter.batch_get_item[0] == 2, (
+            "First BatchGetItem should fetch child META + child bucket"
+        )
+        assert capacity_counter.batch_get_item[1] == 1, (
+            "Second BatchGetItem should fetch parent bucket"
+        )
         assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
         assert capacity_counter.transact_write_items[0] == 2, (
             "Transaction should write 2 items (child + parent)"
@@ -142,10 +145,10 @@ class TestCapacityConsumption:
     def test_acquire_with_stored_limits_capacity(self, sync_limiter, capacity_counter):
         """Verify: acquire(use_stored_limits=True) uses BatchGetItem for bucket reads.
 
-        Expected calls (with BatchGetItem optimization - issue #133):
-        - GetItem for entity/version lookup
+        Expected calls (with META folded into BatchGetItem - issue #116):
+        - GetItem for version lookup
         - Query for limit resolution (entity, resource, system)
-        - 1 BatchGetItem with 1 key = bucket read
+        - 1 BatchGetItem with 2 keys = entity META + 1 bucket
         - 1 TransactWriteItems with 1 item = 1 WCU
 
         Note: Query operations will be reduced by config caching (issue #130).
@@ -168,13 +171,13 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify BatchGetItem optimization (issue #133)
+        # Verify BatchGetItem optimization (issue #133 + #116)
         assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
-        assert capacity_counter.batch_get_item[0] == 1, "BatchGetItem should fetch 1 bucket"
+        assert capacity_counter.batch_get_item[0] == 2, (
+            "BatchGetItem should fetch 1 bucket + 1 META"
+        )
         # Query calls for limit resolution
         assert capacity_counter.query >= 2, "Should have Query calls for stored limits"
-        # GetItem calls for entity/version lookup remain
-        assert capacity_counter.get_item >= 1, "Should have GetItem for entity/version lookup"
 
     def test_available_check_capacity(self, sync_limiter, capacity_counter):
         """Verify: available() reads bucket state without writes.
