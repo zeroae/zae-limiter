@@ -23,6 +23,7 @@ SK_USAGE = "#USAGE#"
 SK_VERSION = "#VERSION"
 SK_AUDIT = "#AUDIT#"
 SK_CONFIG = "#CONFIG"
+SK_RESOURCES = "#RESOURCES"
 
 # Partition key prefix for audit logs
 AUDIT_PREFIX = "AUDIT#"
@@ -89,6 +90,11 @@ def sk_resource_limit(limit_name: str) -> str:
 def sk_resource_limit_prefix() -> str:
     """Build sort key prefix for querying all resource limits."""
     return SK_LIMIT
+
+
+def sk_resources() -> str:
+    """Build sort key for resource registry record (tracks all resources with defaults)."""
+    return SK_RESOURCES
 
 
 def sk_config() -> str:

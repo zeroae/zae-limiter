@@ -742,6 +742,7 @@ Follow the [commit conventions](.claude/rules/commits.md).
 | Batch get buckets | `BatchGetItem` with multiple PK/SK pairs (issue #133) |
 | Get children | GSI1: `GSI1PK=PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
+| List resources with defaults | `PK=SYSTEM#, SK=#RESOURCES` (single GetItem: 1 RCU, issue #233) |
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |

@@ -857,6 +857,19 @@ class Repository:
             }
             await client.put_item(TableName=self.table_name, Item=item)
 
+        # Add resource to the registry using atomic SET ADD operation
+        await client.update_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_resources()},
+            },
+            UpdateExpression="ADD resources :resource",
+            ExpressionAttributeValues={
+                ":resource": {"SS": [resource]},
+            },
+        )
+
         # Log audit event with special prefix
         await self._log_audit_event(
             action=AuditAction.LIMITS_SET,
@@ -962,42 +975,37 @@ class Repository:
             chunk = delete_requests[i : i + 25]
             await client.batch_write_item(RequestItems={self.table_name: chunk})
 
+        # Remove resource from the registry using atomic SET DELETE operation
+        await client.update_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_resources()},
+            },
+            UpdateExpression="DELETE resources :resource",
+            ExpressionAttributeValues={
+                ":resource": {"SS": [resource]},
+            },
+        )
+
     async def list_resources_with_defaults(self) -> list[str]:
-        """List all resources that have default limit configs."""
+        """List all resources that have default limit configs from the resource registry."""
         client = await self._get_client()
 
-        # Query for all items with PK starting with RESOURCE#
-        # This requires a scan since we don't have a GSI for this pattern
-        # Use pagination to handle large result sets (>1MB)
-        resources: set[str] = set()
-        next_key: dict[str, Any] | None = None
+        # Read from resource registry (single GetItem: 1 RCU)
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_resources()},
+            },
+            ConsistentRead=False,
+        )
 
-        while True:
-            params: dict[str, Any] = {
-                "TableName": self.table_name,
-                "FilterExpression": "begins_with(PK, :prefix)",
-                "ExpressionAttributeValues": {
-                    ":prefix": {"S": schema.RESOURCE_PREFIX},
-                },
-                "ProjectionExpression": "PK",
-            }
-            if next_key:
-                params["ExclusiveStartKey"] = next_key
-
-            response = await client.scan(**params)
-
-            # Extract unique resource names from partition keys
-            for item in response.get("Items", []):
-                pk = item.get("PK", {}).get("S", "")
-                if pk.startswith(schema.RESOURCE_PREFIX):
-                    resource = pk[len(schema.RESOURCE_PREFIX) :]
-                    resources.add(resource)
-
-            next_key = response.get("LastEvaluatedKey")
-            if next_key is None:
-                break
-
-        return sorted(resources)
+        # Extract resources from the string set, or return empty list if registry doesn't exist
+        item = response.get("Item", {})
+        resources_set = item.get("resources", {}).get("SS", [])
+        return sorted(resources_set)
 
     # -------------------------------------------------------------------------
     # System-level default config operations (flat schema)
