@@ -148,7 +148,7 @@ def extract_audit_event(record: dict[str, Any]) -> dict[str, Any] | None:
     Extract audit event from a DynamoDB stream REMOVE record.
 
     Only processes REMOVE events with PK starting with AUDIT#.
-    Reads flat top-level attributes (v1.1.0+ schema).
+    Reads flat top-level attributes (v0.6.0+ schema).
 
     Args:
         record: DynamoDB stream record

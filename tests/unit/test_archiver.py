@@ -148,7 +148,7 @@ class TestExtractAuditEvent:
         resource: str | None = None,
         details: dict | None = None,
     ) -> dict:
-        """Helper to create audit stream records (flat format v1.1.0+)."""
+        """Helper to create audit stream records (flat format v0.6.0+)."""
         old_image: dict = {
             "PK": {"S": f"AUDIT#{entity_id}"},
             "SK": {"S": f"#AUDIT#{event_id}"},
@@ -602,7 +602,7 @@ class TestArchiveAuditEvents:
         timestamp: str = "2024-01-15T14:30:00Z",
         principal: str = "admin@example.com",
     ) -> dict:
-        """Helper to create audit stream records (flat format v1.1.0+)."""
+        """Helper to create audit stream records (flat format v0.6.0+)."""
         return {
             "eventName": "REMOVE",
             "dynamodb": {

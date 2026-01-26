@@ -495,7 +495,7 @@ class TestProcessStreamRecords:
         old_counter: int | None = 0,
         new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
     ) -> dict:
-        """Helper to create a stream record with flat format (v1.1.0+)."""
+        """Helper to create a stream record with flat format (v0.6.0+)."""
         record: dict = {
             "eventName": event_name,
             "dynamodb": {
@@ -760,7 +760,7 @@ class TestStructuredLoggingIntegration:
         old_counter: int | None = 0,
         new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
     ) -> dict:
-        """Helper to create a stream record with flat format (v1.1.0+)."""
+        """Helper to create a stream record with flat format (v0.6.0+)."""
         record: dict = {
             "eventName": event_name,
             "dynamodb": {

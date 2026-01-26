@@ -839,7 +839,7 @@ See [ADR-100](docs/adr/100-centralized-config.md) for full design details.
 
 ### Schema Design Notes
 
-**All record types use flat schema (v0.6.0+, schema v1.1.0):**
+**All record types use flat schema (v0.6.0+):**
 
 All DynamoDB records store fields as top-level attributes. The nested `data.M` wrapper used prior to v0.6.0 has been removed. Deserialization reads flat format only (no backward-compatible nested fallback). Serialization always writes flat format. See [ADR-111](docs/adr/111-flatten-all-records.md) and issue [#180](https://github.com/zeroae/zae-limiter/issues/180).
 

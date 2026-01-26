@@ -1238,7 +1238,7 @@ class Repository:
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        # Flat schema (v1.1.0+)
+        # Flat schema (v0.6.0+)
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_system()},
             "SK": {"S": schema.sk_version()},
@@ -1310,7 +1310,7 @@ class Repository:
             details=details or {},
         )
 
-        # Build DynamoDB item (flat schema v1.1.0+)
+        # Build DynamoDB item (flat schema v0.6.0+)
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_audit(entity_id)},
             "SK": {"S": schema.sk_audit(event_id)},
