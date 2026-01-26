@@ -3813,3 +3813,185 @@ class TestEntityCommandsEdgeCases:
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
+
+    # ---- entity create tests ----
+
+    def test_entity_create_help(self, runner: CliRunner) -> None:
+        """Test entity create command help."""
+        result = runner.invoke(cli, ["entity", "create", "--help"])
+        assert result.exit_code == 0
+        assert "Create a new entity" in result.output
+        assert "--cascade" in result.output
+        assert "--parent" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_create_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity create with minimal args."""
+        from zae_limiter.models import Entity
+
+        mock_repo = Mock()
+        mock_repo.create_entity = AsyncMock(
+            return_value=Entity(id="user-123", name="user-123", cascade=False)
+        )
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "create", "user-123"])
+
+        assert result.exit_code == 0
+        assert "Created entity 'user-123'" in result.output
+        assert "Cascade: False" in result.output
+        mock_repo.create_entity.assert_called_once_with(
+            entity_id="user-123", name=None, parent_id=None, cascade=False
+        )
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_create_with_cascade(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity create with --cascade flag."""
+        from zae_limiter.models import Entity
+
+        mock_repo = Mock()
+        mock_repo.create_entity = AsyncMock(
+            return_value=Entity(id="key-1", name="key-1", parent_id="proj-1", cascade=True)
+        )
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["entity", "create", "key-1", "--parent", "proj-1", "--cascade"]
+        )
+
+        assert result.exit_code == 0
+        assert "Created entity 'key-1'" in result.output
+        assert "Parent:  proj-1" in result.output
+        assert "Cascade: True" in result.output
+        mock_repo.create_entity.assert_called_once_with(
+            entity_id="key-1", name=None, parent_id="proj-1", cascade=True
+        )
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_create_with_display_name(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity create with --display-name."""
+        from zae_limiter.models import Entity
+
+        mock_repo = Mock()
+        mock_repo.create_entity = AsyncMock(
+            return_value=Entity(id="proj-1", name="ACME Project", cascade=False)
+        )
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["entity", "create", "proj-1", "--display-name", "ACME Project"]
+        )
+
+        assert result.exit_code == 0
+        assert "Created entity 'proj-1'" in result.output
+        assert "Name:    ACME Project" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_create_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity create handles unexpected exceptions."""
+        mock_repo = Mock()
+        mock_repo.create_entity = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "create", "user-123"])
+
+        assert result.exit_code == 1
+        assert "DynamoDB error" in result.output
+
+    def test_entity_create_repo_init_validation_error(self, runner: CliRunner) -> None:
+        """Test entity create handles ValidationError during Repository init."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid", reason="Invalid name format"
+            )
+
+            result = runner.invoke(cli, ["entity", "create", "user-123"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    # ---- entity show tests ----
+
+    def test_entity_show_help(self, runner: CliRunner) -> None:
+        """Test entity show command help."""
+        result = runner.invoke(cli, ["entity", "show", "--help"])
+        assert result.exit_code == 0
+        assert "Show details for an entity" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_show_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity show displays entity details."""
+        from zae_limiter.models import Entity
+
+        mock_repo = Mock()
+        mock_repo.get_entity = AsyncMock(
+            return_value=Entity(
+                id="key-1",
+                name="API Key 1",
+                parent_id="proj-1",
+                cascade=True,
+                created_at="2026-01-25T00:00:00Z",
+                metadata={"tier": "premium"},
+            )
+        )
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "show", "key-1"])
+
+        assert result.exit_code == 0
+        assert "Entity: key-1" in result.output
+        assert "Name:       API Key 1" in result.output
+        assert "Parent:     proj-1" in result.output
+        assert "Cascade:    True" in result.output
+        assert "Created:    2026-01-25T00:00:00Z" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_show_not_found(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity show when entity doesn't exist."""
+        mock_repo = Mock()
+        mock_repo.get_entity = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "show", "missing-entity"])
+
+        assert result.exit_code == 1
+        assert "Entity 'missing-entity' not found" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_show_handles_exception(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity show handles unexpected exceptions."""
+        mock_repo = Mock()
+        mock_repo.get_entity = AsyncMock(side_effect=Exception("Connection failed"))
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "show", "user-123"])
+
+        assert result.exit_code == 1
+        assert "Connection failed" in result.output
+
+    def test_entity_show_repo_init_validation_error(self, runner: CliRunner) -> None:
+        """Test entity show handles ValidationError during Repository init."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid", reason="Invalid name format"
+            )
+
+            result = runner.invoke(cli, ["entity", "show", "user-123"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
