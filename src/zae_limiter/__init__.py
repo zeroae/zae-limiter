@@ -39,25 +39,6 @@ Example (old API - deprecated):
     )
 """
 
-# ---------------------------------------------------------------------------
-# Lazy imports for Lambda compatibility
-# ---------------------------------------------------------------------------
-# RateLimiter, SyncRateLimiter, OnUnavailable, and StackManager are imported
-# lazily via __getattr__ below. This is REQUIRED because:
-#
-# 1. These modules depend on aioboto3, which is NOT available in the AWS
-#    Lambda runtime (only boto3 is provided).
-# 2. The Lambda aggregator function (zae_limiter.aggregator.handler) imports
-#    this package. Without lazy imports, it would fail with:
-#    ImportError: No module named 'aioboto3'
-# 3. By deferring the import until the attribute is accessed, Lambda can
-#    import the package and use boto3-only code paths successfully.
-#
-# WARNING: Do not add eager imports of limiter.py or infra/stack_manager.py
-# here. Doing so will break the Lambda aggregator function.
-# ---------------------------------------------------------------------------
-from typing import TYPE_CHECKING
-
 from .config_cache import CacheStats
 from .exceptions import (
     EntityError,
@@ -78,7 +59,9 @@ from .exceptions import (
     VersionMismatchError,
     ZAELimiterError,
 )
+from .infra.stack_manager import StackManager
 from .lease import Lease, SyncLease
+from .limiter import OnUnavailable, RateLimiter, SyncRateLimiter
 from .models import (
     AuditAction,
     AuditEvent,
@@ -96,16 +79,8 @@ from .models import (
     UsageSnapshot,
     UsageSummary,
 )
-
-if TYPE_CHECKING:
-    # Type-checking imports for static analysis and IDE support.
-    # These are never executed at runtime.
-    from .infra.stack_manager import StackManager as StackManager
-    from .limiter import OnUnavailable as OnUnavailable
-    from .limiter import RateLimiter as RateLimiter
-    from .limiter import SyncRateLimiter as SyncRateLimiter
-    from .repository import Repository as Repository
-    from .repository_protocol import RepositoryProtocol as RepositoryProtocol
+from .repository import Repository
+from .repository_protocol import RepositoryProtocol
 
 try:
     from ._version import __version__
@@ -168,50 +143,3 @@ __all__ = [
     "InvalidIdentifierError",
     "InvalidNameError",
 ]
-
-
-def __getattr__(name: str) -> type:
-    """Lazy import for modules that require aioboto3.
-
-    This function enables the package to be imported in the AWS Lambda runtime,
-    which only provides boto3 (not aioboto3). Without lazy imports, importing
-    this package would fail with ``ImportError: No module named 'aioboto3'``.
-
-    The Lambda aggregator function (``zae_limiter.aggregator.handler``) uses
-    only boto3 for DynamoDB stream processing. By deferring imports of
-    ``RateLimiter``, ``SyncRateLimiter``, ``OnUnavailable``, and ``StackManager``
-    until they are actually accessed, we allow the Lambda handler to import
-    the package successfully.
-
-    For static type checking and IDE support, these classes are also imported
-    in the ``TYPE_CHECKING`` block above, which is only evaluated by type
-    checkers, not at runtime.
-
-    See Also:
-        PEP 562 -- Module __getattr__ and __dir__
-    """
-    if name == "RateLimiter":
-        from .limiter import RateLimiter
-
-        return RateLimiter
-    if name == "SyncRateLimiter":
-        from .limiter import SyncRateLimiter
-
-        return SyncRateLimiter
-    if name == "OnUnavailable":
-        from .limiter import OnUnavailable
-
-        return OnUnavailable
-    if name == "StackManager":
-        from .infra.stack_manager import StackManager
-
-        return StackManager
-    if name == "Repository":
-        from .repository import Repository
-
-        return Repository
-    if name == "RepositoryProtocol":
-        from .repository_protocol import RepositoryProtocol
-
-        return RepositoryProtocol
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1302,9 +1302,23 @@ class TestLambdaExport:
     def test_lambda_export_to_file(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test exporting Lambda package to file."""
         import zipfile
+        from unittest.mock import patch
+
+        def _mock_write(output_path: Path) -> int:
+            """Write a minimal valid zip for testing."""
+            import io
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("zae_limiter/__init__.py", "")
+                zf.writestr("zae_limiter/aggregator/handler.py", "")
+            data = buf.getvalue()
+            Path(output_path).write_bytes(data)
+            return len(data)
 
         output_file = tmp_path / "test-lambda.zip"
-        result = runner.invoke(cli, ["lambda-export", "--output", str(output_file)])
+        with patch("zae_limiter.cli.write_lambda_package", side_effect=_mock_write):
+            result = runner.invoke(cli, ["lambda-export", "--output", str(output_file)])
 
         assert result.exit_code == 0
         assert "Exported Lambda package to:" in result.output
@@ -1319,9 +1333,22 @@ class TestLambdaExport:
 
     def test_lambda_export_default_filename(self, runner: CliRunner) -> None:
         """Test lambda-export uses default filename."""
-        # Use isolated filesystem to avoid polluting the project directory
+        from unittest.mock import patch
+
+        def _mock_write(output_path: Path) -> int:
+            import io
+            import zipfile
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("zae_limiter/__init__.py", "")
+            data = buf.getvalue()
+            Path(output_path).write_bytes(data)
+            return len(data)
+
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, ["lambda-export"])
+            with patch("zae_limiter.cli.write_lambda_package", side_effect=_mock_write):
+                result = runner.invoke(cli, ["lambda-export"])
 
             assert result.exit_code == 0
             assert "lambda.zip" in result.output
@@ -1342,10 +1369,24 @@ class TestLambdaExport:
 
     def test_lambda_export_force_overwrite(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test lambda-export with --force overwrites existing file."""
+        from unittest.mock import patch
+
+        def _mock_write(output_path: Path) -> int:
+            import io
+            import zipfile
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("zae_limiter/__init__.py", "")
+            data = buf.getvalue()
+            Path(output_path).write_bytes(data)
+            return len(data)
+
         output_file = tmp_path / "existing.zip"
         output_file.write_bytes(b"existing content")
 
-        result = runner.invoke(cli, ["lambda-export", "--output", str(output_file), "--force"])
+        with patch("zae_limiter.cli.write_lambda_package", side_effect=_mock_write):
+            result = runner.invoke(cli, ["lambda-export", "--output", str(output_file), "--force"])
 
         assert result.exit_code == 0
         assert "Exported Lambda package to:" in result.output
@@ -1356,18 +1397,47 @@ class TestLambdaExport:
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
         """Test lambda-export creates parent directories if needed."""
+        from unittest.mock import patch
+
+        def _mock_write(output_path: Path) -> int:
+            import io
+            import zipfile
+
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("zae_limiter/__init__.py", "")
+            data = buf.getvalue()
+            Path(output_path).write_bytes(data)
+            return len(data)
+
         output_file = tmp_path / "nested" / "dirs" / "lambda.zip"
-        result = runner.invoke(cli, ["lambda-export", "--output", str(output_file)])
+        with patch("zae_limiter.cli.write_lambda_package", side_effect=_mock_write):
+            result = runner.invoke(cli, ["lambda-export", "--output", str(output_file)])
 
         assert result.exit_code == 0
         assert output_file.exists()
 
     def test_lambda_export_short_flags(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test lambda-export short flags -o and -f work."""
+        from unittest.mock import patch
+
+        def _mock_write(output_path: Path) -> int:
+            import io
+            import zipfile
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("zae_limiter/__init__.py", "")
+            data = buf.getvalue()
+            Path(output_path).write_bytes(data)
+            return len(data)
+
         output_file = tmp_path / "short-flag.zip"
         output_file.write_bytes(b"existing")
 
-        result = runner.invoke(cli, ["lambda-export", "-o", str(output_file), "-f"])
+        with patch("zae_limiter.cli.write_lambda_package", side_effect=_mock_write):
+            result = runner.invoke(cli, ["lambda-export", "-o", str(output_file), "-f"])
 
         assert result.exit_code == 0
         assert output_file.exists()

@@ -50,6 +50,10 @@ dev = [
 lambda = [
     "aws-lambda-powertools>=2.0.0",
 ]
+deploy = [
+    "aws-lambda-builders>=1.40.0",
+    "pip",
+]
 plot = [
     "asciichartpy>=1.5.25",
 ]
@@ -106,3 +110,7 @@ strict = true
 warn_return_any = true
 warn_unused_ignores = true
 exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = "aws_lambda_builders.*"
+ignore_missing_imports = true

@@ -1,22 +1,106 @@
-"""Integration tests for Lambda package builder (require Docker)."""
+"""Integration tests for Lambda package builder.
 
+Tests the aws-lambda-builders pipeline (real pip install) and Docker-based
+Lambda runtime validation.
+"""
+
+import io
 import json
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
 
 
 @pytest.mark.integration
-class TestLambdaInDocker:
+class TestBuildLambdaPackageIntegration:
+    """Integration tests for build_lambda_package using real aws-lambda-builders.
+
+    These tests exercise the full build pipeline (no mocks) to verify that
+    aws-lambda-builders correctly installs cross-platform dependencies and
+    the locally installed zae_limiter package is included.
     """
-    Integration tests running Lambda in Docker container.
+
+    def test_build_produces_valid_zip(self) -> None:
+        """Build produces a valid zip file with real dependencies."""
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        zip_bytes = build_lambda_package()
+        assert isinstance(zip_bytes, bytes)
+        assert len(zip_bytes) > 0
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            assert zf.testzip() is None
+
+    def test_zip_contains_runtime_dependencies(self) -> None:
+        """Built zip includes pip-installed runtime dependencies."""
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        zip_bytes = build_lambda_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            files = set(zf.namelist())
+
+            # aioboto3 and boto3 are core runtime deps
+            aioboto3_files = [f for f in files if f.startswith("aioboto3/")]
+            assert len(aioboto3_files) > 0, "aioboto3 not found in zip"
+
+            boto3_files = [f for f in files if f.startswith("boto3/")]
+            assert len(boto3_files) > 0, "boto3 not found in zip"
+
+    def test_zip_contains_lambda_extra_dependencies(self) -> None:
+        """Built zip includes [lambda] extra dependencies."""
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        zip_bytes = build_lambda_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            files = set(zf.namelist())
+
+            # aws-lambda-powertools is in the [lambda] extra
+            powertools_files = [f for f in files if f.startswith("aws_lambda_powertools/")]
+            assert len(powertools_files) > 0, "aws-lambda-powertools not found in zip"
+
+    def test_zip_contains_local_package(self) -> None:
+        """Built zip includes locally installed zae_limiter package."""
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        zip_bytes = build_lambda_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            files = set(zf.namelist())
+
+            # Core package files
+            assert "zae_limiter/__init__.py" in files
+            assert "zae_limiter/schema.py" in files
+            assert "zae_limiter/aggregator/handler.py" in files
+            assert "zae_limiter/aggregator/processor.py" in files
+
+            # CloudFormation template
+            assert "zae_limiter/infra/cfn_template.yaml" in files
+
+    def test_write_lambda_package_to_file(self, tmp_path: Path) -> None:
+        """write_lambda_package writes a valid zip to disk."""
+        from zae_limiter.infra.lambda_builder import write_lambda_package
+
+        output_path = tmp_path / "lambda.zip"
+        size = write_lambda_package(output_path)
+
+        assert output_path.exists()
+        assert output_path.stat().st_size == size
+
+        with zipfile.ZipFile(output_path) as zf:
+            assert zf.testzip() is None
+            assert "zae_limiter/aggregator/handler.py" in zf.namelist()
+
+
+@pytest.mark.integration
+class TestLambdaInDocker:
+    """Integration tests running Lambda in Docker container.
 
     Tests the actual Lambda package in the Python 3.12 Lambda runtime to ensure
-    the aggregator can import and execute without aioboto3 (which is not available
-    in Lambda - only boto3 is provided).
-
-    This validates that the lazy import mechanism in __init__.py works correctly.
+    the aggregator can import and execute with all dependencies bundled.
     """
 
     @pytest.fixture(autouse=True)
