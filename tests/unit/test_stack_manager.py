@@ -826,3 +826,103 @@ class TestEnsureTags:
             result = await manager.ensure_tags()
 
             assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_stacks(self) -> None:
+        """ensure_tags returns False if describe_stacks returns empty list."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": []})
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_strips_legacy_prefix_for_tag_comparison(self) -> None:
+        """ensure_tags strips ZAEL- prefix when comparing name tag value."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": [
+                                {"Key": "ManagedBy", "Value": "zae-limiter"},
+                                {"Key": "zae-limiter:name", "Value": "my-app"},
+                            ]
+                        }
+                    ]
+                }
+            )
+            mock_get_client.return_value = mock_client
+
+            # Stack with ZAEL- prefix; user_name should be "my-app"
+            manager = StackManager(stack_name="ZAEL-my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            # Tags already present (ManagedBy + name matches stripped prefix)
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_no_updates_error(self) -> None:
+        """ensure_tags returns False when update_stack says no updates needed."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": []  # No tags, so update will be attempted
+                        }
+                    ]
+                }
+            )
+            mock_client.update_stack = AsyncMock(
+                side_effect=ClientError(
+                    {
+                        "Error": {
+                            "Code": "ValidationError",
+                            "Message": "No updates are to be performed",
+                        }
+                    },
+                    "UpdateStack",
+                )
+            )
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_raises_on_update_error(self) -> None:
+        """ensure_tags re-raises ClientError that is not 'No updates'."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": []  # No tags, so update will be attempted
+                        }
+                    ]
+                }
+            )
+            mock_client.update_stack = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "AccessDenied", "Message": "Not authorized"}},
+                    "UpdateStack",
+                )
+            )
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+
+            with pytest.raises(ClientError) as exc_info:
+                await manager.ensure_tags()
+
+            assert "Not authorized" in str(exc_info.value)
