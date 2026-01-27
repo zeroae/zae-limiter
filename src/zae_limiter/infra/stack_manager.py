@@ -17,6 +17,11 @@ VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}version"
 LAMBDA_VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}lambda-version"
 SCHEMA_VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}schema-version"
 
+# Discovery tag keys
+MANAGED_BY_TAG_KEY = "ManagedBy"
+MANAGED_BY_TAG_VALUE = "zae-limiter"
+NAME_TAG_KEY = f"{VERSION_TAG_PREFIX}name"
+
 
 class StackManager:
     """
@@ -25,7 +30,7 @@ class StackManager:
     Supports both AWS and LocalStack environments. When endpoint_url is provided,
     CloudFormation operations are performed against that endpoint.
 
-    The stack_name is automatically prefixed with 'ZAEL-' if not already present.
+    The stack_name is validated and used as-is (no prefix added).
     The table_name is always identical to the stack_name.
     """
 
@@ -39,11 +44,12 @@ class StackManager:
         Initialize stack manager.
 
         Args:
-            stack_name: Stack identifier (e.g., 'rate-limits'). Will be prefixed with 'ZAEL-'.
+            stack_name: Stack identifier (e.g., 'rate-limits').
+                Used as-is for the CloudFormation stack name.
             region: AWS region (default: use boto3 defaults)
             endpoint_url: Optional endpoint URL (for LocalStack or other AWS-compatible services)
         """
-        # Validate and normalize stack name (adds ZAEL- prefix)
+        # Validate and normalize stack name
         self.stack_name = normalize_stack_name(stack_name)
         # Table name is always identical to stack name
         self.table_name = self.stack_name
@@ -128,7 +134,6 @@ class StackManager:
             "role_name": "RoleName",
             "enable_audit_archival": "EnableAuditArchival",
             "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
-            "base_name": "BaseName",
             "enable_tracing": "EnableTracing",
             "enable_iam_roles": "EnableIAMRoles",
         }
@@ -161,6 +166,97 @@ class StackManager:
             {"Key": SCHEMA_VERSION_TAG_KEY, "Value": schema_version},
             {"Key": LAMBDA_VERSION_TAG_KEY, "Value": __version__},
         ]
+
+    def _get_all_tags(self, user_tags: dict[str, str] | None = None) -> list[dict[str, str]]:
+        """
+        Build complete tag list for CloudFormation stack.
+
+        Combines discovery tags, version tags, and user-defined tags.
+        Managed tags (discovery + version) take precedence over user tags
+        with the same key.
+
+        Args:
+            user_tags: Optional user-defined tags
+
+        Returns:
+            List of CloudFormation tag dicts
+        """
+        from ..naming import PREFIX
+
+        # Derive user_name: strip legacy ZAEL- prefix if present
+        user_name = self.stack_name
+        if user_name.startswith(PREFIX):
+            user_name = user_name[len(PREFIX) :]
+
+        # Start with user tags (lowest precedence)
+        tag_dict: dict[str, str] = {}
+        if user_tags:
+            tag_dict.update(user_tags)
+
+        # Discovery tags (override user tags on collision)
+        tag_dict[MANAGED_BY_TAG_KEY] = MANAGED_BY_TAG_VALUE
+        tag_dict[NAME_TAG_KEY] = user_name
+
+        # Version tags (override user tags on collision)
+        for tag in self._get_version_tags():
+            tag_dict[tag["Key"]] = tag["Value"]
+
+        return [{"Key": k, "Value": v} for k, v in tag_dict.items()]
+
+    async def ensure_tags(self, user_tags: dict[str, str] | None = None) -> bool:
+        """
+        Ensure stack has discovery tags. Auto-tags existing stacks.
+
+        Checks if the stack has the ``ManagedBy`` and ``zae-limiter:name``
+        tags. If missing, updates the stack tags via CloudFormation.
+
+        Args:
+            user_tags: Optional user-defined tags to include
+
+        Returns:
+            True if tags were added/updated, False if already present
+        """
+        client = await self._get_client()
+
+        try:
+            response = await client.describe_stacks(StackName=self.stack_name)
+            stacks = response.get("Stacks", [])
+            if not stacks:
+                return False
+
+            current_tags = {tag["Key"]: tag["Value"] for tag in stacks[0].get("Tags", [])}
+        except ClientError:
+            return False
+
+        # Check if discovery tags exist
+        from ..naming import PREFIX
+
+        # Derive user_name: strip legacy ZAEL- prefix if present
+        user_name = self.stack_name
+        if user_name.startswith(PREFIX):
+            user_name = user_name[len(PREFIX) :]
+        has_managed_by = current_tags.get(MANAGED_BY_TAG_KEY) == MANAGED_BY_TAG_VALUE
+        has_name_tag = current_tags.get(NAME_TAG_KEY) == user_name
+
+        if has_managed_by and has_name_tag:
+            return False
+
+        # Apply tags via stack update (UsePreviousTemplate preserves resources)
+        new_tags = self._get_all_tags(user_tags)
+        try:
+            await client.update_stack(
+                StackName=self.stack_name,
+                UsePreviousTemplate=True,
+                Tags=new_tags,
+                Capabilities=["CAPABILITY_NAMED_IAM"],
+            )
+        except ClientError as e:
+            # "No updates are to be performed" is not an error
+            if "No updates" in str(e):
+                return False
+            raise
+
+        return True
 
     async def stack_exists(self, stack_name: str) -> bool:
         """
@@ -258,6 +354,10 @@ class StackManager:
                     "status": "already_exists_and_ready",
                 }
 
+            # Auto-tag existing stacks that may lack discovery tags
+            user_tags = stack_options.tags if stack_options else None
+            await self.ensure_tags(user_tags)
+
             # Stack exists and is stable
             return {
                 "stack_id": stack_name,
@@ -269,7 +369,8 @@ class StackManager:
         # Load template and format parameters
         template_body = self._load_template()
         cfn_parameters = self._format_parameters(parameters)
-        tags = self._get_version_tags()
+        user_tags = stack_options.tags if stack_options else None
+        tags = self._get_all_tags(user_tags)
 
         # Create stack
         try:

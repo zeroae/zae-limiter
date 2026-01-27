@@ -357,8 +357,8 @@ class TestE2EConfigCLIWorkflow:
         3. List resources via CLI
         4. Delete via CLI
         """
-        # Get the short name (without ZAEL- prefix)
-        short_name = e2e_limiter.name.replace("ZAEL-", "")
+        # Get the limiter name for CLI commands
+        short_name = e2e_limiter.name
 
         # Step 1: Set resource defaults
         result = cli_runner.invoke(
@@ -446,8 +446,8 @@ class TestE2EConfigCLIWorkflow:
         2. Get and verify via CLI
         3. Delete via CLI
         """
-        # Get the short name (without ZAEL- prefix)
-        short_name = e2e_limiter.name.replace("ZAEL-", "")
+        # Get the limiter name for CLI commands
+        short_name = e2e_limiter.name
 
         # Step 1: Set system defaults
         result = cli_runner.invoke(
@@ -519,8 +519,8 @@ class TestE2EConfigCLIWorkflow:
         2. Get and verify via CLI
         3. Delete via CLI
         """
-        # Get the short name (without ZAEL- prefix)
-        short_name = e2e_limiter.name.replace("ZAEL-", "")
+        # Get the limiter name for CLI commands
+        short_name = e2e_limiter.name
 
         # Step 1: Set entity limits
         result = cli_runner.invoke(

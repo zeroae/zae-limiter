@@ -23,7 +23,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3
+      - SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3,resourcegroupstaggingapi
       - DEBUG=0
       - DYNAMODB_REMOVE_EXPIRED_ITEMS=1
     volumes:

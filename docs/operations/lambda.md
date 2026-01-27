@@ -59,7 +59,7 @@ Monitor these metrics for Lambda health. See [Monitoring Guide](../monitoring.md
 ```bash
 # View recent Lambda invocations
 aws logs filter-log-events \
-  --log-group-name /aws/lambda/ZAEL-<name>-aggregator \
+  --log-group-name /aws/lambda/<name>-aggregator \
   --start-time $(date -u -d '1 hour ago' +%s)000 \
   --filter-pattern "ERROR"
 ```
@@ -68,7 +68,7 @@ aws logs filter-log-events \
 
 ```bash
 aws sqs get-queue-attributes \
-  --queue-url https://sqs.<region>.amazonaws.com/<account>/ZAEL-<name>-aggregator-dlq \
+  --queue-url https://sqs.<region>.amazonaws.com/<account>/<name>-aggregator-dlq \
   --attribute-names ApproximateNumberOfMessagesVisible
 ```
 
@@ -76,7 +76,7 @@ aws sqs get-queue-attributes \
 
 ```bash
 aws sqs receive-message \
-  --queue-url https://sqs.<region>.amazonaws.com/<account>/ZAEL-<name>-aggregator-dlq \
+  --queue-url https://sqs.<region>.amazonaws.com/<account>/<name>-aggregator-dlq \
   --max-number-of-messages 10 \
   --visibility-timeout 0
 ```
@@ -124,14 +124,14 @@ fields @timestamp, @message
 1. **Increase Lambda memory** (CPU scales with memory):
    ```bash
    aws lambda update-function-configuration \
-     --function-name ZAEL-<name>-aggregator \
+     --function-name <name>-aggregator \
      --memory-size 512
    ```
 
 2. **Reduce batch size** in event source mapping:
    ```bash
    MAPPING_UUID=$(aws lambda list-event-source-mappings \
-     --function-name ZAEL-<name>-aggregator \
+     --function-name <name>-aggregator \
      --query 'EventSourceMappings[0].UUID' \
      --output text)
 
@@ -161,7 +161,7 @@ import json
 sqs = boto3.client('sqs')
 lambda_client = boto3.client('lambda')
 
-dlq_url = "https://sqs.<region>.amazonaws.com/<account>/ZAEL-<name>-aggregator-dlq"
+dlq_url = "https://sqs.<region>.amazonaws.com/<account>/<name>-aggregator-dlq"
 
 while True:
     response = sqs.receive_message(
@@ -180,7 +180,7 @@ while True:
 
         # Invoke Lambda directly with the failed records
         lambda_client.invoke(
-            FunctionName='ZAEL-<name>-aggregator',
+            FunctionName='<name>-aggregator',
             InvocationType='Event',
             Payload=json.dumps(body),
         )
@@ -201,7 +201,7 @@ while True:
 
 ```bash
 aws sqs purge-queue \
-  --queue-url https://sqs.<region>.amazonaws.com/<account>/ZAEL-<name>-aggregator-dlq
+  --queue-url https://sqs.<region>.amazonaws.com/<account>/<name>-aggregator-dlq
 ```
 
 ### Cold Start Issues
@@ -225,12 +225,12 @@ fields @timestamp, @message, @duration
    ```bash
    # Publish a new version first (provisioned concurrency requires a version or alias)
    VERSION=$(aws lambda publish-version \
-     --function-name ZAEL-<name>-aggregator \
+     --function-name <name>-aggregator \
      --query 'Version' --output text)
 
    # Configure provisioned concurrency on the published version
    aws lambda put-provisioned-concurrency-config \
-     --function-name ZAEL-<name>-aggregator \
+     --function-name <name>-aggregator \
      --qualifier $VERSION \
      --provisioned-concurrent-executions 2
    ```
@@ -266,7 +266,7 @@ zae-limiter deploy --name <name> --region <region> \
 
 ```bash
 aws lambda update-function-configuration \
-  --function-name ZAEL-<name>-aggregator \
+  --function-name <name>-aggregator \
   --memory-size 512 \
   --timeout 120
 ```
@@ -278,10 +278,10 @@ After any Lambda changes, verify health:
 ```bash
 # Check function configuration
 aws lambda get-function-configuration \
-  --function-name ZAEL-<name>-aggregator
+  --function-name <name>-aggregator
 
 # Watch for errors in real-time
-aws logs tail /aws/lambda/ZAEL-<name>-aggregator --follow
+aws logs tail /aws/lambda/<name>-aggregator --follow
 ```
 
 ## Related

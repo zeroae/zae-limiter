@@ -33,7 +33,7 @@ zae-limiter deploy \
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (creates ZAEL-{name} resources) | `limiter` |
+| `--name` | Resource identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom endpoint (LocalStack) | None |
 | `--enable-aggregator/--no-aggregator` | Deploy Lambda aggregator | `true` |
@@ -203,7 +203,7 @@ from zae_limiter import RateLimiter, StackOptions
 
 # Create stack
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",
     region="us-east-1",
     stack_options=StackOptions(),
 )
@@ -226,7 +226,7 @@ For rapid iteration, declare infrastructure with cleanup:
 ```python
 async def dev_session():
     limiter = RateLimiter(
-        name="dev",  # ZAEL-dev resources
+        name="dev",
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
     )
@@ -260,7 +260,7 @@ zae-limiter cfn-template > template.yaml
 # Deploy with AWS CLI
 aws cloudformation deploy \
     --template-file template.yaml \
-    --stack-name ZAEL-limiter \
+    --stack-name limiter \
     --parameter-overrides \
         SnapshotRetentionDays=90 \
         EnablePITR=true \
@@ -290,7 +290,7 @@ Create infrastructure directly from your application:
 from zae_limiter import RateLimiter, StackOptions
 
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",
     region="us-east-1",
     stack_options=StackOptions(
         snapshot_windows="hourly,daily",
@@ -459,14 +459,14 @@ zae-limiter status --name limiter --region us-east-1
 Output includes:
 ```
 IAM Roles
-  App:           arn:aws:iam::123456789012:role/ZAEL-limiter-app-role
-  Admin:         arn:aws:iam::123456789012:role/ZAEL-limiter-admin-role
-  ReadOnly:      arn:aws:iam::123456789012:role/ZAEL-limiter-readonly-role
+  App:           arn:aws:iam::123456789012:role/limiter-app-role
+  Admin:         arn:aws:iam::123456789012:role/limiter-admin-role
+  ReadOnly:      arn:aws:iam::123456789012:role/limiter-readonly-role
 ```
 
 ### Role Naming
 
-- Default: `${StackName}-{app,admin,readonly}-role` (e.g., `ZAEL-limiter-app-role`)
+- Default: `${StackName}-{app,admin,readonly}-role` (e.g., `limiter-app-role`)
 - With `--role-name-format`: Custom naming pattern applied to all roles
 
 Roles respect `--permission-boundary` if configured.

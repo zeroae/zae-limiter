@@ -88,13 +88,13 @@ class TestCLI:
         """Test deploy command with default parameters."""
         # Mock stack manager
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
                 "stack_id": "test-stack-id",
-                "stack_name": "ZAEL-rate-limits",
+                "stack_name": "rate-limits",
             }
         )
         mock_instance.deploy_lambda_code = AsyncMock(
@@ -117,7 +117,7 @@ class TestCLI:
         result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 0
-        assert "Deploying stack: ZAEL-rate-limits" in result.output
+        assert "Deploying stack: rate-limits" in result.output
         assert "✓" in result.output
         assert "Version record initialized" in result.output
 
@@ -144,8 +144,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with custom parameters."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-my-custom-stack"
-        mock_instance.table_name = "ZAEL-my-custom-stack"
+        mock_instance.stack_name = "my-custom-stack"
+        mock_instance.table_name = "my-custom-stack"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -178,7 +178,7 @@ class TestCLI:
         )
 
         assert result.exit_code == 0
-        assert "ZAEL-my-custom-stack" in result.output
+        assert "my-custom-stack" in result.output
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
@@ -187,8 +187,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --pitr-recovery-days parameter."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -228,8 +228,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --log-retention-days parameter."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -269,8 +269,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --lambda-timeout and --lambda-memory parameters."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -323,8 +323,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --no-alarms parameter."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -365,8 +365,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --alarm-sns-topic parameter."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -409,8 +409,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --lambda-duration-threshold-pct parameter."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -455,8 +455,8 @@ class TestCLI:
     ) -> None:
         """Test that duration threshold is correctly calculated from timeout and percentage."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -571,8 +571,8 @@ class TestCLI:
     ) -> None:
         """Test deploy shows correct message when Lambda deployment is skipped for local."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-rate-limits"
-        mock_instance.table_name = "ZAEL-rate-limits"
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -606,8 +606,8 @@ class TestCLI:
     ) -> None:
         """Test deploy command with --endpoint-url for LocalStack."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-test"
-        mock_instance.table_name = "ZAEL-test"
+        mock_instance.stack_name = "test"
+        mock_instance.table_name = "test"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "CREATE_COMPLETE",
@@ -654,8 +654,8 @@ class TestCLI:
     def test_deploy_skip_local(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
         """Test deploy skips CloudFormation for local DynamoDB."""
         mock_instance = Mock()
-        mock_instance.stack_name = "ZAEL-test-stack"
-        mock_instance.table_name = "ZAEL-test-stack"
+        mock_instance.stack_name = "test-stack"
+        mock_instance.table_name = "test-stack"
         mock_instance.create_stack = AsyncMock(
             return_value={
                 "status": "skipped_local",
@@ -671,6 +671,101 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert "skipped" in result.output.lower()
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_tags(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command with --tag options."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123:function:test",
+                "code_sha256": "abc123",
+                "size_bytes": 30000,
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--tag",
+                "env=prod",
+                "--tag",
+                "team=platform",
+                "--no-aggregator",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_args = mock_instance.create_stack.call_args
+        assert call_args is not None
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.tags == {"env": "prod", "team": "platform"}
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_tags_displays_output(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command displays user-defined tags."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123:function:test",
+                "code_sha256": "abc123",
+                "size_bytes": 30000,
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(
+            cli,
+            ["deploy", "--tag", "env=prod", "--no-aggregator"],
+        )
+
+        assert result.exit_code == 0
+        assert "1 user-defined" in result.output
+        assert "env=prod" in result.output
+
+    def test_deploy_with_invalid_tag_format(self, runner: CliRunner) -> None:
+        """Test deploy command rejects tags without KEY=VALUE format."""
+        result = runner.invoke(cli, ["deploy", "--tag", "invalid-tag"])
+
+        assert result.exit_code != 0
 
     @patch("zae_limiter.cli.StackManager")
     def test_delete_with_confirmation(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
@@ -1066,6 +1161,120 @@ class TestCLI:
         assert result.exit_code == 1  # Not initialized
         # Verify Repository was called with endpoint_url
         mock_repo_class.assert_called_once_with("test-table", "us-east-1", "http://localhost:4566")
+
+
+class TestUpgradeEnsureTags:
+    """Tests for ensure_tags during upgrade."""
+
+    @patch("zae_limiter.__version__", "1.1.0")
+    @patch("zae_limiter.cli.StackManager")
+    @patch("zae_limiter.repository.Repository")
+    def test_upgrade_calls_ensure_tags(
+        self, mock_repo_class: Mock, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
+        """Upgrade command calls ensure_tags on the stack."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(
+            return_value={
+                "schema_version": "1.0.0",
+                "lambda_version": "1.0.0",
+                "client_min_version": "0.0.0",
+            }
+        )
+        mock_repo.set_version_record = AsyncMock()
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        mock_manager = Mock()
+        mock_manager.deploy_lambda_code = AsyncMock(
+            return_value={"status": "deployed", "size_bytes": 30000}
+        )
+        mock_manager.ensure_tags = AsyncMock(return_value=True)
+        mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+        mock_manager.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_manager
+
+        result = runner.invoke(
+            cli,
+            ["upgrade", "--name", "test-app", "--force"],
+        )
+
+        assert result.exit_code == 0
+        mock_manager.ensure_tags.assert_called_once()
+        assert "Discovery tags added" in result.output
+
+    @patch("zae_limiter.__version__", "1.1.0")
+    @patch("zae_limiter.cli.StackManager")
+    @patch("zae_limiter.repository.Repository")
+    def test_upgrade_ensure_tags_already_present(
+        self, mock_repo_class: Mock, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
+        """Upgrade command shows tags already present."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(
+            return_value={
+                "schema_version": "1.0.0",
+                "lambda_version": "1.0.0",
+                "client_min_version": "0.0.0",
+            }
+        )
+        mock_repo.set_version_record = AsyncMock()
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        mock_manager = Mock()
+        mock_manager.deploy_lambda_code = AsyncMock(
+            return_value={"status": "deployed", "size_bytes": 30000}
+        )
+        mock_manager.ensure_tags = AsyncMock(return_value=False)
+        mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+        mock_manager.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_manager
+
+        result = runner.invoke(
+            cli,
+            ["upgrade", "--name", "test-app", "--force"],
+        )
+
+        assert result.exit_code == 0
+        assert "Tags already present" in result.output
+
+    @patch("zae_limiter.__version__", "1.1.0")
+    @patch("zae_limiter.cli.StackManager")
+    @patch("zae_limiter.repository.Repository")
+    def test_upgrade_ensure_tags_failure_non_fatal(
+        self, mock_repo_class: Mock, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
+        """Upgrade continues when ensure_tags fails."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(
+            return_value={
+                "schema_version": "1.0.0",
+                "lambda_version": "1.0.0",
+                "client_min_version": "0.0.0",
+            }
+        )
+        mock_repo.set_version_record = AsyncMock()
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        mock_manager = Mock()
+        mock_manager.deploy_lambda_code = AsyncMock(
+            return_value={"status": "deployed", "size_bytes": 30000}
+        )
+        mock_manager.ensure_tags = AsyncMock(side_effect=Exception("Access denied"))
+        mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+        mock_manager.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_manager
+
+        result = runner.invoke(
+            cli,
+            ["upgrade", "--name", "test-app", "--force"],
+        )
+
+        assert result.exit_code == 0
+        assert "Tag update failed" in result.output
+        assert "Upgrade complete" in result.output
 
 
 class TestLambdaExport:
@@ -2040,7 +2249,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-my-app",
+                stack_name="my-app",
                 user_name="my-app",
                 region="us-east-1",
                 stack_status="CREATE_COMPLETE",
@@ -2050,7 +2259,7 @@ class TestListCommand:
                 schema_version="1.0.0",
             ),
             LimiterInfo(
-                stack_name="ZAEL-other-app",
+                stack_name="other-app",
                 user_name="other-app",
                 region="us-east-1",
                 stack_status="UPDATE_COMPLETE",
@@ -2088,7 +2297,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-healthy",
+                stack_name="healthy",
                 user_name="healthy",
                 region="us-east-1",
                 stack_status="CREATE_COMPLETE",
@@ -2119,7 +2328,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-updating",
+                stack_name="updating",
                 user_name="updating",
                 region="us-east-1",
                 stack_status="UPDATE_IN_PROGRESS",
@@ -2146,7 +2355,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-failed",
+                stack_name="failed",
                 user_name="failed",
                 region="us-east-1",
                 stack_status="CREATE_FAILED",
@@ -2173,7 +2382,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-very-long-name-exceeding-limit",
+                stack_name="very-long-name-exceeding-limit",
                 user_name="very-long-name-exceeding-limit",
                 region="us-east-1",
                 stack_status="UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS",
@@ -2252,7 +2461,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-no-tags",
+                stack_name="no-tags",
                 user_name="no-tags",
                 region="us-east-1",
                 stack_status="CREATE_COMPLETE",
@@ -2284,7 +2493,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-test",
+                stack_name="test",
                 user_name="test",
                 region="us-east-1",
                 stack_status="CREATE_COMPLETE",
@@ -2312,7 +2521,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-test",
+                stack_name="test",
                 user_name="test",
                 region="us-east-1",
                 stack_status="CREATE_COMPLETE",
@@ -2340,7 +2549,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-test",
+                stack_name="test",
                 user_name="test",
                 region="ap-northeast-1",
                 stack_status="CREATE_COMPLETE",
@@ -2382,21 +2591,21 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-healthy",
+                stack_name="healthy",
                 user_name="healthy",
                 region="us-east-1",
                 stack_status="CREATE_COMPLETE",
                 creation_time="2024-01-15T10:30:00Z",
             ),
             LimiterInfo(
-                stack_name="ZAEL-failed",
+                stack_name="failed",
                 user_name="failed",
                 region="us-east-1",
                 stack_status="CREATE_FAILED",
                 creation_time="2024-01-15T10:30:00Z",
             ),
             LimiterInfo(
-                stack_name="ZAEL-updating",
+                stack_name="updating",
                 user_name="updating",
                 region="us-east-1",
                 stack_status="UPDATE_IN_PROGRESS",
@@ -2427,7 +2636,7 @@ class TestListCommand:
 
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-unknown",
+                stack_name="unknown",
                 user_name="unknown",
                 region="us-east-1",
                 stack_status="IMPORT_COMPLETE",  # Not healthy, not in_progress, not failed

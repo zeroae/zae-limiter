@@ -39,7 +39,7 @@ When DynamoDB is unavailable, reject all rate-limited requests by raising `RateL
 from zae_limiter import RateLimiter, OnUnavailable, RateLimiterUnavailable
 
 limiter = RateLimiter(
-    name="limiter",  # Connects to ZAEL-limiter
+    name="limiter",
     on_unavailable=OnUnavailable.BLOCK,  # Default
 )
 
@@ -67,7 +67,7 @@ When DynamoDB is unavailable, allow requests to proceed:
 
 ```python
 limiter = RateLimiter(
-    name="limiter",  # Connects to ZAEL-limiter
+    name="limiter",
     on_unavailable=OnUnavailable.ALLOW,
 )
 
@@ -114,7 +114,7 @@ Override the default mode for specific requests:
 ```python
 # Default to BLOCK
 limiter = RateLimiter(
-    name="limiter",  # Connects to ZAEL-limiter
+    name="limiter",
     on_unavailable=OnUnavailable.BLOCK,
 )
 
@@ -158,13 +158,13 @@ except RateLimiterUnavailable as e:
 ```python
 # High-risk: billing, security
 billing_limiter = RateLimiter(
-    name="billing",  # Connects to ZAEL-billing
+    name="billing",
     on_unavailable=OnUnavailable.BLOCK,
 )
 
 # Lower-risk: general API
 api_limiter = RateLimiter(
-    name="api",  # Connects to ZAEL-api
+    name="api",
     on_unavailable=OnUnavailable.ALLOW,
 )
 ```

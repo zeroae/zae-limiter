@@ -13,7 +13,7 @@ Example (new API - preferred):
     from zae_limiter import RateLimiter, Repository, Limit, StackOptions
 
     repo = Repository(
-        name="my-app",  # ZAEL-my-app resources
+        name="my-app",
         region="us-east-1",
         stack_options=StackOptions(),  # Declare desired infrastructure state
     )

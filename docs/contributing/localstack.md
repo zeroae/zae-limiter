@@ -61,7 +61,7 @@ zae-limiter deploy \
 from zae_limiter import RateLimiter, Limit
 
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",
     endpoint_url="http://localhost:4566",
     region="us-east-1",
 )
@@ -83,7 +83,7 @@ For quick iteration, declare infrastructure in code:
 from zae_limiter import RateLimiter, StackOptions
 
 limiter = RateLimiter(
-    name="limiter",  # ZAEL-limiter resources
+    name="limiter",
     endpoint_url="http://localhost:4566",
     region="us-east-1",
     stack_options=StackOptions(),  # Declare desired state
@@ -106,7 +106,7 @@ AWS_DEFAULT_REGION=us-east-1
 import os
 
 limiter = RateLimiter(
-    name="limiter",  # Connects to ZAEL-limiter
+    name="limiter",
     endpoint_url=os.getenv("AWS_ENDPOINT_URL"),
     region=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
 )
@@ -122,7 +122,7 @@ aws --endpoint-url=http://localhost:4566 cloudformation list-stacks
 
 # Describe stack
 aws --endpoint-url=http://localhost:4566 cloudformation describe-stacks \
-    --stack-name ZAEL-limiter
+    --stack-name limiter
 ```
 
 ### Inspect DynamoDB
@@ -133,7 +133,7 @@ aws --endpoint-url=http://localhost:4566 dynamodb list-tables
 
 # Scan table
 aws --endpoint-url=http://localhost:4566 dynamodb scan \
-    --table-name ZAEL-limiter
+    --table-name limiter
 ```
 
 ### View Lambda Logs

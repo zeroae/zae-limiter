@@ -83,8 +83,8 @@ class TestSyncRateLimiter:
 
     def test_name_property(self, sync_limiter):
         """Test that the name property returns the stack name."""
-        # The name should be the ZAEL-prefixed stack name
-        assert sync_limiter.name.startswith("ZAEL-")
+        # The name should match the identifier passed to the constructor
+        assert sync_limiter.name == "test-rate-limits"
 
 
 class TestSyncRateLimiterCascade:
@@ -525,7 +525,7 @@ class TestSyncRateLimiterListDeployed:
         # Mock the async RateLimiter.list_deployed to return test data
         mock_limiters = [
             LimiterInfo(
-                stack_name="ZAEL-test-app",
+                stack_name="test-app",
                 user_name="test-app",
                 region="us-east-1",
                 stack_status="CREATE_COMPLETE",

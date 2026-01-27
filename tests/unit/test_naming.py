@@ -85,16 +85,16 @@ class TestValidateName:
                 validate_name(f"app{char}name")
 
     def test_too_long_raises(self) -> None:
-        """Name > 38 chars raises ValidationError."""
-        long_name = "a" * 39
+        """Name > 48 chars raises ValidationError."""
+        long_name = "a" * 49
         with pytest.raises(ValidationError) as exc_info:
             validate_name(long_name)
-        assert "38 character" in exc_info.value.reason
+        assert "48 character" in exc_info.value.reason
         assert "Too long" in exc_info.value.reason
 
     def test_max_length_valid(self) -> None:
-        """Name exactly 38 chars is valid."""
-        validate_name("a" * 38)  # No exception
+        """Name exactly 48 chars is valid."""
+        validate_name("a" * 48)  # No exception
 
     def test_single_char_valid(self) -> None:
         """Single character name is valid."""
@@ -104,35 +104,24 @@ class TestValidateName:
 class TestNormalizeName:
     """Test normalize_name function."""
 
-    def test_adds_prefix(self) -> None:
-        """Adds ZAEL- prefix to bare name."""
+    def test_returns_name_as_is(self) -> None:
+        """Returns name unchanged (no prefix added)."""
         result = normalize_name("limiter")
-        assert result == "ZAEL-limiter"
+        assert result == "limiter"
 
-    def test_already_prefixed(self) -> None:
-        """Already prefixed name is unchanged."""
+    def test_already_prefixed_returned_as_is(self) -> None:
+        """Already prefixed name is returned as-is (valid name)."""
         result = normalize_name("ZAEL-limiter")
         assert result == "ZAEL-limiter"
 
-    def test_validates_before_normalizing(self) -> None:
+    def test_validates_before_returning(self) -> None:
         """Invalid names are rejected."""
         with pytest.raises(ValidationError):
             normalize_name("rate_limits")
 
-    def test_validates_prefixed_name(self) -> None:
-        """Invalid names after prefix removal are rejected."""
-        with pytest.raises(ValidationError):
-            normalize_name("ZAEL-rate_limits")
-
     def test_prefix_constant(self) -> None:
         """PREFIX constant is ZAEL-."""
         assert PREFIX == "ZAEL-"
-
-    def test_empty_after_prefix_raises(self) -> None:
-        """ZAEL- alone (empty identifier) raises."""
-        with pytest.raises(ValidationError) as exc_info:
-            normalize_name("ZAEL-")
-        assert "cannot be empty" in exc_info.value.reason
 
 
 class TestAliases:

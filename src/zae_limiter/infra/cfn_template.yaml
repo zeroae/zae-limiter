@@ -128,14 +128,6 @@ Parameters:
     MinValue: 1
     MaxValue: 3650
 
-  BaseName:
-    Type: String
-    Description: >
-      Base resource name (without ZAEL- prefix), used for S3 bucket naming.
-      Must be lowercase alphanumeric with hyphens.
-    AllowedPattern: ^[a-z][a-z0-9-]*$
-    ConstraintDescription: Must be lowercase, start with letter, contain only a-z, 0-9, and hyphens
-
   EnableTracing:
     Type: String
     Default: 'false'
@@ -247,9 +239,7 @@ Resources:
     Type: AWS::S3::Bucket
     Condition: DeployAuditArchive
     Properties:
-      # Bucket name format: zael-{base_name}-data
-      # Uses lowercase prefix to comply with S3 naming rules
-      BucketName: !Sub zael-${BaseName}-data
+      # BucketName omitted: CloudFormation auto-generates a globally unique name
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:

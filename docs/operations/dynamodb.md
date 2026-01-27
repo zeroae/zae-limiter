@@ -50,7 +50,7 @@ flowchart TD
 aws cloudwatch get-metric-statistics \
   --namespace AWS/DynamoDB \
   --metric-name ReadThrottleEvents \
-  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --dimensions Name=TableName,Value=<name> \
   --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 300 \
@@ -63,7 +63,7 @@ aws cloudwatch get-metric-statistics \
 aws cloudwatch get-metric-statistics \
   --namespace AWS/DynamoDB \
   --metric-name ConsumedReadCapacityUnits \
-  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --dimensions Name=TableName,Value=<name> \
   --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 300 \
@@ -93,7 +93,7 @@ See [Per-Partition Monitoring](#per-partition-monitoring) below for detailed set
 aws cloudwatch get-metric-statistics \
   --namespace AWS/DynamoDB \
   --metric-name ThrottledRequests \
-  --dimensions Name=TableName,Value=ZAEL-<name> Name=Operation,Value=GetItem \
+  --dimensions Name=TableName,Value=<name> Name=Operation,Value=GetItem \
   --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 300 \
@@ -110,7 +110,7 @@ Write throttling typically occurs during high-volume rate limiting or when the a
 aws cloudwatch get-metric-statistics \
   --namespace AWS/DynamoDB \
   --metric-name ConsumedWriteCapacityUnits \
-  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --dimensions Name=TableName,Value=<name> \
   --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 60 \
@@ -141,7 +141,7 @@ For detailed capacity calculations, see the [Performance Tuning Guide](../perfor
 
 ```bash
 aws dynamodb update-table \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --billing-mode PAY_PER_REQUEST
 ```
 
@@ -149,7 +149,7 @@ aws dynamodb update-table \
 
 ```bash
 aws dynamodb update-table \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --provisioned-throughput ReadCapacityUnits=1000,WriteCapacityUnits=500
 ```
 
@@ -164,7 +164,7 @@ aws dynamodb update-table \
 aws cloudwatch get-metric-statistics \
   --namespace AWS/DynamoDB \
   --metric-name ConsumedReadCapacityUnits \
-  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --dimensions Name=TableName,Value=<name> \
   --start-time $(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 3600 \
@@ -184,14 +184,14 @@ Add 20% headroom for bursts.
 
 ```bash
 aws dynamodb update-table \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --provisioned-throughput ReadCapacityUnits=<new_rcu>,WriteCapacityUnits=<new_wcu>
 ```
 
 **Step 4: Verify**
 
 ```bash
-aws dynamodb describe-table --table-name ZAEL-<name> \
+aws dynamodb describe-table --table-name <name> \
   --query 'Table.ProvisionedThroughput'
 ```
 
@@ -203,7 +203,7 @@ aws dynamodb describe-table --table-name ZAEL-<name> \
 # Register read capacity target
 aws application-autoscaling register-scalable-target \
   --service-namespace dynamodb \
-  --resource-id "table/ZAEL-<name>" \
+  --resource-id "table/<name>" \
   --scalable-dimension "dynamodb:table:ReadCapacityUnits" \
   --min-capacity 5 \
   --max-capacity 1000
@@ -211,7 +211,7 @@ aws application-autoscaling register-scalable-target \
 # Register write capacity target
 aws application-autoscaling register-scalable-target \
   --service-namespace dynamodb \
-  --resource-id "table/ZAEL-<name>" \
+  --resource-id "table/<name>" \
   --scalable-dimension "dynamodb:table:WriteCapacityUnits" \
   --min-capacity 5 \
   --max-capacity 500
@@ -223,9 +223,9 @@ aws application-autoscaling register-scalable-target \
 # Read capacity policy (target 70% utilization)
 aws application-autoscaling put-scaling-policy \
   --service-namespace dynamodb \
-  --resource-id "table/ZAEL-<name>" \
+  --resource-id "table/<name>" \
   --scalable-dimension "dynamodb:table:ReadCapacityUnits" \
-  --policy-name "ZAEL-<name>-read-scaling" \
+  --policy-name "<name>-read-scaling" \
   --policy-type "TargetTrackingScaling" \
   --target-tracking-scaling-policy-configuration '{
     "TargetValue": 70.0,
@@ -247,7 +247,7 @@ aws application-autoscaling put-scaling-policy \
 
 ```bash
 aws dynamodb update-table \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --billing-mode PAY_PER_REQUEST
 ```
 
@@ -258,7 +258,7 @@ aws dynamodb update-table \
 
 ```bash
 aws dynamodb update-table \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --billing-mode PROVISIONED \
   --provisioned-throughput ReadCapacityUnits=100,WriteCapacityUnits=50
 ```
@@ -272,7 +272,7 @@ After capacity changes, monitor for 15-30 minutes:
 watch -n 30 "aws cloudwatch get-metric-statistics \
   --namespace AWS/DynamoDB \
   --metric-name ReadThrottleEvents \
-  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --dimensions Name=TableName,Value=<name> \
   --start-time \$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time \$(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 60 \
@@ -305,12 +305,12 @@ Typical symptoms:
 ```bash
 # Enable for main table
 aws dynamodb update-contributor-insights \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --contributor-insights-action ENABLE
 
 # Enable for GSI (if needed)
 aws dynamodb update-contributor-insights \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --contributor-insights-action ENABLE \
   --index-name GSI1
 ```
@@ -322,13 +322,13 @@ aws dynamodb update-contributor-insights \
 ```bash
 # Check if enabled
 aws dynamodb describe-contributor-insights \
-  --table-name ZAEL-<name>
+  --table-name <name>
 
 # Get top partition keys by throughput
 aws cloudwatch get-metric-statistics \
   --namespace AWS/DynamoDB \
   --metric-name ConributorValue \
-  --dimensions Name=TableName,Value=ZAEL-<name> Name=Contributor,Value=PK \
+  --dimensions Name=TableName,Value=<name> Name=Contributor,Value=PK \
   --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 300 \
@@ -338,7 +338,7 @@ aws cloudwatch get-metric-statistics \
 
 Or use the AWS Console:
 
-1. Go to DynamoDB → Tables → `ZAEL-<name>` → Contributor Insights
+1. Go to DynamoDB → Tables → `<name>` → Contributor Insights
 2. Review "Top Keys" to identify which partition keys consume most throughput
 3. Cross-reference with your entity IDs to find the hot entity
 
@@ -421,7 +421,7 @@ await limiter.available("project-1", "llm-api", [parent_rpm_limit])
 
 ```bash
 aws dynamodb update-table \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --billing-mode PAY_PER_REQUEST
 ```
 
@@ -442,11 +442,11 @@ Add these CloudWatch alarms to catch hot partitions early:
 ```bash
 # Alert on write throttling
 aws cloudwatch put-metric-alarm \
-  --alarm-name "ZAEL-<name>-write-throttle" \
+  --alarm-name "<name>-write-throttle" \
   --alarm-description "Alert when write throttling occurs" \
   --metric-name WriteThrottleEvents \
   --namespace AWS/DynamoDB \
-  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --dimensions Name=TableName,Value=<name> \
   --statistic Sum \
   --period 300 \
   --threshold 1 \
@@ -455,11 +455,11 @@ aws cloudwatch put-metric-alarm \
 
 # Alert on read throttling
 aws cloudwatch put-metric-alarm \
-  --alarm-name "ZAEL-<name>-read-throttle" \
+  --alarm-name "<name>-read-throttle" \
   --alarm-description "Alert when read throttling occurs" \
   --metric-name ReadThrottleEvents \
   --namespace AWS/DynamoDB \
-  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --dimensions Name=TableName,Value=<name> \
   --statistic Sum \
   --period 300 \
   --threshold 1 \
@@ -468,11 +468,11 @@ aws cloudwatch put-metric-alarm \
 
 # Alert on high consumed capacity (warning before throttle)
 aws cloudwatch put-metric-alarm \
-  --alarm-name "ZAEL-<name>-high-capacity" \
+  --alarm-name "<name>-high-capacity" \
   --alarm-description "Warning: approaching provisioned capacity" \
   --metric-name ConsumedWriteCapacityUnits \
   --namespace AWS/DynamoDB \
-  --dimensions Name=TableName,Value=ZAEL-<name> \
+  --dimensions Name=TableName,Value=<name> \
   --statistic Average \
   --period 300 \
   --threshold 800 \

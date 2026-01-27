@@ -409,12 +409,12 @@ Before running migrations in production:
 ```bash
 # Create on-demand backup before migration
 aws dynamodb create-backup \
-  --table-name ZAEL-limiter \
+  --table-name limiter \
   --backup-name "pre-migration-$(date +%Y%m%d)"
 
 # Verify PITR is enabled
 aws dynamodb describe-continuous-backups \
-  --table-name ZAEL-limiter
+  --table-name limiter
 ```
 
 ## Rollback Strategies
@@ -480,8 +480,8 @@ pip install zae-limiter==1.0.0
 ```bash
 # Restore from PITR
 aws dynamodb restore-table-to-point-in-time \
-  --source-table-name ZAEL-limiter \
-  --target-table-name ZAEL-limiter-restored \
+  --source-table-name limiter \
+  --target-table-name limiter-restored \
   --restore-date-time "2024-01-15T10:00:00Z"
 ```
 
@@ -491,7 +491,7 @@ from zae_limiter.migrations import get_migrations
 from zae_limiter.repository import Repository
 
 async def emergency_rollback():
-    repo = Repository("ZAEL-limiter", "us-east-1", None)
+    repo = Repository("limiter", "us-east-1", None)
 
     migrations = get_migrations()
     target_migration = next(m for m in migrations if m.version == "1.1.0")
@@ -682,17 +682,17 @@ Resources:
 ```bash
 # 1. Create backup
 aws dynamodb create-backup \
-  --table-name ZAEL-limiter \
+  --table-name limiter \
   --backup-name "pre-v2-migration-$(date +%Y%m%d)"
 
 # 2. Update CloudFormation stack (adds GSI3)
 aws cloudformation update-stack \
-  --stack-name ZAEL-limiter \
+  --stack-name limiter \
   --template-body file://updated-template.yaml \
   --capabilities CAPABILITY_NAMED_IAM
 
 # 3. Wait for GSI to be active
-aws dynamodb wait table-exists --table-name ZAEL-limiter
+aws dynamodb wait table-exists --table-name limiter
 
 # 4. Install new client version
 pip install zae-limiter==2.0.0
@@ -704,7 +704,7 @@ from zae_limiter.migrations import apply_migrations
 from zae_limiter.repository import Repository
 
 async def run():
-    repo = Repository('ZAEL-limiter', 'us-east-1', None)
+    repo = Repository('limiter', 'us-east-1', None)
     applied = await apply_migrations(repo, '1.0.0', '2.0.0')
     print(f'Applied migrations: {applied}')
     await repo.close()

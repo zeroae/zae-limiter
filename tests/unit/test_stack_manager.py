@@ -14,13 +14,13 @@ class TestStackManager:
     """Test StackManager functionality."""
 
     def test_stack_name_normalization(self) -> None:
-        """Test stack name normalization with ZAEL- prefix."""
+        """Test stack name validation (no prefix added)."""
         manager = StackManager(stack_name="my-table", region="us-east-1")
-        assert manager.stack_name == "ZAEL-my-table"
-        assert manager.table_name == "ZAEL-my-table"
+        assert manager.stack_name == "my-table"
+        assert manager.table_name == "my-table"
 
     def test_stack_name_already_prefixed(self) -> None:
-        """Test stack name when already prefixed."""
+        """Test stack name when already prefixed (returned as-is)."""
         manager = StackManager(stack_name="ZAEL-my-table", region="us-east-1")
         assert manager.stack_name == "ZAEL-my-table"
         assert manager.table_name == "ZAEL-my-table"
@@ -299,7 +299,10 @@ class TestCreateStackErrors:
     @pytest.mark.asyncio
     async def test_returns_existing_stack_status(self) -> None:
         """create_stack returns existing stack info without waiting."""
-        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+        with (
+            patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client,
+            patch.object(StackManager, "ensure_tags", new_callable=AsyncMock),
+        ):
             mock_client = MagicMock()
             mock_client.describe_stacks = AsyncMock(
                 return_value={"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
@@ -311,6 +314,43 @@ class TestCreateStackErrors:
 
             assert result["status"] == "CREATE_COMPLETE"
             assert "already exists" in result.get("message", "")
+
+    @pytest.mark.asyncio
+    async def test_calls_ensure_tags_when_stack_exists(self) -> None:
+        """create_stack calls ensure_tags on existing stacks."""
+        with (
+            patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client,
+            patch.object(StackManager, "ensure_tags", new_callable=AsyncMock) as mock_ensure_tags,
+        ):
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+            )
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            opts = StackOptions(tags={"env": "prod"})
+            await manager.create_stack(stack_options=opts, wait=True)
+
+            mock_ensure_tags.assert_called_once_with({"env": "prod"})
+
+    @pytest.mark.asyncio
+    async def test_calls_ensure_tags_without_user_tags(self) -> None:
+        """create_stack calls ensure_tags with None when no stack_options."""
+        with (
+            patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client,
+            patch.object(StackManager, "ensure_tags", new_callable=AsyncMock) as mock_ensure_tags,
+        ):
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+            )
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            await manager.create_stack(wait=True)
+
+            mock_ensure_tags.assert_called_once_with(None)
 
     @pytest.mark.asyncio
     async def test_raises_already_exists_on_race(self) -> None:
@@ -642,3 +682,247 @@ class TestGetStackEvents:
         events = await manager._get_stack_events(mock_client, "test-stack")
 
         assert events == []
+
+
+class TestGetAllTags:
+    """Test _get_all_tags method for building complete tag lists."""
+
+    def test_includes_discovery_tags(self) -> None:
+        """_get_all_tags includes ManagedBy and name discovery tags."""
+        manager = StackManager(stack_name="my-app", region="us-east-1")
+        tags = manager._get_all_tags()
+
+        tag_dict = {t["Key"]: t["Value"] for t in tags}
+        assert tag_dict["ManagedBy"] == "zae-limiter"
+        assert tag_dict["zae-limiter:name"] == "my-app"
+
+    def test_includes_version_tags(self) -> None:
+        """_get_all_tags includes version, schema, and lambda version tags."""
+        manager = StackManager(stack_name="my-app", region="us-east-1")
+        tags = manager._get_all_tags()
+
+        tag_dict = {t["Key"]: t["Value"] for t in tags}
+        assert "zae-limiter:version" in tag_dict
+        assert "zae-limiter:schema-version" in tag_dict
+        assert "zae-limiter:lambda-version" in tag_dict
+
+    def test_includes_user_tags(self) -> None:
+        """_get_all_tags includes user-defined tags."""
+        manager = StackManager(stack_name="my-app", region="us-east-1")
+        user_tags = {"env": "prod", "team": "platform"}
+        tags = manager._get_all_tags(user_tags)
+
+        tag_dict = {t["Key"]: t["Value"] for t in tags}
+        assert tag_dict["env"] == "prod"
+        assert tag_dict["team"] == "platform"
+
+    def test_managed_tags_override_user_tags(self) -> None:
+        """Managed tags take precedence over user tags with same key."""
+        manager = StackManager(stack_name="my-app", region="us-east-1")
+        # User tries to override ManagedBy — managed tag should win
+        user_tags = {"ManagedBy": "someone-else"}
+        tags = manager._get_all_tags(user_tags)
+
+        tag_dict = {t["Key"]: t["Value"] for t in tags}
+        assert tag_dict["ManagedBy"] == "zae-limiter"
+
+    def test_no_user_tags(self) -> None:
+        """_get_all_tags works without user tags."""
+        manager = StackManager(stack_name="my-app", region="us-east-1")
+        tags = manager._get_all_tags(None)
+
+        tag_dict = {t["Key"]: t["Value"] for t in tags}
+        assert tag_dict["ManagedBy"] == "zae-limiter"
+        assert tag_dict["zae-limiter:name"] == "my-app"
+
+    def test_user_name_from_plain_name(self) -> None:
+        """zae-limiter:name tag matches stack name when no prefix."""
+        manager = StackManager(stack_name="my-app", region="us-east-1")
+        tags = manager._get_all_tags()
+
+        tag_dict = {t["Key"]: t["Value"] for t in tags}
+        assert tag_dict["zae-limiter:name"] == "my-app"
+
+    def test_user_name_extracted_from_legacy_prefixed_name(self) -> None:
+        """zae-limiter:name tag strips ZAEL- prefix for legacy stacks."""
+        manager = StackManager(stack_name="ZAEL-my-app", region="us-east-1")
+        tags = manager._get_all_tags()
+
+        tag_dict = {t["Key"]: t["Value"] for t in tags}
+        assert tag_dict["zae-limiter:name"] == "my-app"
+
+
+class TestEnsureTags:
+    """Test ensure_tags method for auto-tagging existing stacks."""
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_tags_already_present(self) -> None:
+        """ensure_tags returns False if discovery tags already exist."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": [
+                                {"Key": "ManagedBy", "Value": "zae-limiter"},
+                                {"Key": "zae-limiter:name", "Value": "my-app"},
+                            ]
+                        }
+                    ]
+                }
+            )
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            assert result is False
+            mock_client.update_stack.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_tags_missing(self) -> None:
+        """ensure_tags updates stack and returns True if tags are missing."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": [
+                                {"Key": "zae-limiter:version", "Value": "0.6.0"},
+                            ]
+                        }
+                    ]
+                }
+            )
+            mock_client.update_stack = AsyncMock()
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            assert result is True
+            mock_client.update_stack.assert_called_once()
+            call_kwargs = mock_client.update_stack.call_args[1]
+            assert call_kwargs["UsePreviousTemplate"] is True
+            tag_dict = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
+            assert tag_dict["ManagedBy"] == "zae-limiter"
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_describe_error(self) -> None:
+        """ensure_tags returns False if describe_stacks fails."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "ValidationError", "Message": "not found"}},
+                    "DescribeStacks",
+                )
+            )
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_stacks(self) -> None:
+        """ensure_tags returns False if describe_stacks returns empty list."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(return_value={"Stacks": []})
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_strips_legacy_prefix_for_tag_comparison(self) -> None:
+        """ensure_tags strips ZAEL- prefix when comparing name tag value."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": [
+                                {"Key": "ManagedBy", "Value": "zae-limiter"},
+                                {"Key": "zae-limiter:name", "Value": "my-app"},
+                            ]
+                        }
+                    ]
+                }
+            )
+            mock_get_client.return_value = mock_client
+
+            # Stack with ZAEL- prefix; user_name should be "my-app"
+            manager = StackManager(stack_name="ZAEL-my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            # Tags already present (ManagedBy + name matches stripped prefix)
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_no_updates_error(self) -> None:
+        """ensure_tags returns False when update_stack says no updates needed."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": []  # No tags, so update will be attempted
+                        }
+                    ]
+                }
+            )
+            mock_client.update_stack = AsyncMock(
+                side_effect=ClientError(
+                    {
+                        "Error": {
+                            "Code": "ValidationError",
+                            "Message": "No updates are to be performed",
+                        }
+                    },
+                    "UpdateStack",
+                )
+            )
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            result = await manager.ensure_tags()
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_raises_on_update_error(self) -> None:
+        """ensure_tags re-raises ClientError that is not 'No updates'."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                return_value={
+                    "Stacks": [
+                        {
+                            "Tags": []  # No tags, so update will be attempted
+                        }
+                    ]
+                }
+            )
+            mock_client.update_stack = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "AccessDenied", "Message": "Not authorized"}},
+                    "UpdateStack",
+                )
+            )
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+
+            with pytest.raises(ClientError) as exc_info:
+                await manager.ensure_tags()
+
+            assert "Not authorized" in str(exc_info.value)

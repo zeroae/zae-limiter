@@ -78,7 +78,7 @@ class RateLimiter:
 
     Example (old API - deprecated):
         limiter = RateLimiter(
-            name="my-app",  # Creates ZAEL-my-app resources
+            name="my-app",
             region="us-east-1",
             stack_options=StackOptions(),
         )
@@ -177,7 +177,7 @@ class RateLimiter:
 
     @property
     def name(self) -> str:
-        """The resource identifier (with ZAEL- prefix)."""
+        """The resource identifier."""
         return self._name
 
     @staticmethod
@@ -215,7 +215,7 @@ class RateLimiter:
 
         This is a class method that discovers existing deployments without
         requiring an initialized RateLimiter instance. It queries CloudFormation
-        for stacks with the ZAEL- prefix.
+        for stacks tagged with ``ManagedBy=zae-limiter``.
 
         Args:
             region: AWS region (default: use boto3 defaults)
@@ -1578,7 +1578,7 @@ class SyncRateLimiter:
 
     Example (old API - deprecated):
         limiter = SyncRateLimiter(
-            name="my-app",  # Creates ZAEL-my-app resources
+            name="my-app",
             region="us-east-1",
             stack_options=StackOptions(),
         )
@@ -1618,7 +1618,7 @@ class SyncRateLimiter:
 
     @property
     def name(self) -> str:
-        """The resource identifier (with ZAEL- prefix)."""
+        """The resource identifier."""
         return self._limiter.name
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:

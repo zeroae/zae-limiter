@@ -39,7 +39,7 @@ from zae_limiter import RateLimiter, Limit, StackOptions, RateLimitExceeded
 
 # Create rate limiter with declarative infrastructure
 limiter = RateLimiter(
-    name="my-app",           # ZAEL-my-app resources in AWS
+    name="my-app",
     region="us-east-1",
     stack_options=StackOptions(),  # Declare desired state - CloudFormation ensures it
 )
@@ -125,7 +125,7 @@ If you omit `stack_options`, the limiter connects to existing infrastructure wit
 attempting to create or modify it:
 
 ```python
-# Connect only - fails if ZAEL-my-app doesn't exist
+# Connect only - fails if my-app stack doesn't exist
 limiter = RateLimiter(
     name="my-app",
     region="us-east-1",

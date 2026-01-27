@@ -426,23 +426,23 @@ class TestInfrastructureNotFoundError:
 
     def test_attributes_stored(self) -> None:
         """All attributes are stored correctly."""
-        exc = InfrastructureNotFoundError(stack_name="ZAEL-rate-limits")
+        exc = InfrastructureNotFoundError(stack_name="rate-limits")
 
-        assert exc.stack_name == "ZAEL-rate-limits"
+        assert exc.stack_name == "rate-limits"
         # table_name is same as stack_name for backwards compatibility
-        assert exc.table_name == "ZAEL-rate-limits"
+        assert exc.table_name == "rate-limits"
 
     def test_message_format(self) -> None:
         """Message includes stack name and deploy hint."""
-        exc = InfrastructureNotFoundError(stack_name="ZAEL-my-table")
+        exc = InfrastructureNotFoundError(stack_name="my-table")
 
         msg = str(exc)
-        assert "ZAEL-my-table" in msg
+        assert "my-table" in msg
         assert "zae-limiter deploy" in msg
 
     def test_inherits_from_infrastructure_error(self) -> None:
         """InfrastructureNotFoundError is an InfrastructureError."""
-        exc = InfrastructureNotFoundError("ZAEL-table")
+        exc = InfrastructureNotFoundError("my-table")
         assert isinstance(exc, InfrastructureError)
         assert isinstance(exc, ZAELimiterError)
 

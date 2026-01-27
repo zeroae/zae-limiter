@@ -45,7 +45,7 @@ flowchart TD
 aws cloudwatch get-metric-statistics \
   --namespace AWS/Lambda \
   --metric-name IteratorAge \
-  --dimensions Name=FunctionName,Value=ZAEL-<name>-aggregator \
+  --dimensions Name=FunctionName,Value=<name>-aggregator \
   --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 60 \
@@ -55,7 +55,7 @@ aws cloudwatch get-metric-statistics \
 **Check stream status:**
 
 ```bash
-aws dynamodb describe-table --table-name ZAEL-<name> \
+aws dynamodb describe-table --table-name <name> \
   --query 'Table.StreamSpecification'
 ```
 
@@ -63,7 +63,7 @@ aws dynamodb describe-table --table-name ZAEL-<name> \
 
 ```bash
 aws lambda list-event-source-mappings \
-  --function-name ZAEL-<name>-aggregator
+  --function-name <name>-aggregator
 ```
 
 **Check Lambda concurrent executions:**
@@ -72,7 +72,7 @@ aws lambda list-event-source-mappings \
 aws cloudwatch get-metric-statistics \
   --namespace AWS/Lambda \
   --metric-name ConcurrentExecutions \
-  --dimensions Name=FunctionName,Value=ZAEL-<name>-aggregator \
+  --dimensions Name=FunctionName,Value=<name>-aggregator \
   --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 60 \
@@ -106,7 +106,7 @@ aws cloudwatch get-metric-statistics \
 aws cloudwatch get-metric-statistics \
   --namespace AWS/Lambda \
   --metric-name Throttles \
-  --dimensions Name=FunctionName,Value=ZAEL-<name>-aggregator \
+  --dimensions Name=FunctionName,Value=<name>-aggregator \
   --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 300 \
@@ -123,7 +123,7 @@ aws cloudwatch get-metric-statistics \
 
 ```bash
 aws lambda put-function-concurrency \
-  --function-name ZAEL-<name>-aggregator \
+  --function-name <name>-aggregator \
   --reserved-concurrent-executions 10
 ```
 
@@ -131,14 +131,14 @@ aws lambda put-function-concurrency \
 
 ```bash
 aws lambda get-function-concurrency \
-  --function-name ZAEL-<name>-aggregator
+  --function-name <name>-aggregator
 ```
 
 **Remove concurrency limit (use account default):**
 
 ```bash
 aws lambda delete-function-concurrency \
-  --function-name ZAEL-<name>-aggregator
+  --function-name <name>-aggregator
 ```
 
 ### Adjust Batch Size
@@ -147,7 +147,7 @@ aws lambda delete-function-concurrency \
 
 ```bash
 MAPPING_UUID=$(aws lambda list-event-source-mappings \
-  --function-name ZAEL-<name>-aggregator \
+  --function-name <name>-aggregator \
   --query 'EventSourceMappings[0].UUID' \
   --output text)
 
@@ -186,7 +186,7 @@ DynamoDB Streams automatically scales shards based on table throughput.
 
 ```bash
 aws dynamodbstreams describe-stream \
-  --stream-arn $(aws dynamodb describe-table --table-name ZAEL-<name> \
+  --stream-arn $(aws dynamodb describe-table --table-name <name> \
     --query 'Table.LatestStreamArn' --output text) \
   --query 'StreamDescription.Shards | length(@)'
 ```
@@ -215,7 +215,7 @@ aws lambda update-event-source-mapping \
 **Check stream is enabled:**
 
 ```bash
-aws dynamodb describe-table --table-name ZAEL-<name> \
+aws dynamodb describe-table --table-name <name> \
   --query 'Table.StreamSpecification'
 ```
 
@@ -231,7 +231,7 @@ Expected output:
 
 ```bash
 aws lambda list-event-source-mappings \
-  --function-name ZAEL-<name>-aggregator \
+  --function-name <name>-aggregator \
   --query 'EventSourceMappings[0].State'
 ```
 
@@ -246,7 +246,7 @@ After tuning, monitor for 15-30 minutes:
 watch -n 30 "aws cloudwatch get-metric-statistics \
   --namespace AWS/Lambda \
   --metric-name IteratorAge \
-  --dimensions Name=FunctionName,Value=ZAEL-<name>-aggregator \
+  --dimensions Name=FunctionName,Value=<name>-aggregator \
   --start-time \$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ) \
   --end-time \$(date -u +%Y-%m-%dT%H:%M:%SZ) \
   --period 60 \

@@ -57,7 +57,7 @@ class TestE2ELocalStackCLIWorkflow:
         Note: Uses SyncRateLimiter because CLI uses asyncio.run() internally,
         which conflicts with pytest-asyncio's event loop.
         """
-        stack_name = f"ZAEL-{unique_name}"
+        stack_name = unique_name
 
         try:
             # Step 1: Deploy stack via CLI
@@ -164,7 +164,7 @@ class TestE2ELocalStackCLIWorkflow:
                 assert status.latency_ms is not None
                 assert status.latency_ms > 0
                 assert status.table_status == "ACTIVE"
-                assert status.name.startswith("ZAEL-")
+                assert status.name == stack_name
 
         finally:
             # Step 4: Delete stack via CLI
@@ -195,7 +195,7 @@ class TestE2ELocalStackCLIWorkflow:
         4. Verify table format output contains audit event data
         5. Delete stack via CLI
         """
-        stack_name = f"ZAEL-{unique_name}"
+        stack_name = unique_name
 
         try:
             # Step 1: Deploy stack via CLI
@@ -365,7 +365,7 @@ class TestE2ELocalStackCLIWorkflow:
         """
         import boto3
 
-        stack_name = f"ZAEL-{unique_name}"
+        stack_name = unique_name
         table_name = stack_name
 
         try:
@@ -735,7 +735,7 @@ class TestE2ELocalStackFullWorkflow:
         Verifies:
         - Connectivity: available=True, latency_ms > 0
         - Infrastructure: table_status='ACTIVE'
-        - Identity: name is ZAEL-prefixed, region set
+        - Identity: name matches stack name, region set
         - Versions: client_version populated, schema_version may be set
         - Metrics: item_count and size_bytes are integers
         """
@@ -756,7 +756,8 @@ class TestE2ELocalStackFullWorkflow:
         # stack_status depends on CloudFormation availability in LocalStack
 
         # Identity
-        assert status.name.startswith("ZAEL-")
+        assert status.name is not None
+        assert len(status.name) > 0
         assert status.region == "us-east-1"
 
         # Versions

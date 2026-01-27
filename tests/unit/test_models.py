@@ -905,13 +905,13 @@ class TestLimiterInfo:
     def test_basic_construction(self):
         """Test basic LimiterInfo construction."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_COMPLETE",
             creation_time="2024-01-15T10:30:00Z",
         )
-        assert info.stack_name == "ZAEL-my-app"
+        assert info.stack_name == "my-app"
         assert info.user_name == "my-app"
         assert info.region == "us-east-1"
         assert info.stack_status == "CREATE_COMPLETE"
@@ -924,7 +924,7 @@ class TestLimiterInfo:
     def test_construction_with_all_fields(self):
         """Test LimiterInfo with all optional fields."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="UPDATE_COMPLETE",
@@ -942,7 +942,7 @@ class TestLimiterInfo:
     def test_is_healthy_create_complete(self):
         """Test is_healthy returns True for CREATE_COMPLETE."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_COMPLETE",
@@ -953,7 +953,7 @@ class TestLimiterInfo:
     def test_is_healthy_update_complete(self):
         """Test is_healthy returns True for UPDATE_COMPLETE."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="UPDATE_COMPLETE",
@@ -964,7 +964,7 @@ class TestLimiterInfo:
     def test_is_healthy_false_for_in_progress(self):
         """Test is_healthy returns False for in-progress states."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_IN_PROGRESS",
@@ -975,7 +975,7 @@ class TestLimiterInfo:
     def test_is_healthy_false_for_failed(self):
         """Test is_healthy returns False for failed states."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_FAILED",
@@ -986,7 +986,7 @@ class TestLimiterInfo:
     def test_is_in_progress_create(self):
         """Test is_in_progress for CREATE_IN_PROGRESS."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_IN_PROGRESS",
@@ -997,7 +997,7 @@ class TestLimiterInfo:
     def test_is_in_progress_update(self):
         """Test is_in_progress for UPDATE_IN_PROGRESS."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="UPDATE_IN_PROGRESS",
@@ -1008,7 +1008,7 @@ class TestLimiterInfo:
     def test_is_in_progress_delete(self):
         """Test is_in_progress for DELETE_IN_PROGRESS."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="DELETE_IN_PROGRESS",
@@ -1019,7 +1019,7 @@ class TestLimiterInfo:
     def test_is_in_progress_rollback(self):
         """Test is_in_progress for ROLLBACK_IN_PROGRESS."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="UPDATE_ROLLBACK_IN_PROGRESS",
@@ -1030,7 +1030,7 @@ class TestLimiterInfo:
     def test_is_in_progress_false_for_complete(self):
         """Test is_in_progress returns False for complete states."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_COMPLETE",
@@ -1041,7 +1041,7 @@ class TestLimiterInfo:
     def test_is_failed_create_failed(self):
         """Test is_failed for CREATE_FAILED."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_FAILED",
@@ -1052,7 +1052,7 @@ class TestLimiterInfo:
     def test_is_failed_update_failed(self):
         """Test is_failed for UPDATE_FAILED."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="UPDATE_FAILED",
@@ -1063,7 +1063,7 @@ class TestLimiterInfo:
     def test_is_failed_rollback_complete(self):
         """Test is_failed for ROLLBACK_COMPLETE."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="ROLLBACK_COMPLETE",
@@ -1074,7 +1074,7 @@ class TestLimiterInfo:
     def test_is_failed_update_rollback_complete(self):
         """Test is_failed for UPDATE_ROLLBACK_COMPLETE."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="UPDATE_ROLLBACK_COMPLETE",
@@ -1085,7 +1085,7 @@ class TestLimiterInfo:
     def test_is_failed_rollback_failed(self):
         """Test is_failed for ROLLBACK_FAILED."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="ROLLBACK_FAILED",
@@ -1096,7 +1096,7 @@ class TestLimiterInfo:
     def test_is_failed_false_for_complete(self):
         """Test is_failed returns False for healthy complete states."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_COMPLETE",
@@ -1107,7 +1107,7 @@ class TestLimiterInfo:
     def test_is_failed_false_for_in_progress(self):
         """Test is_failed returns False for in-progress states."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_IN_PROGRESS",
@@ -1118,20 +1118,20 @@ class TestLimiterInfo:
     def test_frozen(self):
         """Test that LimiterInfo is immutable."""
         info = LimiterInfo(
-            stack_name="ZAEL-my-app",
+            stack_name="my-app",
             user_name="my-app",
             region="us-east-1",
             stack_status="CREATE_COMPLETE",
             creation_time="2024-01-15T10:30:00Z",
         )
         with pytest.raises(AttributeError):
-            info.stack_name = "ZAEL-other"
+            info.stack_name = "other"
 
     def test_states_are_mutually_exclusive(self):
         """Test that at most one of is_healthy/is_in_progress/is_failed is True."""
         # Healthy state
         healthy = LimiterInfo(
-            stack_name="ZAEL-test",
+            stack_name="test",
             user_name="test",
             region="us-east-1",
             stack_status="CREATE_COMPLETE",
@@ -1143,7 +1143,7 @@ class TestLimiterInfo:
 
         # In-progress state
         in_progress = LimiterInfo(
-            stack_name="ZAEL-test",
+            stack_name="test",
             user_name="test",
             region="us-east-1",
             stack_status="UPDATE_IN_PROGRESS",
@@ -1155,7 +1155,7 @@ class TestLimiterInfo:
 
         # Failed state
         failed = LimiterInfo(
-            stack_name="ZAEL-test",
+            stack_name="test",
             user_name="test",
             region="us-east-1",
             stack_status="CREATE_FAILED",
@@ -1169,7 +1169,7 @@ class TestLimiterInfo:
         """Test ROLLBACK_IN_PROGRESS matches both is_in_progress and is_failed."""
         # This is a special case: rollback is both in-progress AND indicates failure
         info = LimiterInfo(
-            stack_name="ZAEL-test",
+            stack_name="test",
             user_name="test",
             region="us-east-1",
             stack_status="ROLLBACK_IN_PROGRESS",

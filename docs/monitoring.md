@@ -84,9 +84,9 @@ All log entries follow this JSON structure:
   "logger": "zae_limiter.aggregator.handler",
   "message": "Lambda invocation started",
   "request_id": "abc123-def456",
-  "function_name": "ZAEL-limiter-aggregator",
+  "function_name": "limiter-aggregator",
   "record_count": 50,
-  "table_name": "ZAEL-limiter",
+  "table_name": "limiter",
   "snapshot_windows": ["hourly", "daily"]
 }
 ```
@@ -433,7 +433,7 @@ Create a dashboard for capacity analysis:
 ```
 
 !!! tip "Dashboard Deployment"
-    Replace `${TableName}` with your actual table name (e.g., `ZAEL-limiter`) and `${AWS::Region}` with your region before deploying.
+    Replace `${TableName}` with your actual table name (e.g., `limiter`) and `${AWS::Region}` with your region before deploying.
 
 ## Alert Configuration
 

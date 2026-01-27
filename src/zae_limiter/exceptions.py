@@ -247,7 +247,7 @@ class InfrastructureNotFoundError(InfrastructureError):
 
     def __init__(self, stack_name: str) -> None:
         self.stack_name = stack_name
-        # Stack name and table name are always identical with ZAEL- prefix
+        # Stack name and table name are always identical
         self.table_name = stack_name
         msg = f"Infrastructure not found for stack '{stack_name}'"
         msg += ". Run 'zae-limiter deploy' or use stack_options=StackOptions()."
