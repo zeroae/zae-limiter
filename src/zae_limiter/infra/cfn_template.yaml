@@ -434,6 +434,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
                   - dynamodb:Query
                   - dynamodb:TransactWriteItems
                 Resource:
@@ -481,6 +482,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
                   - dynamodb:Query
                   - dynamodb:TransactWriteItems
                   - dynamodb:PutItem
