@@ -24,8 +24,10 @@ classifiers = [
 ]
 dependencies = [
     "aioboto3>=12.0.0",
+    "aws-lambda-builders>=1.40.0",
     "boto3>=1.34.0",
     "click>=8.0.0",
+    "pip",
     "python-ulid>=3.0.0",
 ]
 
@@ -50,10 +52,6 @@ dev = [
 ]
 lambda = [
     "aws-lambda-powertools>=2.0.0",
-]
-deploy = [
-    "aws-lambda-builders>=1.40.0",
-    "pip",
 ]
 plot = [
     "asciichartpy>=1.5.25",

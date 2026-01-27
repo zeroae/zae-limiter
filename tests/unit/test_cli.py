@@ -1443,39 +1443,6 @@ class TestLambdaExport:
         assert output_file.exists()
 
 
-class TestLambdaBuilderCheck:
-    """Test _check_lambda_builder_available guard in CLI."""
-
-    def test_lambda_export_fails_when_builder_missing(
-        self, runner: CliRunner, tmp_path: Path
-    ) -> None:
-        """lambda-export exits with error when aws-lambda-builders is not installed."""
-        output_file = tmp_path / "lambda.zip"
-        with patch(
-            "zae_limiter.cli._check_lambda_builder_available",
-            side_effect=SystemExit(1),
-        ):
-            result = runner.invoke(cli, ["lambda-export", "--output", str(output_file)])
-        assert result.exit_code == 1
-
-    def test_check_lambda_builder_available_shows_error(self, runner: CliRunner) -> None:
-        """_check_lambda_builder_available prints helpful error message."""
-        import builtins
-
-        original_import = builtins.__import__
-
-        def mock_import(name: str, *args: object, **kwargs: object) -> object:
-            if name == "aws_lambda_builders":
-                raise ImportError("No module named 'aws_lambda_builders'")
-            return original_import(name, *args, **kwargs)
-
-        from zae_limiter.cli import _check_lambda_builder_available
-
-        with patch.object(builtins, "__import__", side_effect=mock_import):
-            with pytest.raises(SystemExit):
-                _check_lambda_builder_available()
-
-
 class TestCLIValidationErrors:
     """Test CLI commands reject invalid names with helpful error messages."""
 

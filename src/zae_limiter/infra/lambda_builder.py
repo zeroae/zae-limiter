@@ -43,21 +43,6 @@ def _get_runtime_requirements() -> list[str]:
     return result
 
 
-def _check_builder_available() -> None:
-    """Check if aws-lambda-builders is installed.
-
-    Raises:
-        ImportError: If aws-lambda-builders is not installed
-    """
-    try:
-        import aws_lambda_builders  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "aws-lambda-builders is required for Lambda packaging. "
-            "Install with: pip install 'zae-limiter[deploy]'"
-        ) from e
-
-
 def build_lambda_package() -> bytes:
     """Build Lambda deployment package with cross-platform dependencies.
 
@@ -67,11 +52,7 @@ def build_lambda_package() -> bytes:
 
     Returns:
         Zip file contents as bytes
-
-    Raises:
-        ImportError: If aws-lambda-builders is not installed
     """
-    _check_builder_available()
 
     from aws_lambda_builders.architecture import X86_64
     from aws_lambda_builders.builder import LambdaBuilder

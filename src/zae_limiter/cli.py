@@ -14,23 +14,6 @@ from .infra.stack_manager import StackManager
 from .local import local
 from .models import StackOptions
 
-
-def _check_lambda_builder_available() -> None:
-    """Check if aws-lambda-builders is available for Lambda packaging."""
-    try:
-        import aws_lambda_builders  # noqa: F401
-    except ImportError:
-        click.echo(
-            "Error: aws-lambda-builders is not installed.",
-            err=True,
-        )
-        click.echo(
-            "Lambda packaging requires the [deploy] extra: pip install 'zae-limiter[deploy]'",
-            err=True,
-        )
-        sys.exit(1)
-
-
 if TYPE_CHECKING:
     from .models import Limit
 
@@ -311,7 +294,6 @@ def deploy(
 
                 # Step 2: Deploy Lambda code if aggregator is enabled
                 if stack_options.enable_aggregator and wait:
-                    _check_lambda_builder_available()
                     click.echo()
                     click.echo("Deploying Lambda function code...")
 
@@ -490,8 +472,6 @@ def cfn_template(output: str | None) -> None:
 )
 def lambda_export(output: str, info: bool, force: bool) -> None:
     """Export Lambda deployment package for custom deployment."""
-    if not info:
-        _check_lambda_builder_available()
     try:
         if info:
             # Show package info without building
@@ -1001,8 +981,6 @@ def upgrade(
             click.echo(f"Current: Lambda {infra_version.lambda_version or 'unknown'}")
             click.echo(f"Target:  Lambda {__version__}")
             click.echo()
-
-            _check_lambda_builder_available()
 
             async with StackManager(name, region, endpoint_url) as manager:
                 # Step 1: Update Lambda code

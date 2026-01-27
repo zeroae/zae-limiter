@@ -88,41 +88,6 @@ class TestGetRuntimeRequirements:
         assert "aws-lambda-powertools" in dep_names
 
 
-class TestCheckBuilderAvailable:
-    """Tests for aws-lambda-builders availability check."""
-
-    def test_raises_import_error_when_missing(self) -> None:
-        """ImportError raised with helpful message when not installed."""
-        import builtins
-        import importlib
-
-        original_import = builtins.__import__
-
-        def mock_import(name: str, *args: object, **kwargs: object) -> object:
-            if name == "aws_lambda_builders":
-                raise ImportError("No module named 'aws_lambda_builders'")
-            return original_import(name, *args, **kwargs)
-
-        from zae_limiter.infra import lambda_builder
-
-        # Need to reload to clear any cached import
-        importlib.reload(lambda_builder)
-
-        with patch.object(builtins, "__import__", side_effect=mock_import):
-            try:
-                lambda_builder._check_builder_available()
-                assert False, "Should have raised ImportError"
-            except ImportError as e:
-                assert "zae-limiter[deploy]" in str(e)
-
-    def test_succeeds_when_installed(self) -> None:
-        """No error when aws-lambda-builders is installed."""
-        from zae_limiter.infra.lambda_builder import _check_builder_available
-
-        # Should not raise (aws-lambda-builders is in dev deps)
-        _check_builder_available()
-
-
 class TestBuildLambdaPackage:
     """Tests for building Lambda deployment packages."""
 

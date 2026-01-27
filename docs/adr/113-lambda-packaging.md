@@ -12,7 +12,7 @@ The project needed a packaging approach that bundles all runtime dependencies in
 
 ## Decision
 
-Use `aws-lambda-builders` (via a new `[deploy]` optional extra) to install cross-platform runtime dependencies into the Lambda zip, then copy the locally installed `zae_limiter` package on top. This eliminates the `__getattr__` lazy-import hack entirely.
+Add `aws-lambda-builders` and `pip` as base dependencies to install cross-platform runtime dependencies into the Lambda zip, then copy the locally installed `zae_limiter` package on top. This eliminates the `__getattr__` lazy-import hack entirely.
 
 ## Consequences
 
@@ -25,7 +25,7 @@ Use `aws-lambda-builders` (via a new `[deploy]` optional extra) to install cross
 
 **Negative:**
 - Lambda zip size increases from ~30KB to several MB due to bundled dependencies
-- `pip` must be available in the environment (added to `[deploy]` extra since `uv` environments omit it)
+- `aws-lambda-builders` and `pip` are added as base dependencies, increasing install footprint
 - Build step is slower due to pip dependency resolution
 
 ## Alternatives Considered
