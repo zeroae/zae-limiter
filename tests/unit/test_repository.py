@@ -238,7 +238,7 @@ class TestRepositoryTransactions:
         assert "Put" in put_item
         put_spec = put_item["Put"]
 
-        assert put_spec["TableName"] == "ZAEL-test-repo"
+        assert put_spec["TableName"] == "test-repo"
 
         # Verify keys
         assert "PK" in put_spec["Item"]

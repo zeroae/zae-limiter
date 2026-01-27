@@ -33,8 +33,8 @@ class Repository:
     limit configs, and transactions.
 
     Args:
-        name: Resource identifier (e.g., "my-app"). Automatically prefixed
-            with 'ZAEL-' to form stack_name and table_name.
+        name: Resource identifier (e.g., "my-app"). Used as the
+            CloudFormation stack_name and DynamoDB table_name.
         region: AWS region (e.g., "us-east-1").
         endpoint_url: Custom endpoint URL (e.g., LocalStack).
         stack_options: Configuration for CloudFormation infrastructure.
@@ -59,7 +59,7 @@ class Repository:
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
     ) -> None:
-        # Validate and normalize name (adds ZAEL- prefix)
+        # Validate and normalize name
         self.stack_name = normalize_stack_name(name)
         # Table name is always identical to stack name
         self.table_name = self.stack_name

@@ -54,7 +54,7 @@ flowchart TD
 
 ```bash
 aws dynamodb create-backup \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --backup-name "manual-backup-$(date +%Y%m%d-%H%M%S)"
 ```
 
@@ -62,7 +62,7 @@ aws dynamodb create-backup \
 
 ```bash
 aws dynamodb list-backups \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --time-range-lower-bound $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
 ```
 
@@ -70,7 +70,7 @@ aws dynamodb list-backups \
 
 ```bash
 aws dynamodb list-backups \
-  --table-name ZAEL-<name>
+  --table-name <name>
 ```
 
 ### Restore from Backup
@@ -80,14 +80,14 @@ aws dynamodb list-backups \
 
 ```bash
 aws dynamodb restore-table-from-backup \
-  --target-table-name ZAEL-<name>-restored \
+  --target-table-name <name>-restored \
   --backup-arn <backup-arn>
 ```
 
 **Wait for restore to complete:**
 
 ```bash
-aws dynamodb describe-table --table-name ZAEL-<name>-restored \
+aws dynamodb describe-table --table-name <name>-restored \
   --query 'Table.TableStatus'
 ```
 
@@ -99,14 +99,14 @@ PITR allows restore to any point in the last 35 days.
 
 ```bash
 aws dynamodb describe-continuous-backups \
-  --table-name ZAEL-<name>
+  --table-name <name>
 ```
 
 **Enable PITR (if not enabled):**
 
 ```bash
 aws dynamodb update-continuous-backups \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --point-in-time-recovery-specification PointInTimeRecoveryEnabled=true
 ```
 
@@ -114,8 +114,8 @@ aws dynamodb update-continuous-backups \
 
 ```bash
 aws dynamodb restore-table-to-point-in-time \
-  --source-table-name ZAEL-<name> \
-  --target-table-name ZAEL-<name>-restored \
+  --source-table-name <name> \
+  --target-table-name <name>-restored \
   --restore-date-time "2024-01-15T10:00:00Z"
 ```
 
@@ -123,8 +123,8 @@ aws dynamodb restore-table-to-point-in-time \
 
 ```bash
 aws dynamodb restore-table-to-point-in-time \
-  --source-table-name ZAEL-<name> \
-  --target-table-name ZAEL-<name>-restored \
+  --source-table-name <name> \
+  --target-table-name <name>-restored \
   --use-latest-restorable-time
 ```
 
@@ -140,7 +140,7 @@ from zae_limiter.repository import Repository
 
 async def rollback_migration(name: str, region: str, target_version: str):
     """Rollback a reversible migration."""
-    repo = Repository(f"ZAEL-{name}", region, None)
+    repo = Repository(name, region, None)
 
     try:
         migrations = get_migrations()
@@ -179,7 +179,7 @@ CloudFormation automatically rolls back failed updates. If a stack is stuck:
 
 ```bash
 aws cloudformation describe-stacks \
-  --stack-name ZAEL-<name> \
+  --stack-name <name> \
   --query 'Stacks[0].StackStatus'
 ```
 
@@ -187,7 +187,7 @@ aws cloudformation describe-stacks \
 
 ```bash
 aws cloudformation describe-stack-events \
-  --stack-name ZAEL-<name> \
+  --stack-name <name> \
   --query 'StackEvents[?ResourceStatus==`UPDATE_ROLLBACK_IN_PROGRESS` || ResourceStatus==`UPDATE_ROLLBACK_COMPLETE`]'
 ```
 
@@ -195,7 +195,7 @@ aws cloudformation describe-stack-events \
 
 ```bash
 aws cloudformation continue-update-rollback \
-  --stack-name ZAEL-<name>
+  --stack-name <name>
 ```
 
 ### Stack Redeployment
@@ -204,14 +204,14 @@ aws cloudformation continue-update-rollback \
 
 ```bash
 # Step 1: Verify deletion protection is enabled
-aws dynamodb describe-table --table-name ZAEL-<name> \
+aws dynamodb describe-table --table-name <name> \
   --query 'Table.DeletionProtectionEnabled'
 
 # Step 2: Delete stack (table retained if deletion protection enabled)
 zae-limiter delete --name <name> --region <region> --yes
 
 # Step 3: Wait for deletion
-aws cloudformation wait stack-delete-complete --stack-name ZAEL-<name>
+aws cloudformation wait stack-delete-complete --stack-name <name>
 
 # Step 4: Redeploy
 zae-limiter deploy --name <name> --region <region>
@@ -225,12 +225,12 @@ zae-limiter cfn-template > updated-template.yaml
 
 # Update via CloudFormation
 aws cloudformation update-stack \
-  --stack-name ZAEL-<name> \
+  --stack-name <name> \
   --template-body file://updated-template.yaml \
   --capabilities CAPABILITY_NAMED_IAM
 
 # Wait for update
-aws cloudformation wait stack-update-complete --stack-name ZAEL-<name>
+aws cloudformation wait stack-update-complete --stack-name <name>
 ```
 
 ### Lambda Redeployment
@@ -258,7 +258,7 @@ zae-limiter upgrade --name <name> --region <region> --lambda-only
 Delete a specific bucket (will be recreated on next acquire):
 
 ```bash
-aws dynamodb delete-item --table-name ZAEL-<name> \
+aws dynamodb delete-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}'
 ```
 
@@ -266,7 +266,7 @@ aws dynamodb delete-item --table-name ZAEL-<name> \
 
 ```bash
 # Query all buckets
-BUCKETS=$(aws dynamodb query --table-name ZAEL-<name> \
+BUCKETS=$(aws dynamodb query --table-name <name> \
   --key-condition-expression "PK = :pk AND begins_with(SK, :sk)" \
   --expression-attribute-values '{":pk": {"S": "ENTITY#<entity_id>"}, ":sk": {"S": "#BUCKET#"}}' \
   --projection-expression "PK, SK" \
@@ -277,7 +277,7 @@ echo $BUCKETS | jq -r '.Items[] | @base64' | while read item; do
   PK=$(echo $item | base64 -d | jq -r '.PK.S')
   SK=$(echo $item | base64 -d | jq -r '.SK.S')
 
-  aws dynamodb delete-item --table-name ZAEL-<name> \
+  aws dynamodb delete-item --table-name <name> \
     --key "{\"PK\": {\"S\": \"$PK\"}, \"SK\": {\"S\": \"$SK\"}}"
 
   echo "Deleted: $SK"
@@ -318,25 +318,25 @@ Complete recovery from total failure:
 
 ```bash
 # Check if table exists
-aws dynamodb describe-table --table-name ZAEL-<name> 2>/dev/null && echo "Table exists" || echo "Table missing"
+aws dynamodb describe-table --table-name <name> 2>/dev/null && echo "Table exists" || echo "Table missing"
 
 # Check if stack exists
-aws cloudformation describe-stacks --stack-name ZAEL-<name> 2>/dev/null && echo "Stack exists" || echo "Stack missing"
+aws cloudformation describe-stacks --stack-name <name> 2>/dev/null && echo "Stack exists" || echo "Stack missing"
 ```
 
 ### Step 2: Restore Table (if needed)
 
 ```bash
 # List available backups
-aws dynamodb list-backups --table-name ZAEL-<name>
+aws dynamodb list-backups --table-name <name>
 
 # Restore from backup
 aws dynamodb restore-table-from-backup \
-  --target-table-name ZAEL-<name> \
+  --target-table-name <name> \
   --backup-arn <backup-arn>
 
 # Wait for restore
-aws dynamodb wait table-exists --table-name ZAEL-<name>
+aws dynamodb wait table-exists --table-name <name>
 ```
 
 ### Step 3: Redeploy Stack
@@ -364,7 +364,7 @@ zae-limiter check --name <name> --region <region>
 
 ```bash
 aws dynamodb update-table \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --deletion-protection-enabled
 ```
 
@@ -372,7 +372,7 @@ aws dynamodb update-table \
 
 ```bash
 aws dynamodb update-continuous-backups \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --point-in-time-recovery-specification PointInTimeRecoveryEnabled=true
 ```
 

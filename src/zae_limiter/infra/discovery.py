@@ -7,48 +7,24 @@ separate from the single-stack lifecycle management in StackManager.
 from typing import Any
 
 import aioboto3
-from botocore.exceptions import ClientError
 
 from ..models import LimiterInfo
 from ..naming import PREFIX
 from .stack_manager import (
     LAMBDA_VERSION_TAG_KEY,
+    MANAGED_BY_TAG_KEY,
+    MANAGED_BY_TAG_VALUE,
+    NAME_TAG_KEY,
     SCHEMA_VERSION_TAG_KEY,
     VERSION_TAG_KEY,
 )
-
-# CloudFormation stack statuses to include (exclude DELETE_COMPLETE)
-_ACTIVE_STACK_STATUSES = [
-    "CREATE_IN_PROGRESS",
-    "CREATE_COMPLETE",
-    "CREATE_FAILED",
-    "ROLLBACK_IN_PROGRESS",
-    "ROLLBACK_COMPLETE",
-    "ROLLBACK_FAILED",
-    "DELETE_IN_PROGRESS",
-    "DELETE_FAILED",
-    "UPDATE_IN_PROGRESS",
-    "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS",
-    "UPDATE_COMPLETE",
-    "UPDATE_FAILED",
-    "UPDATE_ROLLBACK_IN_PROGRESS",
-    "UPDATE_ROLLBACK_FAILED",
-    "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS",
-    "UPDATE_ROLLBACK_COMPLETE",
-    "REVIEW_IN_PROGRESS",
-    "IMPORT_IN_PROGRESS",
-    "IMPORT_COMPLETE",
-    "IMPORT_ROLLBACK_IN_PROGRESS",
-    "IMPORT_ROLLBACK_FAILED",
-    "IMPORT_ROLLBACK_COMPLETE",
-]
 
 
 class InfrastructureDiscovery:
     """
     Discovers deployed zae-limiter instances across a region.
 
-    Provides read-only discovery of CloudFormation stacks with ZAEL- prefix.
+    Provides read-only discovery of CloudFormation stacks managed by zae-limiter.
     Does NOT manage stack lifecycle (use StackManager for that).
 
     Example:
@@ -101,15 +77,114 @@ class InfrastructureDiscovery:
         """
         List all zae-limiter stacks in the region.
 
-        Queries CloudFormation for stacks with ZAEL- prefix and extracts
-        version information from tags.
+        Uses two discovery methods and merges results:
+
+        1. **Tag-based** (primary): AWS Resource Groups Tagging API filtered
+           by ``ManagedBy=zae-limiter``. Efficient server-side filtering.
+        2. **describe_stacks** (fallback): CloudFormation ``describe_stacks``
+           iterating all stacks with client-side tag filtering. Catches stacks
+           in environments where the Tagging API is unavailable (e.g., LocalStack).
+
+        Results are de-duplicated by stack name.
 
         Returns:
             List of LimiterInfo objects, sorted by user name.
             Excludes DELETE_COMPLETE stacks.
 
-        Raises:
-            ClientError: If CloudFormation API call fails
+        """
+        # Method 1: Tag-based discovery (primary)
+        tagged_limiters = await self._discover_via_tagging_api()
+
+        # Method 2: describe_stacks fallback
+        describe_limiters = await self._discover_via_describe_stacks()
+
+        # De-duplicate by stack_name (describe results first, tagged override)
+        by_stack_name: dict[str, LimiterInfo] = {}
+        for limiter in describe_limiters:
+            by_stack_name[limiter.stack_name] = limiter
+        for limiter in tagged_limiters:
+            by_stack_name[limiter.stack_name] = limiter
+
+        # Sort by user name for consistent output
+        limiters = sorted(by_stack_name.values(), key=lambda x: x.user_name)
+        return limiters
+
+    async def _discover_via_tagging_api(self) -> list[LimiterInfo]:
+        """
+        Discover stacks via AWS Resource Groups Tagging API.
+
+        Queries for CloudFormation stacks tagged with ``ManagedBy=zae-limiter``.
+        Returns empty list if the API is unavailable (e.g., LocalStack).
+
+        Returns:
+            List of LimiterInfo objects discovered via tags.
+        """
+        if self._session is None:
+            self._session = aioboto3.Session()
+
+        kwargs: dict[str, Any] = {}
+        if self.region:
+            kwargs["region_name"] = self.region
+        if self.endpoint_url:
+            kwargs["endpoint_url"] = self.endpoint_url
+
+        try:
+            session = self._session
+            async with session.client("resourcegroupstaggingapi", **kwargs) as tagging_client:
+                limiters: list[LimiterInfo] = []
+                pagination_token: str = ""
+
+                while True:
+                    request_kwargs: dict[str, Any] = {
+                        "ResourceTypeFilters": ["cloudformation:stack"],
+                        "TagFilters": [
+                            {
+                                "Key": MANAGED_BY_TAG_KEY,
+                                "Values": [MANAGED_BY_TAG_VALUE],
+                            }
+                        ],
+                    }
+                    if pagination_token:
+                        request_kwargs["PaginationToken"] = pagination_token
+
+                    response = await tagging_client.get_resources(**request_kwargs)
+
+                    for resource in response.get("ResourceTagMappingList", []):
+                        arn = resource["ResourceARN"]
+                        # ARN format: arn:aws:cloudformation:region:account:stack/name/id
+                        arn_parts = arn.split("/")
+                        if len(arn_parts) < 2:
+                            continue
+                        stack_name = arn_parts[1]
+
+                        # Extract tags from the tagging API response
+                        tag_dict = {t["Key"]: t["Value"] for t in resource.get("Tags", [])}
+
+                        # Get full stack details from CloudFormation
+                        info = await self._describe_stack_as_limiter_info(stack_name, tag_dict)
+                        if info is not None:
+                            limiters.append(info)
+
+                    pagination_token = response.get("PaginationToken", "")
+                    if not pagination_token:
+                        break
+
+                return limiters
+
+        except Exception:
+            # Tagging API unavailable or errored (e.g., LocalStack basic mocking).
+            # Fall back silently — describe_stacks discovery will handle it.
+            return []
+
+    async def _discover_via_describe_stacks(self) -> list[LimiterInfo]:
+        """
+        Discover stacks via CloudFormation describe_stacks with client-side tag filtering.
+
+        Iterates all stacks and filters by ``ManagedBy=zae-limiter`` tag.
+        Also matches legacy stacks with ``ZAEL-`` prefix that lack tags.
+
+        Returns:
+            List of LimiterInfo objects discovered via describe_stacks.
         """
         client = await self._get_client()
         region_display = self.region or "default"
@@ -117,94 +192,118 @@ class InfrastructureDiscovery:
         limiters: list[LimiterInfo] = []
         next_token: str | None = None
 
-        # Paginate through all stacks in the region
         while True:
-            try:
-                kwargs: dict[str, Any] = {
-                    "StackStatusFilter": _ACTIVE_STACK_STATUSES,
-                }
-                if next_token:
-                    kwargs["NextToken"] = next_token
+            kwargs: dict[str, Any] = {}
+            if next_token:
+                kwargs["NextToken"] = next_token
 
-                response = await client.list_stacks(**kwargs)
+            response = await client.describe_stacks(**kwargs)
 
-                # Filter for ZAEL- prefix
-                for summary in response.get("StackSummaries", []):
-                    stack_name = summary["StackName"]
-                    if not stack_name.startswith(PREFIX):
-                        continue
+            for stack in response.get("Stacks", []):
+                stack_name = stack["StackName"]
+                stack_status = stack["StackStatus"]
 
-                    # Get version tags for this stack
-                    version_info = await self._get_version_tags(client, stack_name)
+                if stack_status == "DELETE_COMPLETE":
+                    continue
 
-                    # Format timestamps
-                    creation_time = summary["CreationTime"].isoformat()
-                    last_updated = summary.get("LastUpdatedTime")
-                    last_updated_time = last_updated.isoformat() if last_updated else None
+                # Extract tags
+                tag_dict = {t["Key"]: t["Value"] for t in stack.get("Tags", [])}
 
-                    limiters.append(
-                        LimiterInfo(
-                            stack_name=stack_name,
-                            user_name=stack_name[len(PREFIX) :],  # Strip prefix
-                            region=region_display,
-                            stack_status=summary["StackStatus"],
-                            creation_time=creation_time,
-                            last_updated_time=last_updated_time,
-                            version=version_info.get("version"),
-                            lambda_version=version_info.get("lambda_version"),
-                            schema_version=version_info.get("schema_version"),
-                        )
+                # Match: has ManagedBy tag OR has legacy ZAEL- prefix
+                is_managed = tag_dict.get(MANAGED_BY_TAG_KEY) == MANAGED_BY_TAG_VALUE
+                is_legacy_prefix = stack_name.startswith(PREFIX)
+
+                if not is_managed and not is_legacy_prefix:
+                    continue
+
+                # Derive user_name: tag first, then strip ZAEL- prefix, then raw
+                user_name = tag_dict.get(NAME_TAG_KEY)
+                if user_name is None and stack_name.startswith(PREFIX):
+                    user_name = stack_name[len(PREFIX) :]
+                if user_name is None:
+                    user_name = stack_name
+
+                creation_time = stack["CreationTime"].isoformat()
+                last_updated = stack.get("LastUpdatedTime")
+                last_updated_time = last_updated.isoformat() if last_updated else None
+
+                limiters.append(
+                    LimiterInfo(
+                        stack_name=stack_name,
+                        user_name=user_name,
+                        region=region_display,
+                        stack_status=stack_status,
+                        creation_time=creation_time,
+                        last_updated_time=last_updated_time,
+                        version=tag_dict.get(VERSION_TAG_KEY),
+                        lambda_version=tag_dict.get(LAMBDA_VERSION_TAG_KEY),
+                        schema_version=tag_dict.get(SCHEMA_VERSION_TAG_KEY),
                     )
+                )
 
-                next_token = response.get("NextToken")
-                if not next_token:
-                    break
+            next_token = response.get("NextToken")
+            if not next_token:
+                break
 
-            except ClientError:
-                # Re-raise CloudFormation API errors
-                raise
-
-        # Sort by user name for consistent output
-        limiters.sort(key=lambda x: x.user_name)
         return limiters
 
-    async def _get_version_tags(self, client: Any, stack_name: str) -> dict[str, str | None]:
+    async def _describe_stack_as_limiter_info(
+        self,
+        stack_name: str,
+        tag_dict: dict[str, str] | None = None,
+    ) -> LimiterInfo | None:
         """
-        Extract version information from stack tags.
+        Describe a CloudFormation stack and convert to LimiterInfo.
 
         Args:
-            client: CloudFormation client
-            stack_name: Stack name to query
+            stack_name: Stack name to describe
+            tag_dict: Pre-fetched tags (from tagging API). If None,
+                tags are extracted from describe_stacks response.
 
         Returns:
-            Dict with version, lambda_version, schema_version keys.
-            Values are None if tags don't exist.
+            LimiterInfo or None if the stack doesn't exist or is deleted.
         """
+        client = await self._get_client()
+        region_display = self.region or "default"
+
         try:
             response = await client.describe_stacks(StackName=stack_name)
             stacks = response.get("Stacks", [])
             if not stacks:
-                return {
-                    "version": None,
-                    "lambda_version": None,
-                    "schema_version": None,
-                }
+                return None
 
-            tags = {tag["Key"]: tag["Value"] for tag in stacks[0].get("Tags", [])}
+            stack = stacks[0]
+            if stack["StackStatus"] == "DELETE_COMPLETE":
+                return None
 
-            return {
-                "version": tags.get(VERSION_TAG_KEY),
-                "lambda_version": tags.get(LAMBDA_VERSION_TAG_KEY),
-                "schema_version": tags.get(SCHEMA_VERSION_TAG_KEY),
-            }
-        except ClientError:
-            # If describe_stacks fails (e.g., stack deleted between list and describe),
-            # return None for all versions
-            return {
-                "version": None,
-                "lambda_version": None,
-                "schema_version": None,
-            }
+            # Use provided tags or extract from stack
+            if tag_dict is None:
+                tag_dict = {t["Key"]: t["Value"] for t in stack.get("Tags", [])}
+
+            # Derive user_name from tag or prefix
+            user_name = tag_dict.get("zae-limiter:name")
+            if user_name is None and stack_name.startswith(PREFIX):
+                user_name = stack_name[len(PREFIX) :]
+            if user_name is None:
+                user_name = stack_name  # Last resort
+
+            creation_time = stack["CreationTime"].isoformat()
+            last_updated = stack.get("LastUpdatedTime")
+            last_updated_time = last_updated.isoformat() if last_updated else None
+
+            return LimiterInfo(
+                stack_name=stack_name,
+                user_name=user_name,
+                region=region_display,
+                stack_status=stack["StackStatus"],
+                creation_time=creation_time,
+                last_updated_time=last_updated_time,
+                version=tag_dict.get(VERSION_TAG_KEY),
+                lambda_version=tag_dict.get(LAMBDA_VERSION_TAG_KEY),
+                schema_version=tag_dict.get(SCHEMA_VERSION_TAG_KEY),
+            )
+        except Exception:
+            return None
 
     async def close(self) -> None:
         """Close the underlying session and client."""

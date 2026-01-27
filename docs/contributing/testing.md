@@ -78,7 +78,7 @@ async def limiter(localstack_endpoint):
     name = f"test-{uuid.uuid4().hex[:8]}"
 
     limiter = RateLimiter(
-        name=name,  # Creates ZAEL-test-{uuid} resources
+        name=name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),

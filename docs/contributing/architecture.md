@@ -327,7 +327,7 @@ src/zae_limiter/
 ├── __init__.py        # Public API exports
 ├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions
 ├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, etc.
-├── naming.py          # Resource name validation and ZAEL- prefix logic
+├── naming.py          # Resource name validation (ZAEL- prefix retained for legacy discovery)
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders
 ├── repository.py      # DynamoDB operations

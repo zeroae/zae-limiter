@@ -23,13 +23,13 @@ from zae_limiter import RateLimiter, SyncRateLimiter
 
 # Async
 limiter = RateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",
     region="us-east-1",
 )
 
 # Sync
 limiter = SyncRateLimiter(
-    name="limiter",  # Creates ZAEL-limiter resources
+    name="limiter",
     region="us-east-1",
 )
 ```

@@ -32,7 +32,7 @@ zae-limiter deploy [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (creates ZAEL-{name} resources) | `limiter` |
+| `--name` | Resource identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 | `--snapshot-windows` | Comma-separated snapshot windows | `hourly,daily` |
@@ -143,7 +143,7 @@ Total: 3 instance(s)
 
 The output includes:
 
-- **Name**: User-friendly name (without ZAEL- prefix)
+- **Name**: User-friendly name
 - **Status**: CloudFormation stack status with visual indicator
 - **Version**: Client version at deployment (from stack tag)
 - **Lambda**: Lambda aggregator version
@@ -164,7 +164,7 @@ zae-limiter status [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (ZAEL-{name}) | Required |
+| `--name` | Resource identifier | Required |
 | `--region` | AWS region | Required |
 | `--endpoint-url` | Custom AWS endpoint | None |
 
@@ -177,7 +177,7 @@ zae-limiter status --name limiter --region us-east-1
 **Output:**
 
 ```
-Status: ZAEL-limiter
+Status: limiter
 ==================================================
 
 Connectivity
@@ -216,7 +216,7 @@ zae-limiter delete [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (ZAEL-{name}) | Required |
+| `--name` | Resource identifier | Required |
 | `--region` | AWS region | Required |
 | `--yes` | Skip confirmation prompt | `false` |
 | `--endpoint-url` | Custom AWS endpoint | None |
@@ -316,7 +316,7 @@ zae-limiter version [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--name` | Resource identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
 
@@ -356,7 +356,7 @@ zae-limiter check [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--name` | Resource identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
 
@@ -395,7 +395,7 @@ zae-limiter upgrade [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--name` | Resource identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
 | `--lambda-only` | Only update Lambda code | `false` |
@@ -425,7 +425,7 @@ zae-limiter audit list [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Resource identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
 | `--entity-id`, `-e` | Entity ID to query (required) | - |
@@ -476,7 +476,7 @@ zae-limiter usage list [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Resource identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
 | `--entity-id`, `-e` | Entity ID to query | - |
@@ -579,7 +579,7 @@ zae-limiter usage summary [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Resource identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Resource identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
 | `--entity-id`, `-e` | Entity ID to query | - |
@@ -650,7 +650,7 @@ zae-limiter resource set-defaults <RESOURCE_NAME> [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 | `--limit`, `-l` | Limit specification (required, repeatable) | - |
@@ -694,7 +694,7 @@ zae-limiter resource get-defaults <RESOURCE_NAME> [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 
@@ -736,7 +736,7 @@ zae-limiter resource delete-defaults <RESOURCE_NAME> [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 | `--yes`, `-y` | Skip confirmation prompt | `false` |
@@ -765,7 +765,7 @@ zae-limiter resource list [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 
@@ -806,7 +806,7 @@ zae-limiter system set-defaults [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 | `--limit`, `-l` | Limit specification (required, repeatable) | - |
@@ -841,7 +841,7 @@ zae-limiter system get-defaults [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 
@@ -875,7 +875,7 @@ zae-limiter system delete-defaults [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 | `--yes`, `-y` | Skip confirmation prompt | `false` |
@@ -915,7 +915,7 @@ zae-limiter entity set-limits <ENTITY_ID> [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--resource`, `-r` | Resource name (required) | - |
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 | `--limit`, `-l` | Limit specification (required, repeatable) | - |
@@ -953,7 +953,7 @@ zae-limiter entity get-limits <ENTITY_ID> [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--resource`, `-r` | Resource name (required) | - |
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 
@@ -993,7 +993,7 @@ zae-limiter entity delete-limits <ENTITY_ID> [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--resource`, `-r` | Resource name (required) | - |
-| `--name`, `-n` | Stack identifier (ZAEL-{name}) | `limiter` |
+| `--name`, `-n` | Stack identifier | `limiter` |
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
 | `--yes`, `-y` | Skip confirmation prompt | `false` |

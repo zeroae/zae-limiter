@@ -48,18 +48,18 @@ flowchart TD
 
 ```bash
 # Query entity metadata
-aws dynamodb get-item --table-name ZAEL-<name> \
+aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#META"}}'
 
 # Query bucket state for a specific limit
-aws dynamodb get-item --table-name ZAEL-<name> \
+aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}'
 ```
 
 **Verify stored limits (if using `use_stored_limits=True`):**
 
 ```bash
-aws dynamodb query --table-name ZAEL-<name> \
+aws dynamodb query --table-name <name> \
   --key-condition-expression "PK = :pk AND begins_with(SK, :sk)" \
   --expression-attribute-values '{":pk": {"S": "ENTITY#<entity_id>"}, ":sk": {"S": "#LIMIT#"}}'
 ```
@@ -78,7 +78,7 @@ aws dynamodb query --table-name ZAEL-<name> \
 **Check bucket state:**
 
 ```bash
-aws dynamodb get-item --table-name ZAEL-<name> \
+aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}' \
   --projection-expression "tokens, last_update, capacity"
 ```
@@ -103,7 +103,7 @@ aws dynamodb get-item --table-name ZAEL-<name> \
 **Verify entity exists:**
 
 ```bash
-aws dynamodb get-item --table-name ZAEL-<name> \
+aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#META"}}'
 ```
 
@@ -114,14 +114,14 @@ If cascade to parent is not enforced:
 **Step 1: Verify parent entity exists:**
 
 ```bash
-aws dynamodb get-item --table-name ZAEL-<name> \
+aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<parent_id>"}, "SK": {"S": "#META"}}'
 ```
 
 **Step 2: Verify child has `parent_id` set:**
 
 ```bash
-aws dynamodb get-item --table-name ZAEL-<name> \
+aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<child_id>"}, "SK": {"S": "#META"}}'
 # Check the "parent_id" attribute in response
 ```
@@ -130,7 +130,7 @@ aws dynamodb get-item --table-name ZAEL-<name> \
 
 ```bash
 # Check the entity's cascade setting in its metadata
-aws dynamodb get-item --table-name ZAEL-<name> \
+aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<child_id>"}, "SK": {"S": "#META"}}'
 # Check the "cascade" attribute in response — should be true
 ```
@@ -202,7 +202,7 @@ print("Limits updated successfully")
 
 ```bash
 # Update a stored limit
-aws dynamodb put-item --table-name ZAEL-<name> \
+aws dynamodb put-item --table-name <name> \
   --item '{
     "PK": {"S": "ENTITY#<entity_id>"},
     "SK": {"S": "#LIMIT#<resource>#<limit_name>"},
@@ -219,7 +219,7 @@ Reset a bucket to restore full capacity:
 
 ```bash
 # Delete the bucket (will be recreated on next acquire with full capacity)
-aws dynamodb delete-item --table-name ZAEL-<name> \
+aws dynamodb delete-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}'
 ```
 
@@ -228,7 +228,7 @@ aws dynamodb delete-item --table-name ZAEL-<name> \
 Query all buckets for an entity:
 
 ```bash
-aws dynamodb query --table-name ZAEL-<name> \
+aws dynamodb query --table-name <name> \
   --key-condition-expression "PK = :pk AND begins_with(SK, :sk)" \
   --expression-attribute-values '{":pk": {"S": "ENTITY#<entity_id>"}, ":sk": {"S": "#BUCKET#"}}' \
   --projection-expression "SK, tokens, capacity, last_update"

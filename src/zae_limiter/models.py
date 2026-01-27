@@ -491,8 +491,8 @@ class LimiterInfo:
                 print(f"⚠️  {limiter.user_name}: {limiter.stack_status}")
 
     Attributes:
-        stack_name: Full CloudFormation stack name (e.g., "ZAEL-my-app")
-        user_name: User-friendly name without prefix (e.g., "my-app")
+        stack_name: Full CloudFormation stack name (e.g., "my-app")
+        user_name: User-friendly name (e.g., "my-app")
         region: AWS region where the stack is deployed
         stack_status: CloudFormation stack status (e.g., "CREATE_COMPLETE")
         creation_time: ISO 8601 timestamp of stack creation
@@ -621,6 +621,9 @@ class StackOptions:
         audit_archive_glacier_days: Days before transitioning archives to Glacier IR (1-3650)
         enable_tracing: Enable AWS X-Ray tracing for Lambda aggregator
         create_iam_roles: Create App/Admin/ReadOnly IAM roles for application access
+        tags: User-defined tags to apply to the CloudFormation stack. Dict of key-value
+            pairs. AWS tag constraints apply (max 50 total including managed tags,
+            key 1-128 chars, value 0-256 chars). The ``aws:`` prefix is reserved.
     """
 
     snapshot_windows: str = "hourly,daily"
@@ -639,6 +642,7 @@ class StackOptions:
     audit_archive_glacier_days: int = 90
     enable_tracing: bool = False
     create_iam_roles: bool = True
+    tags: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         """Validate options."""
@@ -675,13 +679,27 @@ class StackOptions:
         # Validate audit archival options
         if not (1 <= self.audit_archive_glacier_days <= 3650):
             raise ValueError("audit_archive_glacier_days must be between 1 and 3650")
+        # Validate user-defined tags
+        if self.tags is not None:
+            if len(self.tags) > 45:
+                raise ValueError(
+                    "tags exceeds maximum of 45 user-defined tags "
+                    "(50 total including 5 managed tags)"
+                )
+            for key, value in self.tags.items():
+                if key.startswith("aws:"):
+                    raise ValueError(f"tag key '{key}' uses reserved 'aws:' prefix")
+                if not (1 <= len(key) <= 128):
+                    raise ValueError(f"tag key '{key}' must be 1-128 characters")
+                if len(value) > 256:
+                    raise ValueError(f"tag value for '{key}' exceeds 256 characters")
 
     def get_role_name(self, stack_name: str) -> str | None:
         """
         Get the final role name for a given stack name.
 
         Args:
-            stack_name: Full stack name (with ZAEL- prefix)
+            stack_name: Stack name
 
         Returns:
             Final role name, or None to use CloudFormation default
@@ -729,12 +747,6 @@ class StackOptions:
         # Audit archival parameters
         params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
         params["audit_archive_glacier_days"] = str(self.audit_archive_glacier_days)
-        # Extract base name (without ZAEL- prefix) for S3 bucket naming
-        # S3 bucket names must be lowercase, so we derive from the stack name
-        if stack_name:
-            # Stack name format: ZAEL-{base_name}
-            base_name = stack_name.replace("ZAEL-", "").lower()
-            params["base_name"] = base_name
         return params
 
 
@@ -762,7 +774,7 @@ class Status:
         stack_status: CloudFormation stack status (e.g., 'CREATE_COMPLETE')
         table_status: DynamoDB table status (e.g., 'ACTIVE')
         aggregator_enabled: Whether Lambda aggregator is deployed
-        name: Resource name (with ZAEL- prefix)
+        name: Resource name
         region: AWS region (None if using default)
         schema_version: Deployed schema version
         lambda_version: Deployed Lambda version

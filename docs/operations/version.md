@@ -57,7 +57,7 @@ zae-limiter version --name <name> --region <region>
 **Query version record directly:**
 
 ```bash
-aws dynamodb get-item --table-name ZAEL-<name> \
+aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "SYSTEM#"}, "SK": {"S": "#VERSION"}}'
 ```
 
@@ -109,7 +109,7 @@ with schema 1.0.0. Migration required.
 ```bash
 # Create backup before migration
 aws dynamodb create-backup \
-  --table-name ZAEL-<name> \
+  --table-name <name> \
   --backup-name "pre-migration-$(date +%Y%m%d)"
 ```
 

@@ -69,7 +69,7 @@ class RepositoryProtocol(Protocol):
 
     @property
     def stack_name(self) -> str:
-        """CloudFormation stack name (with ZAEL- prefix)."""
+        """CloudFormation stack name."""
         ...
 
     @property

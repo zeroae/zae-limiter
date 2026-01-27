@@ -4,7 +4,7 @@ This module provides centralized validation and normalization for resource names
 Names must satisfy the most restrictive cloud provider rules (currently AWS):
 - Alphanumeric characters and hyphens only
 - Must start with a letter
-- Maximum 38 characters (IAM role limit after prefix/suffix)
+- Maximum 64 characters (IAM role name limit with suffix room)
 """
 
 import re
@@ -12,6 +12,7 @@ import re
 from .exceptions import ValidationError
 
 PREFIX = "ZAEL-"
+"""Legacy prefix kept for backwards compatibility with pre-v0.7 stacks."""
 
 # Name validation pattern (cloud-agnostic, satisfies AWS rules):
 # - Alphanumeric and hyphens only
@@ -24,7 +25,7 @@ def validate_name(name: str) -> None:
     Validate a resource name identifier.
 
     Args:
-        name: The user-provided identifier (without ZAEL- prefix)
+        name: The user-provided identifier
 
     Raises:
         ValidationError: If the name contains invalid characters
@@ -64,46 +65,34 @@ def validate_name(name: str) -> None:
             "Must start with a letter and contain only alphanumeric characters and hyphens.",
         )
 
-    # Length validation (accounting for prefix and IAM role suffix)
-    # IAM roles are limited to 64 chars, and we add "-aggregator-role" (16 chars)
-    # So user identifier + prefix must be <= 48, but role_name_format may add more
-    # Conservative limit: 38 chars for user identifier
-    full_name = f"{PREFIX}{name}"
-    if len(name) > 38:
+    # Length validation (IAM role suffix is up to "-aggregator-role" = 16 chars)
+    # IAM roles are limited to 64 chars total
+    if len(name) > 48:
         raise ValidationError(
             "name",
             name,
-            "Too long. Name exceeds 38 character limit (IAM role constraints).",
-        )
-    if len(full_name) > 128:
-        raise ValidationError(
-            "name",
-            name,
-            f"Too long. Full name '{full_name}' exceeds 128 character limit.",
+            "Too long. Name exceeds 48 character limit (IAM role constraints).",
         )
 
 
 def normalize_name(name: str) -> str:
     """
-    Ensure name has the ZAEL- prefix and is valid.
+    Validate name and return as-is.
+
+    For backwards compatibility, names with the legacy ``ZAEL-`` prefix
+    are accepted and returned unchanged (the prefix is a valid name).
 
     Args:
-        name: User-provided name (with or without prefix)
+        name: User-provided name
 
     Returns:
-        Full resource name with ZAEL- prefix
+        Validated resource name (unchanged)
 
     Raises:
         ValidationError: If the name is invalid
     """
-    # Strip prefix if already present for validation
-    if name.startswith(PREFIX):
-        identifier = name[len(PREFIX) :]
-    else:
-        identifier = name
-
-    validate_name(identifier)
-    return f"{PREFIX}{identifier}"
+    validate_name(name)
+    return name
 
 
 # Aliases for internal AWS-specific code

@@ -29,7 +29,7 @@ def cli() -> None:
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -165,6 +165,13 @@ def cli() -> None:
     default=True,
     help="Create App/Admin/ReadOnly IAM roles for application access (default: enabled)",
 )
+@click.option(
+    "--tag",
+    "-t",
+    "tags",
+    multiple=True,
+    help="User-defined tag in KEY=VALUE format. Can be specified multiple times.",
+)
 def deploy(
     name: str,
     region: str | None,
@@ -186,6 +193,7 @@ def deploy(
     audit_archive_glacier_days: int,
     enable_tracing: bool,
     enable_iam_roles: bool,
+    tags: tuple[str, ...],
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
     from .exceptions import ValidationError
@@ -198,6 +206,20 @@ def deploy(
 
     async def _deploy() -> None:
         async with manager:
+            # Parse user-defined tags
+            user_tags: dict[str, str] | None = None
+            if tags:
+                user_tags = {}
+                for tag_str in tags:
+                    if "=" not in tag_str:
+                        click.echo(
+                            f"Error: Invalid tag format '{tag_str}'. Use KEY=VALUE.",
+                            err=True,
+                        )
+                        sys.exit(1)
+                    key, value = tag_str.split("=", 1)
+                    user_tags[key] = value
+
             # Build StackOptions from CLI arguments
             stack_options = StackOptions(
                 snapshot_windows=snapshot_windows,
@@ -216,6 +238,7 @@ def deploy(
                 audit_archive_glacier_days=audit_archive_glacier_days,
                 enable_tracing=enable_tracing,
                 create_iam_roles=enable_iam_roles,
+                tags=user_tags,
             )
 
             click.echo(f"Deploying stack: {manager.stack_name}")
@@ -245,6 +268,10 @@ def deploy(
                     click.echo(
                         f"  Glacier transition: {stack_options.audit_archive_glacier_days} days"
                     )
+            if stack_options.tags:
+                click.echo(f"  Tags: {len(stack_options.tags)} user-defined")
+                for k, v in stack_options.tags.items():
+                    click.echo(f"    {k}={v}")
             click.echo()
 
             try:
@@ -327,7 +354,7 @@ def deploy(
     "--name",
     "-n",
     required=True,
-    help="Resource identifier (will be prefixed with 'ZAEL-' if not already)",
+    help="Resource identifier used as the CloudFormation stack name",
 )
 @click.option(
     "--region",
@@ -509,7 +536,7 @@ def _format_count(count: int | None) -> str:
     "--name",
     "-n",
     required=True,
-    help="Resource identifier (will be prefixed with 'ZAEL-' if not already)",
+    help="Resource identifier used as the CloudFormation stack name",
 )
 @click.option(
     "--region",
@@ -767,7 +794,7 @@ def list_limiters(region: str | None, endpoint_url: str | None) -> None:
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -865,7 +892,7 @@ def version_cmd(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -948,7 +975,7 @@ def upgrade(
 
             async with StackManager(name, region, endpoint_url) as manager:
                 # Step 1: Update Lambda code
-                click.echo("[1/2] Deploying Lambda code...")
+                click.echo("[1/3] Deploying Lambda code...")
                 try:
                     result = await manager.deploy_lambda_code(wait=True)
 
@@ -962,8 +989,20 @@ def upgrade(
                     click.echo(f"✗ Lambda deployment failed: {e}", err=True)
                     sys.exit(1)
 
-                # Step 2: Update version record
-                click.echo("[2/2] Updating version record...")
+                # Step 2: Ensure discovery tags
+                click.echo("[2/3] Ensuring discovery tags...")
+                try:
+                    tags_added = await manager.ensure_tags()
+                    if tags_added:
+                        click.echo("      Discovery tags added")
+                    else:
+                        click.echo("      Tags already present")
+                except Exception as e:
+                    click.echo(f"⚠️  Tag update failed: {e}", err=True)
+                    # Non-fatal — continue with upgrade
+
+                # Step 3: Update version record
+                click.echo("[3/3] Updating version record...")
                 await repo.set_version_record(
                     schema_version=get_schema_version(),
                     lambda_version=__version__,
@@ -989,7 +1028,7 @@ def upgrade(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1093,7 +1132,7 @@ def audit() -> None:
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1206,7 +1245,7 @@ def usage() -> None:
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1361,7 +1400,7 @@ def usage_list(
     "--name",
     "-n",
     default="limiter",
-    help="Resource identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1526,7 +1565,7 @@ def resource() -> None:
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1599,7 +1638,7 @@ def resource_set_defaults(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1656,7 +1695,7 @@ def resource_get_defaults(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1718,7 +1757,7 @@ def resource_delete_defaults(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1778,7 +1817,7 @@ def system() -> None:
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1857,7 +1896,7 @@ def system_set_defaults(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1913,7 +1952,7 @@ def system_get_defaults(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -1998,7 +2037,7 @@ def entity() -> None:
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -2059,7 +2098,7 @@ def entity_create(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -2126,7 +2165,7 @@ def entity_show(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -2210,7 +2249,7 @@ def entity_set_limits(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
@@ -2277,7 +2316,7 @@ def entity_get_limits(
     "--name",
     "-n",
     default="limiter",
-    help="Stack identifier (will be prefixed with 'ZAEL-'). Default: limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
 )
 @click.option(
     "--region",
