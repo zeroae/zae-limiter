@@ -85,6 +85,64 @@ class TestLocalHelp:
         assert "--tail" in result.output
 
 
+class TestGetDockerClient:
+    """Test _get_docker_client helper."""
+
+    def test_docker_not_installed(self, runner: CliRunner) -> None:
+        """Test error when docker package is not installed."""
+        with patch("zae_limiter.local.docker", None):
+            from zae_limiter.local import _get_docker_client
+
+            with pytest.raises(SystemExit):
+                _get_docker_client()
+
+    def test_docker_host_override(self, mock_docker: Mock) -> None:
+        """Test connecting with a custom docker host."""
+        from zae_limiter.local import _get_docker_client
+
+        _get_docker_client(docker_host="tcp://remote:2375")
+        mock_docker.DockerClient.assert_called_once_with(base_url="tcp://remote:2375")
+
+    def test_docker_from_env(self, mock_docker: Mock) -> None:
+        """Test connecting with default docker env."""
+        from zae_limiter.local import _get_docker_client
+
+        _get_docker_client()
+        mock_docker.from_env.assert_called_once()
+
+    def test_docker_connection_error(self, mock_docker: Mock) -> None:
+        """Test error when Docker daemon is not reachable."""
+        from zae_limiter.local import _get_docker_client
+
+        mock_docker.from_env.side_effect = mock_docker.errors.DockerException("refused")
+
+        with pytest.raises(SystemExit):
+            _get_docker_client()
+
+
+class TestFindContainer:
+    """Test _find_container helper."""
+
+    def test_find_existing(self, mock_docker: Mock) -> None:
+        """Test finding an existing container."""
+        from zae_limiter.local import _find_container
+
+        mock_client = MagicMock()
+        result = _find_container(mock_client)
+        assert result is not None
+        mock_client.containers.get.assert_called_once_with(CONTAINER_NAME)
+
+    def test_find_not_found(self, mock_docker: Mock) -> None:
+        """Test returning None when container doesn't exist."""
+        from zae_limiter.local import _find_container
+
+        mock_client = MagicMock()
+        mock_client.containers.get.side_effect = mock_docker.errors.NotFound("nope")
+
+        result = _find_container(mock_client)
+        assert result is None
+
+
 class TestLocalUp:
     """Test local up command."""
 
@@ -228,6 +286,27 @@ class TestLocalUp:
         assert result.exit_code != 0
         assert "already in use" in result.output.lower()
 
+    @patch("zae_limiter.local._ensure_image")
+    @patch("zae_limiter.local._find_container", return_value=None)
+    @patch("zae_limiter.local._get_docker_client")
+    def test_up_generic_api_error(
+        self,
+        mock_client_fn: Mock,
+        _mock_find: Mock,
+        _mock_image: Mock,
+        mock_docker: Mock,
+        runner: CliRunner,
+    ) -> None:
+        """Test generic API error during container start."""
+        mock_client = MagicMock()
+        mock_client.containers.run.side_effect = mock_docker.errors.APIError("some other error")
+        mock_client_fn.return_value = mock_client
+
+        result = runner.invoke(cli, ["local", "up"])
+
+        assert result.exit_code != 0
+        assert "failed to start container" in result.output.lower()
+
 
 class TestLocalDown:
     """Test local down command."""
@@ -289,6 +368,26 @@ class TestLocalDown:
 
         assert result.exit_code != 0
         assert "failed to stop" in result.output.lower()
+
+    @patch("zae_limiter.local._find_container")
+    @patch("zae_limiter.local._get_docker_client")
+    def test_down_handles_already_removed(
+        self,
+        mock_client_fn: Mock,
+        mock_find: Mock,
+        mock_docker: Mock,
+        runner: CliRunner,
+    ) -> None:
+        """Test down handles container already removed during stop."""
+        mock_container = MagicMock()
+        mock_container.stop.side_effect = mock_docker.errors.NotFound("already gone")
+        mock_find.return_value = mock_container
+        mock_client_fn.return_value = MagicMock()
+
+        result = runner.invoke(cli, ["local", "down"])
+
+        assert result.exit_code == 0
+        assert "stopped" in result.output.lower()
 
 
 class TestLocalStatus:
@@ -462,6 +561,45 @@ class TestLocalLogs:
 
         assert "container stopped" in result.output.lower()
 
+    @patch("zae_limiter.local._find_container")
+    @patch("zae_limiter.local._get_docker_client")
+    def test_logs_api_error(
+        self,
+        mock_client_fn: Mock,
+        mock_find: Mock,
+        mock_docker: Mock,
+        runner: CliRunner,
+    ) -> None:
+        """Test logs handles API error during streaming."""
+        mock_container = MagicMock()
+        mock_container.logs.side_effect = mock_docker.errors.APIError("connection lost")
+        mock_find.return_value = mock_container
+        mock_client_fn.return_value = MagicMock()
+
+        result = runner.invoke(cli, ["local", "logs"])
+
+        assert result.exit_code != 0
+        assert "lost connection" in result.output.lower()
+
+    @patch("zae_limiter.local._find_container")
+    @patch("zae_limiter.local._get_docker_client")
+    def test_logs_keyboard_interrupt(
+        self,
+        mock_client_fn: Mock,
+        mock_find: Mock,
+        mock_docker: Mock,
+        runner: CliRunner,
+    ) -> None:
+        """Test logs handles KeyboardInterrupt gracefully."""
+        mock_container = MagicMock()
+        mock_container.logs.side_effect = KeyboardInterrupt()
+        mock_find.return_value = mock_container
+        mock_client_fn.return_value = MagicMock()
+
+        result = runner.invoke(cli, ["local", "logs"])
+
+        assert result.exit_code == 0
+
 
 class TestWaitForHealth:
     """Test health check behavior."""
@@ -495,6 +633,46 @@ class TestWaitForHealth:
         assert result is False
         mock_container.reload.assert_called_once()
 
+    def test_health_detects_unhealthy(self) -> None:
+        """Test that health check returns False for unhealthy container."""
+        from zae_limiter.local import _wait_for_health
+
+        mock_container = MagicMock()
+        mock_container.status = "running"
+        mock_container.attrs = {"State": {"Health": {"Status": "unhealthy"}}}
+
+        result = _wait_for_health(mock_container)
+
+        assert result is False
+
+    @patch("zae_limiter.local.HEALTH_CHECK_RETRIES", 2)
+    @patch("zae_limiter.local.HEALTH_CHECK_INTERVAL", 0)
+    def test_health_timeout(self) -> None:
+        """Test that health check returns False after retries exhausted."""
+        from zae_limiter.local import _wait_for_health
+
+        mock_container = MagicMock()
+        mock_container.status = "running"
+        mock_container.attrs = {"State": {"Health": {"Status": "starting"}}}
+
+        result = _wait_for_health(mock_container)
+
+        assert result is False
+        assert mock_container.reload.call_count == 2
+
+    def test_health_crash_log_exception(self) -> None:
+        """Test health check handles log read failure during crash."""
+        from zae_limiter.local import _wait_for_health
+
+        mock_container = MagicMock()
+        mock_container.status = "exited"
+        mock_container.attrs = {"State": {}}
+        mock_container.logs.side_effect = Exception("cannot read logs")
+
+        result = _wait_for_health(mock_container)
+
+        assert result is False
+
 
 class TestEnsureImage:
     """Test image pull behavior."""
@@ -519,6 +697,17 @@ class TestEnsureImage:
         _ensure_image(mock_client, DEFAULT_IMAGE)
 
         mock_client.images.pull.assert_called_once_with(DEFAULT_IMAGE)
+
+    def test_ensure_image_pull_fails(self, mock_docker: Mock) -> None:
+        """Test exit on pull failure."""
+        from zae_limiter.local import _ensure_image
+
+        mock_client = MagicMock()
+        mock_client.images.get.side_effect = mock_docker.errors.ImageNotFound("not found")
+        mock_client.images.pull.side_effect = mock_docker.errors.APIError("network error")
+
+        with pytest.raises(SystemExit):
+            _ensure_image(mock_client, DEFAULT_IMAGE)
 
 
 class TestConstants:
