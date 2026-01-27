@@ -1,0 +1,3080 @@
+window.BENCHMARK_DATA = {
+  "lastUpdate": 1769338854912,
+  "repoUrl": "https://github.com/zeroae/zae-limiter",
+  "entries": {
+    "Benchmark": [
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "88731ba4ebd0390d6d2adbbb47ebd42de9599bd4",
+          "message": "\u2705 test(benchmark): add performance benchmarks (#45) (#73)\n\n* \u2705 test(benchmark): add performance benchmarks (#45)\n\nAdd pytest-benchmark tests to measure:\n- Acquire/release latency (single and multiple limits)\n- DynamoDB transaction overhead\n- Cascade overhead (hierarchical limits)\n- Concurrent throughput\n\nAlso adds github-action-benchmark CI workflow for tracking\nperformance over time with dashboard at /benchmarks/.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(ci): add LocalStack to benchmark workflow\n\nRun integration benchmarks with realistic DynamoDB latency\nby adding LocalStack service container.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(ci): move benchmarks into integration job\n\n- Delete separate benchmark.yml workflow\n- Add benchmark steps to integration job (Python 3.12 only)\n- Add permissions and concurrency group for gh-pages access\n- Use --all-extras to include benchmark dependencies\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(tests): unset AWS_ENDPOINT_URL in moto fixtures\n\nWhen AWS_ENDPOINT_URL is set (e.g., in CI integration job), boto3\nroutes requests to that endpoint instead of being intercepted by\nmoto's mock_aws decorator. This caused benchmark tests using\nsync_limiter (moto-based) to fail.\n\nFix by unsetting AWS_ENDPOINT_URL in the aws_credentials fixture.\nLocalStack tests use localstack_endpoint fixture which reads from\nthe environment before aws_credentials runs.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(ci): move benchmarks to separate job\n\n- Extract benchmark steps from integration job to dedicated benchmark job\n- Run benchmarks only on Python 3.12\n- Fix test_cascade_localstack entity ID collision by using unique IDs\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(ci): use --extra dev for integration job\n\nApply review comment: integration tests only need dev dependencies,\nnot all extras.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-11T22:06:20-05:00",
+          "tree_id": "98975233218bec47f8c1b740d305ff2c2e072b0d",
+          "url": "https://github.com/zeroae/zae-limiter/commit/88731ba4ebd0390d6d2adbbb47ebd42de9599bd4"
+        },
+        "date": 1768187357224,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 5.342119329426973,
+            "unit": "iter/sec",
+            "range": "stddev: 0.4064908372577444",
+            "extra": "mean: 187.19162533332363 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.716855731259784,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006780573326925634",
+            "extra": "mean: 53.427777312503366 msec\nrounds: 16"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d41d05fa837a0c9df1271425f09fed1087f0ca3",
+          "message": "\ud83d\udcdd docs: add migration strategy documentation (#40)\n\n- Create comprehensive docs/migrations.md documenting migration strategy\n- Add migrations.md to mkdocs.yml nav under Infrastructure\n- Fix Repository API usage in code examples (save_entity -> create_entity)\n- Fix Entity access patterns (dataclass attributes vs dict access)\n- Fix broken anchor link #running-migrations -> #sample-migration-v200\n- Add link to migrations guide in docs/index.md\n\nCloses #40",
+          "timestamp": "2026-01-11T23:03:11-05:00",
+          "tree_id": "bf1de356be9bf2a153c70a1816212a764a1ae6b7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/5d41d05fa837a0c9df1271425f09fed1087f0ca3"
+        },
+        "date": 1768190749652,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.441425830802014,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00933390046941291",
+            "extra": "mean: 44.560448499998984 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.808426360161572,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02722667726883063",
+            "extra": "mean: 56.15319286363532 msec\nrounds: 22"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "63718c17d3625b4bb03d2094ca5d40b6a33f9fe4",
+          "message": "\ud83d\udd12 feat(models): add input validation to prevent injection attacks (#75)\n\n* \ud83d\udd12 feat(models): add input validation to prevent injection attacks\n\nAdd comprehensive input validation to defend against DynamoDB key\ninjection attacks. The '#' character is used as a key delimiter in\nDynamoDB and must be forbidden in user-provided values.\n\nChanges:\n- Add ValidationError exception hierarchy (ValidationError,\n  InvalidIdentifierError, InvalidNameError) to exceptions.py\n- Add validate_identifier() and validate_name() functions to models.py\n- Add validation to Limit, Entity, BucketState, and LimitStatus models\n- Export new exceptions in __init__.py\n- Add comprehensive test coverage (29 new tests)\n\nValidation rules:\n- Identifiers (entity_id, parent_id): alphanumeric start, max 256 chars,\n  allows alphanumeric, underscore, hyphen, dot, colon, @\n- Names (limit_name, resource): letter start, max 64 chars,\n  allows alphanumeric, underscore, hyphen, dot\n\nCloses #48\n\n* \ud83d\udc1b fix(models): move validation to API boundaries for performance\n\nAddress code review feedback:\n- Remove __post_init__ validation from BucketState and LimitStatus\n  (internal models used for DynamoDB deserialization)\n- Keep validation in BucketState.from_limit() (API boundary)\n- Keep validation in Limit and Entity (user-facing models)\n\nThis fixes:\n1. Performance regression (4.25x slowdown) - validation no longer\n   runs on every internal model construction\n2. Deserialization bug - repository can now read DynamoDB data\n   with empty string defaults without crashing\n\nAlso updates:\n- CLAUDE.md to document ValidationError exception\n- Tests to reflect internal models don't validate directly\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style(models): fix ruff formatting\n\n* \ud83d\udc1b fix(models): remove Entity validation for benchmark performance\n\nMove validation from Entity.__post_init__ to Repository.create_entity()\nto avoid performance overhead during DynamoDB deserialization.\n\n- Entity no longer validates in __post_init__ (internal model)\n- Repository.create_entity() validates entity_id and parent_id at API boundary\n- Add comprehensive tests for repository validation\n- Update model tests to reflect Entity is an internal model\n\nThis fixes the 2.43x performance regression in test_available_check benchmark.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(validation): move validation to RateLimiter API boundary\n\nMove entity_id and resource validation from BucketState.from_limit() to\nRateLimiter._do_acquire() for consistent API boundary validation.\n\nChanges:\n- Remove validation from BucketState.from_limit() (internal factory)\n- Add validation to RateLimiter._do_acquire() (API boundary)\n- Add ValidationError to exceptions that bypass FAIL_OPEN mode\n- Add input validation tests to test_limiter.py\n- Update test_models.py to reflect from_limit is internal\n\nThis ensures validation happens at the public API boundary while keeping\ninternal model construction fast and unvalidated.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T00:28:29-05:00",
+          "tree_id": "3cb86eab302bdb568fe81e9b12c638a898e65a50",
+          "url": "https://github.com/zeroae/zae-limiter/commit/63718c17d3625b4bb03d2094ca5d40b6a33f9fe4"
+        },
+        "date": 1768195846611,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.089016128492737,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010689874051306307",
+            "extra": "mean: 45.27136900000244 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.684824246693545,
+            "unit": "iter/sec",
+            "range": "stddev: 0.028683688554514485",
+            "extra": "mean: 53.51936880952784 msec\nrounds: 21"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e8b69a321e5072e19fddeee1a4b6fe3d00a4bcf",
+          "message": "\u2728 feat(repository): add security audit logging for limit modifications (#76)\n\n* \u2728 feat(repository): add security audit logging for limit modifications\n\n- Add AuditEvent and AuditAction models for tracking security events\n- Add audit schema keys (pk_audit, sk_audit) in schema.py\n- Implement _log_audit_event and get_audit_events methods in Repository\n- Add principal parameter to create_entity, delete_entity, set_limits, delete_limits\n- Log audit events for entity creation/deletion and limit changes\n- Store audit logs in DynamoDB with 90-day TTL by default\n- Add comprehensive tests for audit logging functionality\n\nCloses #47\n\n* \ud83d\udd12 feat(repository): add principal validation to audit logging\n\n- Validate principal field using identifier pattern before logging\n- Prevents injection attacks via malicious principal values\n- Rejects empty strings and # delimiter in principal\n- Accepts valid formats: emails, UUIDs, service names\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(repository): use ULID for collision-free audit event IDs\n\nAddresses PR #76 review feedback:\n- Replace timestamp-based event IDs with ULIDs (monotonic, collision-free)\n- Add python-ulid dependency for ULID generation\n- Update CLAUDE.md with AuditEvent/AuditAction in models.py description\n- Add audit events access pattern to DynamoDB patterns table\n- Add tests for ULID format and monotonic ordering\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style(tests): format test_repository.py\n\n* \u2705 test(models): increase coverage to 100%\n\nAdd tests for:\n- Limit validation: refill_amount and refill_period_seconds\n- BucketState properties: tokens, capacity, burst\n- LimitStatus.deficit property\n- AuditEvent: to_dict() and from_dict() serialization\n- AuditAction constants\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T01:57:47-05:00",
+          "tree_id": "01c1a73e66d9f1c749e6d30da4c01bcbe4187fbd",
+          "url": "https://github.com/zeroae/zae-limiter/commit/7e8b69a321e5072e19fddeee1a4b6fe3d00a4bcf"
+        },
+        "date": 1768201197907,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.948630430335996,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00741757551197253",
+            "extra": "mean: 45.56092933333389 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.87645430208263,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007551622967925118",
+            "extra": "mean: 47.900854500001955 msec\nrounds: 14"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1bbc649df756dedfaf71b9c0701a357d56106468",
+          "message": "fix(infra): use LocalStack legacy CloudFormation engine (#81) (#85)\n\n* \ud83d\udc1b fix(infra): fix CloudFormation output condition for DLQ alarm\n\n- Fix AggregatorDLQAlarmName output to use DeployAggregatorAlarms condition\n  instead of DeployAggregator (fixes template error when aggregator enabled\n  but alarms disabled)\n- Update CLAUDE.md with LocalStack Docker socket requirement\n- Add pytest markers for aws and e2e tests\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(infra): add integration test for CloudFormation stack deletion (#81)\n\nAdd test_stack_create_and_delete_minimal to document and verify the\nLocalStack CloudFormation v2 engine bug where stack deletion fails with:\n  \"Template format error: Unresolved resource dependencies [AggregatorDLQ]\"\n\nRoot cause: LocalStack's new CloudFormation v2 engine incorrectly tries\nto resolve !GetAtt references in conditional resources during deletion,\neven when those resources were never created (condition evaluated to false).\n\nWorkarounds:\n1. Use legacy engine: PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy\n2. Wrap delete_stack() in try/except and delete resources directly\n\nThe test:\n- Creates a minimal stack (no aggregator, no alarms)\n- Attempts deletion (expected to fail on LocalStack v2 engine)\n- Uses xfail to document the known issue\n- Falls back to direct DynamoDB table deletion for cleanup\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(infra): use LocalStack legacy CloudFormation engine (#81)\n\nLocalStack's CloudFormation v2 engine has a bug where stack deletion\nfails with \"Unresolved resource dependencies [AggregatorDLQ]\" due to\nincorrect resolution of !GetAtt references in conditional resources.\n\nWorkaround: Use PROVIDER_OVERRIDE_CLOUDFORMATION=engine-legacy\n\nNote: Legacy engine has its own bug where CloudWatch Alarm Threshold\nparameters are passed as strings. Tests use aggregator_stack_options\n(no alarms) to avoid this issue.\n\nUpdated:\n- CLAUDE.md documentation\n- docs/infra/localstack.md\n- .github/workflows/ci.yml (integration and benchmark jobs)\n- tests/test_integration_localstack.py docstring and cleanup\n- tests/test_stack_manager.py (expect success, not xfail)\n- examples/fastapi-demo/docker-compose.yml\n- tests/fixtures/localstack-v2-bug-repro.yaml (minimal reproduction)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T15:36:47-05:00",
+          "tree_id": "6954f2151e112336169d70c80873cf7686e62019",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1bbc649df756dedfaf71b9c0701a357d56106468"
+        },
+        "date": 1768250336408,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 18.750103225990713,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0073530633439187944",
+            "extra": "mean: 53.33303971435401 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.31678138909128,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007106335751871682",
+            "extra": "mean: 54.594744500011274 msec\nrounds: 18"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1e632cb5f905d3692f2f2a99c5607f7a1d128b73",
+          "message": "revert: undo LocalStack legacy CloudFormation engine workaround (#85) (#86)\n\n* \u23ea revert: undo LocalStack legacy CloudFormation engine workaround (#85)\n\nThis reverts commit 1bbc649df756dedfaf71b9c0701a357d56106468.\n\nPrefer using LocalStack's v2 CloudFormation engine (the default) rather\nthan the legacy engine. While v2 has a stack deletion bug with conditional\nresources, the legacy engine has its own bug with CloudWatch Alarm\nThreshold parameters.\n\nThe v2 engine is the future of LocalStack CloudFormation support, and\nwe should track the upstream bug rather than permanently work around it.\n\nUpstream issue: https://github.com/localstack/localstack/issues/13609\n\nRe-opens #81 for tracking until LocalStack fixes the v2 engine.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(infra): address code review feedback for PR #86\n\n1. Fix CloudFormation condition mismatch: AggregatorDLQAlarmName output\n   now uses DeployAggregatorAlarms condition (not DeployAggregator) to\n   match the resource it references.\n\n2. Add test_cloudformation_stack_deployment_no_alarms: Tests the edge\n   case where EnableAggregator=true but EnableAlarms=false.\n\n3. Add test_stack_create_and_delete_minimal: Integration test for full\n   stack lifecycle with graceful handling of LocalStack v2 deletion bug.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: remove references to non-existent e2e pytest marker\n\nThe e2e marker was removed by the revert. Update CLAUDE.md to reflect\nthat integration tests now include full stack lifecycle tests.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T16:47:20-05:00",
+          "tree_id": "b3417a33749991d9f7e91fe83426329be51cb48f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1e632cb5f905d3692f2f2a99c5607f7a1d128b73"
+        },
+        "date": 1768254597391,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.854401425374554,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007496194642260101",
+            "extra": "mean: 41.92098481818427 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.012249135824824,
+            "unit": "iter/sec",
+            "range": "stddev: 0.026925888075122074",
+            "extra": "mean: 52.59766968420889 msec\nrounds: 19"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c330e5cba9eba3c59d5e79dfb412376118a3ac73",
+          "message": "\u2728 feat(infra): add VS Code worktree configuration for multi-session Claude Code (#87)\n\nConfigure Git Worktrees extension to store worktrees in ../zae-limiter.worktrees,\nenabling parallel Claude Code sessions in separate VS Code windows.\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T17:24:34-05:00",
+          "tree_id": "f05fd6443803a5eabc58f597787e0065b5373370",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c330e5cba9eba3c59d5e79dfb412376118a3ac73"
+        },
+        "date": 1768256806591,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 19.94203037894304,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01391465525580085",
+            "extra": "mean: 50.14534533333719 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.485308910312174,
+            "unit": "iter/sec",
+            "range": "stddev: 0.034333194386366006",
+            "extra": "mean: 57.1908683529313 msec\nrounds: 17"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6504b22e55e93f1a5ebf13534c015f348e40f70",
+          "message": "\u2705 test(e2e): add E2E integration tests for LocalStack and AWS (#82)\n\n* \u2705 test(e2e): add E2E integration tests for LocalStack and AWS (#46)\n\nAdd comprehensive end-to-end integration tests that validate the full\nstack lifecycle including CloudFormation, DynamoDB, Lambda aggregator,\nand CloudWatch alarms.\n\nChanges:\n- Add test_e2e_localstack.py with 9 tests for LocalStack integration\n- Add test_e2e_aws.py with 9 tests for real AWS integration\n- Add --run-aws pytest flag to enable AWS tests\n- Fix CloudFormation template: remove invalid StreamEnabled property\n- Fix table naming to use hyphens (CloudFormation stack name constraint)\n- Add timing-tolerant assertions for token bucket refill behavior\n- Add explicit stack cleanup in test fixtures\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(e2e): mark flaky usage snapshot test as xfail (#84)\n\nThe test_usage_snapshots_created test fails intermittently because\nthe Lambda aggregator may not create snapshots within the 120s wait\nperiod due to DynamoDB Streams latency and Lambda batching delays.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(test): fix flaky concurrent lease test by reducing refill rate\n\nUse per_hour limit (1000/hour = ~0.28/second) instead of per_minute\n(100/minute = ~1.67/second) to prevent bucket from fully refilling\nduring concurrent operations in CI.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(test): fix CI failures for E2E tests\n\n- Add aws and e2e pytest markers to pyproject.toml\n- Disable CloudWatch alarms in e2e_stack_options (LocalStack bug)\n- Loosen concurrent test assertion (optimistic locking timing)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T17:26:35-05:00",
+          "tree_id": "f5e5c987cd7b7d127932c83ecef5744263d195cd",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d6504b22e55e93f1a5ebf13534c015f348e40f70"
+        },
+        "date": 1768257084513,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.007398435827255,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007853424887152958",
+            "extra": "mean: 49.98151075000834 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.79172067482718,
+            "unit": "iter/sec",
+            "range": "stddev: 0.028664996032335733",
+            "extra": "mean: 56.205918374992336 msec\nrounds: 16"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "acf485f1c56bcb725e70d3966fabcafac0a8847a",
+          "message": "\ud83d\udcdd docs: document stack lifecycle and cleanup best practices (#79) (#88)\n\n- Enhanced delete_stack() docstrings with examples and warnings\n- Added Stack Lifecycle section to README with cleanup examples\n- Added Stack Lifecycle Management section to deployment docs\n- Updated LocalStack docs with proper pytest fixtures including cleanup\n- Added use-case guidance for dev/test/production scenarios\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T17:41:28-05:00",
+          "tree_id": "d7dcd91fd6a96f962d4d8ffa2a4e5b86bea6dfd9",
+          "url": "https://github.com/zeroae/zae-limiter/commit/acf485f1c56bcb725e70d3966fabcafac0a8847a"
+        },
+        "date": 1768257849590,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.005732602663947,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004715097428076891",
+            "extra": "mean: 49.985672600004705 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 15.769030762527137,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03479643273802465",
+            "extra": "mean: 63.41543846666582 msec\nrounds: 15"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5c5aeda4bc140ad5db7fd20b105b312dbda7932f",
+          "message": "feat(infra): add IAM permission boundary and role name format support (#90)\n\n* \ud83d\udcdd docs(infra): add implementation plan for IAM permission boundaries (#83)\n\nPlan for adding:\n- Permission boundary support for Lambda execution role\n- Customizable role naming for enterprise compliance\n\n* \ud83d\udcdd docs(infra): update plan with final design for #83\n\n- permission_boundary: accepts policy name or full ARN\n- role_name_format: uses {} placeholder for internal role name\n- Handle substitution in Python, keep CFN template simple\n\n* \u2728 feat(infra): add IAM permission boundary and role name format support (#83)\n\n- Add PermissionBoundary parameter to CloudFormation template\n- Add RoleName parameter with conditional logic for custom naming\n- Add permission_boundary and role_name_format fields to StackOptions\n- Add get_role_name() method for {} placeholder substitution\n- Add --permission-boundary and --role-name-format CLI options\n- Update AWS E2E tests to use permission boundary\n- Add comprehensive unit tests for new StackOptions features\n- Update CLAUDE.md documentation with new options\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-12T20:28:19-05:00",
+          "tree_id": "5e666c6e18e34eb63155577564be9384f088ecf3",
+          "url": "https://github.com/zeroae/zae-limiter/commit/5c5aeda4bc140ad5db7fd20b105b312dbda7932f"
+        },
+        "date": 1768267854860,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.5384404091461,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011287071498665318",
+            "extra": "mean: 48.68918866666642 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.16259108237426,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03321751095772111",
+            "extra": "mean: 58.26626033332379 msec\nrounds: 12"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b09c8d68dbd9882976168230dc4b30ebffb394ad",
+          "message": "feat(cli): add --endpoint-url option to all AWS-interacting commands (#89)\n\nAdd the --endpoint-url parameter to all AWS-interacting CLI commands\nfor LocalStack consistency:\n\n- status: Pass endpoint_url to StackManager\n- delete: Pass endpoint_url to StackManager\n- version: Pass endpoint_url to Repository\n- upgrade: Pass endpoint_url to both Repository and StackManager\n- check: Pass endpoint_url to Repository\n\nAlso adds tests for each command and updates CLAUDE.md documentation.\n\nCloses #78",
+          "timestamp": "2026-01-12T20:35:39-05:00",
+          "tree_id": "70c3bf1e585bb0a9a5a1f4dc9ecebf52eb11135f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/b09c8d68dbd9882976168230dc4b30ebffb394ad"
+        },
+        "date": 1768268286577,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.366310609924543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007529637099960871",
+            "extra": "mean: 46.80265199999035 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/test_performance.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.45917759520124,
+            "unit": "iter/sec",
+            "range": "stddev: 0.030176964898677158",
+            "extra": "mean: 54.173594400000034 msec\nrounds: 15"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "812766ad534fc066643e07b25dc2112c7136c769",
+          "message": "\u26a1 perf(test): optimize test execution with parallel execution and shared fixtures (#80) (#92)\n\n* \u26a1 perf(test): optimize E2E test execution with shared stack fixtures\n\nReduce CloudFormation stack creations from 9 to 4 by sharing stacks\nacross tests within each test class:\n\n- Add shared_stack fixture (class-scoped) for TestE2ELocalStackFullWorkflow\n- Add shared_stack_minimal fixture (class-scoped) for TestE2ELocalStackErrorHandling\n- Each test gets a fresh RateLimiter instance to avoid event loop issues\n- Add unique_table_name_class fixture for class-level table name sharing\n- Update localstack_endpoint and e2e_stack_options to session scope\n\nResults:\n- Stack creations: 9 \u2192 4 (55% reduction)\n- Test time: ~5min \u2192 ~3:15 (35% faster)\n\nCloses #80\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u26a1 perf(test): optimize integration test execution with shared stack fixtures\n\nApply same shared stack pattern to integration tests:\n\n- Add shared_stack fixture (class-scoped) for TestLocalStackIntegration\n- Add shared_stack_sync fixture (class-scoped) for TestSyncLocalStackIntegration\n- Update StackOptions fixtures to session scope for compatibility\n- Fix entity ID collision in inline CloudFormation tests\n\nResults for integration tests:\n- Stack creations: 8 \u2192 4 (50% reduction)\n- Test time: ~2 minutes (was creating redundant stacks)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u26a1 perf(test): add pytest-xdist for parallel test execution\n\n- Add pytest-xdist>=3.5.0 to dev dependencies\n- Update integration tests to use unique table names for parallelization\n- Use --dist loadscope to group tests by class for shared fixtures\n\nPerformance improvements with -n auto --dist loadscope:\n- Unit tests: 56s \u2192 10s (5.6x faster)\n- E2E tests: 3:15 \u2192 1:15 (2.6x faster)\n- Integration tests: 2:03 \u2192 1:36 (1.3x faster)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2699\ufe0f chore(test): make parallel test execution the default\n\nAdd -n auto --dist loadscope to pytest addopts configuration.\nTests now run in parallel by default, significantly reducing CI time.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style: fix line too long in integration test\n\n* \ud83d\udc1b fix(ci): disable xdist for benchmark tests\n\n* \ud83d\udd25 chore: remove benchmark.json from repository\n\n* \ud83d\ude48 chore: add benchmark.json to gitignore\n\n* \u267b\ufe0f refactor(test): simplify class-scoped fixtures with loop_scope\n\n- Use pytest_asyncio.fixture with loop_scope=\"class\" to share event loop\n- Merge two-fixture pattern into single fixture that yields limiter directly\n- Add `test` as valid commit scope in CLAUDE.md\n\nThis removes the \"hack\" where we yielded the table name from a class-scoped\nfixture and created a new limiter per test. With loop_scope=\"class\", we can\nnow share the limiter directly across all tests in a class.\n\nFixes review comments from PR #92.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u26a1 perf(test): make LocalStack fixtures parallelizable with unique table names\n\n- Change hardcoded table names to use unique_table_name fixture\n- Add stack cleanup in fixture teardown\n- Enables parallel test execution with pytest-xdist\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(test): add slow/monitoring/snapshots markers for AWS E2E tests\n\nAllow skipping long-running tests (>30s sleeps) with -m \"not slow\".\nMore granular control with -m \"not monitoring\" or -m \"not snapshots\".\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(test): add loop_scope to async tests using class-scoped fixtures\n\nTests using class-scoped async fixtures must have matching loop_scope\nto prevent \"Future attached to different loop\" errors.\n\n- Moved standalone CFN deployment tests to separate class\n- Added loop_scope=\"class\" to all tests in classes with class-scoped fixtures\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(test): reorganize tests into unit/integration/e2e/benchmark directories\n\n- Split flat tests/ directory into subdirectories by test type:\n  - tests/unit/ - moto-mocked tests (fast)\n  - tests/integration/ - LocalStack repository tests\n  - tests/e2e/ - full workflow tests (LocalStack + AWS)\n  - tests/benchmark/ - performance benchmarks (pytest-benchmark)\n- Add importlib mode to pytest config for same-named files in different dirs\n- Add __init__.py to all test subdirectories for proper package imports\n- Split conftest.py into per-directory fixtures\n- Delete redundant test_integration_localstack.py (duplicated E2E tests)\n- Move CloudFormation stack tests to e2e/test_localstack.py\n- Document test architecture in CLAUDE.md\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(ci): add E2E job and fix benchmark path for new test structure\n\n- Add e2e job to run LocalStack E2E tests (tests/e2e/test_localstack.py)\n- Fix benchmark path from tests/test_performance.py to tests/benchmark/\n- E2E job runs on Python 3.11 and 3.12 with LocalStack service\n- Upload E2E coverage and test results to Codecov with 'e2e' flag\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(test): move root-level tests to subdirectories\n\nMove all test files from tests/ root to appropriate subdirectories:\n- Pure unit tests \u2192 tests/unit/\n- Integration tests with @integration marker \u2192 tests/integration/\n- Split test_stack_manager.py and test_lambda_builder.py (unit vs integration)\n- Remove localstack_endpoint from root conftest (stays in integration/conftest)\n\nNo test files remain at root level - all tests are now organized by:\n- unit/: Fast moto-based tests\n- integration/: LocalStack-based tests\n- e2e/: Full workflow tests\n- benchmark/: Performance benchmarks\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(test): use unique table names for parallel test isolation\n\nUpdate integration tests to use unique_table_name fixture instead of\nhardcoded table names. This prevents race conditions when tests run\nin parallel with pytest-xdist.\n\nAffected tests:\n- test_repository.py: localstack_repo, test_create_table_or_stack,\n  test_create_stack_with_custom_parameters\n- test_stack_manager.py: test_stack_create_and_delete_minimal\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style: fix formatting in tests/unit/conftest.py\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(ci): rename test job to unit for consistency\n\nRename the \"test\" job to \"unit\" to match the tests/unit/ directory structure.\nAlso explicitly targets tests/unit/ and adds the \"unit\" flag for coverage.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(test): use unique table names for parallel test isolation\n\nChange test_hierarchical_rate_limiting_workflow to use per_hour limits\ninstead of per_minute to prevent timing-related flakiness. The per_minute\nlimits refill ~1.67 tokens/second which can cause the test to see 100\ntokens available instead of 99 if there's any delay between consumption\nand verification.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style: shorten assertion messages to fix line length\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T01:58:35-05:00",
+          "tree_id": "51a11d68c509ae65d97be5363af1ea587a345092",
+          "url": "https://github.com/zeroae/zae-limiter/commit/812766ad534fc066643e07b25dc2112c7136c769"
+        },
+        "date": 1768287706255,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.225801769716508,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011832575548474228",
+            "extra": "mean: 41.27830358333284 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.280161665367885,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005011253281689043",
+            "extra": "mean: 44.88297773684436 msec\nrounds: 19"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bdefbfcf7fb6c9a5b4b4e9f5d5110ee2b62ecc52",
+          "message": "\u2728 feat(models): add PEP 561 py.typed marker for type export support (#93)\n\n* \u2728 feat(models): add PEP 561 py.typed marker for type export support\n\nAdd py.typed marker file to enable downstream type checkers (mypy,\npyright) to recognize this package as fully typed.\n\n* \ud83d\udc1b fix(models): correct type ignore comment for _version import\n\nChange type ignore from `import-untyped` to `import-not-found` since\nthe _version module is generated at build time by hatch-vcs.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T03:27:23-05:00",
+          "tree_id": "fb74bf7867c99b915ec18209032a8246a9e29de7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/bdefbfcf7fb6c9a5b4b4e9f5d5110ee2b62ecc52"
+        },
+        "date": 1768293035511,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.095952105344153,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011415370034880107",
+            "extra": "mean: 41.5007464999988 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 23.262100826046936,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007659549760779457",
+            "extra": "mean: 42.98837871428553 msec\nrounds: 21"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c22f355d63f63cc4b253f1eb2eeb7b8d9f486194",
+          "message": "feat(infra): add docker-compose.yml for LocalStack development (#94)\n\n* \u2728 feat(infra): add docker-compose.yml for LocalStack development\n\nAdd docker-compose.yml at project root as the preferred method for\nstarting LocalStack. Update documentation to reflect this change:\n\n- CLAUDE.md: Update Local Development and Running Tests sections\n- README.md: Update Local Development with LocalStack section\n- docs/infra/localstack.md: Reorder tabs to show Docker Compose first\n\n* \ud83d\udcdd docs: replace docker run with docker compose in examples and tests\n\nUpdate all remaining LocalStack setup instructions to use the new\ndocker-compose.yml instead of docker run commands:\n\n- docs/migrations.md\n- examples/basic_rate_limiting.py\n- examples/hierarchical_limits.py\n- examples/llm_token_reconciliation.py\n- tests/e2e/test_localstack.py\n- tests/integration/test_repository.py\n\n* \ud83d\udcdd docs: add AWS credentials to LocalStack test instructions\n\nLocalStack requires AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and\nAWS_DEFAULT_REGION environment variables to be set. Update all test\ndocumentation to include these:\n\n- docker-compose.yml header comments\n- CLAUDE.md Running Tests section\n- tests/e2e/test_localstack.py docstring\n- tests/integration/test_repository.py docstring\n- tests/benchmark/test_localstack.py docstring\n- docs/migrations.md integration test section\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T04:15:04-05:00",
+          "tree_id": "af29c33e20bf205fc851abf0dbb02026c24e1b5a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c22f355d63f63cc4b253f1eb2eeb7b8d9f486194"
+        },
+        "date": 1768295896440,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.42220870181788,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009235932649109433",
+            "extra": "mean: 40.946337499997064 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.532068004945142,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0056646978566288145",
+            "extra": "mean: 46.44235750000121 msec\nrounds: 20"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fccf670778873dd7e9a28bef6df73a3cabab7a52",
+          "message": "\u2728 feat(limiter): rename stack_name to name for cloud-agnostic API (#95)\n\n* \u2728 feat(limiter): rename stack_name to name for cloud-agnostic API\n\nBREAKING CHANGE: The `stack_name` parameter has been renamed to `name` in the public API.\n\nThis change makes the API cloud-agnostic, hiding AWS CloudFormation terminology from end users:\n\n**Python API:**\n- Before: `RateLimiter(stack_name=\"rate-limits\", region=\"us-east-1\")`\n- After: `RateLimiter(name=\"my-app\", region=\"us-east-1\")`\n\n**CLI:**\n- Before: `zae-limiter deploy --stack-name rate-limits`\n- After: `zae-limiter deploy --name my-app` (or `-n my-app`)\n\n**Default value:**\n- Changed from `\"rate-limits\"` to `\"limiter\"` (creates `ZAEL-limiter` resources)\n\n**New module:**\n- Added `naming.py` with `validate_name()` and `normalize_name()` functions\n- Centralizes ZAEL- prefix logic and validation rules\n\n**Internal code unchanged:**\n- `Repository` and `StackManager` still use `stack_name` internally (AWS-specific)\n- Only the public-facing API uses the generic `name` parameter\n\n**Test fixtures:**\n- Renamed `unique_table_name` to `unique_name` for consistency\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(naming): add comprehensive unit tests for naming module\n\n- Add tests/unit/test_naming.py with 33 tests covering:\n  - validate_name() for valid names (simple, hyphenated, alphanumeric)\n  - Error cases (empty, underscore, period, space, starts with number)\n  - Length validation (max 38 chars)\n  - normalize_name() with/without ZAEL- prefix\n  - Backward compatibility aliases (validate_stack_name, normalize_stack_name)\n  - Edge cases (unicode, emoji, special chars)\n\n- Add CLI validation error tests to test_cli.py:\n  - All commands (deploy, delete, status, version, check, upgrade)\n  - Verify helpful error messages for invalid names\n\nCoverage improvement:\n- naming.py: 75% \u2192 96%\n- cli.py: Error handling paths now covered\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(tests): widen tolerance for flaky lease adjustment test\n\nThe test_lease_adjustment_workflow test failed intermittently because\ntoken bucket refill was occurring during test execution. With a refill\nrate of ~167 tokens/second, even a few milliseconds of delay caused\nthe assertion to fail.\n\nWidened tolerance from (200-300) to (150-350) tokens consumed, providing\n\u00b1100 token variance around the expected 250 consumed.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T05:14:35-05:00",
+          "tree_id": "7c31ec57ca33892f6070c72adec5e3cfedbfaa11",
+          "url": "https://github.com/zeroae/zae-limiter/commit/fccf670778873dd7e9a28bef6df73a3cabab7a52"
+        },
+        "date": 1768299423939,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.145762300172827,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008264701074089683",
+            "extra": "mean: 45.15536590908844 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.717607629895728,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006126497051596935",
+            "extra": "mean: 46.04558738889056 msec\nrounds: 18"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6d4ff0f9b3a82a534aa560d79675c7eb691c2b3",
+          "message": "\ud83d\udcdd docs: complete rename of table_name to name for cloud-agnostic API (#103)\n\n* \ud83d\udcdd docs(readme): update table_name to name for cloud-agnostic API\n\nFix documentation missed in PR #95 that renamed stack_name to name.\n\nUpdates include:\n- CLI examples: --table-name \u2192 --name\n- Python examples: table_name \u2192 name parameter\n- create_stack=True \u2192 stack_options=StackOptions()\n- Underscore names \u2192 hyphen names (rate_limits \u2192 my-app)\n- Comments reflect ZAEL- prefix convention\n\n* \ud83d\udcdd docs: complete rename of table_name to name across docs and examples\n\nContinue the work from PR #95 to fully migrate documentation and examples\nfrom the old API (`table_name`, `create_stack=True`) to the new cloud-agnostic\nAPI (`name`, `stack_options=StackOptions()`).\n\nChanges made across 19 files:\n- CLI flag: `--table-name` \u2192 `--name`\n- Python parameter: `table_name=` \u2192 `name=`\n- Python parameter: `create_stack=True` \u2192 `stack_options=StackOptions()`\n- Add StackOptions import where needed\n- Naming convention: `rate_limits` \u2192 `limiter`, `demo`, etc.\n- Environment variable: `TABLE_NAME` \u2192 `NAME` (in fastapi-demo)\n- Comments updated to reflect `ZAEL-{name}` prefix pattern\n\nDocumentation files:\n- docs/api/index.md\n- docs/cli.md\n- docs/getting-started.md\n- docs/guide/failure-modes.md\n- docs/index.md\n- docs/infra/cloudformation.md\n- docs/infra/deployment.md\n- docs/infra/localstack.md\n- docs/migrations.md\n\nExample files:\n- examples/basic_rate_limiting.py\n- examples/hierarchical_limits.py\n- examples/llm_token_reconciliation.py\n- examples/fastapi-demo/* (7 files)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(docs): address PR review comments\n\n- Revert CloudFormation resource name to RateLimitsTable (docs/cli.md)\n- Change \"Creates ZAEL-X resources\" to \"Connects to ZAEL-X\" when no\n  stack_options is provided (docs/guide/failure-modes.md, docs/index.md,\n  docs/infra/localstack.md)\n- Remove non-existent client_config parameter example\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(docs): align cloudformation.md with actual template\n\n- TABLE_NAME: !Ref AWS::StackName \u2192 !Ref TableName\n- RETENTION_DAYS \u2192 SNAPSHOT_TTL_DAYS (matches template)\n- QueueName: ${AWS::StackName}-dlq \u2192 ${TableName}-aggregator-dlq\n- Update alarm example to match actual template structure\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T09:48:11-05:00",
+          "tree_id": "cd3fcea1874de72ee16713803cb757bc34c02690",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d6d4ff0f9b3a82a534aa560d79675c7eb691c2b3"
+        },
+        "date": 1768316082576,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.265242377414133,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007551938410374485",
+            "extra": "mean: 42.982573909085886 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.86876437115989,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006096486711425128",
+            "extra": "mean: 43.72776700000082 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.92080016261182,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034163388604596784",
+            "extra": "mean: 26.370751558822707 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 33.18425596228108,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037413984823842943",
+            "extra": "mean: 30.134772379306956 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.92736537332791,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007444963260683914",
+            "extra": "mean: 40.11655403703403 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 230.24824346885146,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007635304848259191",
+            "extra": "mean: 4.343138453237679 msec\nrounds: 139"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "22b701fbb5ed7858ca86272408aa5f325abb13de",
+          "message": "\u267b\ufe0f refactor(infra): use AWS::StackName instead of TableName parameter (#105)\n\nReplace the redundant TableName parameter with the built-in\nAWS::StackName pseudo-parameter in CloudFormation template.\n\nChanges:\n- Remove TableName parameter from cfn_template.yaml\n- Replace all !Ref TableName with !Ref AWS::StackName\n- Replace ${TableName} with ${AWS::StackName} in !Sub expressions\n- Update stack_manager.py to stop passing TableName parameter\n- Update cloudformation.md documentation\n- Update unit tests to reflect the new behavior\n\nThis ensures the DynamoDB table name always matches the stack name,\neliminating configuration drift and simplifying maintenance.\n\nCloses #104\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T10:26:08-05:00",
+          "tree_id": "13a91d631faf77e42d27369ac94fd5648b59a650",
+          "url": "https://github.com/zeroae/zae-limiter/commit/22b701fbb5ed7858ca86272408aa5f325abb13de"
+        },
+        "date": 1768318357011,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.607554392311055,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0063090727265726195",
+            "extra": "mean: 46.28011027272227 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.86784132661745,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00481724974856363",
+            "extra": "mean: 47.92062505883036 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 34.3569441329885,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004840184040018285",
+            "extra": "mean: 29.106197458342347 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 31.269772845670154,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031628188562764442",
+            "extra": "mean: 31.97976540908795 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 28.00007726677202,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005877618404369088",
+            "extra": "mean: 35.71418716000153 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 226.30516311118274,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000539908534398634",
+            "extra": "mean: 4.418812130718839 msec\nrounds: 153"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "81942dddd28671fc438a98b56211f782cc34c28c",
+          "message": "\ud83d\udcdd docs: create monitoring and observability guide (#108)\n\n- Add comprehensive docs/monitoring.md with structured logging, CloudWatch metrics, Logs Insights queries, dashboard templates, alert configuration, and troubleshooting guide\n- Add monitoring page to mkdocs navigation\n- Update docs/index.md and docs/infra/deployment.md with cross-references\n- Create follow-up issue #107 for X-Ray tracing integration\n\nCloses #38",
+          "timestamp": "2026-01-13T11:11:11-05:00",
+          "tree_id": "1c5bb1c8d695fdb5342fc3059a5e9b1ce4a0ecac",
+          "url": "https://github.com/zeroae/zae-limiter/commit/81942dddd28671fc438a98b56211f782cc34c28c"
+        },
+        "date": 1768321194294,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.317549296836123,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009690481959013373",
+            "extra": "mean: 46.90970740001603 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.590625805436247,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0057548260152146865",
+            "extra": "mean: 44.26614865000147 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.01746609568898,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004537692151988674",
+            "extra": "mean: 25.629547483876443 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.5690822241508,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004412155121081424",
+            "extra": "mean: 30.703966206897743 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.01440840346339,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006686750865683713",
+            "extra": "mean: 39.976959833339265 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 240.37948149998832,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00043122908961592697",
+            "extra": "mean: 4.160088846851301 msec\nrounds: 111"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "47a7ed0bfb69c3e760a33abb55a30059b4819fa5",
+          "message": "\ud83d\udcdd docs: create troubleshooting guide (#36) (#109)\n\n* \ud83d\udcdd docs: add implementation plan for troubleshooting guide (#36)\n\nCreate detailed plan for docs/troubleshooting.md covering:\n- Rate limit enforcement failures\n- DynamoDB throttling issues\n- Lambda aggregator malfunctions\n- Version compatibility errors\n- Stream processing lag\n- Recovery procedures\n\nPlan includes implementation steps, code references, CLI commands,\nand acceptance criteria for the troubleshooting documentation.\n\n* \ud83d\udcdd docs: update plan to consolidate troubleshooting from monitoring.md\n\n- Add consolidation decision section explaining the approach\n- Note existing content in monitoring.md to migrate (4 sections)\n- Add Step 9 to update monitoring.md (remove troubleshooting, add link)\n- Update file changes summary to include monitoring.md\n- Add acceptance criteria for consolidation\n\n* \ud83d\udcdd docs: create troubleshooting guide (#36)\n\nCreate comprehensive troubleshooting guide covering:\n- Rate limit enforcement failures\n- DynamoDB throttling issues\n- Lambda aggregator malfunctions\n- Version compatibility errors\n- Stream processing lag\n- Recovery procedures (backup/restore, migration rollback)\n\nIncludes quick reference tables for CLI commands, CloudWatch\nmetrics, exception types, and DynamoDB key patterns.\n\nConsolidates troubleshooting content from monitoring.md into\nthe new dedicated guide and adds cross-links from index.md\nand failure-modes.md.\n\n* \ud83d\udc1b fix(docs): remove non-existent migrate CLI command\n\nReplace reference to future `zae-limiter migrate` command with\nlink to migration guide, since the CLI command doesn't exist yet.\n\n* \ud83d\uddd1\ufe0f chore: remove implementation plan file\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T11:50:31-05:00",
+          "tree_id": "fb3a27bc7904d8ebd602b2f124baba8715ea96e9",
+          "url": "https://github.com/zeroae/zae-limiter/commit/47a7ed0bfb69c3e760a33abb55a30059b4819fa5"
+        },
+        "date": 1768323426194,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.62613009694978,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008202357309914645",
+            "extra": "mean: 46.24035809999327 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.260408298636197,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006194380043293403",
+            "extra": "mean: 47.03578529412098 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.83060231285526,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003188346173030659",
+            "extra": "mean: 25.75288407692146 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 30.107143797991846,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005333773513659819",
+            "extra": "mean: 33.21470833333251 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.406006814751315,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004524680202935645",
+            "extra": "mean: 39.36077035999915 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 222.85891560641818,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006141308988496417",
+            "extra": "mean: 4.487143793547206 msec\nrounds: 155"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c2aa3da79baf923d197bbbed07c1729b6019c4d",
+          "message": "feat(ci): add path-based filtering and PR docs preview (#110)\n\n* \u2728 feat(ci): add path-based filtering and PR docs preview\n\n- Add change detection job using dorny/paths-filter\n- Skip CI jobs (lint, typecheck, unit, integration, e2e, benchmark)\n  when only docs change\n- Deploy docs preview to gh-pages on PR (using mike)\n- Auto-cleanup PR preview when PR is closed/merged\n- Add PR comment with preview link\n\n* \u2728 feat(ci): trigger docs preview on 'docs-preview' label\n\n- Add 'labeled' event type to PR trigger\n- Check for 'docs-preview' label on PR\n- Deploy preview if docs changed OR label is present\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T12:29:31-05:00",
+          "tree_id": "fe26e28f16ca6c68011bc149a07049ea62630684",
+          "url": "https://github.com/zeroae/zae-limiter/commit/4c2aa3da79baf923d197bbbed07c1729b6019c4d"
+        },
+        "date": 1768325739270,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 19.51999603603363,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008424252348648409",
+            "extra": "mean: 51.22951860000455 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.162681859301298,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008415187760496592",
+            "extra": "mean: 52.184762411771395 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 31.652193224124943,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005499843430229775",
+            "extra": "mean: 31.593387318190995 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 27.5065382491358,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0038559565795379877",
+            "extra": "mean: 36.35499279999067 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.248768846626536,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005102651816009617",
+            "extra": "mean: 43.013030349996484 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 170.96360398855074,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007073140199658543",
+            "extra": "mean: 5.84919817241902 msec\nrounds: 116"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "87c6bf54f049c51de5fecbf0921560c258ebf0ab",
+          "message": "Revert \"feat(ci): add path-based filtering and PR docs preview (#110)\" (#113)\n\nThis reverts commit 4c2aa3da79baf923d197bbbed07c1729b6019c4d.",
+          "timestamp": "2026-01-13T13:28:30-05:00",
+          "tree_id": "4992c8a5dd01b4bcaf6ea72c6027ae840dd1a825",
+          "url": "https://github.com/zeroae/zae-limiter/commit/87c6bf54f049c51de5fecbf0921560c258ebf0ab"
+        },
+        "date": 1768329265091,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.743088426033218,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00906868262416639",
+            "extra": "mean: 43.969402099995136 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.47411816100919,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005588520325509957",
+            "extra": "mean: 46.5676863888973 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.81277399058028,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004139046884837694",
+            "extra": "mean: 25.76471344827598 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.76728640052692,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032610779356879475",
+            "extra": "mean: 30.518242730771853 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.703083938187334,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004352814597288496",
+            "extra": "mean: 40.48077569999862 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 205.3175538338585,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006324336285982313",
+            "extra": "mean: 4.870504159664754 msec\nrounds: 119"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6538975429285b75c7ba02a032752318f18cf8e5",
+          "message": "\ud83d\udcdd docs: create consolidated operations guide (#112)\n\n- Replaces docs/troubleshooting.md with component-centric docs/operations/ directory\n- Adds interactive Mermaid flowchart navigation with clickable nodes\n- Includes Mermaid decision trees in each component file\n- Adds operational runbooks for version upgrades, DynamoDB scaling, runtime limit adjustment, and emergency rollback\n\nCloses #37",
+          "timestamp": "2026-01-13T14:15:05-05:00",
+          "tree_id": "2317aa1ac6044b401b7654ee35698b9a661870e5",
+          "url": "https://github.com/zeroae/zae-limiter/commit/6538975429285b75c7ba02a032752318f18cf8e5"
+        },
+        "date": 1768332124693,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.14416924080268,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007839613651987222",
+            "extra": "mean: 49.642156400000204 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.224164942260465,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00626606570023327",
+            "extra": "mean: 49.44579926315758 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 33.19474561378984,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004850379948341369",
+            "extra": "mean: 30.125249689655025 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 27.5609730833241,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00349125790667861",
+            "extra": "mean: 36.28318916667913 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.779971296304332,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004726646651933567",
+            "extra": "mean: 43.89821159090894 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 193.8541548384558,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004729081924385611",
+            "extra": "mean: 5.158517241135887 msec\nrounds: 141"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06636b70112e1583250767bbfff84b13e2ae016e",
+          "message": "\ud83d\udcdd docs: reorganize documentation by persona with production guide (#117)\n\n* \ud83d\udcdd docs: reorganize docs by persona with production guide (#39)\n\nReorganize documentation structure by audience (Option B):\n- User Guide: Getting started, basic usage, hierarchies, LLM integration\n- Operator Guide: Deployment, production, CloudFormation, monitoring\n- Reference: CLI, API documentation\n- Contributing: Development setup, LocalStack, testing, architecture\n\nKey changes:\n- Create docs/infra/production.md with security, multi-region, cost guidance\n- Move LocalStack from infra/ to contributing/ (developer-only feature)\n- Create contributing section with development, testing, architecture docs\n- Restructure README from ~465 lines to ~113 lines (link to full docs)\n- Update CLAUDE.md with new docs organization decisions\n- Fix broken links after LocalStack relocation\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: add audit logging documentation\n\nAdd comprehensive documentation for the audit capabilities:\n- Create docs/infra/auditing.md with operator guide for audit logging\n- Add AuditEvent and AuditAction to API reference\n- Add cross-references from production and monitoring guides\n- Add Auditing nav entry under Operator Guide\n\nPlanned capabilities tracked in #77 (S3 archival) and #114 (public API).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(readme): reorganize quick start for clarity\n\n- Separate Installation and Usage sections\n- Move hierarchical entity example after basic acquire pattern\n- Add inline comment explaining commit/rollback behavior\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: add token bucket algorithm documentation\n\n- Create docs/guide/token-bucket.md explaining the algorithm\n  - Classic algorithm overview with Mermaid diagrams\n  - Comparison table: classic vs zae-limiter implementation\n  - Key concepts: capacity/burst, lazy refill, negative buckets\n  - Practical implications and limit selection guide\n\n- Expand docs/contributing/architecture.md\n  - Add mathematical formulas for refill, drift compensation, retry\n  - Add code walkthrough with function references\n  - Add design decisions table with rationale\n\n- Improve src/zae_limiter/bucket.py module docstring\n  - Document key features and functions\n  - Add links to documentation\n\n- Add cross-references between documentation pages\n- Frame negative buckets as general \"estimate-then-reconcile\" pattern\n  (not LLM-specific)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: generalize project description and fix inaccurate claims\n\n- Replace LLM-specific framing with problem-focused language\n- Fix misleading \"Global\" claim \u2192 \"Regional\" (single-region design)\n- Add cost estimate (~$1/1M requests) to overview\n- Add 99.99% SLA to \"Why DynamoDB?\" section\n- Add \"tenant \u2192 user\" as additional hierarchy example\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(hierarchical): add warning about planned cascade API changes\n\nLink to issue #116 which proposes moving cascade from per-call\nparameter to per-entity configuration.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: restructure Getting Started with declarative infrastructure focus\n\n- Lead with programmatic API in Quick Start (moved from deployment-first)\n- Add Infrastructure Persistence section explaining AWS resources outlive Python sessions\n- Add Infrastructure Lifecycle section with tabbed Programmatic/CLI options\n- Add Connecting to Existing Infrastructure section (omit stack_options)\n- Add Declarative State Management warning about conflicting StackOptions\n- Expand Understanding Limits with entity_id/resource concepts and examples\n- Cross-link to Token Bucket Algorithm page\n\nMessaging changes applied across all docs:\n- \"auto-creation\" \u2192 \"declarative infrastructure\"\n- \"idempotent/creates if not exists\" \u2192 \"declare desired state\"\n- Soften production warnings to note about strict infra/app separation\n\nFiles updated: CLAUDE.md, README.md, docs/getting-started.md,\ndocs/infra/deployment.md, docs/index.md, docs/contributing/localstack.md,\nsrc/zae_limiter/__init__.py, src/zae_limiter/limiter.py,\nexamples/basic_rate_limiting.py\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(llm-integration): reframe intro to reflect general-purpose design\n\nLLM APIs fit the library's pattern, not the other way around.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: rename failure-modes.md to unavailability.md\n\nClarifies that the document covers infrastructure unavailability\n(DynamoDB errors) rather than all failure scenarios. Changes include:\n\n- Rename file and update nav/cross-references\n- Add scope note distinguishing from RateLimitExceeded\n- Document which exceptions trigger failure mode logic\n- Document no-op lease behavior during FAIL_OPEN\n- Remove redundant circuit breaker example\n- Remove thin DynamoDB Resilience section\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: fix PR review comments for docs structure and internal API\n\n- Update CLAUDE.md docs structure: failure-modes.md \u2192 unavailability.md\n- Add auditing.md to infra/ section in CLAUDE.md\n- Fix Repository import in auditing.md to use internal path\n- Add warning admonition about Repository being internal API\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-13T23:04:00-05:00",
+          "tree_id": "57f96644f3e53b9e0501d96bbb5f8d1db60b02b7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/06636b70112e1583250767bbfff84b13e2ae016e"
+        },
+        "date": 1768363809036,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.528456109557883,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006657208595507799",
+            "extra": "mean: 42.50172622222218 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.415829026802918,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00393396400268562",
+            "extra": "mean: 44.6113324117652 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.04763052045076,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0063745492012561725",
+            "extra": "mean: 26.992279558823263 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.262901045886345,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004851804845552674",
+            "extra": "mean: 30.995352791670427 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.10568408433579,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0064399302408668915",
+            "extra": "mean: 39.83161728000596 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 221.9618768619595,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000697628095286381",
+            "extra": "mean: 4.50527817721559 msec\nrounds: 158"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "324f90b3eaca82a59d9ceb019d150d6e0f3d5c62",
+          "message": "\ud83d\udc1b fix(ci): fix git-cliff regex to strip emoji prefixes (#118)\n\nThe original regex `^[^\\w\\s]+` didn't reliably match Unicode emojis\nin Rust's regex engine. Changed to `^[^a-zA-Z]*` which matches any\nnon-letter prefix including emojis.\n\nAlso:\n- Added `ci` commit type parser (was missing)\n- Added preprocessor for GitHub auto-revert format\n- Fixed `doc` -> `docs` in commit_parsers\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-14T09:26:25-05:00",
+          "tree_id": "e29563779198323a412766c9db4098cc87522598",
+          "url": "https://github.com/zeroae/zae-limiter/commit/324f90b3eaca82a59d9ceb019d150d6e0f3d5c62"
+        },
+        "date": 1768401140797,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.582688867397618,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009150280799157265",
+            "extra": "mean: 42.40398563636528 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.27523535735247,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0077958134861544634",
+            "extra": "mean: 44.8929038888887 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.12272176415126,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004358252548030116",
+            "extra": "mean: 24.923533499999923 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 33.08867996669964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003756806688501879",
+            "extra": "mean: 30.22181607142979 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 26.968608647409607,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005010840622529588",
+            "extra": "mean: 37.08014799999896 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 237.00946716915436,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000536611695307957",
+            "extra": "mean: 4.219240741494504 msec\nrounds: 147"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf5ad36495b2a3bd343760d6b594d776e9a7f22d",
+          "message": "\ud83d\udd27 chore: update vscode git worktrees extension settings (#120)\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-14T13:22:04-05:00",
+          "tree_id": "322bb6dde1a19643dd488718bac58cddf7936bb2",
+          "url": "https://github.com/zeroae/zae-limiter/commit/bf5ad36495b2a3bd343760d6b594d776e9a7f22d"
+        },
+        "date": 1768415327344,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.900049007563812,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009566125344832638",
+            "extra": "mean: 43.668028818178655 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.72019254114837,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0077651401337125985",
+            "extra": "mean: 48.262099785708706 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.11767678638583,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005011762595483263",
+            "extra": "mean: 26.234547441179878 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 30.979193778122625,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004758069915024527",
+            "extra": "mean: 32.27972965217048 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 28.46448512876,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037595465499590326",
+            "extra": "mean: 35.13149791666592 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 228.4826033030443,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006645482497963175",
+            "extra": "mean: 4.376700832113969 msec\nrounds: 137"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "08583b03f7610ce9cd09b8dcece4049d34be87f9",
+          "message": "\u2728 Add org-wide Claude Code instructions and issue templates (#138)\n\n* \u2728 feat: add zeroae org-wide Claude Code instructions as submodule\n\nAdds .claude/rules/zeroae submodule pointing to zeroae/.claude repo\nwith organization-wide conventions for commits, changelogs, and\ndevelopment principles.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: add issue templates and release planning\n\n.github/ISSUE_TEMPLATE/:\n- bug.yml, feature.yml, task.yml, release-epic.yml\n- config.yml (disable blank issues)\n\nCLAUDE.md:\n- Add release planning with milestones (v0.1.0 - v1.0.0)\n- Add project scopes for commits and area labels\n- Reference org conventions in submodule\n\n.claude/rules/zeroae:\n- Update submodule (adds github.md)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: update submodule with capitalized title convention\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat: Add SessionStart hook to auto-init submodules\n\n- Add Claude Code hook to detect empty submodule and run git submodule update\n- Update setup docs with --recurse-submodules clone option\n- Remove user-specific permissions from settings.json (use settings.local.json)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: add Claude Code to recommended VS Code extensions\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-14T23:25:12-05:00",
+          "tree_id": "9d6349888836d9dc6d242b5ed87bc9618243fae2",
+          "url": "https://github.com/zeroae/zae-limiter/commit/08583b03f7610ce9cd09b8dcece4049d34be87f9"
+        },
+        "date": 1768451499376,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.778102396363234,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012522688753866619",
+            "extra": "mean: 45.91768290000289 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.73018081734551,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007001195325656187",
+            "extra": "mean: 48.23884599999594 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.941187070313575,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002892282300468718",
+            "extra": "mean: 25.036812206897416 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 28.174709756847626,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0033372449021288942",
+            "extra": "mean: 35.49282347999906 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.181685810661616,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005224296517363136",
+            "extra": "mean: 39.71140008333407 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 214.54313895431778,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000773530851701782",
+            "extra": "mean: 4.661067256095884 msec\nrounds: 164"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "68a738157ac8a01ed06b32f0f56b885166843b20",
+          "message": "\ud83d\udcdd docs: add conda-forge installation instructions (#140)\n\nAdd conda-forge badge and installation instructions to documentation:\n- README.md: conda-forge badge and install option\n- docs/getting-started.md: conda tab in installation section\n- docs/cli.md: conda install option\n\nCloses #119\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-15T01:18:36-05:00",
+          "tree_id": "4cad1dfd5a6703aa305552abc41c8b83e8260520",
+          "url": "https://github.com/zeroae/zae-limiter/commit/68a738157ac8a01ed06b32f0f56b885166843b20"
+        },
+        "date": 1768458292647,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 19.945022034304394,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005550974060308747",
+            "extra": "mean: 50.13782377778537 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.89376130127119,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006295356278167816",
+            "extra": "mean: 52.92752375000731 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 34.26648708176364,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005025684688722388",
+            "extra": "mean: 29.183032320000848 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 27.242299605326966,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004592791025832557",
+            "extra": "mean: 36.70762066666574 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.802498105496845,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032777708884627233",
+            "extra": "mean: 42.01239700000499 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 206.98703985577293,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009179972524987868",
+            "extra": "mean: 4.831220354167066 msec\nrounds: 144"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4ac9808e5a7e35e7443cdf52279a063e98cc6756",
+          "message": "\u2728 Add is_available() health check method (#142)\n\n* \u2728 feat(limiter): add is_available() health check method\n\nAdd is_available() method to RateLimiter and SyncRateLimiter for\noperational health checks. This enables applications to verify\nDynamoDB connectivity before operations.\n\n- Add Repository.ping() for lightweight DynamoDB connectivity check\n- Add RateLimiter.is_available() with configurable timeout (default 3s)\n- Add SyncRateLimiter.is_available() sync wrapper\n- Returns False on any error (no exceptions thrown)\n- Works without requiring initialization\n\nCloses #127\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(guide): update health checks to use is_available()\n\nUpdate the unavailability guide to document the new is_available()\nmethod for health checks instead of the try/except workaround.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore(limiter): change is_available() default timeout to 1s\n\nUpdate default timeout from 3.0s to 1.0s to meet the acceptance\ncriteria of \"fast execution (< 1s timeout)\".\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(limiter): add coverage for SyncRateLimiter exception handler\n\nAdd test for edge case where event loop fails during is_available().\nThis covers the exception handler in SyncRateLimiter.is_available()\nthat was previously uncovered.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: update .claude/rules/zeroae submodule\n\nUpdate to include PR metadata inheritance guidance.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-15T05:26:30-05:00",
+          "tree_id": "f68a0ef95f8f57edb817aefb1e951cc011111302",
+          "url": "https://github.com/zeroae/zae-limiter/commit/4ac9808e5a7e35e7443cdf52279a063e98cc6756"
+        },
+        "date": 1768473183345,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.104286711597965,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00589801698680643",
+            "extra": "mean: 43.282011363632215 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.557958411873983,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008083660104152292",
+            "extra": "mean: 44.330252842102205 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 41.153134703206604,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004024301325564872",
+            "extra": "mean: 24.29948549999719 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.24243437601234,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004365298104785161",
+            "extra": "mean: 31.015027846159718 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.690298484800017,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010423343406909475",
+            "extra": "mean: 44.071698777778934 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 216.29003058791602,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008186645660315156",
+            "extra": "mean: 4.623421603306525 msec\nrounds: 121"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d11c28fd6c20757d362f6e6f6a1919a280d906b5",
+          "message": "\u2728 Add get_status() method for comprehensive status reporting (#141)\n\n* \u2728 feat(limiter): add get_stack_status() method for API/CLI parity\n\nAdd `get_stack_status()` method to both `RateLimiter` and `SyncRateLimiter`\nclasses to provide programmatic access to CloudFormation stack status,\nmatching the functionality of the `zae-limiter status` CLI command.\n\nThis change:\n- Adds async `get_stack_status()` to `RateLimiter` returning stack status\n  string or None if stack doesn't exist\n- Adds sync `get_stack_status()` to `SyncRateLimiter` wrapping the async\n  implementation\n- Adds unit tests for both methods covering various CloudFormation states\n- Updates docs/getting-started.md with tabbed Programmatic/CLI options\n  for checking status\n- Updates docs/infra/deployment.md with the new programmatic option\n\nCloses #115\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style(test): fix formatting in test_limiter.py\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(limiter): rename get_stack_status() to stack_status\n\nAddress review feedback:\n- Rename `get_stack_status()` to `stack_status()` on RateLimiter (async method)\n- Rename `get_stack_status()` to `stack_status` property on SyncRateLimiter\n- Add `*.local.md` to .gitignore\n- Remove accidentally committed ralph-loop.local.md file\n- Update tests and documentation accordingly\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(limiter): add get_status() method for comprehensive status reporting\n\nAdd Status dataclass and get_status() method to provide unified status\ninformation across API and CLI:\n\n- Status dataclass with connectivity, infrastructure, identity, versions,\n  and table metrics fields\n- Async get_status() in RateLimiter\n- Sync get_status() in SyncRateLimiter\n- Enhanced CLI status command with rich formatted output\n\nCloses #115\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(e2e): add get_status() integration tests with LocalStack\n\nAdd integration tests for RateLimiter.get_status() and\nSyncRateLimiter.get_status() to verify comprehensive status\nreporting works against real LocalStack infrastructure.\n\nTests verify:\n- Connectivity: available flag and latency measurement\n- Infrastructure: table status reporting\n- Identity: ZAEL-prefixed name and region\n- Versions: client version populated\n- Metrics: table item count available\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(cli): make status command read-only\n\n- Remove stack_status() method from RateLimiter and SyncRateLimiter\n  (superseded by get_status() which is more comprehensive)\n- Refactor CLI status command to use StackManager and Repository\n  directly instead of RateLimiter, making it truly read-only\n- Update CLI tests to mock Repository and StackManager\n- Remove stack_status tests from unit tests\n- Enhance e2e CLI output tests to verify all output sections\n\nThe CLI status command is now a read-only operation that won't\ntrigger any infrastructure upgrades or modifications.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(cli): initialize version record during deploy\n\nDeploy command now creates the version record in DynamoDB after\nstack creation, so `zae-limiter status` shows schema/lambda versions\nimmediately instead of N/A.\n\n- Add version record initialization step to deploy command\n- Update docs to use get_status() instead of removed stack_status()\n- Update CLI status output example in docs\n- Add e2e test verifying schema version after deploy\n- Update unit tests to mock Repository for version record\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-15T05:35:51-05:00",
+          "tree_id": "e8625477e759ad4e40cabf2d215be584df68126a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d11c28fd6c20757d362f6e6f6a1919a280d906b5"
+        },
+        "date": 1768473748446,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.06972722419641,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008238799150942189",
+            "extra": "mean: 45.310936100000276 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.689911261296988,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005871255225762972",
+            "extra": "mean: 46.10438410526734 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.15421781952996,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005898210973786602",
+            "extra": "mean: 26.209422107144626 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 31.793509173988802,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003352883777371778",
+            "extra": "mean: 31.452960870960702 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 29.592375714777813,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0040294549671538804",
+            "extra": "mean: 33.79248795832979 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 222.42217084344807,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006082713158767389",
+            "extra": "mean: 4.495954680272635 msec\nrounds: 147"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "edd4476d4344a700a5ee442ceecdd0bc090b0ae6",
+          "message": "\ud83d\udcdd docs: update getting-started.md to use get_status() method (#146)\n\nReplace deprecated stack_status() method with the new get_status() method\nthat returns a Status dataclass with comprehensive infrastructure information.\n\nCloses #121\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-15T11:11:10-05:00",
+          "tree_id": "b85623ff9103a17b7c462ba34aac60ed9de59d7e",
+          "url": "https://github.com/zeroae/zae-limiter/commit/edd4476d4344a700a5ee442ceecdd0bc090b0ae6"
+        },
+        "date": 1768493844315,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.176110204265576,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006443214624636315",
+            "extra": "mean: 45.09357100000567 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.650394830049265,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004784002662832985",
+            "extra": "mean: 46.18853410525653 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.6953881615742,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004512546657403411",
+            "extra": "mean: 25.191843342850007 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.224804359991616,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032084080673095727",
+            "extra": "mean: 31.031995999998685 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.83034143313644,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010323115645867988",
+            "extra": "mean: 41.9633097916711 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 232.80420302359724,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006212254953887537",
+            "extra": "mean: 4.29545509493503 msec\nrounds: 158"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f1359ca4bfbde98fc668d0b38ba11803cbd95e2c",
+          "message": "feat(limiter): expose audit API and principal tracking (#153)\n\n* \u2728 feat(limiter): expose audit API and principal tracking (#114)\n\nAdd audit event retrieval and principal tracking to public interfaces:\n\n- Add get_audit_events() to RateLimiter and SyncRateLimiter\n- Add principal parameter to create_entity, delete_entity, set_limits, delete_limits\n- Auto-detect AWS caller identity (ARN) when principal is None\n- Add CLI command: zae-limiter audit list\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: add docs-parity and api-cli-parity rules\n\nAdd Claude Code agent configurations:\n- docs-updater agent for documentation synchronization\n- api-cli-parity agent for interface consistency checks\n- Rules for when to invoke these agents\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: add audit to CLI command list in CLAUDE.md\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(repository): add coverage for STS failure handling\n\nTest that _get_caller_identity_arn() handles STS exceptions gracefully.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* chore: update zeroae rules submodule\n\nUpdates PR title convention documentation.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* test(cli): add unit tests for audit list command\n\nImproves patch coverage by testing:\n- No events found path\n- Events display with table format\n- Long principal truncation\n- Pagination hint when limit reached\n- Custom limit and start-event-id options\n- Endpoint URL handling\n- Exception handling\n- None resource/principal handling\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* style(test): format test_cli.py\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-16T01:31:16-05:00",
+          "tree_id": "aed52d0693a631ae524b1a5fd057a9286379d01a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/f1359ca4bfbde98fc668d0b38ba11803cbd95e2c"
+        },
+        "date": 1768545469957,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.04681299696042,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011366680273047013",
+            "extra": "mean: 49.88324080000268 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.992846396160314,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005672266571173639",
+            "extra": "mean: 47.63527447058844 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.541555935708935,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004284847001952166",
+            "extra": "mean: 28.136078279997037 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.294650361566916,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003676394404869819",
+            "extra": "mean: 30.96488083333071 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.225306494037394,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004380337312193525",
+            "extra": "mean: 41.2791474999968 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 207.27378096184938,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009321996847212721",
+            "extra": "mean: 4.8245368775516235 msec\nrounds: 147"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f7456983c48bff0aa08c548c7f3b1a2dcb66a1ec",
+          "message": "\ud83d\udc1b fix(aggregator): use flat schema for snapshots to fix overlapping paths error (#172)\n\nDynamoDB rejects UpdateExpressions that SET a map path AND ADD to paths\nwithin it in the same expression with \"overlapping document paths\" error.\n\nThis fix changes usage snapshots from nested `data` map to flat top-level\nattributes, enabling atomic upsert with ADD counters in a single call.\n\nOther record types (entities, buckets, audit) continue to use nested\n`data` maps since they use PUT-then-UPDATE pattern (separate operations).\n\nChanges:\n- Flatten snapshot schema: resource, window, counters at top-level\n- Use if_not_exists() for metadata fields (set once on creation)\n- Use if_not_exists() for TTL (prevent extending on every update)\n- Update unit tests to verify flat structure\n- Add integration tests against LocalStack\n- Document flat snapshot rationale in CLAUDE.md and architecture.md\n\nFixes #168\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-16T02:11:18-05:00",
+          "tree_id": "a576ec7e929ebc198955bef82e42c997a1227fc5",
+          "url": "https://github.com/zeroae/zae-limiter/commit/f7456983c48bff0aa08c548c7f3b1a2dcb66a1ec"
+        },
+        "date": 1768547858459,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.476505105491412,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006117560072286891",
+            "extra": "mean: 48.83645890000139 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.580056744351964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0052788581795663115",
+            "extra": "mean: 46.33908111764928 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 36.04484054579451,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004006211411353258",
+            "extra": "mean: 27.74322163332954 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 29.17837450463365,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003011851016056108",
+            "extra": "mean: 34.271957125000085 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 26.697890837011457,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005803170946228195",
+            "extra": "mean: 37.456142363639216 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 223.255311013445,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008033575258022834",
+            "extra": "mean: 4.479176757142309 msec\nrounds: 140"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "26c111ffbf7b87e0e75da03b66311922a4463d3f",
+          "message": "chore: update .claude submodule (#183)\n\n* \ud83d\udd27 chore: update .claude submodule\n\nAdds documentation for REST API issue type creation.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: remove duplicate milestone queries from CLAUDE.md\n\nNow references .claude/rules/zeroae/github.md which is loaded automatically.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-16T08:57:22-05:00",
+          "tree_id": "f2d0a0ebc2910de8f99ed4078c7b0cb1492ac2be",
+          "url": "https://github.com/zeroae/zae-limiter/commit/26c111ffbf7b87e0e75da03b66311922a4463d3f"
+        },
+        "date": 1768572240087,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.436830002602495,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007149993855612662",
+            "extra": "mean: 44.569575999996786 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 23.587866187926867,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005927888937261748",
+            "extra": "mean: 42.39467834999999 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.98130721578593,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005243762216086692",
+            "extra": "mean: 25.653321333334823 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.439905735010896,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003998001165830776",
+            "extra": "mean: 30.826230142855998 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 28.000964166533656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005816756487131996",
+            "extra": "mean: 35.71305595237986 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 242.45946329355078,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000621799275807084",
+            "extra": "mean: 4.124400781953719 msec\nrounds: 133"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c31a673520e6f1574b93ab8c63446e092407bb7f",
+          "message": "\ud83d\udd27 chore: update .claude submodule (#184)\n\nAdds PR creation workflow with issue metadata inheritance.\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-16T09:12:07-05:00",
+          "tree_id": "1f2b0d9ebd78b8c51af863c6cb5ab53e82138ac8",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c31a673520e6f1574b93ab8c63446e092407bb7f"
+        },
+        "date": 1768573117804,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.728101786440245,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007750549705347796",
+            "extra": "mean: 43.998394999999846 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.768645656204765,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006752180361911743",
+            "extra": "mean: 45.93763047059236 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.1056410024378,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00438394708569597",
+            "extra": "mean: 26.242833703703482 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 27.043910351768094,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005897670242199507",
+            "extra": "mean: 36.97690115788382 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 28.078248411191684,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004128925990390815",
+            "extra": "mean: 35.61475720833821 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 212.83471049782307,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008682588705813981",
+            "extra": "mean: 4.698481735714008 msec\nrounds: 140"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9b8fc2f0d0578184c01e09f19d689eb091e878a7",
+          "message": "\u2728 feat(limiter): expose usage snapshot data through RateLimiter API (#188)\n\n* \u2728 feat(limiter): expose usage snapshot data through RateLimiter API\n\nAdd public API methods to query aggregated usage data created by the\nLambda aggregator from DynamoDB stream events.\n\nNew methods:\n- get_usage_snapshots(): Query raw snapshot records with filtering by\n  entity_id, resource, window_type, and time range. Supports pagination.\n- get_usage_summary(): Convenience method returning aggregated stats\n  including sum, average, and snapshot count.\n\nBoth async (RateLimiter) and sync (SyncRateLimiter) interfaces provided.\n\nNew CLI commands:\n- zae-limiter usage list: Query snapshots with table output\n- zae-limiter usage summary: Show aggregated statistics\n\nModels:\n- UsageSnapshot: Existing model, now returned by public API\n- UsageSummary: New model for aggregated statistics\n\nRepository:\n- Entity-centric queries via PK (ENTITY#{id})\n- Resource-centric queries via GSI2 (RESOURCE#{name})\n- Proper timezone handling for UTC timestamps\n- Window end calculation with microsecond precision\n\nDocumentation updated in CLAUDE.md, docs/cli.md, docs/api/models.md.\n\nCloses #128\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style: fix ruff formatting\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(limiter): add unit tests for usage snapshot API\n\nAdd comprehensive test coverage for get_usage_snapshots and\nget_usage_summary methods:\n\n- Repository tests: entity/resource queries, GSI2, filters, pagination\n- RateLimiter tests: datetime conversion, async methods\n- SyncRateLimiter tests: sync wrapper parity\n\nAlso:\n- Fix CLAUDE.md GSI2SK documentation (SK -> GSI2SK)\n- Add pagination behavior note to docstrings\n- Add user guide docs/guide/usage-snapshots.md\n- Update mkdocs.yml navigation\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(cli): add coverage tests for usage commands\n\nAdd 7 more tests to TestUsageCommands covering edge cases:\n- Long entity_id truncation (>18 chars)\n- Long resource name truncation (>14 chars)\n- ValueError exception handling in usage list\n- Generic exception handling in usage list\n- Window filter display in usage summary\n- ValueError exception handling in usage summary\n- Generic exception handling in usage summary\n\nThese tests increase patch coverage from 56.59% to 94.9%,\nexceeding the 66%+ target (56% minimum + 10%).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: update Claude Code permissions\n\nAdd git diff and gh label list to allowed commands.\nReorganize permissions list alphabetically.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(repository): add edge case tests for usage snapshots\n\nAdd tests for:\n- Malformed snapshot items (skipped during deserialization)\n- All window types (hourly, daily, monthly) via parameterized test\n- Monthly edge cases: January, December year rollover, leap year Feb\n- Unknown window type fallback behavior\n- Invalid window_start date format handling\n\nThese tests exercise all code paths in _calculate_window_end() and\n_deserialize_usage_snapshot() for comprehensive coverage.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(monitoring): add cross-reference to usage snapshots guide\n\nAdd tip box linking to the new Usage Snapshots Guide for users\nlooking to query historical consumption data.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style(repository): add comment for unknown window type fallback\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: set docker compose project name to zae-limiter\n\nEnsures consistent stack name across all worktrees.\nAlso fixes deprecated --table-name flag in comment.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-17T20:05:11-05:00",
+          "tree_id": "455e5dda825c052c6ab60f4df528325c0310bfd3",
+          "url": "https://github.com/zeroae/zae-limiter/commit/9b8fc2f0d0578184c01e09f19d689eb091e878a7"
+        },
+        "date": 1768698705360,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.752566285654762,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007941804442864443",
+            "extra": "mean: 45.97158729999933 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.5490345906047,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005976783717390287",
+            "extra": "mean: 46.405791210525805 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.08240229956544,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005077228978473936",
+            "extra": "mean: 26.966969181813738 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 30.052984011868674,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003372517722741663",
+            "extra": "mean: 33.27456600000436 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 27.13727046753524,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005791807104212251",
+            "extra": "mean: 36.84968984615885 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 227.70549993881565,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006312931905543178",
+            "extra": "mean: 4.391637445159206 msec\nrounds: 155"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ad9ce0ff84a3c0543adfef558f67d73f2876fd11",
+          "message": "\u2728 feat(aggregator): archive expired audit events to S3 (#77) (#192)\n\n* \u2728 feat(aggregator): archive expired audit events to S3 (#77)\n\nThis PR implements S3 audit archival for compliance and long-term retention.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(aggregator): archive expired audit events to S3\n\nImplements issue #77 - S3 audit archival feature that archives expired\naudit events to S3 when DynamoDB TTL deletes them. This enables long-term\nretention and compliance requirements.\n\nKey changes:\n- Add archiver.py module with gzip-compressed JSONL output\n- Extend Lambda handler to process REMOVE events for AUDIT# records\n- Add S3 bucket with lifecycle rules (Glacier IR after 90 days)\n- Add CLI flags: --enable-audit-archival, --audit-archive-glacier-days\n- Add StackOptions fields: enable_audit_archival, audit_archive_glacier_days\n- S3 bucket naming: zael-{name}-data (lowercase)\n- Hive-style partitioning: audit/year=YYYY/month=MM/day=DD/\n\nInfrastructure:\n- CloudFormation: S3 bucket, IAM permissions, lifecycle rules, outputs\n- docker-compose: Add S3 to LocalStack services\n- Add boto3-stubs and types-aiobotocore for type checking\n\nTests:\n- Unit tests for archiver module (test_archiver.py)\n- E2E tests for archival workflow (test_audit_archival.py)\n- S3 client fixture in e2e/conftest.py\n\nCloses #77\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83e\uddea test(aggregator): add unit tests for handler and archiver\n\nImproves patch coverage for the S3 audit archival feature:\n- Add test_handler.py with 5 tests covering:\n  - Basic record processing\n  - Archival when enabled\n  - Error aggregation from both processors\n  - Skip archival when disabled or no bucket\n- Add JSONL error handling test to test_archiver.py\n\nBoth archiver.py and handler.py now have 100% test coverage.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: update documentation for S3 audit archival feature\n\n- Add archiver.py to project structure in CLAUDE.md\n- Add missing CloudFormation parameters to cloudformation.md:\n  - BaseName, LambdaDurationThreshold, PermissionBoundary, RoleName\n- Add S3 service to LocalStack Docker examples\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(infra): convert CloudFormation diagram to Mermaid\n\nReplace ASCII art diagram with Mermaid flowchart for better\nrendering in MkDocs Material.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(infra): add S3 audit archive documentation\n\n- Update cloudformation.md with interactive Mermaid diagram\n- Add clickable nodes linking to relevant sections\n- Add S3 Audit Archive Bucket section with CloudFormation resource\n- Document object structure and lifecycle policy\n- Update production.md checklist with audit archival options\n- Add S3 costs to cost estimation table\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T09:33:24-05:00",
+          "tree_id": "ab34f05d8433ea89dc3eee7b0c4ece53e746e0c4",
+          "url": "https://github.com/zeroae/zae-limiter/commit/ad9ce0ff84a3c0543adfef558f67d73f2876fd11"
+        },
+        "date": 1768747182771,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.45924768486914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007386956387506147",
+            "extra": "mean: 44.52508890908679 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.906537047613234,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005531338587324506",
+            "extra": "mean: 43.65566030000139 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.77070434214637,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003733493665947249",
+            "extra": "mean: 25.144136030305756 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 33.10667939644361,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0036741993527859822",
+            "extra": "mean: 30.20538508333222 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 27.28940546284426,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00501551372157572",
+            "extra": "mean: 36.64425747059769 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 230.58673789406782,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005950790625978251",
+            "extra": "mean: 4.33676285606418 msec\nrounds: 132"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0b81581a2c282574ba7775352f85cc8d11239ab3",
+          "message": "\ud83d\udd27 chore: add milestone skill and VSCode workspace (#193)\n\nAdd Claude Code skill for milestone status analysis and a basic VSCode\nworkspace configuration file.\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T11:22:59-05:00",
+          "tree_id": "f4ae8323702899a8faea9eb42ed55c2fef44d6df",
+          "url": "https://github.com/zeroae/zae-limiter/commit/0b81581a2c282574ba7775352f85cc8d11239ab3"
+        },
+        "date": 1768753776253,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.658104358911537,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010419913533199314",
+            "extra": "mean: 46.17209259999413 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.892015522938063,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006124203839104368",
+            "extra": "mean: 47.86517599999223 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.15397335113646,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004365491871848744",
+            "extra": "mean: 26.915021727263316 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 30.031484590621492,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004477467672604727",
+            "extra": "mean: 33.29838713042808 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.360186315239332,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005423809893430803",
+            "extra": "mean: 42.8078777500005 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 194.06379920622473,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011045732772183307",
+            "extra": "mean: 5.152944568179537 msec\nrounds: 132"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e6f05f277d2dbe3727bf85dba6bd7ba6eb5c70e4",
+          "message": "\u2728 feat(infra): add AWS X-Ray tracing support for Lambda aggregator (#196)\n\n* \u2728 feat(infra): add AWS X-Ray tracing support for Lambda aggregator\n\nAdd opt-in X-Ray tracing configuration for the Lambda aggregator function.\n\nChanges:\n- Add `enable_tracing: bool = False` to StackOptions\n- Add `--enable-tracing/--no-tracing` CLI flag\n- Add EnableTracing CloudFormation parameter with TracingEnabled condition\n- Add conditional XRayAccess IAM policy (only when tracing enabled)\n- Add TracingConfig.Mode (Active when enabled, PassThrough otherwise)\n- Add AWS E2E tests for tracing configuration validation\n\nKey design decisions:\n- Uses Active mode (not PassThrough) because DynamoDB Streams don't\n  propagate trace context headers\n- IAM permissions conditionally added to follow least privilege\n- Default is disabled (opt-in) to avoid unexpected X-Ray costs\n\nNote: DynamoDB subsegments require aws-xray-sdk instrumentation (#194).\n\nCloses #107\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore(ci): add cfn-lint to CI and remove Claude review workflows\n\n- Add CloudFormation template linting step to lint job\n- Remove claude-infra-review.yml workflow\n- Remove claude-test-review.yml workflow\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix: resolve merge conflict in CLAUDE.md\n\nKeep both audit archival and X-Ray tracing examples.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T13:31:07-05:00",
+          "tree_id": "562894fc1f560a2611e0c219695ea551ab4bce92",
+          "url": "https://github.com/zeroae/zae-limiter/commit/e6f05f277d2dbe3727bf85dba6bd7ba6eb5c70e4"
+        },
+        "date": 1768761464368,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.034443073880322,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010114947069566926",
+            "extra": "mean: 47.54107329999897 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.803015730902825,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0045609151362836255",
+            "extra": "mean: 48.06995355555602 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.30294404662296,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003942628995735968",
+            "extra": "mean: 26.807535586203418 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 29.62099804642526,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0039027795459202646",
+            "extra": "mean: 33.75983477777119 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 20.18037030724683,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011569741453169797",
+            "extra": "mean: 49.55310456522679 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 195.01414156760595,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007136447445371076",
+            "extra": "mean: 5.127833253330133 msec\nrounds: 150"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a1e5b22f2c9f84bc47e8ba0f832a499c3d932235",
+          "message": "\u2728 feat(cli,limiter): add list command to discover deployed rate limiters (#198)\n\n* \u2728 feat(cli,limiter): add list command to discover deployed rate limiters\n\nAdd capability to list all deployed zae-limiter instances in a region:\n- New `zae-limiter list` CLI command with table output\n- New `RateLimiter.list_deployed()` class method for programmatic access\n- New `LimiterInfo` frozen dataclass for discovered stack information\n- New `InfrastructureDiscovery` class for CloudFormation stack discovery\n\nThe list feature queries CloudFormation for stacks with ZAEL- prefix and\nextracts version info from stack tags.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2705 test(cli,limiter): add unit tests for list command and discovery\n\n- Add 19 unit tests for CLI list command covering all display paths\n- Add 6 tests for InfrastructureDiscovery edge cases\n- Achieve 90% overall test coverage (exceeds 88% requirement)\n- Add Claude Code hooks: LocalStack auto-start, mypy pre-commit check\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc1b fix(limiter): address code review compliance issues\n\n- Add SyncRateLimiter.list_deployed() for async/sync parity\n- Add discovery.py to CLAUDE.md Project Structure section\n- Add E2E test for zae-limiter list command\n- Add unit tests for SyncRateLimiter.list_deployed()\n\nAddresses all 3 issues from claude[bot] review on PR #198.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(cli): use rich table format across all CLI commands\n\n- Add _print_table() helper for consistent box-drawing tables\n- Apply to: list, audit list, usage list, usage summary\n- Auto-sized columns show full values (no truncation)\n- Supports left/right alignment per column\n- Consistent format across all tabular output\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style: apply ruff formatting to 5 files\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T16:35:04-05:00",
+          "tree_id": "7c31b3736d6405d8c0dbeae2ee77730f60645d61",
+          "url": "https://github.com/zeroae/zae-limiter/commit/a1e5b22f2c9f84bc47e8ba0f832a499c3d932235"
+        },
+        "date": 1768772495630,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.52270406484321,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011699483483384206",
+            "extra": "mean: 46.46256330000256 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.776250894815668,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006410678505962016",
+            "extra": "mean: 45.92158699999516 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 33.14034824805769,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007651127738493607",
+            "extra": "mean: 30.174698000000905 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 30.27711847985053,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004392406731807879",
+            "extra": "mean: 33.0282421250061 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 26.719119304654086,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006014962170309778",
+            "extra": "mean: 37.426383279998845 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 221.38818660043296,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007589334603718469",
+            "extra": "mean: 4.5169528480976515 msec\nrounds: 158"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "deb04b33394c2fbb1611939c81c53d9150869a66",
+          "message": "\u2728 feat(cli): add ASCII plot visualization for usage snapshots (#201)\n\n* \ud83d\udd27 chore(ci): add PostToolUse hook for uv sync on pyproject.toml changes\n\nAutomatically runs `uv sync --all-extras` when pyproject.toml is\nmodified via Edit or Write tools, keeping dependencies in sync.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(cli): add ASCII plot visualization for usage snapshots (#200)\n\nAdd --plot flag to `usage list` command for ASCII chart visualization\nof usage snapshot timeseries data using asciichartpy.\n\nFeatures:\n- Side-by-side chart layout (2 counters per row)\n- Auto-downsampling for large datasets (>60 points)\n- Right-aligned Y-axis labels for proper alignment\n- Entity/resource context in chart header\n- Graceful fallback to table format if asciichartpy not installed\n\nInstall with: pip install 'zae-limiter[plot]'\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(cli): update plot examples with actual output format\n\nUpdate CLI and usage-snapshots docs to show:\n- Side-by-side chart layout\n- Entity/resource header\n- Feature list (downsampling, right-aligned Y-axis)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc77 ci(claude): gate code review on core CI jobs passing\n\nAdd a wait step that polls GitHub Checks API for lint, typecheck, and\nunit jobs before running Claude code review. This prevents wasting API\ncalls on PRs that will fail basic CI checks.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u267b\ufe0f refactor(cli): use TableRenderer for consistent table output\n\n- Add TableRenderer class for box-drawing tables with auto-sized columns\n- Replace _print_table function with TableRenderer across all CLI commands\n- Fix truncation issue in usage list by using TableRenderer instead of TableFormatter\n- Add plot extra to CI for e2e and unit tests\n- Fix mypy and lint errors in visualization module\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udc77 ci(claude): gate code review on core CI jobs passing\n\nAdd a wait step that polls GitHub Checks API for lint, typecheck, and\nunit jobs before running Claude code review. This prevents wasting API\ncalls on PRs that will fail basic CI checks.\n\nUses exact job names including matrix variants (unit (3.11), unit (3.12)).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u23ea\ufe0f revert(ci): remove CI job gating from claude-code-review\n\nRevert the wait-for-CI-jobs step added in b62523c. The polling approach\nhad issues with matrix job naming and didn't fail fast properly.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T19:13:29-05:00",
+          "tree_id": "d61260a10a999263ed479e35f964b8d79802ff7b",
+          "url": "https://github.com/zeroae/zae-limiter/commit/deb04b33394c2fbb1611939c81c53d9150869a66"
+        },
+        "date": 1768781982973,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.407536295814783,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00962392410142483",
+            "extra": "mean: 49.00150539999686 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.076087769524275,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0066971666161088515",
+            "extra": "mean: 52.42165018749745 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.66672894265738,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004611095993537012",
+            "extra": "mean: 25.86202731249898 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.242469622796875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037229758229974028",
+            "extra": "mean: 31.014993941188525 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 27.557536081619737,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004860381333878348",
+            "extra": "mean: 36.287714440006766 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 215.94525271910504,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010696126988187465",
+            "extra": "mean: 4.630803351351138 msec\nrounds: 148"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "80aaea10c3f56035fc6443931d7ad9b5b598ab42",
+          "message": "chore: add release-prep skill and expand CLI permissions (#202)\n\n* \ud83d\udcdd docs: clarify milestone skill trigger conditions\n\nReword skill description to lead with trigger conditions (version\nmentions, release status questions) rather than generic \"use when\"\nguidance, making it clearer when to invoke the skill.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: add permission boundary and iteration tips for AWS testing\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(monitoring): update X-Ray section for Phase 1 implementation\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: add release-prep skill and expand CLI permissions\n\n- Add release-prep skill for milestone release workflow\n- Expand allowed permissions for zae-limiter CLI commands\n- Add AWS profile permissions for deploy/delete operations\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83c\udfa8 style: sort permissions alphabetically in settings.json\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T19:26:11-05:00",
+          "tree_id": "616159a8c497139ce25d9b8e2ad3e3ddeccc95d0",
+          "url": "https://github.com/zeroae/zae-limiter/commit/80aaea10c3f56035fc6443931d7ad9b5b598ab42"
+        },
+        "date": 1768782743911,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.729763300686674,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008264223370776149",
+            "extra": "mean: 46.019829400000845 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.83890792123949,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008343055816293769",
+            "extra": "mean: 45.789835444447625 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 36.61289026366121,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004112042254002107",
+            "extra": "mean: 27.312785000000765 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 31.109265135709023,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037040468152108306",
+            "extra": "mean: 32.14476445000116 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 26.604623885624058,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003841612303336104",
+            "extra": "mean: 37.58745112500369 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 226.97383767980764,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007555314848311635",
+            "extra": "mean: 4.405794122451688 msec\nrounds: 147"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f3f1a61cb620643949b3bd3c135baf7bf1e6f90",
+          "message": "docs(adr): add ADR-001 centralized configuration access patterns (#195)\n\n* \ud83d\udcdd docs: add mkdocs serve --livereload --dirty workaround\n\nDue to Click 8.3.x bug (squidfunk/mkdocs-material#8478), the\n--livereload flag must be explicitly passed for live reload to work.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: add ADR-001 centralized config access patterns (#129)\n\nAdd Architecture Decision Record documenting:\n- Three-level config hierarchy (Entity > Resource > System)\n- Flat schema for atomic config_version counter\n- Caching strategy with negative caching for sparse traffic\n- Cost analysis for various traffic patterns\n- API change: stored limits as default behavior\n- v0.6.0 recommendation to flatten all existing records\n\nUpdate CLAUDE.md with centralized configuration section and\naccess patterns documentation.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(adr): refine ADR-001 with config scope, caching, and issue links\n\n- Clarify config field scope: on_unavailable at all levels, auto_update/strict_version system-only\n- Add detailed record structure examples for each level (system, resource, entity)\n- Update RCU costs to use eventually consistent reads (50% savings)\n- Add distributed cache consistency and read consistency sections\n- Remove config_version (TTL-based cache is sufficient)\n- Link implementation checklist to milestone issues (#129, #130, #131, #135)\n- Enable pymdownx.tasklist extension in mkdocs.yml\n- Convert checklist to admonition format for better rendering\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: add mkdocs permission to project settings\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(skills): add context-aware issue and PR skills\n\n- Issue skill: create, update, and track progress on GitHub issues\n  - Infers type, labels, milestone from conversation context\n  - Supports Bug, Feature, Task, Chore, Epic, Theme types\n  - Progress mode checks off checkboxes based on completed work\n\n- PR skill: create feature PRs and release prep PRs\n  - Feature PR inherits metadata from linked issues\n  - Release Prep PR verifies milestone readiness before cutting release\n  - Moved Release Epic functionality from issue to PR skill\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore(docs): remove navigation expand features from mkdocs\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(skills): add ADR creation and review skill\n\nAdd tooling to enforce ADR best practices:\n- .claude/rules/adr-format.md: Auto-enforced rules (100 line limit,\n  one decision per ADR, required sections, excluded content)\n- .claude/skills/adr/SKILL.md: User-invocable skill for /adr create\n  and /adr review commands\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(skills): add changelog skill for git-cliff setup\n\nConverts changelog.md rule to on-demand skill to save context.\nUse `/changelog init` to set up git-cliff in a new project.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(adr): split ADR-001 into focused decisions (101-105)\n\nSplit the 401-line ADR-001 into 6 focused ADRs under 100 lines each:\n- ADR-001: Summary/index linking to sub-decisions\n- ADR-101: Flat schema for config records\n- ADR-102: Three-level configuration hierarchy\n- ADR-103: Client-side config caching with TTL\n- ADR-104: Stored limits as default behavior\n- ADR-105: Eventually consistent reads for config\n\nNumbering starts at 100 to leave 001-099 available for backfilling\nhistorical decisions.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs: add ADR-101 through ADR-105 to mkdocs nav\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udd27 chore: add hook to prompt mkdocs.yml update for new docs files\n\nWhen a new .md file is created in docs/, Claude is prompted to check\nif mkdocs.yml nav needs updating. Also fixes duplicate PostToolUse\nkeys in settings.json.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \ud83d\udcdd docs(adr): rename ADR-001 to ADR-100\n\nAll centralized config ADRs now use 100-series numbering (100-105),\nleaving 001-099 available for backfilling historical decisions.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* \u2728 feat(skills): add /pr edit mode to update PR body\n\nAdd Edit PR Mode to regenerate PR descriptions based on current commits.\nUseful when PR scope has changed significantly.\n\nTriggers:\n- `/pr edit` - Edit PR for current branch\n- `/pr edit 195` - Edit specific PR number\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-18T23:00:05-05:00",
+          "tree_id": "7dadc6e85120e250e8ab5fb0add325c2e446b8aa",
+          "url": "https://github.com/zeroae/zae-limiter/commit/4f3f1a61cb620643949b3bd3c135baf7bf1e6f90"
+        },
+        "date": 1768795592648,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.477200105049217,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007675276271258486",
+            "extra": "mean: 46.56100400000014 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.00497949824244,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006020508287303626",
+            "extra": "mean: 52.61778893749813 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 34.93005019922934,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004343322300004094",
+            "extra": "mean: 28.62864480000269 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 29.787415555655176,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004271614939677754",
+            "extra": "mean: 33.57122400000053 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.52754805577793,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00649975001990095",
+            "extra": "mean: 42.5033665909108 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 209.61664291378193,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000824716475384087",
+            "extra": "mean: 4.770613564359548 msec\nrounds: 101"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8a1cd8c7f28c0ed9e5763a5d09eeb3a20f28a571",
+          "message": "Merge pull request #206 from zeroae/ci/adr-enforcer\n\nci(adr): add Claude ADR Enforcer workflow",
+          "timestamp": "2026-01-19T09:25:12-05:00",
+          "tree_id": "0a765a249b6050ef9e3694cd86d2f1c32b450d00",
+          "url": "https://github.com/zeroae/zae-limiter/commit/8a1cd8c7f28c0ed9e5763a5d09eeb3a20f28a571"
+        },
+        "date": 1768833071826,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.67867689936443,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00899848641422922",
+            "extra": "mean: 46.12827639999182 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 9.005109806007136,
+            "unit": "iter/sec",
+            "range": "stddev: 0.2573065012416638",
+            "extra": "mean: 111.0480628823559 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 36.0933534891289,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0033668198962327226",
+            "extra": "mean: 27.70593207143232 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 27.626673086373295,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004227872454220414",
+            "extra": "mean: 36.19690278570837 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.309283316626555,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005595402695068938",
+            "extra": "mean: 41.13654799999969 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 178.57182291751428,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001126147569208129",
+            "extra": "mean: 5.599987633334062 msec\nrounds: 120"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2928225f111f8885fd294bb03f18faceffe9fe5a",
+          "message": "\ud83d\udd27 chore(ci): add annotation demo workflow (#210)\n\nDemonstrates GitHub Actions annotation features:\n- notice/warning/error annotations\n- file/line references for inline PR comments\n- grouped output sections\n- debug messages and secret masking\n- problem matchers (single and multiline)\n- job summaries with markdown\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-20T22:56:55-05:00",
+          "tree_id": "799c2778dd5759b4d5f98605adbab476b1d0cd06",
+          "url": "https://github.com/zeroae/zae-limiter/commit/2928225f111f8885fd294bb03f18faceffe9fe5a"
+        },
+        "date": 1768968239578,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.329242033979646,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008750505692051352",
+            "extra": "mean: 44.78432355555305 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.87450242986679,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00520558682825305",
+            "extra": "mean: 47.905333473684216 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.58546015973609,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005446553093317924",
+            "extra": "mean: 28.101364869561838 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 28.188241432345492,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003949371630424738",
+            "extra": "mean: 35.475785263160056 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.80479907216164,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004898402574612035",
+            "extra": "mean: 42.00833609091215 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 178.22895087016357,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010488323228726257",
+            "extra": "mean: 5.61076073846432 msec\nrounds: 130"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2dfe8212a40802ffdd6f5e7b21e00d348e268668",
+          "message": "\u2728 feat(ci): add ADR audit result script for CI pass/fail (#211)\n\n- Document GitHub Actions annotations in audit.md (notice, warning, error, group, GITHUB_STEP_SUMMARY)\n- Update workflow to execute .claude/audit-result.sh for proper exit codes\n- Annotations appear inline on PR diffs with file/line references\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-20T23:49:26-05:00",
+          "tree_id": "ea5c1d5be83f3de7ce3bdce17a9517879266749b",
+          "url": "https://github.com/zeroae/zae-limiter/commit/2dfe8212a40802ffdd6f5e7b21e00d348e268668"
+        },
+        "date": 1768971345053,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.539942885935528,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009845994020713022",
+            "extra": "mean: 48.68562710000219 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.906451388158295,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005067745948625183",
+            "extra": "mean: 50.23497058822185 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 31.593061776627284,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003576100748702577",
+            "extra": "mean: 31.65251937499155 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 26.25733218769982,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004917463355745119",
+            "extra": "mean: 38.08460024999979 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.08759345222829,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003830159555306923",
+            "extra": "mean: 43.31330600000172 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 208.76528326946126,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007486776464037382",
+            "extra": "mean: 4.790068465115735 msec\nrounds: 129"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4ea8ab72fe1f3aa0dddf76755b2ba64d96cfe937",
+          "message": "\ud83d\udc1b fix(ci): allow file writes in ADR enforcer workflow (#212)\n\nAdd allowed_tools to permit Bash, Write, Read, Glob, Grep, Task\nso Claude can create the audit-result.sh script.\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-21T00:02:37-05:00",
+          "tree_id": "33679573f99d07cae01d3d9fcb02ac0f19b4df52",
+          "url": "https://github.com/zeroae/zae-limiter/commit/4ea8ab72fe1f3aa0dddf76755b2ba64d96cfe937"
+        },
+        "date": 1768972150571,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.35687474304962,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008393103119246747",
+            "extra": "mean: 44.728970909088424 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.477823361725086,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007741337814452047",
+            "extra": "mean: 44.48829336842221 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.3935237889467,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034086765885391135",
+            "extra": "mean: 25.384883194444935 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.04803026426104,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0035850294377081236",
+            "extra": "mean: 31.203165740740353 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 28.22133199546054,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005998780231351004",
+            "extra": "mean: 35.43418858333306 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 221.49169302269883,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000754341753780985",
+            "extra": "mean: 4.514842007630138 msec\nrounds: 131"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f1fff23b71daac9e3447c7f9dda2dc5df5343ad2",
+          "message": "\ud83d\udc1b fix(ci): use .github/audit-result.sh path and claude_args (#213)\n\n- Change output path from .claude/ to .github/ (sensitive dir blocked)\n- Use claude_args with --allowedTools instead of invalid allowed_tools\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-21T00:49:32-05:00",
+          "tree_id": "fd261c432ff80bd691bd529b6eb524d43e6db428",
+          "url": "https://github.com/zeroae/zae-limiter/commit/f1fff23b71daac9e3447c7f9dda2dc5df5343ad2"
+        },
+        "date": 1768974943046,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.842631936147274,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005532925755627138",
+            "extra": "mean: 45.78202860000147 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.26386698277193,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00585624037828646",
+            "extra": "mean: 47.02813466667206 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.19737389036356,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006563319172618151",
+            "extra": "mean: 28.411210538459606 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 28.809827354779742,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005435565428812243",
+            "extra": "mean: 34.71037808333458 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.44653775297841,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004810335375320463",
+            "extra": "mean: 39.29807700000187 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 219.7002452518662,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005432749702392155",
+            "extra": "mean: 4.551656275365518 msec\nrounds: 138"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e2c6fb2988787ddbb1cfa1a417c3cb9cb4617f52",
+          "message": "\ud83d\udc1b fix(deps): move type stubs to dev dependencies (#215)\n\nboto3-stubs and types-aiobotocore are only needed for static type\nchecking, not at runtime. Having them as runtime dependencies broke\nthe conda-forge build since boto3-stubs isn't available on conda-forge.\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-21T04:18:15-05:00",
+          "tree_id": "4d08b99c51689ed95f89e8b1be28ca279b9c136a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/e2c6fb2988787ddbb1cfa1a417c3cb9cb4617f52"
+        },
+        "date": 1768987459052,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 19.645944443390086,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008769671526601283",
+            "extra": "mean: 50.90109069999187 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.172001020031253,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004730430798836525",
+            "extra": "mean: 47.23219118749711 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.08472888712536,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003982286955733945",
+            "extra": "mean: 26.965277352942127 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 28.63418616269371,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006455294213453983",
+            "extra": "mean: 34.92329044444289 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 26.203608784107075,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004029274747043993",
+            "extra": "mean: 38.16268240909308 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 196.33663954518292,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008633391121795935",
+            "extra": "mean: 5.093292837834632 msec\nrounds: 148"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5329a39e603105b70a22ce1de0d50039bbf6c8c9",
+          "message": "\ud83d\udd27 chore(ci): limit code review to main branch and disable ADR enforcer (#221)\n\n- Add branch filter to claude-code-review.yml to only run on PRs against main/master\n- Disable claude-adr-enforcer.yml by renaming to .disabled\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-22T10:01:52-05:00",
+          "tree_id": "0f4c0c17d150bbde4e84afa3c1007a7f98e38cd4",
+          "url": "https://github.com/zeroae/zae-limiter/commit/5329a39e603105b70a22ce1de0d50039bbf6c8c9"
+        },
+        "date": 1769094515026,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.98256546026539,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008482730602581137",
+            "extra": "mean: 45.49059580000119 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.78914204199935,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006897454045274389",
+            "extra": "mean: 45.89441833333612 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 36.85454352611764,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003156352491457964",
+            "extra": "mean: 27.133696535715654 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 30.56576706041058,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034048971193439636",
+            "extra": "mean: 32.716339099999914 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.584785244476144,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00544412716999813",
+            "extra": "mean: 42.400216479995834 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 218.68021644012245,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000760600569620854",
+            "extra": "mean: 4.572887370786983 msec\nrounds: 89"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1172e428bd1abbd8313b32de93d699b223c9e730",
+          "message": "Merge pull request #203 from zeroae/release/0.5.0\n\n\ud83d\udd16 chore: release prep v0.5.0",
+          "timestamp": "2026-01-25T05:07:56-05:00",
+          "tree_id": "06e57f0bd18a4f6affe597179c482fc7baf146e0",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1172e428bd1abbd8313b32de93d699b223c9e730"
+        },
+        "date": 1769336461618,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 18.122454227851282,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010958511445143612",
+            "extra": "mean: 55.18016420001004 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.700517201206857,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007476778626306889",
+            "extra": "mean: 44.05185974999881 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.40489360685244,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004499835682193155",
+            "extra": "mean: 26.038348399995925 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 33.369082434668876,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007439228487032043",
+            "extra": "mean: 29.967860277783604 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 30.519520863385402,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003957195144191171",
+            "extra": "mean: 32.76591413332805 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 227.30712355127758,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006852030493608422",
+            "extra": "mean: 4.399334188813545 msec\nrounds: 143"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 34.71663118534857,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006303486225139077",
+            "extra": "mean: 28.804638176472295 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 23.762919879118787,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007690972785466134",
+            "extra": "mean: 42.08237056249686 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 34.89214837993728,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004777943319630124",
+            "extra": "mean: 28.659742848479695 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 14.081152389495035,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005605943530861599",
+            "extra": "mean: 71.01691483333639 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 35.113637198541284,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037945515747656003",
+            "extra": "mean: 28.478963724143703 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9169222277029903,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009959487380023252",
+            "extra": "mean: 521.6695729999856 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9366589484055068,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007206355174445323",
+            "extra": "mean: 516.3531766000006 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9416635344191245,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009448933221210855",
+            "extra": "mean: 1.0619504349999715 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9222550980402642,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005274811526811281",
+            "extra": "mean: 1.0842986958000438 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodr\u00e9",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9e4a8449bea5bbdd5f06537fe7b18c7ff4167fd5",
+          "message": "\ud83d\udd27 chore(ci): skip claude code review for bot PRs (#230)\n\nBots like dependabot and renovate don't need AI code review.\nSkip the job when the PR author type is 'Bot'.\n\nFixes #226 workflow failure.\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-25T05:48:27-05:00",
+          "tree_id": "1ec9047fd3830987d7ef393bc1fcc3eb327a2b30",
+          "url": "https://github.com/zeroae/zae-limiter/commit/9e4a8449bea5bbdd5f06537fe7b18c7ff4167fd5"
+        },
+        "date": 1769338854511,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.195660071602056,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031328881572121416",
+            "extra": "mean: 47.17946959999608 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 25.38414724236223,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032963161190171586",
+            "extra": "mean: 39.39466590908968 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 36.98465684818563,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0056637757898994326",
+            "extra": "mean: 27.038239238092522 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 33.866727181069784,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007555560802222053",
+            "extra": "mean: 29.527506294111642 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 30.92950233507266,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004320337638408308",
+            "extra": "mean: 32.331590374994335 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 225.19843986965188,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007504598165380447",
+            "extra": "mean: 4.440528098590801 msec\nrounds: 142"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 33.02535374571623,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004690542350320777",
+            "extra": "mean: 30.27976649999431 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 27.413947387846402,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004152137375624574",
+            "extra": "mean: 36.477782124997304 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 35.00993509099757,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031714294113267772",
+            "extra": "mean: 28.563320594591424 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 13.219019701359217,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0057543828919987975",
+            "extra": "mean: 75.64857475000035 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 29.6399689992978,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004101849054654478",
+            "extra": "mean: 33.73822691999749 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9260670132165978,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010349084310271662",
+            "extra": "mean: 519.1927348000036 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9244697321391107,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002633957792454566",
+            "extra": "mean: 519.6236570000337 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9477305781565214,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0020958683707225263",
+            "extra": "mean: 1.0551521951999803 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9139557656837906,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004305157144234695",
+            "extra": "mean: 1.094144856399953 sec\nrounds: 5"
+          }
+        ]
+      }
+    ]
+  }
+}
