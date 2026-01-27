@@ -7,12 +7,14 @@ on:
       - 'release/v*'
       - 'release/[0-9]*'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
       - 'release/v*'
       - 'release/[0-9]*'
       - 'milestone/v*'
       - 'milestone/[0-9]*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -173,7 +175,33 @@ jobs:
           report_type: test_results
           fail_ci_if_error: false
 
-  benchmark:
+  benchmark-moto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Needed for benchmark gh-pages access
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --extra dev --extra plot
+      - name: Run moto benchmarks
+        run: uv run pytest tests/benchmark/ -m "benchmark and not integration and not aws" --benchmark-json=benchmark-moto.json -n 0
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'pytest'
+          output-file-path: benchmark-moto.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: benchmarks/moto
+          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          alert-threshold: '120%'
+          comment-on-alert: true
+          fail-on-alert: false
+
+  benchmark-localstack:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     services:
       localstack:
@@ -200,9 +228,9 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
-        run: uv sync --all-extras
-      - name: Run benchmarks
-        run: uv run pytest tests/benchmark/ --benchmark-json=benchmark.json -n 0
+        run: uv sync --extra dev --extra plot
+      - name: Run LocalStack benchmarks
+        run: uv run pytest tests/benchmark/test_localstack.py --benchmark-json=benchmark-localstack.json -n 0
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
@@ -212,10 +240,38 @@ jobs:
         uses: benchmark-action/github-action-benchmark@v1
         with:
           tool: 'pytest'
-          output-file-path: benchmark.json
+          output-file-path: benchmark-localstack.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          benchmark-data-dir-path: benchmarks
+          benchmark-data-dir-path: benchmarks/localstack
           auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          alert-threshold: '130%'
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false
+
+  # TODO: Blocked on #189 (AWS OIDC authentication)
+  # Uncomment AWS credential steps once #189 lands
+  benchmark-aws:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Needed for benchmark gh-pages access
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install dependencies
+        run: uv sync --extra dev --extra plot
+      - name: Run AWS benchmarks
+        run: uv run pytest tests/benchmark/test_aws.py --run-aws --benchmark-json=benchmark-aws.json -n 0
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'pytest'
+          output-file-path: benchmark-aws.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: benchmarks/aws
+          auto-push: true
+          alert-threshold: '150%'
           comment-on-alert: true
           fail-on-alert: false
