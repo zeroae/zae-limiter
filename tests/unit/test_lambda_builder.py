@@ -24,6 +24,29 @@ def _mock_builder_build(
     (dep_dir / "__init__.py").write_text("# mock aioboto3")
 
 
+def _mock_builder_build_with_placeholder(
+    source_dir: str,
+    artifacts_dir: str,
+    scratch_dir: str,
+    manifest_path: str,
+    runtime: str,
+    architecture: object,
+    **kwargs: object,
+) -> None:
+    """Mock build that also creates placeholder __init__.py and pip-installed zae_limiter."""
+    artifacts = Path(artifacts_dir)
+    # Simulate placeholder __init__.py copied from source
+    (artifacts / "__init__.py").write_text("# placeholder")
+    # Simulate pip-installed zae_limiter (should be replaced by local copy)
+    pip_pkg = artifacts / "zae_limiter"
+    pip_pkg.mkdir(parents=True, exist_ok=True)
+    (pip_pkg / "__init__.py").write_text("# pip-installed version")
+    # Also install a normal dep
+    dep_dir = artifacts / "aioboto3"
+    dep_dir.mkdir(parents=True, exist_ok=True)
+    (dep_dir / "__init__.py").write_text("# mock aioboto3")
+
+
 class TestGetRuntimeRequirements:
     """Tests for reading runtime dependencies from metadata."""
 
@@ -35,6 +58,16 @@ class TestGetRuntimeRequirements:
         dep_names = [r.split(">=")[0].split(">")[0].split("==")[0] for r in reqs]
         assert "aioboto3" in dep_names
         assert "boto3" in dep_names
+
+    def test_returns_empty_when_no_metadata(self) -> None:
+        """Returns empty list when package has no requires metadata."""
+        from zae_limiter.infra.lambda_builder import _get_runtime_requirements
+
+        with patch(
+            "zae_limiter.infra.lambda_builder.importlib.metadata.requires", return_value=None
+        ):
+            reqs = _get_runtime_requirements()
+        assert reqs == []
 
     def test_excludes_dev_extras(self) -> None:
         """Dev/docs/cdk extras are excluded."""
@@ -130,6 +163,25 @@ class TestBuildLambdaPackage:
 
             # Should contain mocked dependency
             assert "aioboto3/__init__.py" in files
+
+    def test_placeholder_removed_and_pip_package_replaced(self) -> None:
+        """Test that placeholder __init__.py is removed and pip zae_limiter is replaced."""
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build_with_placeholder
+            zip_bytes = build_lambda_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            files = set(zf.namelist())
+
+            # Placeholder __init__.py should NOT be at the root
+            assert "__init__.py" not in files
+
+            # zae_limiter should contain local copy, not pip-installed version
+            assert "zae_limiter/__init__.py" in files
+            content = zf.read("zae_limiter/__init__.py").decode()
+            assert "pip-installed" not in content
 
     def test_package_contains_cfn_template(self) -> None:
         """Test that CloudFormation template is included."""
