@@ -2341,7 +2341,7 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;
 </span></code></pre></div>
 <p><strong>Query version record directly:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;SYSTEM#&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#VERSION&quot;}}&#39;</span>
 </span></code></pre></div>
 <h3 id="versionmismatcherror">VersionMismatchError<a class="headerlink" href="#versionmismatcherror" title="Permanent link">&para;</a></h3>
@@ -2377,7 +2377,7 @@
 </ol>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Create backup before migration</span>
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>create-backup<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--table-name<span class="w"> </span>ZAEL-&lt;name&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--backup-name<span class="w"> </span><span class="s2">&quot;pre-migration-</span><span class="k">$(</span>date<span class="w"> </span>+%Y%m%d<span class="k">)</span><span class="s2">&quot;</span>
 </span></code></pre></div>
 <p>Then follow the migration procedures in the <a href="../../migrations/#sample-migration-v200">Migration Guide</a>.</p>

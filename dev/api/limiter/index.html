@@ -3873,7 +3873,7 @@ limiter = RateLimiter(repository=repo)
 </code></pre></div>
 <p>Example (old API - deprecated):
     limiter = RateLimiter(
-        name="my-app",  # Creates ZAEL-my-app resources
+        name="my-app",
         region="us-east-1",
         stack_options=StackOptions(),
     )</p>
@@ -4119,7 +4119,7 @@ are provided.</p>
 
     <div class="doc doc-contents ">
 
-        <p>The resource identifier (with ZAEL- prefix).</p>
+        <p>The resource identifier.</p>
 
     </div>
 
@@ -4149,7 +4149,7 @@ are provided.</p>
         <p>List all deployed rate limiter instances in a region.</p>
 <p>This is a class method that discovers existing deployments without
 requiring an initialized RateLimiter instance. It queries CloudFormation
-for stacks with the ZAEL- prefix.</p>
+for stacks tagged with <code>ManagedBy=zae-limiter</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -7126,7 +7126,7 @@ limiter = SyncRateLimiter(repository=repo)
 </code></pre></div>
 <p>Example (old API - deprecated):
     limiter = SyncRateLimiter(
-        name="my-app",  # Creates ZAEL-my-app resources
+        name="my-app",
         region="us-east-1",
         stack_options=StackOptions(),
     )</p>
@@ -7167,7 +7167,7 @@ limiter = SyncRateLimiter(repository=repo)
 
     <div class="doc doc-contents ">
 
-        <p>The resource identifier (with ZAEL- prefix).</p>
+        <p>The resource identifier.</p>
 
     </div>
 
