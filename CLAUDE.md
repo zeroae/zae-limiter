@@ -103,6 +103,7 @@ Choose the milestone whose description best matches the issue - don't just pick 
 - `infra` / `area/infra` - CloudFormation, IAM, infrastructure
 - `aggregator` / `area/aggregator` - Lambda aggregator function
 - `ci` / `area/ci` - CI/CD workflows
+- `local` / `area/local` - LocalStack local development commands
 
 ## Infrastructure Deployment
 
@@ -261,16 +262,25 @@ limiter = RateLimiter(
 
 ### Local Development with LocalStack
 
-LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Streams, Lambda). Use the provided `docker-compose.yml` at the project root (preferred method):
+LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Streams, Lambda). Use the `zae-limiter local` CLI commands (preferred) or `docker-compose.yml`:
 
 ```bash
-# Start LocalStack with docker compose (preferred)
-docker compose up -d
+# Start LocalStack with CLI (preferred — source of truth for container config)
+zae-limiter local up
 
-# Deploy infrastructure with CLI
+# Start and deploy a stack in one step
+zae-limiter local up --name my-app
+
+# Check LocalStack status
+zae-limiter local status
+
+# Stream container logs
+zae-limiter local logs --follow
+
+# Deploy infrastructure (if not using --name above)
 zae-limiter deploy --name my-app --endpoint-url http://localhost:4566 --region us-east-1
 
-# Or declare infrastructure in code (recommended)
+# Or declare infrastructure in code
 limiter = RateLimiter(
     name="my-app",
     endpoint_url="http://localhost:4566",
@@ -279,12 +289,36 @@ limiter = RateLimiter(
 )
 
 # Stop LocalStack when done
-docker compose down
+zae-limiter local down
 ```
 
-**Important:** The Docker socket mount is required for LocalStack to spawn Lambda functions as Docker containers. The `docker-compose.yml` is pre-configured with this mount. Without it, CloudFormation stack creation will fail when the aggregator Lambda is enabled.
+**Alternative:** `docker compose up -d` / `docker compose down` also works. The `docker-compose.yml` must stay in sync with the CLI container configuration (see LocalStack Configuration Parity below).
+
+**Important:** The Docker socket mount is required for LocalStack to spawn Lambda functions as Docker containers. Without it, CloudFormation stack creation will fail when the aggregator Lambda is enabled.
 
 **Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services.
+
+### LocalStack Configuration Parity
+
+The **CLI** (`zae-limiter local up`) is the **source of truth** for LocalStack container configuration. The following must stay in sync:
+
+| Setting | Source of Truth |
+|---------|----------------|
+| LocalStack image | CLI (`DEFAULT_IMAGE`) |
+| Services list | CLI (`LOCALSTACK_SERVICES`) |
+| Environment variables | CLI container config |
+| Volume mounts | CLI container config |
+| Healthcheck | CLI container config |
+| Container name | CLI (`CONTAINER_NAME`) |
+
+**Consumers that must match:**
+1. **`docker-compose.yml`** — for developers who prefer `docker compose up -d`
+2. **`.github/workflows/ci.yml`** — LocalStack service containers in integration, e2e, and benchmark jobs
+
+**When updating LocalStack configuration:**
+1. Update the CLI code (source of truth)
+2. Update `docker-compose.yml` to match
+3. Update CI workflow LocalStack service definitions to match
 
 ## Project Structure
 
@@ -301,7 +335,7 @@ src/zae_limiter/
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter, SyncRateLimiter
 ├── config_cache.py    # Client-side config caching with TTL (CacheStats)
-├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system)
+├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, local)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   └── __init__.py    # Migration registry and runner
@@ -492,8 +526,8 @@ tests/
 # Unit tests only (fast, no Docker)
 uv run pytest tests/unit/ -v
 
-# Start LocalStack using docker compose (preferred)
-docker compose up -d
+# Start LocalStack (preferred: CLI)
+zae-limiter local up
 
 # Set environment variables for LocalStack
 export AWS_ENDPOINT_URL=http://localhost:4566
@@ -520,10 +554,10 @@ uv run pytest tests/benchmark/test_localstack.py -v
 uv run pytest tests/benchmark/ -v --benchmark-json=benchmark.json
 
 # Stop LocalStack when done
-docker compose down
+zae-limiter local down
 ```
 
-**Note:** The `docker-compose.yml` is pre-configured with the Docker socket mount required for Lambda execution in LocalStack.
+**Note:** `docker compose up -d` / `docker compose down` also works as an alternative. See [LocalStack Configuration Parity](#localstack-configuration-parity) for keeping configurations in sync.
 
 ### Test Coverage
 
@@ -567,8 +601,8 @@ Performance-sensitive operations require benchmarking to detect regressions. Ben
 
 4. **LocalStack benchmarks (realistic latency):**
    ```bash
-   # Start LocalStack with Docker
-   docker compose up -d
+   # Start LocalStack
+   zae-limiter local up
 
    # Run with environment vars
    export AWS_ENDPOINT_URL=http://localhost:4566
@@ -579,7 +613,7 @@ Performance-sensitive operations require benchmarking to detect regressions. Ben
      --benchmark-json=baseline-ls.json
 
    # Stop when done
-   docker compose down
+   zae-limiter local down
    ```
 
 **Key Benchmarks:**
@@ -726,6 +760,12 @@ When reviewing PRs, check the following based on files changed:
 - Check type hints match descriptions
 - Flag public API changes without changelog entry
 
+### LocalStack Configuration (changes to cli.py local commands, docker-compose.yml, .github/workflows/ci.yml)
+- The CLI (`zae-limiter local up`) is the source of truth for LocalStack container configuration
+- Verify `docker-compose.yml` matches CLI container settings (image, services, env vars, volumes, healthcheck)
+- Verify CI workflow LocalStack service definitions match CLI container settings
+- Flag any drift between the three: CLI, `docker-compose.yml`, CI workflows
+
 ### Design Validation (new features with derived data)
 When implementing features that derive data from state changes (like consumption from token deltas), use the `design-validator` agent to validate the approach before implementation. See issue #179 for an example where the snapshot aggregator failed because `old_tokens - new_tokens` doesn't work when refill rate exceeds consumption rate.
 
@@ -733,7 +773,7 @@ When implementing features that derive data from state changes (like consumption
 
 Follow the [commit conventions](.claude/rules/commits.md).
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`, `local`
 
 **Examples:**
 ```bash

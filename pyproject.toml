@@ -46,12 +46,16 @@ dev = [
     "pytest-xdist>=3.5.0",
     "ruff>=0.1.0",
     "types-aiobotocore[dynamodb,s3]>=2.0.0",
+    "types-docker>=7.0.0",
 ]
 lambda = [
     "aws-lambda-powertools>=2.0.0",
 ]
 plot = [
     "asciichartpy>=1.5.25",
+]
+local = [
+    "docker>=7.0.0",
 ]
 cdk = [
     "aws-cdk-lib>=2.0.0",
