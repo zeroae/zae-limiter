@@ -420,6 +420,36 @@ class TestLocalStatus:
         assert "healthy" in result.output.lower()
         assert "http://localhost:4566" in result.output
         assert LOCALSTACK_SERVICES in result.output
+        assert "AWS_ENDPOINT_URL=http://localhost:4566" in result.output
+        assert "AWS_ACCESS_KEY_ID=test" in result.output
+        assert "AWS_SECRET_ACCESS_KEY=test" in result.output
+        assert "AWS_DEFAULT_REGION=us-east-1" in result.output
+
+    @patch("zae_limiter.local._find_container")
+    @patch("zae_limiter.local._get_docker_client")
+    def test_status_unhealthy_omits_env_vars(
+        self,
+        mock_client_fn: Mock,
+        mock_find: Mock,
+        mock_docker: Mock,
+        runner: CliRunner,
+    ) -> None:
+        """Test status omits env var instructions when container is unhealthy."""
+        mock_container = MagicMock()
+        mock_container.status = "running"
+        mock_container.attrs = {
+            "State": {"Health": {"Status": "unhealthy"}},
+            "NetworkSettings": {"Ports": {"4566/tcp": [{"HostIp": "0.0.0.0", "HostPort": "4566"}]}},
+            "Config": {"Image": DEFAULT_IMAGE},
+        }
+        mock_find.return_value = mock_container
+        mock_client_fn.return_value = MagicMock()
+
+        result = runner.invoke(cli, ["local", "status"])
+
+        assert result.exit_code == 0
+        assert "unhealthy" in result.output.lower()
+        assert "AWS_ENDPOINT_URL" not in result.output
 
     @patch("zae_limiter.local._find_container", return_value=None)
     @patch("zae_limiter.local._get_docker_client")

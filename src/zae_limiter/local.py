@@ -358,6 +358,14 @@ def status(docker_host: str | None) -> None:
     click.echo(f"Image:      {image}")
     click.echo(f"Services:   {LOCALSTACK_SERVICES}")
 
+    if state == "running" and health == "healthy":
+        click.echo()
+        click.echo("To use with zae-limiter:")
+        click.echo(f"  export AWS_ENDPOINT_URL={endpoint}")
+        click.echo("  export AWS_ACCESS_KEY_ID=test")
+        click.echo("  export AWS_SECRET_ACCESS_KEY=test")
+        click.echo("  export AWS_DEFAULT_REGION=us-east-1")
+
 
 @local.command()
 @click.option(
