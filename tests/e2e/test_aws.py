@@ -156,9 +156,9 @@ class TestE2EAWSFullWorkflow:
 
         iam = boto3.client("iam", region_name="us-east-1")
 
-        # The role name format "PowerUserPB-{}" produces "PowerUserPB-ZAEL-{name}-aggregator-role"
-        # The {} is replaced with the full default role name: ZAEL-{name}-aggregator-role
-        expected_role_name = f"PowerUserPB-ZAEL-{unique_name}-aggregator-role"
+        # The role name format "PowerUserPB-{}" produces "PowerUserPB-{name}-aggregator-role"
+        # The {} is replaced with the full default role name: {name}-aggregator-role
+        expected_role_name = f"PowerUserPB-{unique_name}-aggregator-role"
 
         role = iam.get_role(RoleName=expected_role_name)
 
@@ -192,7 +192,7 @@ class TestE2EAWSFullWorkflow:
         await asyncio.sleep(60)
 
         # Check alarm states - alarm names are based on stack name pattern
-        stack_name = f"ZAEL-{unique_name}"
+        stack_name = unique_name
         alarm_name_prefix = stack_name
 
         response = aws_cloudwatch_client.describe_alarms(
@@ -237,7 +237,7 @@ class TestE2EAWSFullWorkflow:
         await asyncio.sleep(30)
 
         # Get DLQ URL
-        dlq_name = f"ZAEL-{unique_name}-aggregator-dlq"
+        dlq_name = f"{unique_name}-aggregator-dlq"
         try:
             response = aws_sqs_client.get_queue_url(QueueName=dlq_name)
             dlq_url = response["QueueUrl"]
@@ -282,7 +282,7 @@ class TestE2EAWSFullWorkflow:
         # Wait for Lambda invocations and metrics
         await asyncio.sleep(120)  # CloudWatch metrics have delay
 
-        function_name = f"ZAEL-{unique_name}-aggregator"
+        function_name = f"{unique_name}-aggregator"
         end_time = datetime.now(UTC)
         start_time_epoch = time.time() - 300  # Last 5 minutes
         start_time = datetime.fromtimestamp(start_time_epoch, tz=UTC)
@@ -377,7 +377,7 @@ class TestE2EAWSUsageSnapshots:
 
         # Wait for Event Source Mapping to be enabled before generating traffic
         # The ESM may still be in "Creating" or "Enabling" state after stack creation
-        function_name = f"ZAEL-{unique_name}-aggregator"
+        function_name = f"{unique_name}-aggregator"
         esm_enabled = await wait_for_event_source_mapping(
             aws_lambda_client,
             function_name,
@@ -670,7 +670,7 @@ class TestE2EAWSXRayTracing:
         Checks:
         - TracingConfig.Mode is 'Active'
         """
-        function_name = f"ZAEL-{unique_name}-aggregator"
+        function_name = f"{unique_name}-aggregator"
 
         response = aws_lambda_client.get_function_configuration(FunctionName=function_name)
 
@@ -688,7 +688,7 @@ class TestE2EAWSXRayTracing:
         Checks:
         - TracingConfig.Mode is 'PassThrough'
         """
-        function_name = f"ZAEL-{unique_name}-aggregator"
+        function_name = f"{unique_name}-aggregator"
 
         response = aws_lambda_client.get_function_configuration(FunctionName=function_name)
 
@@ -709,7 +709,7 @@ class TestE2EAWSXRayTracing:
         import boto3
 
         iam = boto3.client("iam", region_name="us-east-1")
-        role_name = f"PowerUserPB-ZAEL-{unique_name}-aggregator-role"
+        role_name = f"PowerUserPB-{unique_name}-aggregator-role"
 
         # Get inline policies
         response = iam.list_role_policies(RoleName=role_name)
@@ -749,7 +749,7 @@ class TestE2EAWSXRayTracing:
         import boto3
 
         iam = boto3.client("iam", region_name="us-east-1")
-        role_name = f"PowerUserPB-ZAEL-{unique_name}-aggregator-role"
+        role_name = f"PowerUserPB-{unique_name}-aggregator-role"
 
         # Get inline policies
         response = iam.list_role_policies(RoleName=role_name)
@@ -785,7 +785,7 @@ class TestE2EAWSXRayTracing:
 
         from tests.e2e.conftest import wait_for_event_source_mapping
 
-        function_name = f"ZAEL-{unique_name}-aggregator"
+        function_name = f"{unique_name}-aggregator"
 
         # Wait for Event Source Mapping to be enabled
         esm_enabled = await wait_for_event_source_mapping(
