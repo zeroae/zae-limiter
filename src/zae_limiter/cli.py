@@ -11,6 +11,7 @@ import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
 from .infra.stack_manager import StackManager
+from .local import local
 from .models import StackOptions
 
 if TYPE_CHECKING:
@@ -2374,6 +2375,13 @@ def entity_delete_limits(
             await repo.close()
 
     asyncio.run(_delete())
+
+
+# ---------------------------------------------------------------------------
+# Local development commands
+# ---------------------------------------------------------------------------
+
+cli.add_command(local)
 
 
 if __name__ == "__main__":
