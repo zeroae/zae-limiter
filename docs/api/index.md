@@ -57,7 +57,7 @@ Limit.custom("requests", capacity=50, refill_period_seconds=30)
 
 ### Acquiring Limits
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter, Limit, RateLimitExceeded
 
 limiter = RateLimiter(name="limiter")

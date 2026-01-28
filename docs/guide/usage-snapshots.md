@@ -31,7 +31,7 @@ Usage snapshots are time-aggregated consumption records created by the Lambda ag
 
 Query snapshots for an entity:
 
-```{.python .lint-only}
+```python
 from datetime import datetime
 from zae_limiter import RateLimiter
 
@@ -52,7 +52,7 @@ for snap in snapshots:
 
 Query snapshots across all entities for a resource:
 
-```{.python .lint-only}
+```python
 # Get all consumption for gpt-4 across all users
 snapshots, _ = await limiter.get_usage_snapshots(
     resource="gpt-4",
@@ -64,7 +64,7 @@ snapshots, _ = await limiter.get_usage_snapshots(
 
 For large result sets, use the `next_key` cursor:
 
-```{.python .lint-only}
+```python
 all_snapshots = []
 next_key = None
 
@@ -186,7 +186,7 @@ Each snapshot contains:
 
 Example snapshot:
 
-```{.python .lint-only}
+```python
 UsageSnapshot(
     entity_id="user-123",
     resource="gpt-4",
@@ -204,7 +204,7 @@ UsageSnapshot(
 
 Provide `entity_id` to query snapshots for a specific entity:
 
-```{.python .lint-only}
+```python
 # Uses primary key (PK) - most efficient
 snapshots, _ = await limiter.get_usage_snapshots(
     entity_id="user-123",
@@ -216,7 +216,7 @@ snapshots, _ = await limiter.get_usage_snapshots(
 
 Provide only `resource` to query across all entities:
 
-```{.python .lint-only}
+```python
 # Uses GSI2 - aggregates across entities
 snapshots, _ = await limiter.get_usage_snapshots(
     resource="gpt-4",

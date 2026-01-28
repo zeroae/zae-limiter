@@ -98,7 +98,7 @@ ZAELimiterError (base)
 
 ### Basic Handling
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimitExceeded, RateLimiterUnavailable
 
 try:

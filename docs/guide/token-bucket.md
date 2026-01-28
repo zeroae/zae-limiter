@@ -51,7 +51,7 @@ Every limit has two key parameters:
 - **Capacity**: The sustained rate (tokens that refill per period)
 - **Burst**: The maximum bucket size (can be larger than capacity)
 
-```{.python .lint-only}
+```python
 # 10,000 tokens/minute sustained, 15,000 burst
 Limit.per_minute("tpm", capacity=10_000, burst=15_000)
 ```

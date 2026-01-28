@@ -8,7 +8,7 @@ zae-limiter supports two-level hierarchies for rate limiting, enabling patterns 
 
 ## Creating a Hierarchy
 
-```{.python .lint-only}
+```python
 # Create parent entity (project)
 await limiter.create_entity(
     entity_id="project-1",
@@ -35,7 +35,7 @@ await limiter.create_entity(
 
 Create entities with `cascade=True` to apply rate limits to both the child and parent on every `acquire()` call:
 
-```{.python .lint-only}
+```python
 # Cascade is set once at entity creation
 await limiter.create_entity(
     entity_id="key-abc",
@@ -182,7 +182,7 @@ async with limiter.acquire(
 
 ### API Key Management
 
-```{.python .lint-only}
+```python
 # Project limit: 10k RPM
 await limiter.set_limits(
     entity_id="project-prod",

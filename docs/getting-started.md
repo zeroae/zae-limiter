@@ -34,7 +34,7 @@ zae-limiter creates its own infrastructure automatically. Here's a complete exam
 
 ### Async API (Recommended)
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter, Limit, StackOptions, RateLimitExceeded
 
 # Create rate limiter with declarative infrastructure
@@ -58,7 +58,7 @@ except RateLimitExceeded as e:
 
 ### Sync API
 
-```{.python .lint-only}
+```python
 from zae_limiter import SyncRateLimiter, Limit, StackOptions
 
 limiter = SyncRateLimiter(
@@ -102,7 +102,7 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 
     Pass `stack_options` to declare the desired infrastructure state:
 
-    ```{.python .lint-only}
+    ```python
     limiter = RateLimiter(
         name="my-app",
         stack_options=StackOptions(),  # Desired state declaration
@@ -124,7 +124,7 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 If you omit `stack_options`, the limiter connects to existing infrastructure without
 attempting to create or modify it:
 
-```{.python .lint-only}
+```python
 # Connect only - fails if my-app stack doesn't exist
 limiter = RateLimiter(
     name="my-app",
@@ -213,7 +213,7 @@ When you call `acquire()`, you specify:
 
 Each entity has **separate buckets per resource**. A user rate limited on `"gpt-4"` can still access `"gpt-3.5-turbo"`:
 
-```{.python .lint-only}
+```python
 # User 123 accessing GPT-4 - tracked separately from GPT-3.5
 async with limiter.acquire(
     entity_id="user-123",

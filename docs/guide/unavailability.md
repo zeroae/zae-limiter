@@ -155,7 +155,7 @@ except RateLimiterUnavailable as e:
 
 ### 1. Choose Based on Risk
 
-```{.python .lint-only}
+```python
 # High-risk: billing, security
 billing_limiter = RateLimiter(
     name="billing",

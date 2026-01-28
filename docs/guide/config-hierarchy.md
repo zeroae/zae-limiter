@@ -36,7 +36,7 @@ flowchart TD
 
 System defaults apply to **all resources** unless overridden:
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter, Limit, OnUnavailable
 
 limiter = RateLimiter(name="my-app", region="us-east-1")
@@ -64,7 +64,7 @@ await limiter.delete_system_defaults()
 
 Resource defaults override system defaults for a specific resource:
 
-```{.python .lint-only}
+```python
 # Set resource-specific defaults (overrides system)
 await limiter.set_resource_defaults(
     resource="gpt-4",
@@ -89,7 +89,7 @@ await limiter.delete_resource_defaults("gpt-4")
 
 Entity limits override both system and resource defaults for a specific entity+resource pair:
 
-```{.python .lint-only}
+```python
 # Set entity-specific limits (highest precedence)
 await limiter.set_limits(
     entity_id="user-premium",
@@ -161,7 +161,7 @@ zae-limiter entity delete-limits user-premium --resource gpt-4 --yes
 
 Here's how to implement a typical SaaS pricing model:
 
-```{.python .lint-only}
+```python
 async def setup_rate_limits(limiter: RateLimiter):
     # 1. System defaults: Free tier baseline (all resources)
     await limiter.set_system_defaults(
@@ -239,7 +239,7 @@ zae-limiter system set-defaults -l rpm:100 --on-unavailable allow
 
 When you set limits at any level, the new limits **completely replace** the previous ones:
 
-```{.python .lint-only}
+```python
 # Initial: rpm=100, tpm=10000
 await limiter.set_system_defaults([
     Limit.per_minute("rpm", 100),
@@ -254,7 +254,7 @@ await limiter.set_system_defaults([
 
 To add or update a single limit while preserving others, read first:
 
-```{.python .lint-only}
+```python
 # Read existing
 current, on_unavail = await limiter.get_system_defaults()
 
