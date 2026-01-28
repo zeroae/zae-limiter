@@ -102,7 +102,7 @@ class TestE2EAWSFullWorkflow:
         async with limiter:
             yield limiter
 
-        # Clean up stack (use --keep-stacks-on-failure to skip via conftest)
+        # Clean up stack after test completes
         try:
             await limiter.delete_stack()
         except Exception as e:

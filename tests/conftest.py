@@ -4,18 +4,12 @@ import pytest
 
 
 def pytest_addoption(parser):
-    """Add custom pytest options."""
+    """Add --run-aws pytest option."""
     parser.addoption(
         "--run-aws",
         action="store_true",
         default=False,
         help="Run tests against real AWS (requires valid credentials)",
-    )
-    parser.addoption(
-        "--keep-stacks-on-failure",
-        action="store_true",
-        default=False,
-        help="Keep CloudFormation stacks after test failures for debugging",
     )
 
 
