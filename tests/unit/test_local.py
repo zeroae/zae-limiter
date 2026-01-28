@@ -51,10 +51,21 @@ class TestLocalHelp:
         result = runner.invoke(cli, ["local", "--help"])
         assert result.exit_code == 0
         assert "Local development" in result.output
+        assert "env" in result.output
         assert "up" in result.output
         assert "down" in result.output
         assert "status" in result.output
         assert "logs" in result.output
+
+    def test_local_env_help(self, runner: CliRunner) -> None:
+        """Test local env help."""
+        result = runner.invoke(cli, ["local", "env", "--help"])
+        assert result.exit_code == 0
+        assert "--format" in result.output
+        assert "--port" in result.output
+        assert "eval" in result.output
+        assert "direnv" in result.output
+        assert "powershell" in result.output
 
     def test_local_up_help(self, runner: CliRunner) -> None:
         """Test local up help."""
@@ -83,6 +94,80 @@ class TestLocalHelp:
         assert result.exit_code == 0
         assert "--follow" in result.output
         assert "--tail" in result.output
+
+
+class TestLocalEnv:
+    """Test local env command."""
+
+    def test_env_default_format(self, runner: CliRunner) -> None:
+        """Test default (eval) format outputs export statements."""
+        result = runner.invoke(cli, ["local", "env"])
+
+        assert result.exit_code == 0
+        assert "export AWS_ENDPOINT_URL=http://localhost:4566" in result.output
+        assert "export AWS_ACCESS_KEY_ID=test" in result.output
+        assert "export AWS_SECRET_ACCESS_KEY=test" in result.output
+        assert "export AWS_DEFAULT_REGION=us-east-1" in result.output
+
+    def test_env_eval_format(self, runner: CliRunner) -> None:
+        """Test explicit eval format."""
+        result = runner.invoke(cli, ["local", "env", "--format", "eval"])
+
+        assert result.exit_code == 0
+        assert "export AWS_ENDPOINT_URL=http://localhost:4566" in result.output
+
+    def test_env_direnv_format(self, runner: CliRunner) -> None:
+        """Test direnv format outputs KEY=VALUE without export prefix."""
+        result = runner.invoke(cli, ["local", "env", "--format", "direnv"])
+
+        assert result.exit_code == 0
+        assert "AWS_ENDPOINT_URL=http://localhost:4566" in result.output
+        assert "AWS_ACCESS_KEY_ID=test" in result.output
+        assert "AWS_SECRET_ACCESS_KEY=test" in result.output
+        assert "AWS_DEFAULT_REGION=us-east-1" in result.output
+        assert "export" not in result.output
+
+    def test_env_powershell_format(self, runner: CliRunner) -> None:
+        """Test powershell format outputs $env:KEY = "VALUE" lines."""
+        result = runner.invoke(cli, ["local", "env", "--format", "powershell"])
+
+        assert result.exit_code == 0
+        assert '$env:AWS_ENDPOINT_URL = "http://localhost:4566"' in result.output
+        assert '$env:AWS_ACCESS_KEY_ID = "test"' in result.output
+        assert '$env:AWS_SECRET_ACCESS_KEY = "test"' in result.output
+        assert '$env:AWS_DEFAULT_REGION = "us-east-1"' in result.output
+
+    def test_env_custom_port(self, runner: CliRunner) -> None:
+        """Test --port changes the endpoint URL."""
+        result = runner.invoke(cli, ["local", "env", "--port", "4510"])
+
+        assert result.exit_code == 0
+        assert "http://localhost:4510" in result.output
+        assert "http://localhost:4566" not in result.output
+
+    def test_env_custom_port_with_direnv(self, runner: CliRunner) -> None:
+        """Test --port works with direnv format."""
+        result = runner.invoke(cli, ["local", "env", "--format", "direnv", "--port", "5000"])
+
+        assert result.exit_code == 0
+        assert "AWS_ENDPOINT_URL=http://localhost:5000" in result.output
+        assert "export" not in result.output
+
+    def test_env_invalid_format(self, runner: CliRunner) -> None:
+        """Test invalid format is rejected by click.Choice."""
+        result = runner.invoke(cli, ["local", "env", "--format", "fish"])
+
+        assert result.exit_code != 0
+
+    def test_env_no_docker_required(self, runner: CliRunner) -> None:
+        """Test env command works without docker installed."""
+        from unittest.mock import patch
+
+        with patch("zae_limiter.local.docker", None):
+            result = runner.invoke(cli, ["local", "env"])
+
+        assert result.exit_code == 0
+        assert "export AWS_ENDPOINT_URL" in result.output
 
 
 class TestGetDockerClient:
@@ -168,7 +253,7 @@ class TestLocalUp:
 
         assert result.exit_code == 0
         assert "LocalStack is ready" in result.output
-        assert "AWS_ENDPOINT_URL" in result.output
+        assert 'eval "$(zae-limiter local env)"' in result.output
         mock_client.containers.run.assert_called_once()
 
     @patch("zae_limiter.local._find_container")
@@ -420,10 +505,9 @@ class TestLocalStatus:
         assert "healthy" in result.output.lower()
         assert "http://localhost:4566" in result.output
         assert LOCALSTACK_SERVICES in result.output
-        assert "AWS_ENDPOINT_URL=http://localhost:4566" in result.output
-        assert "AWS_ACCESS_KEY_ID=test" in result.output
-        assert "AWS_SECRET_ACCESS_KEY=test" in result.output
-        assert "AWS_DEFAULT_REGION=us-east-1" in result.output
+        assert 'eval "$(zae-limiter local env)"' in result.output
+        assert "direnv" in result.output
+        assert "powershell" in result.output.lower()
 
     @patch("zae_limiter.local._find_container")
     @patch("zae_limiter.local._get_docker_client")
@@ -449,7 +533,7 @@ class TestLocalStatus:
 
         assert result.exit_code == 0
         assert "unhealthy" in result.output.lower()
-        assert "AWS_ENDPOINT_URL" not in result.output
+        assert "zae-limiter local env" not in result.output
 
     @patch("zae_limiter.local._find_container", return_value=None)
     @patch("zae_limiter.local._get_docker_client")

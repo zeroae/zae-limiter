@@ -173,6 +173,59 @@ def _wait_for_health(container: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Environment variable helpers
+# ---------------------------------------------------------------------------
+
+
+def _localstack_env_vars(port: int = DEFAULT_PORT) -> dict[str, str]:
+    """Return the LocalStack environment variables as a dict.
+
+    Args:
+        port: Host port for LocalStack endpoint.
+
+    Returns:
+        Dict mapping env var names to their values.
+    """
+    return {
+        "AWS_ENDPOINT_URL": f"http://localhost:{port}",
+        "AWS_ACCESS_KEY_ID": "test",
+        "AWS_SECRET_ACCESS_KEY": "test",
+        "AWS_DEFAULT_REGION": "us-east-1",
+    }
+
+
+def _format_env_vars(port: int = DEFAULT_PORT, fmt: str = "eval") -> str:
+    """Format LocalStack environment variables for shell output.
+
+    Args:
+        port: Host port for LocalStack endpoint.
+        fmt: Output format - ``eval``, ``direnv``, or ``powershell``.
+
+    Returns:
+        Formatted string with one variable per line.
+    """
+    env_vars = _localstack_env_vars(port)
+    lines: list[str] = []
+    for key, value in env_vars.items():
+        if fmt == "eval":
+            lines.append(f"export {key}={value}")
+        elif fmt == "direnv":
+            lines.append(f"{key}={value}")
+        elif fmt == "powershell":
+            lines.append(f'$env:{key} = "{value}"')
+    return "\n".join(lines)
+
+
+def _echo_env_hint() -> None:
+    """Print shell configuration hints pointing to ``local env``."""
+    click.echo()
+    click.echo("To configure your shell:")
+    click.echo('  eval "$(zae-limiter local env)"                 # bash/zsh')
+    click.echo("  zae-limiter local env --format direnv > .envrc  # direnv")
+    click.echo("  zae-limiter local env --format powershell       # PowerShell")
+
+
+# ---------------------------------------------------------------------------
 # Click command group
 # ---------------------------------------------------------------------------
 
@@ -187,6 +240,38 @@ local = click.Group(
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+
+@local.command()
+@click.option(
+    "--format",
+    "-f",
+    "fmt",
+    type=click.Choice(["eval", "direnv", "powershell"], case_sensitive=False),
+    default="eval",
+    show_default=True,
+    help="Output format",
+)
+@click.option(
+    "--port",
+    default=DEFAULT_PORT,
+    type=int,
+    show_default=True,
+    help="Host port for LocalStack endpoint",
+)
+def env(fmt: str, port: int) -> None:
+    """Output LocalStack environment variables.
+
+    Prints the environment variables needed to connect to LocalStack.
+    Does not require Docker or a running container.
+
+    \b
+    Examples:
+      eval "$(zae-limiter local env)"                 # bash/zsh
+      zae-limiter local env --format direnv > .envrc  # direnv
+      zae-limiter local env --format powershell       # PowerShell
+    """
+    click.echo(_format_env_vars(port=port, fmt=fmt))
 
 
 @local.command()
@@ -278,12 +363,7 @@ def up(
 
     endpoint = f"http://localhost:{port}"
     click.echo(f"LocalStack is ready at {endpoint}")
-    click.echo()
-    click.echo("To use with zae-limiter:")
-    click.echo(f"  export AWS_ENDPOINT_URL={endpoint}")
-    click.echo("  export AWS_ACCESS_KEY_ID=test")
-    click.echo("  export AWS_SECRET_ACCESS_KEY=test")
-    click.echo("  export AWS_DEFAULT_REGION=us-east-1")
+    _echo_env_hint()
 
     if stack_name:
         click.echo()
@@ -359,12 +439,7 @@ def status(docker_host: str | None) -> None:
     click.echo(f"Services:   {LOCALSTACK_SERVICES}")
 
     if state == "running" and health == "healthy":
-        click.echo()
-        click.echo("To use with zae-limiter:")
-        click.echo(f"  export AWS_ENDPOINT_URL={endpoint}")
-        click.echo("  export AWS_ACCESS_KEY_ID=test")
-        click.echo("  export AWS_SECRET_ACCESS_KEY=test")
-        click.echo("  export AWS_DEFAULT_REGION=us-east-1")
+        _echo_env_hint()
 
 
 @local.command()
