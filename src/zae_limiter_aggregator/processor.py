@@ -9,7 +9,7 @@ from typing import Any
 
 import boto3
 
-from ..schema import SK_BUCKET, gsi2_pk_resource, gsi2_sk_usage, pk_entity, sk_usage
+from zae_limiter.schema import SK_BUCKET, gsi2_pk_resource, gsi2_sk_usage, pk_entity, sk_usage
 
 
 class StructuredLogger:

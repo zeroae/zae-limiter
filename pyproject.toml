@@ -24,8 +24,10 @@ classifiers = [
 ]
 dependencies = [
     "aioboto3>=12.0.0",
+    "aws-lambda-builders>=1.40.0",
     "boto3>=1.34.0",
     "click>=8.0.0",
+    "pip",
     "python-ulid>=3.0.0",
 ]
 
@@ -80,7 +82,7 @@ zae-limiter = "zae_limiter.cli:cli"
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zae_limiter"]
+packages = ["src/zae_limiter", "src/zae_limiter_aggregator"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -110,3 +112,7 @@ strict = true
 warn_return_any = true
 warn_unused_ignores = true
 exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = "aws_lambda_builders.*"
+ignore_missing_imports = true

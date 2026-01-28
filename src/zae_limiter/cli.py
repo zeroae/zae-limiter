@@ -482,8 +482,16 @@ def lambda_export(output: str, info: bool, force: bool) -> None:
             click.echo()
             click.echo(f"Package path:      {pkg_info['package_path']}")
             click.echo(f"Python files:      {pkg_info['python_files']}")
-            click.echo(f"Uncompressed size: {int(pkg_info['uncompressed_size']) / 1024:.1f} KB")
+            size_bytes = pkg_info["uncompressed_size"]
+            assert isinstance(size_bytes, int)
+            click.echo(f"Uncompressed size: {size_bytes / 1024:.1f} KB")
             click.echo(f"Handler:           {pkg_info['handler']}")
+            deps = pkg_info.get("runtime_dependencies", [])
+            assert isinstance(deps, list)
+            if deps:
+                click.echo(f"Dependencies:      {len(deps)}")
+                for dep in deps:
+                    click.echo(f"  - {dep}")
             click.echo()
             return
 

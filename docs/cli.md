@@ -296,7 +296,7 @@ zae-limiter lambda-export --info
 
 ```
 Lambda Package Info:
-  Handler: zae_limiter.aggregator.handler.lambda_handler
+  Handler: zae_limiter_aggregator.handler.handler
   Runtime: python3.12
   Estimated size: ~30KB
   Dependencies: boto3 (provided by Lambda runtime)

@@ -189,10 +189,12 @@ zae-limiter delete --name my-app --yes
 ```
 
 **Lambda Deployment Details:**
-- The CLI automatically builds a deployment package from the installed `zae_limiter` package
+- The CLI automatically builds a deployment package using `aws-lambda-builders` for cross-platform compatibility
+- Only `[lambda]` extra dependencies (aws-lambda-powertools) are pip-installed; `boto3` is provided by the Lambda runtime
+- The `zae_limiter_aggregator` package and a minimal `zae_limiter/schema.py` stub are copied into the zip
 - Lambda code is updated via AWS Lambda API after stack creation
-- No S3 bucket required - deployment package (~30KB) is uploaded directly
-- Lambda only depends on `boto3` (provided by AWS Lambda runtime)
+- No S3 bucket required - deployment package is uploaded directly
+- No Docker required - `aws-lambda-builders` handles platform-specific wheels
 
 ### Declarative Infrastructure (Recommended)
 
@@ -339,10 +341,6 @@ src/zae_limiter/
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
 │   └── __init__.py    # Migration registry and runner
-├── aggregator/        # Lambda for usage snapshots and audit archival
-│   ├── handler.py     # Lambda entry point
-│   ├── processor.py   # Stream processing logic for usage snapshots
-│   └── archiver.py    # S3 audit archival (gzip JSONL)
 ├── visualization/     # Usage snapshot formatting and display
 │   ├── __init__.py    # UsageFormatter enum, format_usage_snapshots()
 │   ├── factory.py     # Formatter factory
@@ -353,6 +351,12 @@ src/zae_limiter/
     ├── lambda_builder.py   # Lambda deployment package builder
     ├── discovery.py        # Multi-stack discovery and listing
     └── cfn_template.yaml   # CloudFormation template
+
+src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
+├── __init__.py               # Re-exports handler, processor types
+├── handler.py                # Lambda entry point
+├── processor.py              # Stream processing logic for usage snapshots
+└── archiver.py               # S3 audit archival (gzip JSONL)
 ```
 
 ### Repository Pattern (v0.5.0+)
@@ -741,7 +745,7 @@ When reviewing PRs, check the following based on files changed:
 - Ensure error handling is consistent
 - Confirm both unit test files updated (tests/unit/)
 
-### Infrastructure (changes to infra/, aggregator/)
+### Infrastructure (changes to infra/, zae_limiter_aggregator/)
 - Validate CloudFormation template syntax
 - Check IAM follows least privilege
 - Verify Lambda handler signature
@@ -952,14 +956,16 @@ All DynamoDB records store fields as top-level attributes. The nested `data.M` w
 
 **Required:**
 - `aioboto3`: Async DynamoDB client
+- `aws-lambda-builders`: Cross-platform Lambda packaging (see ADR-113)
 - `boto3`: Sync DynamoDB (for Lambda aggregator)
+- `pip`: Required by `aws-lambda-builders` for dependency resolution
 
 **Optional extras:**
 - `[plot]`: `asciichartpy` for ASCII chart visualization of usage snapshots
 - `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit)
 - `[docs]`: MkDocs documentation generation
 - `[cdk]`: AWS CDK constructs
-- `[lambda]`: Lambda Powertools
+- `[lambda]`: Lambda Powertools (aws-lambda-powertools)
 
 ## Releasing
 

@@ -39,7 +39,7 @@ All log entries follow this JSON structure:
 {
   "timestamp": "2024-01-15T10:30:00.000000+00:00",
   "level": "INFO",
-  "logger": "zae_limiter.aggregator.handler",
+  "logger": "zae_limiter_aggregator.handler",
   "message": "Lambda invocation completed",
   "request_id": "abc123-def456",
   "processed": 50,
@@ -81,7 +81,7 @@ All log entries follow this JSON structure:
 {
   "timestamp": "2024-01-15T10:30:00.000000+00:00",
   "level": "INFO",
-  "logger": "zae_limiter.aggregator.handler",
+  "logger": "zae_limiter_aggregator.handler",
   "message": "Lambda invocation started",
   "request_id": "abc123-def456",
   "function_name": "limiter-aggregator",
@@ -96,7 +96,7 @@ All log entries follow this JSON structure:
 {
   "timestamp": "2024-01-15T10:30:00.500000+00:00",
   "level": "INFO",
-  "logger": "zae_limiter.aggregator.processor",
+  "logger": "zae_limiter_aggregator.processor",
   "message": "Batch processing completed",
   "processed_count": 50,
   "deltas_extracted": 45,
@@ -111,7 +111,7 @@ All log entries follow this JSON structure:
 {
   "timestamp": "2024-01-15T10:30:01.000000+00:00",
   "level": "ERROR",
-  "logger": "zae_limiter.aggregator.processor",
+  "logger": "zae_limiter_aggregator.processor",
   "message": "Error processing record",
   "record_index": 12,
   "exception": "Traceback (most recent call last):\n..."

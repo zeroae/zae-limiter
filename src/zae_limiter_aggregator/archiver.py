@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from ..schema import AUDIT_PREFIX
+from zae_limiter.schema import AUDIT_PREFIX
+
 from .processor import StructuredLogger
 
 logger = StructuredLogger(__name__)

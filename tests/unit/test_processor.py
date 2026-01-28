@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from zae_limiter.aggregator.processor import (
+from zae_limiter_aggregator.processor import (
     ConsumptionDelta,
     ProcessResult,
     StructuredLogger,
@@ -524,7 +524,7 @@ class TestProcessStreamRecords:
 
     def test_empty_records(self) -> None:
         """Empty records list returns zero counts."""
-        with patch("zae_limiter.aggregator.processor.boto3"):
+        with patch("zae_limiter_aggregator.processor.boto3"):
             result = process_stream_records([], "test_table", ["hourly"])
 
         assert result.processed_count == 0
@@ -538,7 +538,7 @@ class TestProcessStreamRecords:
             self._make_record(event_name="REMOVE"),
         ]
 
-        with patch("zae_limiter.aggregator.processor.boto3"):
+        with patch("zae_limiter_aggregator.processor.boto3"):
             result = process_stream_records(records, "test_table", ["hourly"])
 
         assert result.processed_count == 2
@@ -563,7 +563,7 @@ class TestProcessStreamRecords:
             ),
         ]
 
-        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
             mock_boto.resource.return_value.Table.return_value = mock_table
 
@@ -578,7 +578,7 @@ class TestProcessStreamRecords:
         """Updates multiple window types."""
         records = [self._make_record()]
 
-        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
             mock_boto.resource.return_value.Table.return_value = mock_table
 
@@ -611,7 +611,7 @@ class TestProcessStreamRecords:
             },
         }
 
-        with patch("zae_limiter.aggregator.processor.boto3"):
+        with patch("zae_limiter_aggregator.processor.boto3"):
             result = process_stream_records([bad_record], "test_table", ["hourly"])
 
         assert result.processed_count == 1
@@ -622,7 +622,7 @@ class TestProcessStreamRecords:
         """Handles exceptions during update_snapshot."""
         records = [self._make_record()]
 
-        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
             mock_table.update_item.side_effect = Exception("DynamoDB error")
             mock_boto.resource.return_value.Table.return_value = mock_table
@@ -645,7 +645,7 @@ class TestProcessStreamRecords:
             ),
         ]
 
-        with patch("zae_limiter.aggregator.processor.boto3"):
+        with patch("zae_limiter_aggregator.processor.boto3"):
             result = process_stream_records(records, "test_table", ["hourly"])
 
         assert result.processed_count == 1
@@ -673,7 +673,7 @@ class TestProcessStreamRecords:
             ),
         ]
 
-        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
             mock_boto.resource.return_value.Table.return_value = mock_table
 
@@ -791,7 +791,7 @@ class TestStructuredLoggingIntegration:
         """Logs batch start and completion with metrics."""
         records = [self._make_record()]
 
-        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
             mock_boto.resource.return_value.Table.return_value = mock_table
 
@@ -823,7 +823,7 @@ class TestStructuredLoggingIntegration:
         """Error logs include entity_id, resource, limit_name."""
         records = [self._make_record()]
 
-        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
             mock_table.update_item.side_effect = Exception("DynamoDB error")
             mock_boto.resource.return_value.Table.return_value = mock_table
@@ -848,7 +848,7 @@ class TestStructuredLoggingIntegration:
         """Successful snapshot updates are logged at DEBUG level."""
         records = [self._make_record()]
 
-        with patch("zae_limiter.aggregator.processor.boto3") as mock_boto:
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
             mock_table = MagicMock()
             mock_boto.resource.return_value.Table.return_value = mock_table
 

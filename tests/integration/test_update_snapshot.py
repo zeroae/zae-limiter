@@ -11,8 +11,8 @@ from datetime import UTC, datetime
 import boto3
 import pytest
 
-from zae_limiter.aggregator.processor import ConsumptionDelta, update_snapshot
 from zae_limiter.schema import get_table_definition, pk_entity, sk_usage
+from zae_limiter_aggregator.processor import ConsumptionDelta, update_snapshot
 
 
 @pytest.fixture(scope="module")

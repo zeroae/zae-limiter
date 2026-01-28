@@ -211,7 +211,7 @@ AggregatorFunction:
   Type: AWS::Lambda::Function
   Properties:
     Runtime: python3.12
-    Handler: zae_limiter.aggregator.handler.lambda_handler
+    Handler: zae_limiter_aggregator.handler.handler
     MemorySize: 256
     Timeout: 60
     Environment:

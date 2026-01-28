@@ -271,6 +271,19 @@ wheels = [
 ]
 
 [[package]]
+name = "aws-lambda-builders"
+version = "1.62.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "setuptools" },
+    { name = "wheel" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/6d/ff0a4b22a7b6b5a5867313b14187443e4268bb773635094205fd13a4fdcc/aws_lambda_builders-1.62.0.tar.gz", hash = "sha256:2f1a4baa61c165941d26fdf05966aa4c2e95a66af06b7309bb09558daea4a561", size = 110532, upload-time = "2026-01-21T20:21:36.2Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/39/f6ae09290c8bb53cf18105e6dbf926c3753684f6577e79dd354ab9912e06/aws_lambda_builders-1.62.0-py3-none-any.whl", hash = "sha256:008afea8aa14bd10a1cf8b7c736ceee893b38d8dca15519e6121a384bd86e52f", size = 149963, upload-time = "2026-01-21T20:21:34.999Z" },
+]
+
+[[package]]
 name = "aws-lambda-powertools"
 version = "3.24.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1793,6 +1806,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pip"
+version = "25.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/6e/74a3f0179a4a73a53d66ce57fdb4de0080a8baa1de0063de206d6167acc2/pip-25.3.tar.gz", hash = "sha256:8d0538dbbd7babbd207f261ed969c65de439f6bc9e5dbd3b3b9a77f25d95f343", size = 1803014, upload-time = "2025-10-25T00:55:41.394Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/3c/d717024885424591d5376220b5e836c2d5293ce2011523c9de23ff7bf068/pip-25.3-py3-none-any.whl", hash = "sha256:9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd", size = 1778622, upload-time = "2025-10-25T00:55:39.247Z" },
+]
+
+[[package]]
 name = "platformdirs"
 version = "4.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2879,6 +2901,18 @@ wheels = [
 ]
 
 [[package]]
+name = "wheel"
+version = "0.46.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/89/24/a2eb353a6edac9a0303977c4cb048134959dd2a51b48a269dfc9dde00c8a/wheel-0.46.3.tar.gz", hash = "sha256:e3e79874b07d776c40bd6033f8ddf76a7dad46a7b8aa1b2787a83083519a1803", size = 60605, upload-time = "2026-01-22T12:39:49.136Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/22/b76d483683216dde3d67cba61fb2444be8d5be289bf628c13fc0fd90e5f9/wheel-0.46.3-py3-none-any.whl", hash = "sha256:4b399d56c9d9338230118d705d9737a2a468ccca63d5e813e2a4fc7815d8bc4d", size = 30557, upload-time = "2026-01-22T12:39:48.099Z" },
+]
+
+[[package]]
 name = "wrapt"
 version = "1.17.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3061,8 +3095,10 @@ name = "zae-limiter"
 source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
+    { name = "aws-lambda-builders" },
     { name = "boto3" },
     { name = "click" },
+    { name = "pip" },
     { name = "python-ulid" },
 ]
 
@@ -3110,6 +3146,7 @@ requires-dist = [
     { name = "aioboto3", specifier = ">=12.0.0" },
     { name = "asciichartpy", marker = "extra == 'plot'", specifier = ">=1.5.25" },
     { name = "aws-cdk-lib", marker = "extra == 'cdk'", specifier = ">=2.0.0" },
+    { name = "aws-lambda-builders", specifier = ">=1.40.0" },
     { name = "aws-lambda-powertools", marker = "extra == 'lambda'", specifier = ">=2.0.0" },
     { name = "boto3", specifier = ">=1.34.0" },
     { name = "boto3-stubs", extras = ["cloudformation", "dynamodb", "lambda", "s3", "sts"], marker = "extra == 'dev'", specifier = ">=1.34.0" },
@@ -3125,6 +3162,7 @@ requires-dist = [
     { name = "moto", extras = ["dynamodb"], marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "openapi-spec-validator", marker = "extra == 'dev'", specifier = ">=0.7.1" },
+    { name = "pip" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
