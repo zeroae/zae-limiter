@@ -109,6 +109,7 @@ try:
         await do_work()
 except RateLimitExceeded as e:
     print(f"Rate limited! Retry after {e.retry_after_seconds:.1f}s")
+```
 
 ## Infrastructure Persistence
 

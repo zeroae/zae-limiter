@@ -13,7 +13,7 @@ Documentation currently emphasizes passing `limits=[...]` to every `acquire()` c
 
 Make `limits=None` the default in `acquire()`:
 
-```python
+```python lint-only
 async def acquire(
     self,
     entity_id: str,
