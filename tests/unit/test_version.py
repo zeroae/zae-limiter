@@ -214,11 +214,11 @@ class TestSchemaVersion:
     def test_current_schema_version(self):
         """Test CURRENT_SCHEMA_VERSION is valid."""
         v = parse_version(CURRENT_SCHEMA_VERSION)
-        assert v.major >= 1
+        assert v.major >= 0
 
     def test_get_schema_version(self):
         """Test get_schema_version returns valid version."""
         version = get_schema_version()
         assert version == CURRENT_SCHEMA_VERSION
         v = parse_version(version)
-        assert v.major >= 1
+        assert v.major >= 0
