@@ -1231,15 +1231,15 @@ class TestRateLimiterResourceCapacity:
         limits = [Limit.per_minute("rpm", 100)]
 
         # Entity A: consume 20
-        async with limiter.acquire("entity-a", "gpt-4", limits, {"rpm": 20}):
+        async with limiter.acquire("entity-a", "gpt-4", {"rpm": 20}, limits=limits):
             pass
 
         # Entity B: consume 50
-        async with limiter.acquire("entity-b", "gpt-4", limits, {"rpm": 50}):
+        async with limiter.acquire("entity-b", "gpt-4", {"rpm": 50}, limits=limits):
             pass
 
         # Entity C: consume 10
-        async with limiter.acquire("entity-c", "gpt-4", limits, {"rpm": 10}):
+        async with limiter.acquire("entity-c", "gpt-4", {"rpm": 10}, limits=limits):
             pass
 
         # Query aggregated capacity
@@ -1273,7 +1273,7 @@ class TestRateLimiterResourceCapacity:
 
         # Create buckets for all
         for entity_id in ["org-1", "team-1", "org-2"]:
-            async with limiter.acquire(entity_id, "api", limits, {"rpm": 10}):
+            async with limiter.acquire(entity_id, "api", {"rpm": 10}, limits=limits):
                 pass
 
         # Query with parents_only=False (all)
@@ -1299,7 +1299,7 @@ class TestRateLimiterResourceCapacity:
         limits = [Limit.per_minute("rpm", 100)]
 
         # Consume 30%
-        async with limiter.acquire("entity-1", "api", limits, {"rpm": 30}):
+        async with limiter.acquire("entity-1", "api", {"rpm": 30}, limits=limits):
             pass
 
         capacity = await limiter.get_resource_capacity("api", "rpm")
@@ -1650,7 +1650,7 @@ class TestRateLimiterInputValidation:
         limits = [Limit.per_minute("rpm", 100)]
 
         with pytest.raises(InvalidIdentifierError) as exc_info:
-            async with limiter.acquire("user#123", "api", limits, {"rpm": 1}):
+            async with limiter.acquire("user#123", "api", {"rpm": 1}, limits=limits):
                 pass
 
         assert exc_info.value.field == "entity_id"
@@ -1662,7 +1662,7 @@ class TestRateLimiterInputValidation:
         limits = [Limit.per_minute("rpm", 100)]
 
         with pytest.raises(InvalidNameError) as exc_info:
-            async with limiter.acquire("user-123", "api#v2", limits, {"rpm": 1}):
+            async with limiter.acquire("user-123", "api#v2", {"rpm": 1}, limits=limits):
                 pass
 
         assert exc_info.value.field == "resource"
@@ -1674,7 +1674,7 @@ class TestRateLimiterInputValidation:
         limits = [Limit.per_minute("rpm", 100)]
 
         with pytest.raises(InvalidIdentifierError) as exc_info:
-            async with limiter.acquire("", "api", limits, {"rpm": 1}):
+            async with limiter.acquire("", "api", {"rpm": 1}, limits=limits):
                 pass
 
         assert exc_info.value.field == "entity_id"
@@ -1686,7 +1686,7 @@ class TestRateLimiterInputValidation:
         limits = [Limit.per_minute("rpm", 100)]
 
         with pytest.raises(InvalidNameError) as exc_info:
-            async with limiter.acquire("user-123", "", limits, {"rpm": 1}):
+            async with limiter.acquire("user-123", "", {"rpm": 1}, limits=limits):
                 pass
 
         assert exc_info.value.field == "resource"
@@ -1698,7 +1698,7 @@ class TestRateLimiterInputValidation:
         limits = [Limit.per_minute("rpm", 100)]
 
         # Should not raise
-        async with limiter.acquire("user-123", "gpt-3.5-turbo", limits, {"rpm": 1}):
+        async with limiter.acquire("user-123", "gpt-3.5-turbo", {"rpm": 1}, limits=limits):
             pass
 
 

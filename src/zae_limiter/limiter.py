@@ -657,16 +657,16 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit] | None,
         consume: dict[str, int],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
     ) -> AsyncIterator[Lease]:
         """
         Acquire rate limit capacity.
 
-        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
-        If no stored limits found, falls back to the `limits` parameter.
+        Limits are resolved automatically from stored config using three-tier
+        hierarchy: Entity > Resource > System. Pass ``limits`` to override.
 
         Cascade behavior is controlled by the entity's ``cascade`` flag, set at
         entity creation time via ``create_entity(cascade=True)``. When enabled,
@@ -676,7 +676,7 @@ class RateLimiter:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
             consume: Amounts to consume by limit name
-            limits: Override limits (optional, falls back to stored config)
+            limits: Override stored config with explicit limits (optional)
             use_stored_limits: DEPRECATED - limits are now always resolved from
                 stored config. This parameter will be removed in v1.0.
             on_unavailable: Override default on_unavailable behavior
@@ -687,7 +687,7 @@ class RateLimiter:
         Raises:
             RateLimitExceeded: If any limit would be exceeded
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
-            ValidationError: If no limits found at any level and no override provided
+            ValidationError: If no limits configured at any level
         """
         await self._ensure_initialized()
 
@@ -1830,16 +1830,16 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit] | None,
         consume: dict[str, int],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
     ) -> Iterator[SyncLease]:
         """
         Acquire rate limit capacity (synchronous).
 
-        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
-        If no stored limits found, falls back to the `limits` parameter.
+        Limits are resolved automatically from stored config using three-tier
+        hierarchy: Entity > Resource > System. Pass ``limits`` to override.
 
         Cascade behavior is controlled by the entity's ``cascade`` flag, set at
         entity creation time via ``create_entity(cascade=True)``.

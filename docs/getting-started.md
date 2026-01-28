@@ -30,51 +30,85 @@ This guide will help you install zae-limiter and set up rate limiting in your ap
 
 ## Quick Start
 
-zae-limiter creates its own infrastructure automatically. Here's a complete example:
+zae-limiter creates its own infrastructure automatically.
 
-### Async API (Recommended)
+### Minimalist
+
+For scripts and quick demos, pass limits inline:
 
 ```python
 from zae_limiter import RateLimiter, Limit, StackOptions, RateLimitExceeded
 
-# Create rate limiter with declarative infrastructure
 limiter = RateLimiter(
     name="my-app",
     region="us-east-1",
-    stack_options=StackOptions(),  # Declare desired state - CloudFormation ensures it
+    stack_options=StackOptions(),  # Creates infrastructure if needed
 )
 
 try:
     async with limiter.acquire(
         entity_id="user-123",
         resource="api",
-        limits=[Limit.per_minute("requests", 100)],
         consume={"requests": 1},
+        limits=[Limit.per_minute("requests", 100)],
     ) as lease:
         await do_work()
 except RateLimitExceeded as e:
     print(f"Rate limited! Retry after {e.retry_after_seconds:.1f}s")
+
+# Clean up when done
+await limiter.delete_stack()
 ```
 
-### Sync API
+### Stored Config (Recommended)
+
+For production, configure limits once and keep application code simple.
+
+**Step 1: Deploy and configure**
+
+=== "CLI"
+
+    ```bash
+    # Deploy infrastructure
+    zae-limiter deploy --name my-app --region us-east-1
+
+    # Configure limits (apply to all entities)
+    zae-limiter system set-defaults --name my-app -l rpm:1000 -l tpm:100000
+    ```
+
+=== "Python"
+
+    ```python
+    from zae_limiter import RateLimiter, Limit, StackOptions
+
+    limiter = RateLimiter(
+        name="my-app",
+        region="us-east-1",
+        stack_options=StackOptions(),
+    )
+
+    await limiter.set_system_defaults(limits=[
+        Limit.per_minute("rpm", 1000),
+        Limit.per_minute("tpm", 100000),
+    ])
+    ```
+
+**Step 2: Use in your application**
 
 ```python
-from zae_limiter import SyncRateLimiter, Limit, StackOptions
+from zae_limiter import RateLimiter, RateLimitExceeded
 
-limiter = SyncRateLimiter(
-    name="my-app",
-    region="us-east-1",
-    stack_options=StackOptions(),
-)
+limiter = RateLimiter(name="my-app", region="us-east-1")
 
-with limiter.acquire(
-    entity_id="user-123",
-    resource="api",
-    limits=[Limit.per_minute("requests", 100)],
-    consume={"requests": 1},
-) as lease:
-    response = call_api()
-```
+try:
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="api",
+        consume={"rpm": 1, "tpm": 500},  # Limits resolved automatically
+    ) as lease:
+        await do_work()
+except RateLimitExceeded as e:
+    print(f"Rate limited! Retry after {e.retry_after_seconds:.1f}s")
 
 ## Infrastructure Persistence
 
@@ -208,8 +242,8 @@ When you call `acquire()`, you specify:
 
 - **`entity_id`**: Who is being rate limited (e.g., `"user-123"`, `"api-key-abc"`, `"tenant-xyz"`)
 - **`resource`**: What they're accessing (e.g., `"gpt-4"`, `"api"`, `"embeddings"`)
-- **`limits`**: The rate limit rules to apply
 - **`consume`**: How much capacity this request uses
+- **`limits`**: The rate limit rules to apply (optional if using stored config)
 
 Each entity has **separate buckets per resource**. A user rate limited on `"gpt-4"` can still access `"gpt-3.5-turbo"`:
 
@@ -218,8 +252,8 @@ Each entity has **separate buckets per resource**. A user rate limited on `"gpt-
 async with limiter.acquire(
     entity_id="user-123",
     resource="gpt-4",        # Bucket: user-123 + gpt-4
-    limits=[Limit.per_minute("rpm", 10)],
     consume={"rpm": 1},
+    limits=[Limit.per_minute("rpm", 10)],
 ) as lease:
     ...
 
@@ -227,8 +261,8 @@ async with limiter.acquire(
 async with limiter.acquire(
     entity_id="user-123",
     resource="gpt-3.5-turbo",  # Bucket: user-123 + gpt-3.5-turbo
-    limits=[Limit.per_minute("rpm", 100)],
     consume={"rpm": 1},
+    limits=[Limit.per_minute("rpm", 100)],
 ) as lease:
     ...
 ```
@@ -270,8 +304,8 @@ try:
     async with limiter.acquire(
         entity_id="user-123",
         resource="gpt-4",
-        limits=[Limit.per_minute("rpm", 1)],
         consume={"rpm": 2},  # Exceeds capacity to trigger error
+        limits=[Limit.per_minute("rpm", 1)],
     ):
         await do_work()
 except RateLimitExceeded as e:
@@ -315,8 +349,7 @@ With limits configured, application code becomes simpler—no need to pass limit
 async with limiter.acquire(
     entity_id="user-123",
     resource="gpt-4",
-    limits=None,  # Auto-resolves: Entity > Resource > System
-    consume={"rpm": 1},
+    consume={"rpm": 1},  # No limits parameter needed
 ) as lease:
     await call_api()
 ```
