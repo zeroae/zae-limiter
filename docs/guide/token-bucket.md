@@ -175,9 +175,15 @@ Because buckets can go negative, your initial estimate doesn't need to be perfec
 
 The lazy refill with drift compensation means `retry_after` tells you exactly when tokens will be available:
 
-```{.python .lint-only}
+```python
 try:
-    await limiter.check(entity_id, resource, limits, consume={"tpm": 1000})
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="api",
+        limits=[Limit.per_minute("tpm", 10_000)],
+        consume={"tpm": 1000},
+    ):
+        pass
 except RateLimitExceeded as e:
     # This is the exact time to wait
     await asyncio.sleep(e.retry_after_seconds)

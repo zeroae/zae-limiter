@@ -8,14 +8,14 @@
 
 Currently, `acquire()` requires explicit limits or opt-in via `use_stored_limits=True`:
 
-```{.python .lint-only}
+```python
 async with limiter.acquire(
-    entity_id="user-1",
+    entity_id="user-123",
     resource="gpt-4",
     limits=[Limit.per_minute("tpm", 10000)],  # Required
-    use_stored_limits=False,  # Default
+    consume={"tpm": 1},
 ):
-    ...
+    pass
 ```
 
 This creates friction: users must pass limits on every call or remember to opt-in. With centralized config (ADR-102), stored limits become the natural default.

@@ -263,18 +263,23 @@ See [Token Bucket Algorithm](guide/token-bucket.md) for details on how capacity,
 
 When a rate limit is exceeded, `RateLimitExceeded` is raised with full details:
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimitExceeded
 
 try:
-    async with limiter.acquire(...):
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 1)],
+        consume={"rpm": 2},  # Exceeds capacity to trigger error
+    ):
         await do_work()
 except RateLimitExceeded as e:
     # Get retry delay
     print(f"Retry after: {e.retry_after_seconds}s")
 
     # For HTTP responses
-    return JSONResponse(
+    response = JSONResponse(
         status_code=429,
         content=e.as_dict(),
         headers={"Retry-After": e.retry_after_header},

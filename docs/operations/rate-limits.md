@@ -149,10 +149,10 @@ await limiter.create_entity(
 
 Test that rate limiting is working correctly:
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter, Limit, RateLimitExceeded
 
-limiter = RateLimiter(name="<name>", region="<region>")
+limiter = RateLimiter(name="limiter", region="us-east-1")
 
 # Consume all capacity
 for i in range(100):
@@ -177,10 +177,10 @@ for i in range(100):
 
 Update stored limits for an entity without redeployment:
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter, Limit
 
-limiter = RateLimiter(name="<name>", region="<region>")
+limiter = RateLimiter(name="limiter", region="us-east-1")
 
 # Update limits for an entity
 await limiter.set_limits(

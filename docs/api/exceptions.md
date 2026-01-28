@@ -140,9 +140,14 @@ async def endpoint():
 
 ### Detailed Error Information
 
-```{.python .lint-only}
+```python
 try:
-    async with limiter.acquire(...):
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 1)],
+        consume={"rpm": 2},  # Exceeds capacity to trigger error
+    ):
         pass
 except RateLimitExceeded as e:
     # All limit statuses (both passed and failed)

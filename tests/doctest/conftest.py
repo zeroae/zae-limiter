@@ -222,6 +222,23 @@ async def _stub_execute_operation(*args, **kwargs):
     return _MockResult()
 
 
+class _JSONResponse:
+    """Stub for starlette.responses.JSONResponse used in doc examples."""
+
+    def __init__(self, status_code=200, content=None, headers=None):
+        self.status_code = status_code
+        self.content = content
+        self.headers = headers or {}
+
+
+class _HTTPError(Exception):
+    """Stub for fastapi.HTTPException used in doc examples."""
+
+    def __init__(self, status_code=500, detail=None):
+        self.status_code = status_code
+        self.detail = detail
+
+
 # ---------------------------------------------------------------------------
 # Fixtures for doc example execution
 # ---------------------------------------------------------------------------
@@ -440,6 +457,12 @@ def doctest_globals(doctest_env):
         "elapsed_ms": 50,
         "request_id": "req-123",
         "num_shards": 10,
+        # Web framework stubs
+        "JSONResponse": _JSONResponse,
+        "HTTPException": _HTTPError,
+        # Context variables used in doc examples
+        "logger": _logging.getLogger("doctest"),
+        "is_critical_operation": False,
         # Stub functions
         "call_llm": _stub_call_llm,
         "call_api": _stub_call_api,

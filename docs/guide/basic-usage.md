@@ -6,11 +6,11 @@ This guide covers common rate limiting patterns with zae-limiter.
 
 The `acquire()` method is the primary API for rate limiting:
 
-```{.python .lint-only}
+```python
 async with limiter.acquire(
     entity_id="user-123",      # Who is being rate limited
     resource="gpt-4",          # What resource they're accessing
-    limits=[...],              # Rate limit definitions
+    limits=[Limit.per_minute("rpm", 100)],  # Rate limit definitions
     consume={"rpm": 1},        # How much to consume
 ) as lease:
     # Your code here
@@ -205,10 +205,15 @@ print(f"Parent: {entity.parent_id}")
 
 ### RateLimitExceeded Details
 
-```{.python .lint-only}
+```python
 try:
-    async with limiter.acquire(...):
-        ...
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 1)],
+        consume={"rpm": 2},  # Exceeds capacity to trigger error
+    ):
+        pass
 except RateLimitExceeded as e:
     # All limit statuses
     for status in e.statuses:
@@ -222,17 +227,22 @@ except RateLimitExceeded as e:
     print(f"Bottleneck: {e.primary_violation.limit_name}")
 
     # For API responses
-    return e.as_dict()
+    print(e.as_dict())
 ```
 
 ### Service Unavailable
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiterUnavailable
 
 try:
-    async with limiter.acquire(...):
-        ...
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 100)],
+        consume={"rpm": 1},
+    ):
+        pass
 except RateLimiterUnavailable as e:
     # DynamoDB is unavailable
     # Behavior depends on on_unavailable setting

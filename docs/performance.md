@@ -477,13 +477,10 @@ limiter = RateLimiter(name="rate-limits", region="us-east-1")
 
 #### 2. Optimize TTL Settings
 
-```{.python .lint-only}
+```python
 # Shorter TTL = faster cleanup = less storage
-limiter = RateLimiter(
-    name="rate-limits",
-    region="us-east-1",
-    # bucket_ttl_seconds is configured via StackOptions or CloudFormation
-)
+# bucket_ttl_seconds is configured via StackOptions or CloudFormation
+limiter = RateLimiter(name="rate-limits", region="us-east-1")
 ```
 
 #### 3. Reduce Snapshot Granularity

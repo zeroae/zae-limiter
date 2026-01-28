@@ -35,7 +35,7 @@ When DynamoDB is unavailable, reject all rate-limited requests by raising `RateL
 !!! warning "Exception Handling Required"
     When using `BLOCK` mode (the default), your application **must** catch `RateLimiterUnavailable` to handle infrastructure failures gracefully. This exception inherits from `InfrastructureError`, not `RateLimitExceeded`.
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter, OnUnavailable, RateLimiterUnavailable
 
 limiter = RateLimiter(
@@ -44,14 +44,19 @@ limiter = RateLimiter(
 )
 
 try:
-    async with limiter.acquire(...):
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 100)],
+        consume={"rpm": 1},
+    ):
         await do_work()
 except RateLimiterUnavailable as e:
     # DynamoDB is unavailable - handle degraded mode
-    return JSONResponse(
+    print(JSONResponse(
         status_code=503,
         content={"error": "Service temporarily unavailable"},
-    )
+    ).status_code)
 ```
 
 **When to use:**
@@ -65,14 +70,19 @@ except RateLimiterUnavailable as e:
 
 When DynamoDB is unavailable, allow requests to proceed:
 
-```{.python .lint-only}
+```python
 limiter = RateLimiter(
     name="limiter",
     on_unavailable=OnUnavailable.ALLOW,
 )
 
 # Requests proceed even if DynamoDB is down
-async with limiter.acquire(...):
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="gpt-4",
+    limits=[Limit.per_minute("rpm", 100)],
+    consume={"rpm": 1},
+):
     await do_work()  # Runs without rate limiting
 ```
 
@@ -133,11 +143,16 @@ async with limiter.acquire(
 
 The `RateLimiterUnavailable` exception includes details about the failure:
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiterUnavailable
 
 try:
-    async with limiter.acquire(...):
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 100)],
+        consume={"rpm": 1},
+    ):
         await do_work()
 except RateLimiterUnavailable as e:
     # Log the underlying error

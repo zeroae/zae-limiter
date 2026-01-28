@@ -77,11 +77,16 @@ except RateLimitExceeded as e:
 
 ### Handling Exceptions
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimitExceeded, RateLimiterUnavailable
 
 try:
-    async with limiter.acquire(...):
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 100)],
+        consume={"rpm": 1},
+    ):
         pass
 except RateLimitExceeded as e:
     # Rate limit exceeded
