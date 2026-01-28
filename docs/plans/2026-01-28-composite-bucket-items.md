@@ -400,3 +400,64 @@ repository, limiter, lease, aggregator, schema, and migration.
 | `processor.py` | `extract_deltas` (multi-delta from single event) |
 | `version.py` | New schema version |
 | `migrations/` | Migration script for existing data |
+
+### Test Strategy
+
+Tests are categorized into three groups to guarantee the migration preserves all
+business logic while allowing internal implementation to change.
+
+#### Untouchable tests (safety net)
+
+These tests MUST pass without modification. If any fail, the migration has a bug.
+
+| Test file | What it guards |
+|-----------|---------------|
+| `tests/unit/test_bucket.py` | Token bucket math: refill, consume, burst, retry_after, negative |
+| `tests/unit/test_exceptions.py` | `RateLimitExceeded` structure, serialization, violations + passed |
+| `tests/unit/test_sync_limiter.py` | Sync/async API parity |
+| `tests/unit/test_config_cache.py` | Config caching, TTL, invalidation |
+| `tests/unit/test_cli.py` | CLI commands and output |
+| `tests/unit/test_stack_manager.py` | CloudFormation operations |
+| `tests/unit/test_lambda_builder.py` | Lambda packaging |
+| `tests/unit/test_visualization.py` | Usage snapshot formatting |
+| `tests/e2e/test_localstack.py` | Full user workflows (acquire, cascade, adjust, stored limits) |
+| `tests/e2e/test_aws.py` | Real AWS workflows |
+
+**Key invariants these guard:**
+- Refill calculation: `(now - last_refill) * (refill_amount / refill_period)`
+- Burst capping: `min(tokens + refill, burst)`
+- Negative buckets only via adjust, not acquire
+- Retry-after: `deficit / refill_rate`
+- Acquire fails when `requested > available`
+- Lease rollback on exception (no partial commits)
+- Cascade consumes parent when `cascade=True`
+- Multi-limit checks: ALL limits must pass
+- Exception includes both `violations` AND `passed` limits
+
+#### Tests that will be rewritten (internal implementation)
+
+These tests validate the current DynamoDB schema and must be updated for composite
+bucket format. Behavior at the API boundary stays the same.
+
+| Test file | What changes |
+|-----------|-------------|
+| `tests/unit/test_repository.py` | Item structure assertions, transaction shape, batch get expectations |
+| `tests/integration/test_repository.py` | Optimistic locking tests, transaction item counts, GSI query results |
+| `tests/unit/test_processor.py` | Delta extraction: `extract_delta` → `extract_deltas`, composite SK parsing |
+
+#### Tests that should improve (benchmarks)
+
+Run before and after migration to verify performance gains.
+
+| Test file | Expected result |
+|-----------|----------------|
+| `tests/benchmark/test_latency.py` | p50/p95/p99 should decrease (~30-50% for multi-limit) |
+| `tests/benchmark/test_capacity.py` | RCU/WCU should decrease proportionally to limit count |
+| `tests/benchmark/test_throughput.py` | Ops/sec should increase due to reduced contention |
+
+#### Migration validation phases
+
+1. **Phase 1 — Business logic:** Run untouchable tests → all MUST pass unchanged
+2. **Phase 2 — DynamoDB layer:** Rewrite repository and processor tests for composite schema
+3. **Phase 3 — E2E + benchmarks:** Run E2E tests (must pass) and benchmarks (verify gains)
+4. **Phase 4 — AWS validation:** Run `tests/e2e/test_aws.py --run-aws` against real DynamoDB
