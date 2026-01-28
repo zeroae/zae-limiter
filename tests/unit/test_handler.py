@@ -6,10 +6,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Import the module explicitly, not via __init__.py which exports the function
-from zae_limiter.aggregator.handler import handler
+from zae_limiter_aggregator.handler import handler
 
 # Get the actual module reference for patching
-handler_module = sys.modules["zae_limiter.aggregator.handler"]
+handler_module = sys.modules["zae_limiter_aggregator.handler"]
 
 
 class TestHandler:
@@ -95,7 +95,7 @@ class TestHandler:
             },
         }
 
-    @patch("zae_limiter.aggregator.handler.process_stream_records")
+    @patch("zae_limiter_aggregator.handler.process_stream_records")
     def test_handler_processes_records(
         self,
         mock_process: MagicMock,
@@ -121,9 +121,9 @@ class TestHandler:
 
     @patch.object(handler_module, "ENABLE_ARCHIVAL", True)
     @patch.object(handler_module, "ARCHIVE_BUCKET_NAME", "test-archive-bucket")
-    @patch("zae_limiter.aggregator.handler.boto3")
-    @patch("zae_limiter.aggregator.handler.archive_audit_events")
-    @patch("zae_limiter.aggregator.handler.process_stream_records")
+    @patch("zae_limiter_aggregator.handler.boto3")
+    @patch("zae_limiter_aggregator.handler.archive_audit_events")
+    @patch("zae_limiter_aggregator.handler.process_stream_records")
     def test_handler_with_archival_enabled(
         self,
         mock_process: MagicMock,
@@ -168,9 +168,9 @@ class TestHandler:
 
     @patch.object(handler_module, "ENABLE_ARCHIVAL", True)
     @patch.object(handler_module, "ARCHIVE_BUCKET_NAME", "test-bucket")
-    @patch("zae_limiter.aggregator.handler.boto3")
-    @patch("zae_limiter.aggregator.handler.archive_audit_events")
-    @patch("zae_limiter.aggregator.handler.process_stream_records")
+    @patch("zae_limiter_aggregator.handler.boto3")
+    @patch("zae_limiter_aggregator.handler.archive_audit_events")
+    @patch("zae_limiter_aggregator.handler.process_stream_records")
     def test_handler_aggregates_errors(
         self,
         mock_process: MagicMock,
@@ -199,8 +199,8 @@ class TestHandler:
 
     @patch.object(handler_module, "ENABLE_ARCHIVAL", False)
     @patch.object(handler_module, "ARCHIVE_BUCKET_NAME", "")
-    @patch("zae_limiter.aggregator.handler.archive_audit_events")
-    @patch("zae_limiter.aggregator.handler.process_stream_records")
+    @patch("zae_limiter_aggregator.handler.archive_audit_events")
+    @patch("zae_limiter_aggregator.handler.process_stream_records")
     def test_handler_skips_archival_when_disabled(
         self,
         mock_process: MagicMock,
@@ -221,8 +221,8 @@ class TestHandler:
 
     @patch.object(handler_module, "ENABLE_ARCHIVAL", True)
     @patch.object(handler_module, "ARCHIVE_BUCKET_NAME", "")  # Empty bucket name
-    @patch("zae_limiter.aggregator.handler.archive_audit_events")
-    @patch("zae_limiter.aggregator.handler.process_stream_records")
+    @patch("zae_limiter_aggregator.handler.archive_audit_events")
+    @patch("zae_limiter_aggregator.handler.process_stream_records")
     def test_handler_skips_archival_when_no_bucket(
         self,
         mock_process: MagicMock,

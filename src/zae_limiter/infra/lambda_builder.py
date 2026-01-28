@@ -1,12 +1,13 @@
 """Build Lambda deployment packages for zae-limiter aggregator.
 
-Uses aws-lambda-builders to install runtime dependencies for the Lambda
-target platform (Linux x86_64), then copies the locally installed
-zae_limiter package into the artifact. This ensures:
+Uses aws-lambda-builders to install the ``[lambda]`` extra pip dependencies
+(aws-lambda-powertools) for the Lambda target platform (Linux x86_64), then
+copies the ``zae_limiter_aggregator`` package and a minimal ``zae_limiter``
+stub (only ``schema.py``) into the artifact.  This ensures:
 
 1. Cross-platform builds work (macOS/Windows host → Linux Lambda)
 2. The deployed code matches what's installed locally (dev versions work)
-3. Native extensions (aiohttp, etc.) are compiled for the correct platform
+3. The Lambda zip is small (~1-2 MB) — no aioboto3, aiohttp, click, etc.
 """
 
 import importlib.metadata
@@ -19,13 +20,15 @@ from pathlib import Path
 
 
 def _get_runtime_requirements() -> list[str]:
-    """Read runtime dependencies from installed zae-limiter metadata.
+    """Read ``[lambda]`` extra dependencies from installed zae-limiter metadata.
 
-    Includes core dependencies and the ``lambda`` extra dependencies
-    (e.g. aws-lambda-powertools).
+    Only returns the ``lambda`` extra dependencies (e.g. aws-lambda-powertools).
+    Core dependencies like aioboto3, boto3, click are *not* needed inside the
+    Lambda because the aggregator only uses boto3 (provided by the runtime)
+    and aws-lambda-powertools.
 
     Returns:
-        List of PEP 508 dependency strings (e.g. ["aioboto3>=12.0.0", ...])
+        List of PEP 508 dependency strings (e.g. ["aws-lambda-powertools>=2.0.0"])
     """
     requires = importlib.metadata.requires("zae_limiter")
     if requires is None:
@@ -33,10 +36,7 @@ def _get_runtime_requirements() -> list[str]:
 
     result = []
     for r in requires:
-        if "extra ==" not in r:
-            # Core dependency (no extra marker)
-            result.append(r)
-        elif "extra == 'lambda'" in r:
+        if "extra == 'lambda'" in r:
             # Lambda extra dependency — strip the marker
             dep = r.split(";")[0].strip()
             result.append(dep)
@@ -46,9 +46,14 @@ def _get_runtime_requirements() -> list[str]:
 def build_lambda_package() -> bytes:
     """Build Lambda deployment package with cross-platform dependencies.
 
-    Uses aws-lambda-builders to install runtime dependencies (aioboto3,
-    boto3, etc.) for the Lambda target platform, then copies the locally
-    installed zae_limiter package on top.
+    Installs ``[lambda]`` extra dependencies via aws-lambda-builders, then
+    copies:
+    - ``zae_limiter_aggregator/`` (all .py files)
+    - ``zae_limiter/__init__.py`` (empty stub — makes it a valid package)
+    - ``zae_limiter/schema.py`` (full copy — no external deps)
+
+    The full ``zae_limiter`` package is *not* included (it depends on
+    aioboto3 which is not needed by the aggregator).
 
     Returns:
         Zip file contents as bytes
@@ -67,7 +72,7 @@ def build_lambda_package() -> bytes:
         artifacts_dir.mkdir()
         scratch_dir.mkdir()
 
-        # Write requirements.txt with runtime deps only (not zae-limiter itself)
+        # Write requirements.txt with [lambda] extra deps only
         requirements = _get_runtime_requirements()
         requirements_txt = source_dir / "requirements.txt"
         requirements_txt.write_text("\n".join(requirements) + "\n")
@@ -96,28 +101,41 @@ def build_lambda_package() -> bytes:
         if placeholder.exists():
             placeholder.unlink()
 
-        # Copy the locally installed zae_limiter package into artifacts
-        import zae_limiter
+        # Copy the zae_limiter_aggregator package into artifacts
+        import zae_limiter_aggregator
 
-        package_path = Path(zae_limiter.__file__).parent
-        dest_path = artifacts_dir / "zae_limiter"
+        aggregator_path = Path(zae_limiter_aggregator.__file__).parent
+        dest_aggregator = artifacts_dir / "zae_limiter_aggregator"
 
-        # Remove any pip-installed zae_limiter (from deps resolution) to use local copy
-        if dest_path.exists():
-            shutil.rmtree(dest_path)
+        # Remove any pip-installed copy to use local version
+        if dest_aggregator.exists():
+            shutil.rmtree(dest_aggregator)
 
-        for src_file in package_path.rglob("*.py"):
-            rel = src_file.relative_to(package_path)
-            dst = dest_path / rel
+        for src_file in aggregator_path.rglob("*.py"):
+            rel = src_file.relative_to(aggregator_path)
+            dst = dest_aggregator / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_file, dst)
 
-        # Include CloudFormation template (useful for debugging)
-        cfn_template = package_path / "infra" / "cfn_template.yaml"
-        if cfn_template.exists():
-            dst = dest_path / "infra" / "cfn_template.yaml"
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(cfn_template, dst)
+        # Copy minimal zae_limiter stub (schema.py + empty __init__.py)
+        import zae_limiter
+
+        zae_limiter_path = Path(zae_limiter.__file__).parent
+        dest_zae_limiter = artifacts_dir / "zae_limiter"
+
+        # Remove any pip-installed zae_limiter (from deps resolution)
+        if dest_zae_limiter.exists():
+            shutil.rmtree(dest_zae_limiter)
+
+        dest_zae_limiter.mkdir(parents=True, exist_ok=True)
+
+        # Empty __init__.py — avoids importing aioboto3 when resolving
+        # `from zae_limiter.schema import ...`
+        (dest_zae_limiter / "__init__.py").write_text("")
+
+        # Full copy of schema.py — no external deps (only imports typing)
+        schema_src = zae_limiter_path / "schema.py"
+        shutil.copy2(schema_src, dest_zae_limiter / "schema.py")
 
         # Create zip from artifacts
         zip_buffer = io.BytesIO()
@@ -155,17 +173,17 @@ def get_package_info() -> dict[str, str | int | list[str]]:
     Returns:
         Dict with package metadata
     """
-    import zae_limiter
+    import zae_limiter_aggregator
 
-    package_path = Path(zae_limiter.__file__).parent
-    py_files = list(package_path.rglob("*.py"))
+    aggregator_path = Path(zae_limiter_aggregator.__file__).parent
+    py_files = list(aggregator_path.rglob("*.py"))
     total_size = sum(f.stat().st_size for f in py_files)
     requirements = _get_runtime_requirements()
 
     return {
-        "package_path": str(package_path),
+        "package_path": str(aggregator_path),
         "python_files": len(py_files),
         "uncompressed_size": total_size,
-        "handler": "zae_limiter.aggregator.handler.handler",
+        "handler": "zae_limiter_aggregator.handler.handler",
         "runtime_dependencies": requirements,
     }

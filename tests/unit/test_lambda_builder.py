@@ -18,10 +18,10 @@ def _mock_builder_build(
 ) -> None:
     """Mock LambdaBuilder.build() — simulates installing deps into artifacts_dir."""
     artifacts = Path(artifacts_dir)
-    # Simulate a dependency being installed
-    dep_dir = artifacts / "aioboto3"
+    # Simulate a dependency being installed (aws-lambda-powertools)
+    dep_dir = artifacts / "aws_lambda_powertools"
     dep_dir.mkdir(parents=True, exist_ok=True)
-    (dep_dir / "__init__.py").write_text("# mock aioboto3")
+    (dep_dir / "__init__.py").write_text("# mock aws-lambda-powertools")
 
 
 def _mock_builder_build_with_placeholder(
@@ -33,31 +33,34 @@ def _mock_builder_build_with_placeholder(
     architecture: object,
     **kwargs: object,
 ) -> None:
-    """Mock build that also creates placeholder __init__.py and pip-installed zae_limiter."""
+    """Mock build that also creates placeholder __init__.py and pip-installed packages."""
     artifacts = Path(artifacts_dir)
     # Simulate placeholder __init__.py copied from source
     (artifacts / "__init__.py").write_text("# placeholder")
-    # Simulate pip-installed zae_limiter (should be replaced by local copy)
+    # Simulate pip-installed zae_limiter (should be replaced by stub)
     pip_pkg = artifacts / "zae_limiter"
     pip_pkg.mkdir(parents=True, exist_ok=True)
     (pip_pkg / "__init__.py").write_text("# pip-installed version")
+    # Simulate pip-installed zae_limiter_aggregator (should be replaced by local copy)
+    pip_agg = artifacts / "zae_limiter_aggregator"
+    pip_agg.mkdir(parents=True, exist_ok=True)
+    (pip_agg / "__init__.py").write_text("# pip-installed aggregator")
     # Also install a normal dep
-    dep_dir = artifacts / "aioboto3"
+    dep_dir = artifacts / "aws_lambda_powertools"
     dep_dir.mkdir(parents=True, exist_ok=True)
-    (dep_dir / "__init__.py").write_text("# mock aioboto3")
+    (dep_dir / "__init__.py").write_text("# mock aws-lambda-powertools")
 
 
 class TestGetRuntimeRequirements:
     """Tests for reading runtime dependencies from metadata."""
 
-    def test_returns_core_deps(self) -> None:
-        """Core dependencies are included."""
+    def test_returns_only_lambda_extra(self) -> None:
+        """Only [lambda] extra dependencies are returned."""
         from zae_limiter.infra.lambda_builder import _get_runtime_requirements
 
         reqs = _get_runtime_requirements()
         dep_names = [r.split(">=")[0].split(">")[0].split("==")[0] for r in reqs]
-        assert "aioboto3" in dep_names
-        assert "boto3" in dep_names
+        assert "aws-lambda-powertools" in dep_names
 
     def test_returns_empty_when_no_metadata(self) -> None:
         """Returns empty list when package has no requires metadata."""
@@ -78,6 +81,15 @@ class TestGetRuntimeRequirements:
         assert "pytest" not in dep_text
         assert "mkdocs" not in dep_text
         assert "aws-cdk-lib" not in dep_text
+
+    def test_excludes_core_deps(self) -> None:
+        """Core dependencies are not included (only [lambda] extra)."""
+        from zae_limiter.infra.lambda_builder import _get_runtime_requirements
+
+        reqs = _get_runtime_requirements()
+        dep_names = [r.split(">=")[0].split(">")[0].split("==")[0] for r in reqs]
+        for pkg in ("aioboto3", "boto3", "click", "pip", "python-ulid"):
+            assert pkg not in dep_names, f"{pkg} should not be in [lambda] extra deps"
 
     def test_includes_lambda_extra(self) -> None:
         """Lambda extra dependencies are included."""
@@ -106,7 +118,7 @@ class TestBuildLambdaPackage:
             assert zf.testzip() is None
 
     def test_package_contains_required_files(self) -> None:
-        """Test that package contains all required files."""
+        """Test that package contains aggregator and schema stub."""
         from zae_limiter.infra.lambda_builder import build_lambda_package
 
         with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
@@ -116,21 +128,49 @@ class TestBuildLambdaPackage:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
             files = set(zf.namelist())
 
-            # Must contain aggregator handler
-            assert "zae_limiter/aggregator/handler.py" in files
-            assert "zae_limiter/aggregator/processor.py" in files
+            # Must contain aggregator handler (new top-level package)
+            assert "zae_limiter_aggregator/handler.py" in files
+            assert "zae_limiter_aggregator/processor.py" in files
+            assert "zae_limiter_aggregator/__init__.py" in files
 
-            # Must contain schema (dependency of processor)
+            # Must contain schema stub
             assert "zae_limiter/schema.py" in files
-
-            # Should contain package init
             assert "zae_limiter/__init__.py" in files
 
             # Should contain mocked dependency
-            assert "aioboto3/__init__.py" in files
+            assert "aws_lambda_powertools/__init__.py" in files
 
-    def test_placeholder_removed_and_pip_package_replaced(self) -> None:
-        """Test that placeholder __init__.py is removed and pip zae_limiter is replaced."""
+    def test_zae_limiter_init_is_empty_stub(self) -> None:
+        """Test that zae_limiter/__init__.py is an empty stub."""
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            zip_bytes = build_lambda_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            content = zf.read("zae_limiter/__init__.py").decode()
+            assert content == ""
+
+    def test_package_does_not_contain_full_zae_limiter(self) -> None:
+        """Test that the full zae_limiter package is not included."""
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            zip_bytes = build_lambda_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            files = set(zf.namelist())
+
+            # Should NOT contain full zae_limiter package files
+            assert "zae_limiter/limiter.py" not in files
+            assert "zae_limiter/repository.py" not in files
+            assert "zae_limiter/cli.py" not in files
+            assert "zae_limiter/infra/cfn_template.yaml" not in files
+
+    def test_placeholder_removed_and_pip_packages_replaced(self) -> None:
+        """Test that placeholder __init__.py is removed and pip packages are replaced."""
         from zae_limiter.infra.lambda_builder import build_lambda_package
 
         with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
@@ -143,22 +183,16 @@ class TestBuildLambdaPackage:
             # Placeholder __init__.py should NOT be at the root
             assert "__init__.py" not in files
 
-            # zae_limiter should contain local copy, not pip-installed version
+            # zae_limiter/__init__.py should be the empty stub, not pip-installed version
             assert "zae_limiter/__init__.py" in files
             content = zf.read("zae_limiter/__init__.py").decode()
             assert "pip-installed" not in content
+            assert content == ""
 
-    def test_package_contains_cfn_template(self) -> None:
-        """Test that CloudFormation template is included."""
-        from zae_limiter.infra.lambda_builder import build_lambda_package
-
-        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
-            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
-            zip_bytes = build_lambda_package()
-
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-            files = set(zf.namelist())
-            assert "zae_limiter/infra/cfn_template.yaml" in files
+            # zae_limiter_aggregator should be local copy, not pip-installed
+            assert "zae_limiter_aggregator/__init__.py" in files
+            content = zf.read("zae_limiter_aggregator/__init__.py").decode()
+            assert "pip-installed" not in content
 
     def test_builder_called_with_correct_args(self) -> None:
         """Test that LambdaBuilder is invoked with correct parameters."""
@@ -198,11 +232,15 @@ class TestBuildLambdaPackage:
             application_framework=None,
         )
 
-        # Verify requirements.txt contained runtime deps
+        # Verify requirements.txt contains only [lambda] extra deps
         assert len(captured_reqs) == 1
         reqs_content = captured_reqs[0]
-        assert "aioboto3" in reqs_content
-        assert "boto3" in reqs_content
+        assert "aws-lambda-powertools" in reqs_content
+        # Core deps should NOT be in requirements.txt
+        reqs_lines = reqs_content.strip().splitlines()
+        assert not any(line.startswith("aioboto3") for line in reqs_lines)
+        assert not any(line.startswith("boto3") for line in reqs_lines)
+        assert not any(line.startswith("click") for line in reqs_lines)
 
     def test_write_lambda_package(self) -> None:
         """Test writing package to file."""
@@ -238,9 +276,9 @@ class TestGetPackageInfo:
         assert "handler" in info
         assert "runtime_dependencies" in info
 
-        assert info["handler"] == "zae_limiter.aggregator.handler.handler"
+        assert info["handler"] == "zae_limiter_aggregator.handler.handler"
         assert isinstance(info["python_files"], int)
-        assert info["python_files"] > 5
+        assert info["python_files"] > 0
 
     def test_runtime_dependencies_included(self) -> None:
         """Test that runtime dependencies are listed in info."""
@@ -251,7 +289,7 @@ class TestGetPackageInfo:
         assert isinstance(deps, list)
         assert len(deps) > 0
         dep_text = " ".join(str(d) for d in deps)
-        assert "aioboto3" in dep_text
+        assert "aws-lambda-powertools" in dep_text
 
 
 class TestLambdaHandlerUnit:
@@ -259,7 +297,7 @@ class TestLambdaHandlerUnit:
 
     def test_handler_with_empty_records(self) -> None:
         """Test handler with empty Records list."""
-        from zae_limiter.aggregator.handler import handler
+        from zae_limiter_aggregator.handler import handler
 
         event = {"Records": []}
         result = handler(event, None)
@@ -270,7 +308,7 @@ class TestLambdaHandlerUnit:
 
     def test_handler_with_no_records_key(self) -> None:
         """Test handler with missing Records key."""
-        from zae_limiter.aggregator.handler import handler
+        from zae_limiter_aggregator.handler import handler
 
         event = {}
         result = handler(event, None)

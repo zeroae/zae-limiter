@@ -1297,7 +1297,7 @@ class TestLambdaExport:
         assert "Package path:" in result.output
         assert "Python files:" in result.output
         assert "Handler:" in result.output
-        assert "zae_limiter.aggregator.handler.handler" in result.output
+        assert "zae_limiter_aggregator.handler.handler" in result.output
 
     def test_lambda_export_to_file(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test exporting Lambda package to file."""

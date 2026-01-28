@@ -4,7 +4,7 @@ import gzip
 import json
 from unittest.mock import MagicMock, patch
 
-from zae_limiter.aggregator.archiver import (
+from zae_limiter_aggregator.archiver import (
     _deserialize_map,
     _deserialize_value,
     archive_audit_events,
@@ -574,7 +574,7 @@ class TestArchiveAuditEvents:
 
         # Mock create_jsonl_gzip to raise an exception
         with patch(
-            "zae_limiter.aggregator.archiver.create_jsonl_gzip",
+            "zae_limiter_aggregator.archiver.create_jsonl_gzip",
             side_effect=ValueError("Serialization failed"),
         ):
             result = archive_audit_events(

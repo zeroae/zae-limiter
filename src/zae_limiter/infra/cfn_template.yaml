@@ -539,7 +539,7 @@ Resources:
       FunctionName: !Sub ${AWS::StackName}-aggregator
       Description: Aggregates rate limiter usage into hourly/daily snapshots
       Runtime: python3.12
-      Handler: zae_limiter.aggregator.handler.handler
+      Handler: zae_limiter_aggregator.handler.handler
       MemorySize: !Ref LambdaMemorySize
       Timeout: !Ref LambdaTimeout
       Role: !GetAtt AggregatorRole.Arn

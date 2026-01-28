@@ -1,32 +1,49 @@
 # ADR-113: Lambda Packaging
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-27
 **Issue:** [#154](https://github.com/zeroae/zae-limiter/issues/154)
 
 ## Context
 
-The Lambda aggregator previously bundled only the `zae_limiter` Python source files without runtime dependencies. The Lambda runtime provides `boto3` but not `aioboto3` or other libraries required by the package's public API. To avoid import failures when Lambda loaded the `zae_limiter` package, `__init__.py` used a PEP 562 `__getattr__` hack to lazily import modules that depend on `aioboto3`. This workaround was fragile, hard to maintain, and prevented static analysis tools from resolving imports.
+The Lambda aggregator previously bundled the entire `zae_limiter` package with all runtime dependencies into the Lambda zip. This resulted in a ~17 MB deployment package containing libraries like `aioboto3`, `aiohttp`, `click`, `pip`, and other packages that the aggregator never uses. The aggregator only needs `boto3` (provided by the Lambda runtime), `aws-lambda-powertools`, and `zae_limiter.schema`.
 
-The project needed a packaging approach that bundles all runtime dependencies into the Lambda zip, works cross-platform (macOS/Windows host building for Linux Lambda), does not require Docker, and is compatible with LocalStack free tier (which does not support Lambda Layers).
+The project needed a packaging approach that:
+- Produces a small Lambda zip (~1-2 MB instead of ~17 MB)
+- Only bundles what the aggregator actually uses
+- Works cross-platform (macOS/Windows host building for Linux Lambda)
+- Does not require Docker
+- Is compatible with LocalStack free tier (no Lambda Layers)
 
 ## Decision
 
-Add `aws-lambda-builders` and `pip` as base dependencies to install cross-platform runtime dependencies into the Lambda zip, then copy the locally installed `zae_limiter` package on top. This eliminates the `__getattr__` lazy-import hack entirely.
+1. **Separate the aggregator** into its own top-level package `zae_limiter_aggregator` (installed alongside `zae_limiter` from the same wheel).
+
+2. **Minimal Lambda zip** — The Lambda builder copies only:
+   - `zae_limiter_aggregator/` (all `.py` files)
+   - `zae_limiter/__init__.py` (empty stub — avoids importing `aioboto3`)
+   - `zae_limiter/schema.py` (full copy — only imports `typing`, no external deps)
+   - `[lambda]` extra dependencies via `aws-lambda-builders` (only `aws-lambda-powertools`)
+
+3. **Empty `__init__.py` stub** — Python's import system executes `zae_limiter/__init__.py` when the aggregator does `from zae_limiter.schema import ...`. The real `__init__.py` imports `aioboto3` which isn't available in Lambda. The empty stub avoids this.
+
+4. **`aws-lambda-builders`** remains a base dependency for cross-platform pip installs of the `[lambda]` extra.
 
 ## Consequences
 
 **Positive:**
-- All runtime dependencies (aioboto3, boto3, aws-lambda-powertools) are bundled in the Lambda zip
-- The `__getattr__` hack is removed — all imports in `__init__.py` are direct
-- Cross-platform builds work without Docker (aws-lambda-builders handles platform-specific wheels)
-- Dev/unreleased versions work because the local package is copied, not downloaded from PyPI
+- Lambda zip size reduced from ~17 MB to ~1-2 MB (aws-lambda-powertools + source files only)
+- No `aioboto3`, `aiohttp`, `botocore`, `click`, `pip` in the Lambda zip
+- `boto3` provided by Lambda runtime — no need to bundle
+- Cross-platform builds work without Docker
 - Compatible with LocalStack free tier (no Lambda Layers required)
+- Dev/unreleased versions work because local packages are copied, not downloaded from PyPI
+- Clean separation of concerns: aggregator is independently importable
 
 **Negative:**
-- Lambda zip size increases from ~30KB to several MB due to bundled dependencies
-- `aws-lambda-builders` and `pip` are added as base dependencies, increasing install footprint
-- Build step is slower due to pip dependency resolution
+- Two packages to manage in the wheel (`zae_limiter` + `zae_limiter_aggregator`)
+- Empty `__init__.py` stub is a packaging workaround (not a true standalone package)
+- `aws-lambda-builders` and `pip` remain as base dependencies
 
 ## Alternatives Considered
 
@@ -41,3 +58,6 @@ Rejected because: Requires Docker installed on the build machine, adding a heavy
 
 ### pip --platform with --only-binary
 Rejected because: Only works for packages with pre-built wheels; fails for packages requiring compilation, and aws-lambda-builders already wraps this approach with better error handling.
+
+### Bundle full zae_limiter with all deps
+Rejected because: Produces ~17 MB zip with unnecessary packages (aioboto3, aiohttp, click, pip) that the aggregator never imports.

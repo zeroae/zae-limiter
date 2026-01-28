@@ -82,7 +82,7 @@ zae-limiter = "zae_limiter.cli:cli"
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zae_limiter"]
+packages = ["src/zae_limiter", "src/zae_limiter_aggregator"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
