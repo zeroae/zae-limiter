@@ -168,16 +168,16 @@ DynamoDB enforces these limits:
 async with limiter.acquire(
     "entity-id",
     "llm-api",
-    [rpm_limit, tpm_limit],
     {"rpm": 1},  # Initial consumption (1 request)
+    limits=[rpm_limit, tpm_limit],
 ) as lease:
     # 2 GetItems + 1 TransactWrite (2 items)
     response = await call_llm()
     await lease.adjust(tpm=response.usage.total_tokens)
 
 # Inefficient: Separate acquisitions
-async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
-    async with limiter.acquire("entity-id", "llm-api", [tpm_limit], {"tpm": 100}):
+async with limiter.acquire("entity-id", "llm-api", {"rpm": 1}, limits=[rpm_limit]):
+    async with limiter.acquire("entity-id", "llm-api", {"tpm": 100}, limits=[tpm_limit]):
         # 2 GetItems + 2 TransactWrites (doubles write cost!)
         pass
 ```
@@ -188,13 +188,13 @@ async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
 # Entity without cascade (default) — saves 1 GetEntity + parent bucket operations
 await limiter.create_entity(entity_id="api-key", parent_id="project-1")
 
-async with limiter.acquire("api-key", "llm-api", limits, {"rpm": 1}):
+async with limiter.acquire("api-key", "llm-api", {"rpm": 1}, limits=limits):
     pass  # Only checks api-key's limits
 
 # Entity with cascade — checks and updates parent limits too
 await limiter.create_entity(entity_id="api-key", parent_id="project-1", cascade=True)
 
-async with limiter.acquire("api-key", "llm-api", limits, {"rpm": 1}):
+async with limiter.acquire("api-key", "llm-api", {"rpm": 1}, limits=limits):
     pass  # Checks both api-key AND project-1 limits
 ```
 
@@ -245,7 +245,7 @@ await limiter.create_entity(
 # On acquire, use the same sharding logic
 shard_id = hash(api_key_id) % num_shards
 sharded_parent = f"project-1-shard-{shard_id}"
-async with limiter.acquire(api_key_id, "llm-api", limits, {"rpm": 1}):
+async with limiter.acquire(api_key_id, "llm-api", {"rpm": 1}, limits=limits):
     pass  # Cascades to sharded parent instead of single hotspot
 ```
 
@@ -514,10 +514,10 @@ zae-limiter deploy --table-name rate_limits --no-aggregator
 ```python
 # Combine multiple limits into single acquire
 async with limiter.acquire(
-    "entity",
-    "api",
-    [rpm_limit, tpm_limit, daily_limit],
-    {"rpm": 1},  # 1 transaction vs 3
+    entity_id="entity",
+    resource="api",
+    consume={"rpm": 1},  # 1 transaction vs 3
+    limits=[rpm_limit, tpm_limit, daily_limit],
 ):
     pass
 ```
