@@ -138,7 +138,7 @@ When an entity has cascade enabled, `RateLimitExceeded` includes statuses for al
 try:
     async with limiter.acquire(
         entity_id="key-abc",  # Has cascade=True from create_entity()
-        ...
+        resource="gpt-4",
     ):
         ...
 except RateLimitExceeded as e:

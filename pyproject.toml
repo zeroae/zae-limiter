@@ -45,6 +45,7 @@ dev = [
     "pytest-benchmark>=4.0.0",
     "pytest-cov>=4.0.0",
     "pytest-repeat>=0.9.4",
+    "pytest-examples>=0.0.18",
     "pytest-xdist>=3.5.0",
     "ruff>=0.1.0",
     "types-aiobotocore[dynamodb,s3]>=2.0.0",
@@ -97,6 +98,7 @@ markers = [
     "slow: marks tests with significant wait times (>30s sleeps)",
     "monitoring: marks tests that verify CloudWatch alarms, metrics, DLQ",
     "snapshots: marks tests that verify usage snapshot creation",
+    "doctest: marks tests that validate documentation code examples",
 ]
 
 [tool.ruff]

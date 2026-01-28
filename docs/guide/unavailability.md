@@ -178,8 +178,8 @@ async def resilient_operation(entity_id: str):
     try:
         async with limiter.acquire(
             entity_id=entity_id,
+            resource="api",
             on_unavailable=OnUnavailable.BLOCK,
-            ...
         ):
             return await premium_operation()
     except RateLimiterUnavailable:

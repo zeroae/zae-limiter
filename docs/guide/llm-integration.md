@@ -69,7 +69,8 @@ estimated_output = 500  # Rough estimate for output
 total_estimate = input_tokens + estimated_output
 
 async with limiter.acquire(
-    ...
+    entity_id="user-123",
+    resource="gpt-4",
     consume={"tpm": total_estimate},
 ) as lease:
     response = await call_llm()
@@ -85,7 +86,8 @@ Use max_tokens as upper bound:
 max_tokens = 1000
 
 async with limiter.acquire(
-    ...
+    entity_id="user-123",
+    resource="gpt-4",
     consume={"tpm": input_tokens + max_tokens},
 ) as lease:
     response = await openai.chat.completions.create(
@@ -176,8 +178,9 @@ zae-limiter allows buckets to go negative, which is useful when actual usage exc
 ```python
 # Estimate: 500 tokens
 async with limiter.acquire(
+    entity_id="user-123",
+    resource="gpt-4",
     consume={"tpm": 500},
-    ...
 ) as lease:
     response = await call_llm()
 

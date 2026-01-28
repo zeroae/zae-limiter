@@ -225,7 +225,9 @@ await limiter.set_system_defaults(
     limits=[...],
     on_unavailable=OnUnavailable.ALLOW,
 )
+```
 
+```bash
 # Or via CLI
 zae-limiter system set-defaults -l rpm:100 --on-unavailable allow
 ```

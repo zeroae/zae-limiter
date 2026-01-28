@@ -551,7 +551,7 @@ Rollback:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from . import Migration, register_migration
@@ -572,8 +572,8 @@ async def migrate_v2_0_0(repository: Repository) -> None:
     2. Add created_at if missing (set to migration timestamp)
     3. Add GSI3 keys for index population
     """
-    migration_time = datetime.now(timezone.utc).isoformat()
-    migration_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    migration_time = datetime.now(UTC).isoformat()
+    migration_month = datetime.now(UTC).strftime("%Y-%m")
 
     # Get DynamoDB client
     client = await repository._get_client()

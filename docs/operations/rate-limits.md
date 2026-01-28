@@ -248,7 +248,7 @@ All token values are stored as **millitokens** (multiply by 1000):
 
 After adjusting limits, verify:
 
-```python
+```
 # Check available capacity
 available = await limiter.available(
     entity_id="<entity_id>",
