@@ -6,8 +6,8 @@ import re
 from dataclasses import dataclass
 
 # Current schema version - increment when schema changes
-# 2.0.0: Composite bucket items (ADR-114) + ADD-based writes (ADR-115)
-CURRENT_SCHEMA_VERSION = "2.0.0"
+# 0.7.0: Composite bucket items (ADR-114) + ADD-based writes (ADR-115)
+CURRENT_SCHEMA_VERSION = "0.7.0"
 
 
 @dataclass(frozen=True, order=False)
