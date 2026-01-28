@@ -926,3 +926,356 @@ class TestEnsureTags:
                 await manager.ensure_tags()
 
             assert "Not authorized" in str(exc_info.value)
+
+
+class TestWaitForEsmReady:
+    """Tests for wait_for_esm_ready method."""
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_esm_enabled_and_stabilized(self) -> None:
+        """wait_for_esm_ready returns True when ESM enabled with OK result."""
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                return_value={
+                    "EventSourceMappings": [
+                        {
+                            "State": "Enabled",
+                            "LastProcessingResult": "OK",
+                        }
+                    ]
+                }
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            # Use short stabilization time for test
+            result = await manager.wait_for_esm_ready(
+                "test-aggregator", max_seconds=10, min_stabilization=0.0
+            )
+
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_esm_enabled_no_records_processed(self) -> None:
+        """wait_for_esm_ready returns True when ESM has polled but found no records."""
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                return_value={
+                    "EventSourceMappings": [
+                        {
+                            "State": "Enabled",
+                            "LastProcessingResult": "No records processed",
+                        }
+                    ]
+                }
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            result = await manager.wait_for_esm_ready(
+                "test-aggregator", max_seconds=10, min_stabilization=0.0
+            )
+
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_esm_disabled(self) -> None:
+        """wait_for_esm_ready returns False when ESM is Disabled."""
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                return_value={
+                    "EventSourceMappings": [
+                        {
+                            "State": "Disabled",
+                            "LastProcessingResult": None,
+                        }
+                    ]
+                }
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            result = await manager.wait_for_esm_ready("test-aggregator", max_seconds=1)
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_esm_disabling(self) -> None:
+        """wait_for_esm_ready returns False when ESM is Disabling."""
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                return_value={
+                    "EventSourceMappings": [
+                        {
+                            "State": "Disabling",
+                            "LastProcessingResult": None,
+                        }
+                    ]
+                }
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            result = await manager.wait_for_esm_ready("test-aggregator", max_seconds=1)
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_timeout(self) -> None:
+        """wait_for_esm_ready returns False when ESM never becomes ready."""
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            # ESM stays in Creating state
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                return_value={
+                    "EventSourceMappings": [
+                        {
+                            "State": "Creating",
+                            "LastProcessingResult": None,
+                        }
+                    ]
+                }
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            # Very short timeout to avoid slow test
+            result = await manager.wait_for_esm_ready("test-aggregator", max_seconds=1)
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_esm_found(self) -> None:
+        """wait_for_esm_ready returns False when no ESM mappings exist."""
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                return_value={"EventSourceMappings": []}
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            result = await manager.wait_for_esm_ready("test-aggregator", max_seconds=1)
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handles_api_exception(self) -> None:
+        """wait_for_esm_ready handles API exceptions gracefully."""
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(side_effect=Exception("API error"))
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            # Should not raise, returns False after timeout
+            result = await manager.wait_for_esm_ready("test-aggregator", max_seconds=1)
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_waits_when_last_processing_result_is_none(self) -> None:
+        """wait_for_esm_ready keeps waiting when LastProcessingResult is None."""
+        call_count = 0
+
+        async def mock_list_esm(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                # First calls: ESM enabled but no LastProcessingResult yet
+                return {
+                    "EventSourceMappings": [
+                        {
+                            "State": "Enabled",
+                            "LastProcessingResult": None,
+                        }
+                    ]
+                }
+            else:
+                # Later: ESM has polled
+                return {
+                    "EventSourceMappings": [
+                        {
+                            "State": "Enabled",
+                            "LastProcessingResult": "OK",
+                        }
+                    ]
+                }
+
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(side_effect=mock_list_esm)
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            result = await manager.wait_for_esm_ready(
+                "test-aggregator", max_seconds=60, min_stabilization=0.0
+            )
+
+            assert result is True
+            assert call_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_uses_endpoint_url_when_provided(self) -> None:
+        """wait_for_esm_ready passes endpoint_url to Lambda client."""
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                return_value={
+                    "EventSourceMappings": [{"State": "Enabled", "LastProcessingResult": "OK"}]
+                }
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(
+                stack_name="test",
+                region="us-east-1",
+                endpoint_url="http://localhost:4566",
+            )
+            await manager.wait_for_esm_ready(
+                "test-aggregator", max_seconds=10, min_stabilization=0.0
+            )
+
+            # Verify endpoint_url was passed to client
+            mock_session.client.assert_called_with(
+                "lambda",
+                region_name="us-east-1",
+                endpoint_url="http://localhost:4566",
+            )
+
+    @pytest.mark.asyncio
+    async def test_waits_for_enabling_state(self) -> None:
+        """wait_for_esm_ready keeps waiting when ESM is in Enabling state."""
+        call_count = 0
+
+        async def mock_list_esm(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                return {
+                    "EventSourceMappings": [{"State": "Enabling", "LastProcessingResult": None}]
+                }
+            else:
+                return {"EventSourceMappings": [{"State": "Enabled", "LastProcessingResult": "OK"}]}
+
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(side_effect=mock_list_esm)
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            result = await manager.wait_for_esm_ready(
+                "test-aggregator", max_seconds=60, min_stabilization=0.0
+            )
+
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_waits_on_error_processing_result(self) -> None:
+        """wait_for_esm_ready keeps waiting when LastProcessingResult is an error."""
+        call_count = 0
+
+        async def mock_list_esm(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                return {
+                    "EventSourceMappings": [
+                        {"State": "Enabled", "LastProcessingResult": "FunctionError"}
+                    ]
+                }
+            else:
+                return {"EventSourceMappings": [{"State": "Enabled", "LastProcessingResult": "OK"}]}
+
+        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(side_effect=mock_list_esm)
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            result = await manager.wait_for_esm_ready(
+                "test-aggregator", max_seconds=60, min_stabilization=0.0
+            )
+
+            assert result is True

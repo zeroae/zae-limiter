@@ -301,6 +301,8 @@ def deploy(
                             click.echo(f"✓ Lambda code deployed ({size_kb:.1f} KB)")
                             click.echo(f"  Function ARN: {lambda_result['function_arn']}")
                             click.echo(f"  Code SHA256: {lambda_result['code_sha256'][:16]}...")
+                            if lambda_result.get("esm_ready"):
+                                click.echo("✓ Event Source Mapping ready")
                     except Exception as e:
                         click.echo(f"⚠️  Lambda deployment failed: {e}", err=True)
                         click.echo(

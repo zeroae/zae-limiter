@@ -1,5 +1,7 @@
 """CloudFormation stack management for zae-limiter infrastructure."""
 
+import asyncio
+import time
 from importlib.resources import files
 from typing import Any, cast
 
@@ -577,7 +579,7 @@ class StackManager:
                     },
                 )
 
-                return {
+                result = {
                     "function_arn": response["FunctionArn"],
                     "code_sha256": response["CodeSha256"],
                     "status": "deployed",
@@ -593,6 +595,99 @@ class StackManager:
                     stack_name=self.stack_name,
                     reason=f"Lambda deployment failed ({error_code}): {error_msg}",
                 ) from e
+
+        # Wait for ESM to be ready outside Lambda client context
+        # ESM needs ~45s after stack creation to establish stream position
+        if wait:
+            esm_ready = await self.wait_for_esm_ready(function_name)
+            result["esm_ready"] = esm_ready
+
+        return result
+
+    async def wait_for_esm_ready(
+        self,
+        function_name: str,
+        max_seconds: int = 120,
+        min_stabilization: float = 45.0,
+    ) -> bool:
+        """
+        Wait for Lambda Event Source Mapping to be ready to process events.
+
+        After CloudFormation stack creation and Lambda deployment, the ESM needs
+        time to fully initialize and establish its position in the DynamoDB stream.
+        Even after reporting State="Enabled" and LastProcessingResult="No records
+        processed", ESM may not reliably capture events for ~45 seconds.
+
+        This is because ESM with StartingPosition: LATEST must establish its
+        position in the stream. Events written before ESM establishes its position
+        are missed (see issue #249).
+
+        Args:
+            function_name: Lambda function name
+            max_seconds: Maximum time to wait for ESM to be fully ready
+            min_stabilization: Minimum seconds to wait after ESM shows enabled
+
+        Returns:
+            True if ESM is ready, False if timeout or no ESM found
+        """
+        if self._session is None:
+            self._session = aioboto3.Session()
+
+        kwargs: dict[str, Any] = {}
+        if self.region:
+            kwargs["region_name"] = self.region
+        if self.endpoint_url:
+            kwargs["endpoint_url"] = self.endpoint_url
+
+        start_time = time.time()
+        enabled_at: float | None = None
+        interval = 5.0
+
+        async with self._session.client("lambda", **kwargs) as lambda_client:
+            while time.time() - start_time < max_seconds:
+                try:
+                    response = await lambda_client.list_event_source_mappings(
+                        FunctionName=function_name,
+                    )
+                    mappings = response.get("EventSourceMappings", [])
+
+                    for mapping in mappings:
+                        state = mapping.get("State", "")
+                        last_result = mapping.get("LastProcessingResult")
+
+                        if state in ("Disabled", "Disabling"):
+                            return False
+
+                        if state in ("Creating", "Enabling", "Updating"):
+                            # Still transitioning, keep waiting
+                            break
+
+                        if state == "Enabled":
+                            # Track when ESM first became enabled
+                            if enabled_at is None:
+                                enabled_at = time.time()
+
+                            # Check if ESM has polled at least once
+                            if last_result is None:
+                                # ESM hasn't polled yet, keep waiting
+                                break
+
+                            if last_result not in ("OK", "No records processed"):
+                                # Error state, keep waiting
+                                break
+
+                            # ESM is enabled and has polled - check stabilization
+                            time_since_enabled = time.time() - enabled_at
+                            if time_since_enabled >= min_stabilization:
+                                return True
+                            # Still stabilizing, keep waiting
+                            break
+
+                    await asyncio.sleep(interval)
+                except Exception:
+                    await asyncio.sleep(interval)
+
+        return False
 
     async def close(self) -> None:
         """Close the underlying session and client."""
