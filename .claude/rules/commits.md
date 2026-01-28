@@ -42,7 +42,7 @@ See [gitmoji.dev](https://gitmoji.dev/) for the complete list.
 Always specify a type that communicates the intent of the change.
 
 ### Scope (Optional)
-Indicates the affected component. Project-specific scopes are defined in CLAUDE.md.
+Indicates the affected component. Project-specific scopes are defined in `release-planning.md`.
 
 ### Description (Required)
 - Use **imperative mood**: "add feature" not "added feature"
