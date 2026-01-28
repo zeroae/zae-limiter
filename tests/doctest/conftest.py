@@ -471,3 +471,54 @@ def doctest_globals(doctest_env):
         "basic_operation": _stub_basic_operation,
         "execute_operation": _stub_execute_operation,
     }
+
+
+# ---------------------------------------------------------------------------
+# LocalStack integration fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def localstack_limiter():
+    """Deploy and provide a RateLimiter stack named 'limiter' on LocalStack.
+
+    This fixture deploys a minimal stack (no aggregator, no alarms) to LocalStack
+    for doc examples tagged with 'requires-localstack'. The stack matches what
+    the CLI deploy example in docs/contributing/localstack.md creates.
+
+    Session-scoped to avoid redeploying for each test.
+    """
+    import os
+
+    from zae_limiter import RateLimiter, StackOptions
+
+    endpoint = os.environ.get("AWS_ENDPOINT_URL")
+    if not endpoint:
+        pytest.skip("AWS_ENDPOINT_URL not set (LocalStack not running)")
+
+    limiter = RateLimiter(
+        name="limiter",
+        endpoint_url=endpoint,
+        region="us-east-1",
+        stack_options=StackOptions(enable_aggregator=False, enable_alarms=False),
+    )
+
+    # Deploy the stack
+    import asyncio
+
+    async def _deploy():
+        async with limiter:
+            pass  # __aenter__ deploys the stack
+
+    asyncio.run(_deploy())
+
+    yield limiter
+
+    # Cleanup after all tests
+    async def _cleanup():
+        try:
+            await limiter.delete_stack()
+        except Exception:
+            pass
+
+    asyncio.run(_cleanup())
