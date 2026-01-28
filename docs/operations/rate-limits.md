@@ -23,7 +23,7 @@ flowchart TD
 
     CHECK2 --> FIX2{Entity exists?}
     FIX2 -->|No| CREATE[Create entity first]
-    FIX2 -->|Yes| LIMITS[Check use_stored_limits]
+    FIX2 -->|Yes| LIMITS[Check stored limits config]
 
     click A1 "#unexpected-ratelimitexceeded" "Diagnose unexpected limits"
     click A2 "#limits-not-enforcing" "Check entity setup"
@@ -56,7 +56,7 @@ aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}'
 ```
 
-**Verify stored limits (if using `use_stored_limits=True`):**
+**Verify stored limits:**
 
 ```bash
 aws dynamodb query --table-name <name> \
@@ -96,7 +96,7 @@ aws dynamodb get-item --table-name <name> \
 | Cause | Solution |
 |-------|----------|
 | **Entity not created** | Create entity before rate limiting: `await limiter.create_entity(...)` |
-| **Wrong `use_stored_limits` setting** | Set `use_stored_limits=True` if limits are in DynamoDB |
+| **No stored limits configured** | Set limits via `set_system_defaults()`, `set_resource_defaults()`, or `set_limits()` |
 | **Stale bucket state** | Bucket refills over time; tokens may have refilled |
 | **Limit configuration mismatch** | Verify limit `capacity`, `burst`, and `refill_rate` match expectations |
 

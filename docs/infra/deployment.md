@@ -266,10 +266,10 @@ aws cloudformation deploy \
         EnablePITR=true \
     --capabilities CAPABILITY_NAMED_IAM
 
-# Deploy Lambda code separately
+# Deploy Lambda code separately (function name is {stack-name}-aggregator)
 zae-limiter lambda-export --output lambda.zip
 aws lambda update-function-code \
-    --function-name zae-limiter-aggregator \
+    --function-name limiter-aggregator \
     --zip-file fileb://lambda.zip
 ```
 

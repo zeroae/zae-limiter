@@ -324,22 +324,33 @@ condition_expression="version = :expected_version"
 
 ```
 src/zae_limiter/
-├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, etc.
-├── naming.py          # Resource name validation (ZAEL- prefix retained for legacy discovery)
-├── bucket.py          # Token bucket math (integer arithmetic)
-├── schema.py          # DynamoDB key builders
-├── repository.py      # DynamoDB operations
-├── lease.py           # Lease context manager
-├── limiter.py         # RateLimiter, SyncRateLimiter
-├── cli.py             # CLI commands
-├── version.py         # Version tracking and compatibility
-├── migrations/        # Schema migration framework
+├── __init__.py            # Public API exports
+├── models.py              # Limit, Entity, LimitStatus, BucketState, StackOptions, ...
+├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
+├── naming.py              # Resource name validation
+├── bucket.py              # Token bucket math (integer arithmetic)
+├── schema.py              # DynamoDB key builders
+├── repository_protocol.py # RepositoryProtocol for backend abstraction
+├── repository.py          # DynamoDB operations
+├── config_cache.py        # Client-side config caching with TTL
+├── lease.py               # Lease context manager
+├── limiter.py             # RateLimiter, SyncRateLimiter
+├── local.py               # LocalStack management commands
+├── cli.py                 # CLI commands (deploy, delete, status, list, local, ...)
+├── version.py             # Version tracking and compatibility
+├── migrations/            # Schema migration framework
+├── visualization/         # Usage snapshot formatting and display
 └── infra/
     ├── stack_manager.py    # CloudFormation stack operations
     ├── lambda_builder.py   # Lambda deployment package builder
+    ├── discovery.py        # Multi-stack discovery and listing
     └── cfn_template.yaml   # CloudFormation template
+
+src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
+├── __init__.py               # Re-exports handler, processor types
+├── handler.py                # Lambda entry point
+├── processor.py              # Stream processing logic for usage snapshots
+└── archiver.py               # S3 audit archival (gzip JSONL)
 ```
 
 ## Key Design Decisions
@@ -347,7 +358,7 @@ src/zae_limiter/
 1. **Lease commits only on success**: If any exception occurs in the context, changes are rolled back
 2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
-4. **Stored limits override defaults**: When `use_stored_limits=True`
+4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override
 5. **Transactions are atomic**: Multi-entity updates succeed or fail together
 
 ## Next Steps

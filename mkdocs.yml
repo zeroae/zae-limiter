@@ -116,8 +116,10 @@ nav:
       - API:
           - Overview: api/index.md
           - RateLimiter: api/limiter.md
+          - Repository: api/repository.md
           - Models: api/models.md
           - Exceptions: api/exceptions.md
+      - Benchmarks: benchmarks.md
   - Contributing:
       - Overview: contributing/index.md
       - Development Setup: contributing/development.md
@@ -125,6 +127,7 @@ nav:
       - Testing: contributing/testing.md
       - Architecture: contributing/architecture.md
   - ADRs:
+      - ADR Format: adr/000-adr-format-standard.md
       - Foundational (v0.1.0-v0.4.0):
           - ADR-001 Single-Table DynamoDB: adr/001-single-table-dynamodb.md
           - ADR-002 Integer Arithmetic: adr/002-integer-arithmetic-millitokens.md
@@ -137,6 +140,8 @@ nav:
           - ADR-009 Version Migration: adr/009-version-migration-system.md
           - ADR-010 Consumed Counter: adr/010-total-consumed-counter.md
           - ADR-011 API/CLI Parity: adr/011-api-cli-parity.md
+          - ADR-012 CloudFormation Docs Parity: adr/012-cloudformation-docs-parity.md
+          - ADR-013 Module Documentation Parity: adr/013-module-documentation-parity.md
       - Centralized Config (v0.5.0):
           - ADR-100 Overview: adr/100-centralized-config.md
           - ADR-101 Flat Schema: adr/101-flat-schema-config.md
@@ -145,7 +150,12 @@ nav:
           - ADR-104 Stored Limits Default: adr/104-stored-limits-default.md
           - ADR-105 Eventual Consistency: adr/105-eventual-consistency.md
           - ADR-106 Audit Entity IDs: adr/106-audit-entity-ids-for-config.md
+          - ADR-107 IAM Roles: adr/107-iam-roles-for-application-access.md
       - Repository Protocol (v0.5.0):
           - ADR-108 Repository Protocol: adr/108-repository-protocol.md
           - ADR-109 Backend Capabilities: adr/109-backend-capability-matrix.md
           - ADR-110 Deprecation Strategy: adr/110-deprecation-constructor.md
+      - Schema & Infra (v0.6.0+):
+          - ADR-111 Flatten All Records: adr/111-flatten-all-records.md
+          - ADR-112 Cascade Per Entity: adr/112-cascade-per-entity.md
+          - ADR-113 Lambda Packaging: adr/113-lambda-packaging.md

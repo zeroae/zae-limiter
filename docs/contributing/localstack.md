@@ -13,7 +13,30 @@ LocalStack provides a local AWS environment for development and testing. This gu
 
 ### 1. Start LocalStack
 
-=== "Docker Compose (Preferred)"
+=== "CLI (Preferred)"
+
+    The `zae-limiter local` commands are the source of truth for LocalStack container configuration:
+
+    ```bash
+    # Start LocalStack
+    zae-limiter local up
+
+    # Start and show deploy instructions
+    zae-limiter local up --name my-app
+
+    # Check status
+    zae-limiter local status
+
+    # View logs
+    zae-limiter local logs --follow
+
+    # Stop
+    zae-limiter local down
+    ```
+
+    See [CLI Reference](../cli.md#local) for full options.
+
+=== "Docker Compose"
 
     The project includes a pre-configured `docker-compose.yml` at the repository root:
 
@@ -22,29 +45,20 @@ LocalStack provides a local AWS environment for development and testing. This gu
     docker compose up -d
     ```
 
-    This is the preferred method as it includes all required configuration for Lambda execution.
-
 === "Docker"
 
     ```bash
     docker run -d \
-      --name localstack \
+      --name zae-limiter-localstack \
       -p 4566:4566 \
-      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3 \
+      -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3,sts,resourcegroupstaggingapi \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
-      localstack/localstack
+      localstack/localstack:4
     ```
 
     !!! important "Docker Socket Required"
         The Docker socket mount (`-v /var/run/docker.sock:/var/run/docker.sock`) is required for LocalStack to spawn Lambda functions as Docker containers.
-
-=== "LocalStack CLI"
-
-    ```bash
-    pip install localstack
-    localstack start -d
-    ```
 
 ### 2. Deploy Infrastructure
 
@@ -142,9 +156,9 @@ aws --endpoint-url=http://localhost:4566 dynamodb scan \
 # List functions
 aws --endpoint-url=http://localhost:4566 lambda list-functions
 
-# Get logs
+# Get logs (replace {name} with your stack name)
 aws --endpoint-url=http://localhost:4566 logs tail \
-    /aws/lambda/zae-limiter-aggregator
+    /aws/lambda/{name}-aggregator
 ```
 
 ## LocalStack vs DynamoDB Local
@@ -181,13 +195,13 @@ curl http://localhost:4566/_localstack/health
 Check Lambda logs:
 
 ```bash
-docker logs localstack 2>&1 | grep -i lambda
+docker logs zae-limiter-localstack 2>&1 | grep -i lambda
 ```
 
 Ensure the Lambda service is enabled:
 
 ```bash
-docker run -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3 ...
+docker run -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3,sts,resourcegroupstaggingapi ...
 ```
 
 ### Slow Performance

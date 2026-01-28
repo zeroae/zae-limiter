@@ -10,7 +10,10 @@ The main components of the API are:
 |-----------|-------------|
 | [`RateLimiter`](limiter.md#zae_limiter.limiter.RateLimiter) | Async rate limiter client |
 | [`SyncRateLimiter`](limiter.md#zae_limiter.limiter.SyncRateLimiter) | Synchronous rate limiter client |
+| [`Repository`](repository.md) | DynamoDB data access and infrastructure management |
+| [`RepositoryProtocol`](repository.md#repositoryprotocol) | Protocol for pluggable backends |
 | [`Limit`](models.md#zae_limiter.models.Limit) | Rate limit configuration |
+| [`StackOptions`](models.md#zae_limiter.models.StackOptions) | Infrastructure deployment configuration |
 | [`CacheStats`](models.md#zae_limiter.config_cache.CacheStats) | Cache performance statistics |
 | [`RateLimitExceeded`](exceptions.md#zae_limiter.exceptions.RateLimitExceeded) | Exception when limit is exceeded |
 
@@ -94,15 +97,24 @@ except RateLimiterUnavailable as e:
 
 ```
 zae_limiter/
-├── __init__.py        # Public API exports
-├── limiter.py         # RateLimiter, SyncRateLimiter
-├── models.py          # Limit, Entity, LimitStatus, BucketState
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable
-├── lease.py           # Lease context manager
-├── bucket.py          # Token bucket algorithm
-├── schema.py          # DynamoDB key builders
-├── repository.py      # DynamoDB operations
-└── cli.py             # CLI commands
+├── __init__.py            # Public API exports
+├── limiter.py             # RateLimiter, SyncRateLimiter
+├── models.py              # Limit, Entity, LimitStatus, BucketState, StackOptions, ...
+├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, ...
+├── repository.py          # Repository (DynamoDB operations)
+├── repository_protocol.py # RepositoryProtocol (backend abstraction)
+├── lease.py               # Lease, SyncLease context managers
+├── config_cache.py        # Client-side config caching with TTL
+├── bucket.py              # Token bucket algorithm
+├── schema.py              # DynamoDB key builders
+├── naming.py              # Resource name validation
+├── local.py               # LocalStack management commands
+├── cli.py                 # CLI commands
+└── infra/
+    ├── stack_manager.py   # StackManager (CloudFormation operations)
+    ├── lambda_builder.py  # Lambda deployment package builder
+    ├── discovery.py       # Multi-stack discovery and listing
+    └── cfn_template.yaml  # CloudFormation template
 ```
 
 ## Public Exports
@@ -111,18 +123,32 @@ The following are exported from `zae_limiter`:
 
 ```python
 from zae_limiter import (
+    # Version
+    __version__,
+
     # Main classes
     RateLimiter,
     SyncRateLimiter,
+    Repository,
+    RepositoryProtocol,
     Lease,
     SyncLease,
+    StackManager,
 
     # Models
     Limit,
     LimiterInfo,
+    LimitName,
     Entity,
     LimitStatus,
     BucketState,
+    UsageSnapshot,
+    UsageSummary,
+    ResourceCapacity,
+    EntityCapacity,
+    StackOptions,
+    BackendCapabilities,
+    Status,
     CacheStats,
 
     # Audit
@@ -134,6 +160,12 @@ from zae_limiter import (
 
     # Exceptions - Base
     ZAELimiterError,
+
+    # Exceptions - Categories
+    RateLimitError,
+    InfrastructureError,
+    EntityError,
+    VersionError,
 
     # Exceptions - Rate Limit
     RateLimitExceeded,
@@ -151,11 +183,17 @@ from zae_limiter import (
     # Exceptions - Version
     VersionMismatchError,
     IncompatibleSchemaError,
+
+    # Exceptions - Validation
+    ValidationError,
+    InvalidIdentifierError,
+    InvalidNameError,
 )
 ```
 
 ## Detailed Documentation
 
 - [RateLimiter](limiter.md) - Main rate limiter classes
+- [Repository](repository.md) - Data access and infrastructure management
 - [Models](models.md) - Data models and configuration
 - [Exceptions](exceptions.md) - Exception types and handling

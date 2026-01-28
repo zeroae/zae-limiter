@@ -13,7 +13,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` - single limit | 1 | 1 | BatchGetItem + TransactWrite |
 | `acquire()` - N limits | N | N | 1 BatchGetItem + TransactWrite(N items) |
 | `acquire()` with cascade entity | N×2 | N×2 | 1 GetEntity + 1 BatchGetItem + TransactWrite |
-| `acquire(use_stored_limits=True)` | +2 | 0 | +2 Query operations for limits |
+| `acquire(limits=None)` with config cache miss | +3 | 0 | +3 GetItem operations for config hierarchy |
 | `available()` | 1 per limit | 0 | Read-only, no transaction |
 | `get_limits()` | 1 | 0 | Query operation |
 | `set_limits()` | 1 | N+1 | Query + N PutItems |
@@ -258,18 +258,21 @@ async with limiter.acquire(api_key_id, "llm-api", limits, {"rpm": 1}):
 #### Stored Limits Optimization
 
 ```python
-# Default: No stored limits lookup (saves 2 RCUs per acquire)
+# Config caching reduces RCUs (60s TTL by default)
 limiter = RateLimiter(
     name="rate_limits",
     region="us-east-1",
+    config_cache_ttl=60,  # seconds (0 to disable)
 )
 
-# Enable only when limits vary per entity
-limiter = RateLimiter(
-    name="rate_limits",
-    region="us-east-1",
-    use_stored_limits=True,  # +2 Queries per acquire
-)
+# Pass explicit limits to skip config resolution entirely
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="api",
+    limits=[Limit.per_minute("rpm", 100)],  # No config lookup
+    consume={"rpm": 1},
+) as lease:
+    ...
 ```
 
 ### Bulk Operations
