@@ -1,6 +1,7 @@
 """Lease management for rate limit acquisitions."""
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -12,6 +13,8 @@ from .models import BucketState, Limit, LimitStatus
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class LeaseEntry:
@@ -21,7 +24,11 @@ class LeaseEntry:
     resource: str
     limit: Limit
     state: BucketState
-    consumed: int = 0  # total consumed during this lease
+    consumed: int = 0  # total consumed during this lease (tokens, not milli)
+    # Original values from DynamoDB read, for ADD delta computation (ADR-115)
+    _original_tokens_milli: int = 0  # stored tk before try_consume
+    _original_rf_ms: int = 0  # shared rf from composite item read
+    _is_new: bool = False  # True if item needs Create path (no existing item)
 
 
 @dataclass
@@ -161,22 +168,152 @@ class Lease:
         await self.adjust(**negated)
 
     async def _commit(self) -> None:
-        """Persist the final bucket states to DynamoDB."""
+        """Persist bucket state changes using ADD-based writes (ADR-115).
+
+        Groups entries by (entity_id, resource) to build one composite
+        update per group. Uses Normal write path first (ADD with refill,
+        CONDITION rf=expected). On ConditionalCheckFailedException, falls
+        back to Retry path (ADD consumption only, CONDITION tk>=consumed).
+        """
         if self._committed or self._rolled_back:
             return
 
         self._committed = True
 
+        now_ms = int(time.time() * 1000)
+        repo = self.repository
+
+        # Group entries by (entity_id, resource) for composite updates
+        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            key = (entry.entity_id, entry.resource)
+            groups.setdefault(key, []).append(entry)
+
         # Build transaction items
         items: list[dict[str, Any]] = []
-        for entry in self.entries:
-            items.append(self.repository.build_bucket_put_item(entry.state))
+        for (entity_id, resource), group_entries in groups.items():
+            is_new = group_entries[0]._is_new
 
-        await self.repository.transact_write(items)
+            if is_new:
+                # Create path: PutItem with attribute_not_exists
+                items.append(
+                    repo.build_composite_create(  # type: ignore[attr-defined]
+                        entity_id=entity_id,
+                        resource=resource,
+                        states=[e.state for e in group_entries],
+                        now_ms=now_ms,
+                    )
+                )
+            else:
+                # Normal path: ADD with refill+consumption, CONDITION rf=expected
+                consumed: dict[str, int] = {}
+                refill_amounts: dict[str, int] = {}
+                expected_rf = group_entries[0]._original_rf_ms
+
+                for entry in group_entries:
+                    name = entry.limit.name
+                    consumed[name] = entry.consumed * 1000  # to millitokens
+                    # Refill = (final_tk + consumed_milli) - original_tk
+                    # Because: final_tk = original_tk + refill - consumed
+                    # So: refill = final_tk - original_tk + consumed
+                    consumed_milli = entry.consumed * 1000
+                    refill_amounts[name] = (
+                        entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli
+                    )
+
+                items.append(
+                    repo.build_composite_normal(  # type: ignore[attr-defined]
+                        entity_id=entity_id,
+                        resource=resource,
+                        consumed=consumed,
+                        refill_amounts=refill_amounts,
+                        now_ms=now_ms,
+                        expected_rf=expected_rf,
+                    )
+                )
+
+        if not items:
+            return
+
+        try:
+            await repo.transact_write(items)
+        except Exception as exc:
+            # Check if this is a ConditionalCheckFailedException (optimistic lock lost)
+            if not _is_condition_check_failure(exc):
+                raise
+
+            # Retry path: ADD consumption only, CONDITION tk>=consumed per limit
+            logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
+            retry_items: list[dict[str, Any]] = []
+            for (entity_id, resource), group_entries in groups.items():
+                if group_entries[0]._is_new:
+                    # Create race: another writer created the item first.
+                    # Retry as consumption-only (item now exists).
+                    pass
+
+                consumed = {}
+                for entry in group_entries:
+                    if entry.consumed > 0:
+                        consumed[entry.limit.name] = entry.consumed * 1000
+
+                if consumed:
+                    retry_items.append(
+                        repo.build_composite_retry(  # type: ignore[attr-defined]
+                            entity_id=entity_id,
+                            resource=resource,
+                            consumed=consumed,
+                        )
+                    )
+
+            if retry_items:
+                try:
+                    await repo.transact_write(retry_items)
+                except Exception as retry_exc:
+                    if _is_condition_check_failure(retry_exc):
+                        # Retry also failed — insufficient tokens.
+                        # Build statuses for the error from the local state.
+                        statuses = _build_retry_failure_statuses(self.entries)
+                        raise RateLimitExceeded(statuses) from retry_exc
+                    raise
 
     async def _rollback(self) -> None:
         """Rollback is implicit - we just don't commit."""
         self._rolled_back = True
+
+
+def _is_condition_check_failure(exc: Exception) -> bool:
+    """Check if an exception is a DynamoDB ConditionalCheckFailedException."""
+    exc_name = type(exc).__name__
+    if exc_name in ("ConditionalCheckFailedException", "TransactionCanceledException"):
+        return True
+    # botocore wraps it in ClientError
+    if hasattr(exc, "response"):
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if error_code in (
+            "ConditionalCheckFailedException",
+            "TransactionCanceledException",
+        ):
+            return True
+    return False
+
+
+def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus]:
+    """Build LimitStatus list for a retry failure (rate limit exceeded)."""
+    statuses: list[LimitStatus] = []
+    for entry in entries:
+        statuses.append(
+            LimitStatus(
+                entity_id=entry.entity_id,
+                resource=entry.resource,
+                limit_name=entry.limit.name,
+                limit=entry.limit,
+                available=entry.state.tokens_milli // 1000,
+                requested=entry.consumed,
+                exceeded=entry.consumed > 0,
+                retry_after_seconds=0.0,
+            )
+        )
+    return statuses
 
 
 class SyncLease:

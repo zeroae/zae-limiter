@@ -398,14 +398,14 @@ class Repository:
         resource: str,
         limit_name: str,
     ) -> BucketState | None:
-        """Get a bucket by entity/resource/limit."""
+        """Get a single limit's bucket from the composite item."""
         client = await self._get_client()
 
         response = await client.get_item(
             TableName=self.table_name,
             Key={
                 "PK": {"S": schema.pk_entity(entity_id)},
-                "SK": {"S": schema.sk_bucket(resource, limit_name)},
+                "SK": {"S": schema.sk_bucket(resource)},
             },
         )
 
@@ -413,20 +413,42 @@ class Repository:
         if not item:
             return None
 
-        return self._deserialize_bucket(item)
+        buckets = self._deserialize_composite_bucket(item)
+        for b in buckets:
+            if b.limit_name == limit_name:
+                return b
+        return None
 
     async def get_buckets(
         self,
         entity_id: str,
         resource: str | None = None,
     ) -> list[BucketState]:
-        """Get all buckets for an entity, optionally filtered by resource."""
+        """Get all buckets for an entity, optionally filtered by resource.
+
+        With composite items, each item contains all limits for one resource.
+        """
         client = await self._get_client()
 
+        if resource:
+            # Single composite item for this entity+resource
+            response = await client.get_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                },
+            )
+            item = response.get("Item")
+            if not item:
+                return []
+            return self._deserialize_composite_bucket(item)
+
+        # Query all composite bucket items for this entity
         key_condition = "PK = :pk AND begins_with(SK, :sk_prefix)"
         expression_values: dict[str, Any] = {
             ":pk": {"S": schema.pk_entity(entity_id)},
-            ":sk_prefix": {"S": schema.SK_BUCKET + (f"{resource}#" if resource else "")},
+            ":sk_prefix": {"S": schema.SK_BUCKET},
         }
 
         response = await client.query(
@@ -435,24 +457,28 @@ class Repository:
             ExpressionAttributeValues=expression_values,
         )
 
-        return [self._deserialize_bucket(item) for item in response.get("Items", [])]
+        buckets: list[BucketState] = []
+        for item in response.get("Items", []):
+            buckets.extend(self._deserialize_composite_bucket(item))
+        return buckets
 
     async def batch_get_buckets(
         self,
-        keys: list[tuple[str, str, str]],
+        keys: list[tuple[str, str]],
     ) -> dict[tuple[str, str, str], BucketState]:
         """
-        Batch get multiple buckets in a single DynamoDB call.
+        Batch get composite buckets in a single DynamoDB call.
 
-        Uses BatchGetItem to reduce round trips when fetching buckets for
-        multiple entity/resource/limit combinations (e.g., cascade scenarios).
+        With composite items, each (entity_id, resource) pair is a single
+        DynamoDB item containing all limits. Returns individual BucketStates
+        keyed by (entity_id, resource, limit_name) for backward compatibility.
 
         Args:
-            keys: List of (entity_id, resource, limit_name) tuples
+            keys: List of (entity_id, resource) tuples
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
-            Missing buckets are not included in the result.
+            Missing composite items are not included in the result.
 
         Note:
             DynamoDB BatchGetItem supports up to 100 items per request.
@@ -474,9 +500,9 @@ class Repository:
             request_keys = [
                 {
                     "PK": {"S": schema.pk_entity(entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource, limit_name)},
+                    "SK": {"S": schema.sk_bucket(resource)},
                 }
-                for entity_id, resource, limit_name in chunk
+                for entity_id, resource in chunk
             ]
 
             response = await client.batch_get_item(
@@ -487,36 +513,35 @@ class Repository:
                 }
             )
 
-            # Process responses
+            # Process responses — each item is a composite bucket
             items = response.get("Responses", {}).get(self.table_name, [])
             for item in items:
-                bucket = self._deserialize_bucket(item)
-                key = (bucket.entity_id, bucket.resource, bucket.limit_name)
-                result[key] = bucket
-
-            # Handle unprocessed keys (retry with exponential backoff if needed)
-            # For simplicity, we don't retry here - the caller can handle missing keys
-            # In production, consider adding retry logic for UnprocessedKeys
+                buckets = self._deserialize_composite_bucket(item)
+                for bucket in buckets:
+                    key = (bucket.entity_id, bucket.resource, bucket.limit_name)
+                    result[key] = bucket
 
         return result
 
     async def batch_get_entity_and_buckets(
         self,
         entity_id: str,
-        bucket_keys: list[tuple[str, str, str]],
+        bucket_keys: list[tuple[str, str]],
     ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
         """
-        Fetch entity metadata and buckets in a single BatchGetItem call.
+        Fetch entity metadata and composite buckets in a single BatchGetItem.
 
-        Includes the entity's #META record alongside bucket records to avoid
-        a separate get_entity() round trip.
+        With composite items, each (entity_id, resource) pair is a single
+        DynamoDB item. Includes the entity's #META record alongside bucket
+        records to avoid a separate get_entity() round trip.
 
         Args:
             entity_id: Entity whose META record to include
-            bucket_keys: List of (entity_id, resource, limit_name) for buckets
+            bucket_keys: List of (entity_id, resource) for composite buckets
 
         Returns:
-            Tuple of (entity_or_none, bucket_dict)
+            Tuple of (entity_or_none, bucket_dict) where bucket_dict maps
+            (entity_id, resource, limit_name) to BucketState.
 
         Note:
             DynamoDB BatchGetItem supports up to 100 items per request.
@@ -524,7 +549,7 @@ class Repository:
         """
         client = await self._get_client()
 
-        # Build all keys: META key + bucket keys
+        # Build all keys: META key + composite bucket keys
         meta_key = {
             "PK": {"S": schema.pk_entity(entity_id)},
             "SK": {"S": schema.sk_meta()},
@@ -532,11 +557,11 @@ class Repository:
 
         request_keys = [meta_key]
         unique_bucket_keys = list(set(bucket_keys))
-        for eid, resource, limit_name in unique_bucket_keys:
+        for eid, resource in unique_bucket_keys:
             request_keys.append(
                 {
                     "PK": {"S": schema.pk_entity(eid)},
-                    "SK": {"S": schema.sk_bucket(resource, limit_name)},
+                    "SK": {"S": schema.sk_bucket(resource)},
                 }
             )
 
@@ -560,10 +585,10 @@ class Repository:
                 sk = item.get("SK", {}).get("S", "")
                 if sk == schema.sk_meta():
                     entity = self._deserialize_entity(item)
-                else:
-                    bucket = self._deserialize_bucket(item)
-                    key = (bucket.entity_id, bucket.resource, bucket.limit_name)
-                    buckets[key] = bucket
+                elif sk.startswith(schema.SK_BUCKET):
+                    for bucket in self._deserialize_composite_bucket(item):
+                        key = (bucket.entity_id, bucket.resource, bucket.limit_name)
+                        buckets[key] = bucket
 
         return entity, buckets
 
@@ -617,27 +642,18 @@ class Repository:
         state: BucketState,
         ttl_seconds: int = 86400,
     ) -> dict[str, Any]:
-        """Build a PutItem for a bucket (for use in transactions)."""
+        """Build a PutItem for a composite bucket (for use in transactions).
+
+        Wraps build_composite_create for backward compatibility with protocol.
+        """
         now_ms = self._now_ms()
-        item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(state.entity_id)},
-            "SK": {"S": schema.sk_bucket(state.resource, state.limit_name)},
-            "entity_id": {"S": state.entity_id},
-            "resource": {"S": state.resource},
-            "limit_name": {"S": state.limit_name},
-            "tokens_milli": {"N": str(state.tokens_milli)},
-            "last_refill_ms": {"N": str(state.last_refill_ms)},
-            "capacity_milli": {"N": str(state.capacity_milli)},
-            "burst_milli": {"N": str(state.burst_milli)},
-            "refill_amount_milli": {"N": str(state.refill_amount_milli)},
-            "refill_period_ms": {"N": str(state.refill_period_ms)},
-            "GSI2PK": {"S": schema.gsi2_pk_resource(state.resource)},
-            "GSI2SK": {"S": schema.gsi2_sk_bucket(state.entity_id, state.limit_name)},
-            "ttl": {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))},
-        }
-        if state.total_consumed_milli is not None:
-            item["total_consumed_milli"] = {"N": str(state.total_consumed_milli)}
-        return {"Put": {"TableName": self.table_name, "Item": item}}
+        return self.build_composite_create(
+            entity_id=state.entity_id,
+            resource=state.resource,
+            states=[state],
+            now_ms=now_ms,
+            ttl_seconds=ttl_seconds,
+        )
 
     def build_bucket_update_item(
         self,
@@ -648,18 +664,23 @@ class Repository:
         new_last_refill_ms: int,
         expected_tokens_milli: int | None = None,
     ) -> dict[str, Any]:
-        """Build an UpdateItem for a bucket (for use in transactions)."""
+        """Build an UpdateItem for a single limit in a composite bucket.
+
+        Legacy method — prefer build_composite_normal/retry/adjust for
+        composite writes. This updates one limit's tk within the composite item.
+        """
+        tk_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TK)
         update: dict[str, dict[str, Any]] = {
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
                     "PK": {"S": schema.pk_entity(entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource, limit_name)},
+                    "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": "SET #tokens = :tokens, #refill = :refill",
                 "ExpressionAttributeNames": {
-                    "#tokens": "tokens_milli",
-                    "#refill": "last_refill_ms",
+                    "#tokens": tk_attr,
+                    "#refill": schema.BUCKET_FIELD_RF,
                 },
                 "ExpressionAttributeValues": {
                     ":tokens": {"N": str(new_tokens_milli)},
@@ -676,6 +697,222 @@ class Repository:
             }
 
         return update
+
+    # -------------------------------------------------------------------------
+    # Composite bucket write paths (ADR-114, ADR-115)
+    # -------------------------------------------------------------------------
+
+    def build_composite_create(
+        self,
+        entity_id: str,
+        resource: str,
+        states: list[BucketState],
+        now_ms: int,
+        ttl_seconds: int = 86400,
+    ) -> dict[str, Any]:
+        """Build a PutItem for creating a new composite bucket.
+
+        Used on first acquire for an entity+resource. Condition ensures no
+        concurrent creation race (attribute_not_exists).
+        """
+        item: dict[str, Any] = {
+            "PK": {"S": schema.pk_entity(entity_id)},
+            "SK": {"S": schema.sk_bucket(resource)},
+            "entity_id": {"S": entity_id},
+            "resource": {"S": resource},
+            schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
+            "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+            "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
+            "ttl": {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))},
+        }
+        for state in states:
+            name = state.limit_name
+            item[schema.bucket_attr(name, schema.BUCKET_FIELD_TK)] = {
+                "N": str(state.tokens_milli),
+            }
+            item[schema.bucket_attr(name, schema.BUCKET_FIELD_CP)] = {
+                "N": str(state.capacity_milli),
+            }
+            item[schema.bucket_attr(name, schema.BUCKET_FIELD_BX)] = {
+                "N": str(state.burst_milli),
+            }
+            item[schema.bucket_attr(name, schema.BUCKET_FIELD_RA)] = {
+                "N": str(state.refill_amount_milli),
+            }
+            item[schema.bucket_attr(name, schema.BUCKET_FIELD_RP)] = {
+                "N": str(state.refill_period_ms),
+            }
+            tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
+            item[schema.bucket_attr(name, schema.BUCKET_FIELD_TC)] = {
+                "N": str(tc),
+            }
+
+        return {
+            "Put": {
+                "TableName": self.table_name,
+                "Item": item,
+                "ConditionExpression": "attribute_not_exists(PK)",
+            }
+        }
+
+    def build_composite_normal(
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+        refill_amounts: dict[str, int],
+        now_ms: int,
+        expected_rf: int,
+    ) -> dict[str, Any]:
+        """Build an UpdateItem for the normal write path (ADR-115 path 2).
+
+        ADD tk:(refill - consumed), tc:consumed for each limit.
+        SET rf:now. CONDITION rf = :expected.
+        """
+        add_parts: list[str] = []
+        attr_names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF}
+        attr_values: dict[str, Any] = {
+            ":now": {"N": str(now_ms)},
+            ":expected_rf": {"N": str(expected_rf)},
+        }
+
+        for name in consumed:
+            c = consumed[name]
+            r = refill_amounts.get(name, 0)
+            tk_delta = r - c  # refill minus consumption
+
+            tk_alias = f"#b_{name}_tk"
+            tc_alias = f"#b_{name}_tc"
+            tk_val = f":b_{name}_tk_delta"
+            tc_val = f":b_{name}_tc_delta"
+
+            attr_names[tk_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+            attr_names[tc_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            attr_values[tk_val] = {"N": str(tk_delta)}
+            attr_values[tc_val] = {"N": str(c)}
+
+            add_parts.append(f"{tk_alias} {tk_val}")
+            add_parts.append(f"{tc_alias} {tc_val}")
+
+        update_expr = f"SET #rf = :now ADD {', '.join(add_parts)}"
+
+        return {
+            "Update": {
+                "TableName": self.table_name,
+                "Key": {
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                },
+                "UpdateExpression": update_expr,
+                "ConditionExpression": "#rf = :expected_rf",
+                "ExpressionAttributeNames": attr_names,
+                "ExpressionAttributeValues": attr_values,
+            }
+        }
+
+    def build_composite_retry(
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+    ) -> dict[str, Any]:
+        """Build an UpdateItem for the retry write path (ADR-115 path 3).
+
+        Lost optimistic lock — skip refill, only consume.
+        ADD tk:(-consumed), tc:consumed for each limit.
+        CONDITION: tk >= consumed per limit (prevent negative on acquire).
+        """
+        add_parts: list[str] = []
+        condition_parts: list[str] = []
+        attr_names: dict[str, str] = {}
+        attr_values: dict[str, Any] = {}
+
+        for name in consumed:
+            c = consumed[name]
+            tk_alias = f"#b_{name}_tk"
+            tc_alias = f"#b_{name}_tc"
+            tk_neg_val = f":b_{name}_tk_neg"
+            tc_val = f":b_{name}_tc_delta"
+            tk_threshold = f":b_{name}_tk_min"
+
+            attr_names[tk_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+            attr_names[tc_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            attr_values[tk_neg_val] = {"N": str(-c)}
+            attr_values[tc_val] = {"N": str(c)}
+            attr_values[tk_threshold] = {"N": str(c)}
+
+            add_parts.append(f"{tk_alias} {tk_neg_val}")
+            add_parts.append(f"{tc_alias} {tc_val}")
+            condition_parts.append(f"{tk_alias} >= {tk_threshold}")
+
+        update_expr = f"ADD {', '.join(add_parts)}"
+        condition_expr = " AND ".join(condition_parts)
+
+        return {
+            "Update": {
+                "TableName": self.table_name,
+                "Key": {
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                },
+                "UpdateExpression": update_expr,
+                "ConditionExpression": condition_expr,
+                "ExpressionAttributeNames": attr_names,
+                "ExpressionAttributeValues": attr_values,
+            }
+        }
+
+    def build_composite_adjust(
+        self,
+        entity_id: str,
+        resource: str,
+        deltas: dict[str, int],
+    ) -> dict[str, Any]:
+        """Build an UpdateItem for the adjust write path (ADR-115 path 4).
+
+        Unconditional ADD for post-hoc correction. Can go negative by design.
+        Positive delta = consumed more (subtract tokens, add to counter).
+        Negative delta = consumed less (add tokens, subtract from counter).
+        """
+        add_parts: list[str] = []
+        attr_names: dict[str, str] = {}
+        attr_values: dict[str, Any] = {}
+
+        for name, delta in deltas.items():
+            if delta == 0:
+                continue
+            tk_alias = f"#b_{name}_tk"
+            tc_alias = f"#b_{name}_tc"
+            tk_val = f":b_{name}_tk_delta"
+            tc_val = f":b_{name}_tc_delta"
+
+            attr_names[tk_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+            attr_names[tc_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            # delta > 0 means consumed more: subtract from tk, add to tc
+            attr_values[tk_val] = {"N": str(-delta)}
+            attr_values[tc_val] = {"N": str(delta)}
+
+            add_parts.append(f"{tk_alias} {tk_val}")
+            add_parts.append(f"{tc_alias} {tc_val}")
+
+        if not add_parts:
+            # Nothing to adjust
+            return {}
+
+        update_expr = f"ADD {', '.join(add_parts)}"
+
+        return {
+            "Update": {
+                "TableName": self.table_name,
+                "Key": {
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                },
+                "UpdateExpression": update_expr,
+                "ExpressionAttributeNames": attr_names,
+                "ExpressionAttributeValues": attr_values,
+            }
+        }
 
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
         """Execute a transactional write."""
@@ -1762,17 +1999,18 @@ class Repository:
         resource: str,
         limit_name: str | None = None,
     ) -> list[BucketState]:
-        """Get all buckets for a resource across all entities."""
+        """Get all buckets for a resource across all entities.
+
+        With composite items, each GSI2 entry is one composite item per
+        entity. Returns individual BucketStates, optionally filtered by limit_name.
+        """
         client = await self._get_client()
 
-        key_condition = "GSI2PK = :pk"
+        key_condition = "GSI2PK = :pk AND begins_with(GSI2SK, :sk_prefix)"
         expression_values: dict[str, Any] = {
             ":pk": {"S": schema.gsi2_pk_resource(resource)},
+            ":sk_prefix": {"S": "BUCKET#"},
         }
-
-        if limit_name:
-            key_condition += " AND begins_with(GSI2SK, :sk_prefix)"
-            expression_values[":sk_prefix"] = {"S": "BUCKET#"}
 
         response = await client.query(
             TableName=self.table_name,
@@ -1781,11 +2019,11 @@ class Repository:
             ExpressionAttributeValues=expression_values,
         )
 
-        buckets = []
+        buckets: list[BucketState] = []
         for item in response.get("Items", []):
-            bucket = self._deserialize_bucket(item)
-            if limit_name is None or bucket.limit_name == limit_name:
-                buckets.append(bucket)
+            for bucket in self._deserialize_composite_bucket(item):
+                if limit_name is None or bucket.limit_name == limit_name:
+                    buckets.append(bucket)
 
         return buckets
 
@@ -1892,6 +2130,53 @@ class Repository:
             refill_period_ms=int(item.get("refill_period_ms", {}).get("N", "0")),
             total_consumed_milli=total_consumed_milli,
         )
+
+    def _deserialize_composite_bucket(self, item: dict[str, Any]) -> list[BucketState]:
+        """Deserialize a composite DynamoDB item to a list of BucketStates.
+
+        A composite bucket item stores all limits for an entity+resource in a
+        single DynamoDB item. Per-limit attributes use the prefix b_{name}_{field}
+        with a shared rf (refill timestamp). See ADR-114.
+        """
+        entity_id = item.get("entity_id", {}).get("S", "")
+        resource = item.get("resource", {}).get("S", "")
+        rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
+
+        # Discover limit names by scanning for b_{name}_tk attributes
+        limit_names: list[str] = []
+        suffix = f"_{schema.BUCKET_FIELD_TK}"
+        for attr_name in item:
+            if attr_name.startswith(schema.BUCKET_ATTR_PREFIX) and attr_name.endswith(suffix):
+                name = attr_name[len(schema.BUCKET_ATTR_PREFIX) : -len(suffix)]
+                if name:
+                    limit_names.append(name)
+
+        buckets: list[BucketState] = []
+        for name in limit_names:
+
+            def _get(field: str) -> int:
+                attr = schema.bucket_attr(name, field)
+                return int(item.get(attr, {}).get("N", "0"))
+
+            tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
+            total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
+
+            buckets.append(
+                BucketState(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limit_name=name,
+                    tokens_milli=_get(schema.BUCKET_FIELD_TK),
+                    last_refill_ms=rf,
+                    capacity_milli=_get(schema.BUCKET_FIELD_CP),
+                    burst_milli=_get(schema.BUCKET_FIELD_BX),
+                    refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
+                    refill_period_ms=_get(schema.BUCKET_FIELD_RP),
+                    total_consumed_milli=total_consumed,
+                )
+            )
+
+        return buckets
 
 
 # Type assertion: Repository implements RepositoryProtocol

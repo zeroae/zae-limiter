@@ -112,9 +112,8 @@ def process_stream_records(
             continue
 
         try:
-            delta = extract_delta(record)
-            if delta:
-                deltas.append(delta)
+            record_deltas = extract_deltas(record)
+            deltas.extend(record_deltas)
         except Exception as e:
             error_msg = f"Error processing record: {e}"
             logger.warning(
@@ -168,21 +167,20 @@ def process_stream_records(
     return ProcessResult(len(records), snapshots_updated, errors)
 
 
-def extract_delta(record: dict[str, Any]) -> ConsumptionDelta | None:
+def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:
     """
-    Extract consumption delta from a stream record.
+    Extract consumption deltas from a composite bucket stream record.
 
-    Uses the total_consumed_milli counter (flat top-level attribute) for accurate
-    tracking. This counter is unaffected by token bucket refill, so it correctly
-    captures consumption even with high rate limits (10M+ TPM). See issue #179.
-
-    Falls back to None if counter not present (old buckets without counter).
+    With composite items (ADR-114), one stream event contains all limits for
+    an entity+resource. This function enumerates b_{name}_tc attributes to
+    extract one ConsumptionDelta per limit that changed.
 
     Args:
         record: DynamoDB stream record
 
     Returns:
-        ConsumptionDelta if this was a consumption event, None otherwise
+        List of ConsumptionDeltas (one per limit with changed tc counter).
+        Empty list if not a bucket record or no consumption changes.
     """
     dynamodb_data = record.get("dynamodb", {})
     new_image = dynamodb_data.get("NewImage", {})
@@ -191,54 +189,65 @@ def extract_delta(record: dict[str, Any]) -> ConsumptionDelta | None:
     # Only process bucket records
     sk = new_image.get("SK", {}).get("S", "")
     if not sk.startswith(SK_BUCKET):
-        return None
+        return []
 
-    # Parse key: #BUCKET#{resource}#{limit_name}
-    parts = sk[len(SK_BUCKET) :].split("#", 1)
-    if len(parts) != 2:
-        return None
+    # Parse key: #BUCKET#{resource} (no limit_name suffix in composite)
+    resource = sk[len(SK_BUCKET) :]
+    if not resource:
+        return []
 
-    resource, limit_name = parts
     entity_id = new_image.get("entity_id", {}).get("S", "")
-
     if not entity_id:
-        return None
+        return []
 
-    # Extract counter values from FLAT top-level attribute (not nested data.M).
-    # Counter is stored flat to enable atomic ADD operations. See issue #179.
-    new_counter_attr = new_image.get("total_consumed_milli", {})
-    old_counter_attr = old_image.get("total_consumed_milli", {})
+    # Shared rf timestamp for all limits
+    new_rf = int(new_image.get("rf", {}).get("N", "0"))
 
-    # Skip if counter not present in both images (old bucket without counter)
-    if "N" not in new_counter_attr or "N" not in old_counter_attr:
-        logger.debug(
-            "Skipping bucket without consumption counter",
-            entity_id=entity_id,
-            resource=resource,
-            limit_name=limit_name,
+    # Enumerate b_{name}_tc attributes to find all limit consumption counters
+    deltas: list[ConsumptionDelta] = []
+    tc_suffix = "_tc"
+    b_prefix = "b_"
+
+    for attr_name in new_image:
+        if not attr_name.startswith(b_prefix) or not attr_name.endswith(tc_suffix):
+            continue
+
+        limit_name = attr_name[len(b_prefix) : -len(tc_suffix)]
+        if not limit_name:
+            continue
+
+        new_tc_attr = new_image.get(attr_name, {})
+        old_tc_attr = old_image.get(attr_name, {})
+
+        # Skip if counter not present in both images
+        if "N" not in new_tc_attr or "N" not in old_tc_attr:
+            logger.debug(
+                "Skipping limit without consumption counter",
+                entity_id=entity_id,
+                resource=resource,
+                limit_name=limit_name,
+            )
+            continue
+
+        new_tc = int(new_tc_attr["N"])
+        old_tc = int(old_tc_attr["N"])
+
+        # Calculate delta: new - old = net consumption since last update
+        tokens_delta = new_tc - old_tc
+        if tokens_delta == 0:
+            continue
+
+        deltas.append(
+            ConsumptionDelta(
+                entity_id=entity_id,
+                resource=resource,
+                limit_name=limit_name,
+                tokens_delta=tokens_delta,
+                timestamp_ms=new_rf,
+            )
         )
-        return None
 
-    new_counter = int(new_counter_attr["N"])
-    old_counter = int(old_counter_attr["N"])
-
-    new_refill_ms = int(new_image.get("last_refill_ms", {}).get("N", "0"))
-
-    # Calculate delta: new - old = net consumption since last update
-    # Positive = consumed, negative = returned (via release/adjust)
-    tokens_delta = new_counter - old_counter
-
-    # Skip if no consumption change
-    if tokens_delta == 0:
-        return None
-
-    return ConsumptionDelta(
-        entity_id=entity_id,
-        resource=resource,
-        limit_name=limit_name,
-        tokens_delta=tokens_delta,  # positive = consumed, negative = returned
-        timestamp_ms=new_refill_ms,
-    )
+    return deltas
 
 
 def get_window_key(timestamp_ms: int, window: str) -> str:
