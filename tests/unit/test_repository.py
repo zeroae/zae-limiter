@@ -8,6 +8,7 @@ from zae_limiter import AuditAction, Limit
 from zae_limiter.exceptions import InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
+from zae_limiter.schema import parse_bucket_attr, parse_bucket_sk
 
 
 @pytest.fixture
@@ -45,6 +46,42 @@ async def repo_with_buckets(repo):
             await repo.transact_write([put_item])
 
     yield repo
+
+
+class TestSchemaCompositeKeys:
+    """Tests for composite bucket schema key builders."""
+
+    def test_parse_bucket_attr_valid(self):
+        """parse_bucket_attr returns (limit_name, field) for valid attributes."""
+        assert parse_bucket_attr("b_rpm_tk") == ("rpm", "tk")
+        assert parse_bucket_attr("b_tpm_cp") == ("tpm", "cp")
+        assert parse_bucket_attr("b_my_limit_bx") == ("my_limit", "bx")
+
+    def test_parse_bucket_attr_not_bucket(self):
+        """parse_bucket_attr returns None for non-bucket attributes."""
+        assert parse_bucket_attr("entity_id") is None
+        assert parse_bucket_attr("PK") is None
+        assert parse_bucket_attr("rf") is None
+
+    def test_parse_bucket_attr_no_field_separator(self):
+        """parse_bucket_attr returns None when no underscore after prefix."""
+        assert parse_bucket_attr("b_") is None
+        assert parse_bucket_attr("b_x") is None
+
+    def test_parse_bucket_sk_valid(self):
+        """parse_bucket_sk extracts resource from composite SK."""
+        assert parse_bucket_sk("#BUCKET#gpt-4") == "gpt-4"
+        assert parse_bucket_sk("#BUCKET#api") == "api"
+
+    def test_parse_bucket_sk_invalid_prefix(self):
+        """parse_bucket_sk raises ValueError for non-bucket SK."""
+        with pytest.raises(ValueError, match="Invalid bucket SK"):
+            parse_bucket_sk("#META")
+
+    def test_parse_bucket_sk_empty_resource(self):
+        """parse_bucket_sk raises ValueError for empty resource."""
+        with pytest.raises(ValueError, match="Invalid bucket SK format"):
+            parse_bucket_sk("#BUCKET#")
 
 
 class TestRepositoryBucketOperations:
@@ -287,6 +324,101 @@ class TestRepositoryTransactions:
         # Verify entity is deleted
         entity = await repo.get_entity("entity-0")
         assert entity is None
+
+
+class TestCompositeWritePaths:
+    """Tests for composite bucket write path builders (ADR-115)."""
+
+    @pytest.mark.asyncio
+    async def test_build_composite_retry_structure(self, repo):
+        """build_composite_retry produces ADD for tk and tc per limit."""
+        result = repo.build_composite_retry(
+            entity_id="entity-1",
+            resource="gpt-4",
+            consumed={"rpm": 5000, "tpm": 100000},
+        )
+
+        assert "Update" in result
+        update = result["Update"]
+        assert update["Key"]["PK"]["S"] == "ENTITY#entity-1"
+        assert update["Key"]["SK"]["S"] == "#BUCKET#gpt-4"
+
+        # Verify ADD expression contains both limits
+        expr = update["UpdateExpression"]
+        assert "ADD" in expr
+        assert "#b_rpm_tk" in expr
+        assert "#b_rpm_tc" in expr
+        assert "#b_tpm_tk" in expr
+        assert "#b_tpm_tc" in expr
+
+        # Verify condition requires sufficient tokens
+        cond = update["ConditionExpression"]
+        assert "#b_rpm_tk >= " in cond
+        assert "#b_tpm_tk >= " in cond
+
+        # Verify attribute mappings
+        names = update["ExpressionAttributeNames"]
+        assert names["#b_rpm_tk"] == "b_rpm_tk"
+        assert names["#b_rpm_tc"] == "b_rpm_tc"
+
+        # Verify values: tk gets negative (consumption), tc gets positive
+        vals = update["ExpressionAttributeValues"]
+        assert vals[":b_rpm_tk_neg"]["N"] == "-5000"
+        assert vals[":b_rpm_tc_delta"]["N"] == "5000"
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_structure(self, repo):
+        """build_composite_adjust produces unconditional ADD for tk and tc."""
+        result = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": 3000, "tpm": -500},
+        )
+
+        assert "Update" in result
+        update = result["Update"]
+
+        # Should have ADD but no condition
+        assert "ADD" in update["UpdateExpression"]
+        assert "ConditionExpression" not in update
+
+        # Positive delta: subtract from tk, add to tc
+        vals = update["ExpressionAttributeValues"]
+        assert vals[":b_rpm_tk_delta"]["N"] == "-3000"
+        assert vals[":b_rpm_tc_delta"]["N"] == "3000"
+        # Negative delta: add to tk, subtract from tc
+        assert vals[":b_tpm_tk_delta"]["N"] == "500"
+        assert vals[":b_tpm_tc_delta"]["N"] == "-500"
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_zero_deltas(self, repo):
+        """build_composite_adjust with all-zero deltas returns empty dict."""
+        result = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": 0},
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_get_bucket_returns_none_for_missing_limit(
+        self,
+        repo_with_buckets,
+    ):
+        """get_bucket returns None when limit_name not found in composite item."""
+        result = await repo_with_buckets.get_bucket(
+            "entity-1",
+            "gpt-4",
+            "nonexistent",
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_buckets_returns_empty_for_missing_resource(self, repo):
+        """get_buckets returns empty list when no composite item exists."""
+        await repo.create_entity("entity-1")
+        result = await repo.get_buckets("entity-1", resource="nonexistent")
+        assert result == []
 
 
 class TestRepositorySerialization:
