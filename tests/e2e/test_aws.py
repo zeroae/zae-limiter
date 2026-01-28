@@ -28,6 +28,7 @@ import time
 from datetime import UTC, datetime
 
 import pytest
+import pytest_asyncio
 
 from zae_limiter import Limit, RateLimiter, StackOptions
 
@@ -74,12 +75,12 @@ def aws_lambda_client():
 class TestE2EAWSFullWorkflow:
     """E2E tests against real AWS."""
 
-    @pytest.fixture
-    async def aws_limiter(self, unique_name):
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def aws_limiter(self, unique_name_class):
         """
         Create RateLimiter with full stack on real AWS.
 
-        Uses unique name for isolation.
+        Uses unique name for isolation. Class-scoped to share stack across tests.
         """
         stack_options = StackOptions(
             enable_aggregator=True,
@@ -93,7 +94,7 @@ class TestE2EAWSFullWorkflow:
         )
 
         limiter = RateLimiter(
-            name=unique_name,
+            name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -107,7 +108,7 @@ class TestE2EAWSFullWorkflow:
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_complete_aws_workflow(self, aws_limiter):
         """
         Complete E2E workflow on real AWS.
@@ -149,8 +150,8 @@ class TestE2EAWSFullWorkflow:
         )
         assert available["rpm"] < 100
 
-    @pytest.mark.asyncio
-    async def test_role_has_permission_boundary(self, aws_limiter, unique_name):
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_role_has_permission_boundary(self, aws_limiter, unique_name_class):
         """Verify the Lambda role was created with permission boundary and custom name."""
         import boto3
 
@@ -158,7 +159,7 @@ class TestE2EAWSFullWorkflow:
 
         # The role name format "PowerUserPB-{}" produces "PowerUserPB-{name}-aggregator-role"
         # The {} is replaced with the full default role name: {name}-aggregator-role
-        expected_role_name = f"PowerUserPB-{unique_name}-aggregator-role"
+        expected_role_name = f"PowerUserPB-{unique_name_class}-aggregator-role"
 
         role = iam.get_role(RoleName=expected_role_name)
 
@@ -167,10 +168,12 @@ class TestE2EAWSFullWorkflow:
             "arn:aws:iam::aws:policy/PowerUserAccess"
         )
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     @pytest.mark.slow
     @pytest.mark.monitoring
-    async def test_cloudwatch_alarm_states(self, aws_limiter, aws_cloudwatch_client, unique_name):
+    async def test_cloudwatch_alarm_states(
+        self, aws_limiter, aws_cloudwatch_client, unique_name_class
+    ):
         """
         Verify CloudWatch alarms are in expected states.
 
@@ -192,7 +195,7 @@ class TestE2EAWSFullWorkflow:
         await asyncio.sleep(60)
 
         # Check alarm states - alarm names are based on stack name pattern
-        stack_name = unique_name
+        stack_name = unique_name_class
         alarm_name_prefix = stack_name
 
         response = aws_cloudwatch_client.describe_alarms(
@@ -211,10 +214,10 @@ class TestE2EAWSFullWorkflow:
                     f"Alarm {alarm['AlarmName']} in unexpected state: {state}"
                 )
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     @pytest.mark.slow
     @pytest.mark.monitoring
-    async def test_dlq_is_empty(self, aws_limiter, aws_sqs_client, unique_name):
+    async def test_dlq_is_empty(self, aws_limiter, aws_sqs_client, unique_name_class):
         """
         Verify Dead Letter Queue has no messages after normal operation.
 
@@ -237,7 +240,7 @@ class TestE2EAWSFullWorkflow:
         await asyncio.sleep(30)
 
         # Get DLQ URL
-        dlq_name = f"{unique_name}-aggregator-dlq"
+        dlq_name = f"{unique_name_class}-aggregator-dlq"
         try:
             response = aws_sqs_client.get_queue_url(QueueName=dlq_name)
             dlq_url = response["QueueUrl"]
@@ -255,10 +258,10 @@ class TestE2EAWSFullWorkflow:
             # Queue might not exist if aggregator disabled
             pass
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     @pytest.mark.slow
     @pytest.mark.monitoring
-    async def test_lambda_metrics(self, aws_limiter, aws_cloudwatch_client, unique_name):
+    async def test_lambda_metrics(self, aws_limiter, aws_cloudwatch_client, unique_name_class):
         """
         Query Lambda metrics to verify aggregator is working.
 
@@ -282,7 +285,7 @@ class TestE2EAWSFullWorkflow:
         # Wait for Lambda invocations and metrics
         await asyncio.sleep(120)  # CloudWatch metrics have delay
 
-        function_name = f"{unique_name}-aggregator"
+        function_name = f"{unique_name_class}-aggregator"
         end_time = datetime.now(UTC)
         start_time_epoch = time.time() - 300  # Last 5 minutes
         start_time = datetime.fromtimestamp(start_time_epoch, tz=UTC)
@@ -327,9 +330,9 @@ class TestE2EAWSFullWorkflow:
 class TestE2EAWSUsageSnapshots:
     """Tests for usage snapshot verification on real AWS."""
 
-    @pytest.fixture
-    async def aws_limiter_with_snapshots(self, unique_name):
-        """Create RateLimiter configured for snapshot testing."""
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def aws_limiter_with_snapshots(self, unique_name_class):
+        """Create RateLimiter configured for snapshot testing. Class-scoped to share stack."""
         stack_options = StackOptions(
             enable_aggregator=True,
             enable_alarms=False,  # Faster for snapshot tests
@@ -340,7 +343,7 @@ class TestE2EAWSUsageSnapshots:
         )
 
         limiter = RateLimiter(
-            name=unique_name,
+            name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -354,11 +357,15 @@ class TestE2EAWSUsageSnapshots:
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     @pytest.mark.slow
     @pytest.mark.snapshots
     async def test_usage_snapshots_created(
-        self, aws_limiter_with_snapshots, aws_cloudwatch_client, aws_lambda_client, unique_name
+        self,
+        aws_limiter_with_snapshots,
+        aws_cloudwatch_client,
+        aws_lambda_client,
+        unique_name_class,
     ):
         """
         Verify Lambda aggregator creates usage snapshots.
@@ -377,7 +384,7 @@ class TestE2EAWSUsageSnapshots:
 
         # Wait for Event Source Mapping to be enabled before generating traffic
         # The ESM may still be in "Creating" or "Enabling" state after stack creation
-        function_name = f"{unique_name}-aggregator"
+        function_name = f"{unique_name_class}-aggregator"
         esm_enabled = await wait_for_event_source_mapping(
             aws_lambda_client,
             function_name,
@@ -488,9 +495,9 @@ class TestE2EAWSUsageSnapshots:
 class TestE2EAWSRateLimiting:
     """Additional rate limiting tests for real AWS."""
 
-    @pytest.fixture
-    async def aws_limiter_minimal(self, unique_name):
-        """Create RateLimiter with minimal stack for faster tests."""
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def aws_limiter_minimal(self, unique_name_class):
+        """Create RateLimiter with minimal stack for faster tests. Class-scoped to share stack."""
         stack_options = StackOptions(
             enable_aggregator=False,
             enable_alarms=False,
@@ -500,7 +507,7 @@ class TestE2EAWSRateLimiting:
         )
 
         limiter = RateLimiter(
-            name=unique_name,
+            name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -514,7 +521,7 @@ class TestE2EAWSRateLimiting:
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_high_throughput_operations(self, aws_limiter_minimal):
         """
         Test high throughput rate limiting operations.
@@ -547,7 +554,7 @@ class TestE2EAWSRateLimiting:
         # due to refill during network round trips to DynamoDB
         assert available["rpm"] < 1000, "Should have consumed some tokens"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_multiple_resources(self, aws_limiter_minimal):
         """
         Test rate limiting across multiple resources.
@@ -598,8 +605,8 @@ class TestE2EAWSRateLimiting:
         assert gpt4_available["rpm"] <= 90, "gpt-4 should have consumed at least 10 tokens"
 
 
-class TestE2EAWSXRayTracing:
-    """Tests for X-Ray tracing configuration and verification."""
+class TestE2EAWSXRayTracingEnabled:
+    """Tests for X-Ray tracing when enabled."""
 
     @pytest.fixture
     def aws_xray_client(self):
@@ -608,9 +615,9 @@ class TestE2EAWSXRayTracing:
 
         return boto3.client("xray", region_name="us-east-1")
 
-    @pytest.fixture
-    async def aws_limiter_with_tracing(self, unique_name):
-        """Create RateLimiter with X-Ray tracing enabled."""
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def aws_limiter_with_tracing(self, unique_name_class):
+        """Create RateLimiter with X-Ray tracing enabled. Class-scoped to share stack."""
         stack_options = StackOptions(
             enable_aggregator=True,
             enable_tracing=True,
@@ -621,7 +628,7 @@ class TestE2EAWSXRayTracing:
         )
 
         limiter = RateLimiter(
-            name=unique_name,
+            name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -634,35 +641,9 @@ class TestE2EAWSXRayTracing:
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.fixture
-    async def aws_limiter_without_tracing(self, unique_name):
-        """Create RateLimiter with X-Ray tracing disabled (default)."""
-        stack_options = StackOptions(
-            enable_aggregator=True,
-            enable_tracing=False,  # Explicitly disabled
-            enable_alarms=False,
-            retention_days=1,
-            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-            role_name_format="PowerUserPB-{}",
-        )
-
-        limiter = RateLimiter(
-            name=unique_name,
-            region="us-east-1",
-            stack_options=stack_options,
-        )
-
-        async with limiter:
-            yield limiter
-
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
-
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_lambda_tracing_enabled(
-        self, aws_limiter_with_tracing, aws_lambda_client, unique_name
+        self, aws_limiter_with_tracing, aws_lambda_client, unique_name_class
     ):
         """
         Verify Lambda function has Active tracing when enabled.
@@ -670,7 +651,7 @@ class TestE2EAWSXRayTracing:
         Checks:
         - TracingConfig.Mode is 'Active'
         """
-        function_name = f"{unique_name}-aggregator"
+        function_name = f"{unique_name_class}-aggregator"
 
         response = aws_lambda_client.get_function_configuration(FunctionName=function_name)
 
@@ -678,26 +659,8 @@ class TestE2EAWSXRayTracing:
             f"Expected TracingConfig.Mode='Active', got '{response['TracingConfig']['Mode']}'"
         )
 
-    @pytest.mark.asyncio
-    async def test_lambda_tracing_disabled(
-        self, aws_limiter_without_tracing, aws_lambda_client, unique_name
-    ):
-        """
-        Verify Lambda function has PassThrough tracing when disabled.
-
-        Checks:
-        - TracingConfig.Mode is 'PassThrough'
-        """
-        function_name = f"{unique_name}-aggregator"
-
-        response = aws_lambda_client.get_function_configuration(FunctionName=function_name)
-
-        assert response["TracingConfig"]["Mode"] == "PassThrough", (
-            f"Expected TracingConfig.Mode='PassThrough', got '{response['TracingConfig']['Mode']}'"
-        )
-
-    @pytest.mark.asyncio
-    async def test_iam_role_has_xray_permissions(self, aws_limiter_with_tracing, unique_name):
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_iam_role_has_xray_permissions(self, aws_limiter_with_tracing, unique_name_class):
         """
         Verify IAM role has X-Ray permissions when tracing is enabled.
 
@@ -709,7 +672,7 @@ class TestE2EAWSXRayTracing:
         import boto3
 
         iam = boto3.client("iam", region_name="us-east-1")
-        role_name = f"PowerUserPB-{unique_name}-aggregator-role"
+        role_name = f"PowerUserPB-{unique_name_class}-aggregator-role"
 
         # Get inline policies
         response = iam.list_role_policies(RoleName=role_name)
@@ -736,37 +699,14 @@ class TestE2EAWSXRayTracing:
         assert "xray:PutTraceSegments" in actions, "Missing xray:PutTraceSegments"
         assert "xray:PutTelemetryRecords" in actions, "Missing xray:PutTelemetryRecords"
 
-    @pytest.mark.asyncio
-    async def test_iam_role_no_xray_permissions_when_disabled(
-        self, aws_limiter_without_tracing, unique_name
-    ):
-        """
-        Verify IAM role does NOT have X-Ray permissions when tracing is disabled.
-
-        Checks:
-        - XRayAccess policy does NOT exist
-        """
-        import boto3
-
-        iam = boto3.client("iam", region_name="us-east-1")
-        role_name = f"PowerUserPB-{unique_name}-aggregator-role"
-
-        # Get inline policies
-        response = iam.list_role_policies(RoleName=role_name)
-        policy_names = response.get("PolicyNames", [])
-
-        assert "XRayAccess" not in policy_names, (
-            f"XRayAccess policy should NOT exist when tracing disabled. Found: {policy_names}"
-        )
-
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     @pytest.mark.slow
     @pytest.mark.xfail(
         reason="Requires X-Ray SDK instrumentation in Lambda (see #194)",
         strict=False,
     )
     async def test_xray_traces_created(
-        self, aws_limiter_with_tracing, aws_lambda_client, aws_xray_client, unique_name
+        self, aws_limiter_with_tracing, aws_lambda_client, aws_xray_client, unique_name_class
     ):
         """
         Verify X-Ray traces are created when Lambda is invoked.
@@ -785,7 +725,7 @@ class TestE2EAWSXRayTracing:
 
         from tests.e2e.conftest import wait_for_event_source_mapping
 
-        function_name = f"{unique_name}-aggregator"
+        function_name = f"{unique_name_class}-aggregator"
 
         # Wait for Event Source Mapping to be enabled
         esm_enabled = await wait_for_event_source_mapping(
@@ -901,4 +841,75 @@ class TestE2EAWSXRayTracing:
         subsegment_names = [s.get("name") for s in aws_subsegments]
         assert len(dynamodb_subsegments) > 0, (
             f"No DynamoDB subsegments found. AWS subsegments: {subsegment_names}"
+        )
+
+
+class TestE2EAWSXRayTracingDisabled:
+    """Tests for X-Ray tracing when disabled."""
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def aws_limiter_without_tracing(self, unique_name_class):
+        """Create RateLimiter with X-Ray tracing disabled (default). Class-scoped to share stack."""
+        stack_options = StackOptions(
+            enable_aggregator=True,
+            enable_tracing=False,  # Explicitly disabled
+            enable_alarms=False,
+            retention_days=1,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
+        )
+
+        limiter = RateLimiter(
+            name=unique_name_class,
+            region="us-east-1",
+            stack_options=stack_options,
+        )
+
+        async with limiter:
+            yield limiter
+
+        try:
+            await limiter.delete_stack()
+        except Exception as e:
+            print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_lambda_tracing_disabled(
+        self, aws_limiter_without_tracing, aws_lambda_client, unique_name_class
+    ):
+        """
+        Verify Lambda function has PassThrough tracing when disabled.
+
+        Checks:
+        - TracingConfig.Mode is 'PassThrough'
+        """
+        function_name = f"{unique_name_class}-aggregator"
+
+        response = aws_lambda_client.get_function_configuration(FunctionName=function_name)
+
+        assert response["TracingConfig"]["Mode"] == "PassThrough", (
+            f"Expected TracingConfig.Mode='PassThrough', got '{response['TracingConfig']['Mode']}'"
+        )
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_iam_role_no_xray_permissions_when_disabled(
+        self, aws_limiter_without_tracing, unique_name_class
+    ):
+        """
+        Verify IAM role does NOT have X-Ray permissions when tracing is disabled.
+
+        Checks:
+        - XRayAccess policy does NOT exist
+        """
+        import boto3
+
+        iam = boto3.client("iam", region_name="us-east-1")
+        role_name = f"PowerUserPB-{unique_name_class}-aggregator-role"
+
+        # Get inline policies
+        response = iam.list_role_policies(RoleName=role_name)
+        policy_names = response.get("PolicyNames", [])
+
+        assert "XRayAccess" not in policy_names, (
+            f"XRayAccess policy should NOT exist when tracing disabled. Found: {policy_names}"
         )
