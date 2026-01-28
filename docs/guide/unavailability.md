@@ -111,7 +111,7 @@ async def acquire_with_metrics(limiter, **kwargs):
 
 Override the default mode for specific requests:
 
-```{.python .lint-only}
+```python
 # Default to BLOCK
 limiter = RateLimiter(
     name="limiter",
@@ -212,7 +212,7 @@ The `is_available()` method:
 - Uses a configurable timeout (default 1 second)
 - Works without requiring initialization
 
-```{.python .lint-only}
+```{.python .requires-external}
 # FastAPI health endpoint example
 @app.get("/health")
 async def health():

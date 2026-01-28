@@ -137,7 +137,7 @@ aws dynamodb get-item --table-name <name> \
 
 If cascade is not enabled, recreate the entity with cascade:
 
-```{.python .lint-only}
+```python
 await limiter.create_entity(
     entity_id="child-id",
     parent_id="parent-id",

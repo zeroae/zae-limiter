@@ -16,7 +16,7 @@ LLM APIs present unique rate limiting challenges:
 
 ## Basic Pattern: Estimate and Reconcile
 
-```{.python .lint-only}
+```python
 async with limiter.acquire(
     entity_id="api-key-123",
     resource="gpt-4",
@@ -50,7 +50,7 @@ consume={"tpm": 500}  # Always estimate 500 tokens
 
 Estimate based on input length:
 
-```{.python .lint-only}
+```{.python .requires-external}
 import tiktoken
 
 def estimate_tokens(messages: list, model: str = "gpt-4") -> int:
@@ -82,12 +82,13 @@ async with limiter.acquire(
 
 Use max_tokens as upper bound:
 
-```{.python .lint-only}
+```python
 max_tokens = 1000
 
 async with limiter.acquire(
     entity_id="user-123",
     resource="gpt-4",
+    limits=[Limit.per_minute("tpm", 10_000)],
     consume={"tpm": input_tokens + max_tokens},
 ) as lease:
     response = await openai.chat.completions.create(
@@ -132,7 +133,7 @@ async with limiter.acquire(
 
 Different models have different limits. Use the `resource` parameter:
 
-```{.python .lint-only}
+```python
 MODEL_LIMITS = {
     "gpt-4": [
         Limit.per_minute("rpm", 100),
@@ -175,11 +176,12 @@ async def rate_limited_completion(
 
 zae-limiter allows buckets to go negative, which is useful when actual usage exceeds estimates:
 
-```{.python .lint-only}
+```python
 # Estimate: 500 tokens
 async with limiter.acquire(
     entity_id="user-123",
     resource="gpt-4",
+    limits=[Limit.per_minute("tpm", 10_000)],
     consume={"tpm": 500},
 ) as lease:
     response = await call_llm()

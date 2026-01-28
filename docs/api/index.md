@@ -39,7 +39,7 @@ limiter = SyncRateLimiter(
 
 ### Defining Limits
 
-```{.python .lint-only}
+```python
 from zae_limiter import Limit
 
 # Factory methods
@@ -52,7 +52,7 @@ Limit.per_day("rpd", 10000)
 Limit.per_minute("tpm", 10_000, burst=15_000)
 
 # Custom period
-Limit.custom("requests", capacity=50, refill_period_seconds=30)
+Limit.custom("requests", capacity=50, refill_amount=50, refill_period_seconds=30)
 ```
 
 ### Acquiring Limits

@@ -148,7 +148,7 @@ Negative buckets let you:
 
 The debt is automatically repaid as tokens refill over time.
 
-```{.python .lint-only}
+```python
 async with limiter.acquire(
     entity_id="user-123",
     resource="api",

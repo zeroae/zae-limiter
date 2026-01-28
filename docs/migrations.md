@@ -233,7 +233,7 @@ register_migration(
 
 Migration functions must follow this protocol:
 
-```{.python .lint-only}
+```python
 async def __call__(self, repository: Repository) -> None:
     """Execute the migration."""
     ...
@@ -437,7 +437,7 @@ register_migration(
 
 Rollback removes or reverts the changes:
 
-```{.python .lint-only}
+```python
 async def rollback_v1_1_0(repository: Repository) -> None:
     """Remove metrics attribute from all entities."""
     # Implementation to remove metrics attribute

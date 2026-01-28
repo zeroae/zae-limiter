@@ -278,7 +278,7 @@ The debt is repaid as tokens refill over time. A bucket at -1500 millitokens nee
 
 Burst allows temporary exceeding of sustained rate:
 
-```{.python .lint-only}
+```python
 # Sustained: 10k tokens/minute
 # Burst: 15k tokens (one-time)
 Limit.per_minute("tpm", 10_000, burst=15_000)

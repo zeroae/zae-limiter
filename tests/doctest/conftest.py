@@ -147,12 +147,54 @@ def wrap_async_source(source: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+class _MockUsage:
+    """Mock OpenAI-style usage object for doc examples."""
+
+    prompt_tokens = 100
+    completion_tokens = 50
+    total_tokens = 150
+
+
+class _MockChoice:
+    """Mock OpenAI-style choice object."""
+
+    class Message:
+        content = "Hello"
+
+    message = Message()
+
+
+class _MockResponse:
+    """Mock OpenAI-style response with .usage attribute access."""
+
+    usage = _MockUsage()
+    choices = [_MockChoice()]
+
+
+class _MockOpenAICompletions:
+    """Mock openai.chat.completions for doc examples."""
+
+    async def create(self, **kwargs):
+        return _MockResponse()
+
+
+class _MockOpenAIChat:
+    completions = _MockOpenAICompletions()
+
+
+class _MockOpenAI:
+    chat = _MockOpenAIChat()
+
+
+class _MockResult:
+    """Mock result for execute_operation() stubs."""
+
+    units_consumed = 12
+
+
 async def _stub_call_llm(*args, **kwargs):
     """Stub for call_llm() used in doc examples."""
-    return {
-        "choices": [{"message": {"content": "Hello"}}],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    }
+    return _MockResponse()
 
 
 async def _stub_call_api(*args, **kwargs):
@@ -175,6 +217,11 @@ async def _stub_basic_operation(*args, **kwargs):
     return "basic result"
 
 
+async def _stub_execute_operation(*args, **kwargs):
+    """Stub for execute_operation() used in doc examples."""
+    return _MockResult()
+
+
 # ---------------------------------------------------------------------------
 # Fixtures for doc example execution
 # ---------------------------------------------------------------------------
@@ -187,6 +234,8 @@ def doctest_env(moto_env, monkeypatch):
     Patches RateLimiter and Repository so that doc examples that construct
     their own instances work against moto without CloudFormation.
     """
+    from zae_limiter import Limit
+    from zae_limiter.exceptions import EntityExistsError
     from zae_limiter.limiter import RateLimiter as _RateLimiter
     from zae_limiter.limiter import SyncRateLimiter as _SyncRateLimiter
     from zae_limiter.repository import Repository
@@ -198,8 +247,35 @@ def doctest_env(moto_env, monkeypatch):
         if self.table_name not in _created_tables:
             await self.create_table()
             _created_tables.add(self.table_name)
+            # Auto-set system/resource defaults so blocks with limits=None work
+            _tmp = _RateLimiter(name=self.table_name, region="us-east-1")
+            _tmp._repository = self  # reuse same repo
+            await _tmp.set_system_defaults(
+                limits=[Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)],
+            )
+            for _r in ["gpt-4", "gpt-3.5-turbo", "api", "llm-api", "test"]:
+                await _tmp.set_resource_defaults(
+                    resource=_r,
+                    limits=[Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)],
+                )
 
     monkeypatch.setattr(Repository, "ensure_infrastructure", _auto_create_ensure)
+
+    # Monkeypatch create_entity to silently ignore EntityExistsError.
+    # Doc examples often call create_entity() on pre-existing entities.
+    _original_create_entity = _RateLimiter.create_entity
+
+    async def _safe_create_entity(self, *args, **kwargs):
+        try:
+            return await _original_create_entity(self, *args, **kwargs)
+        except EntityExistsError:
+            # Entity already exists — return the existing entity
+            entity_id = kwargs.get("entity_id") or (args[0] if args else None)
+            if entity_id:
+                return await self.get_entity(entity_id)
+            raise
+
+    monkeypatch.setattr(_RateLimiter, "create_entity", _safe_create_entity)
 
     _original_init = _RateLimiter.__init__
 
@@ -231,6 +307,13 @@ _COMMON_ENTITIES = [
     "proj-1",
     "org-456",
     "tenant-acme",
+    "test-entity",
+    "entity",
+    "entity-1",
+    "entity-2",
+    "project-prod",
+    "project-1",
+    "api-key",
 ]
 
 
@@ -242,6 +325,11 @@ def doctest_globals(doctest_env):
     and commonly-used imports so doc code blocks can execute.
     """
     import asyncio as _asyncio
+    import datetime as _datetime
+    import json as _json
+    import logging as _logging
+    import os as _os
+    import time as _time
 
     from zae_limiter import (
         AuditAction,
@@ -271,15 +359,36 @@ def doctest_globals(doctest_env):
     _limiter = RateLimiter(name="limiter", region="us-east-1")
     _asyncio.run(_limiter._repository.create_table())
 
-    # Pre-create common entities
+    # Pre-create common entities and set up stored limits
     async def _setup():
         for eid in _COMMON_ENTITIES:
             try:
                 await _limiter.create_entity(entity_id=eid)
             except Exception:
                 pass
+        # Set system defaults so blocks using limits=None can resolve
+        await _limiter.set_system_defaults(
+            limits=[
+                Limit.per_minute("rpm", 100),
+                Limit.per_minute("tpm", 10_000),
+            ],
+        )
+        # Set resource defaults for common resources
+        for resource in ["gpt-4", "gpt-3.5-turbo", "api", "llm-api", "test"]:
+            await _limiter.set_resource_defaults(
+                resource=resource,
+                limits=[
+                    Limit.per_minute("rpm", 100),
+                    Limit.per_minute("tpm", 10_000),
+                ],
+            )
 
     _asyncio.run(_setup())
+
+    # Common limit objects referenced in doc examples
+    _rpm_limit = Limit.per_minute("rpm", 100)
+    _tpm_limit = Limit.per_minute("tpm", 10_000)
+    _daily_limit = Limit.per_day("rpd", 10_000)
 
     return {
         # Pre-built limiter
@@ -306,10 +415,36 @@ def doctest_globals(doctest_env):
         "RateLimitExceeded": RateLimitExceeded,
         "RateLimiterUnavailable": RateLimiterUnavailable,
         "OnUnavailable": OnUnavailable,
+        # Standard library modules (inject both module and common class)
+        "datetime": _datetime.datetime,
+        "json": _json,
+        "os": _os,
+        "time": _time,
+        "logging": _logging,
+        "asyncio": _asyncio,
+        # Mock objects
+        "openai": _MockOpenAI(),
+        # Common limit objects
+        "rpm_limit": _rpm_limit,
+        "tpm_limit": _tpm_limit,
+        "daily_limit": _daily_limit,
+        "parent_rpm_limit": Limit.per_minute("rpm", 1000),
+        "limits": [_rpm_limit],
+        # Common variables
+        "prompt": "Hello, how are you?",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "estimated_tokens": 500,
+        "input_tokens": 100,
+        "max_tokens": 1000,
+        "entity_id": "user-123",
+        "elapsed_ms": 50,
+        "request_id": "req-123",
+        "num_shards": 10,
         # Stub functions
         "call_llm": _stub_call_llm,
         "call_api": _stub_call_api,
         "do_work": _stub_do_work,
         "premium_operation": _stub_premium_operation,
         "basic_operation": _stub_basic_operation,
+        "execute_operation": _stub_execute_operation,
     }

@@ -31,7 +31,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 
 ## Quick Example
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter, Limit, StackOptions
 
 # Async rate limiter with declarative infrastructure

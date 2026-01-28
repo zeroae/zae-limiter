@@ -55,7 +55,7 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
 === "Programmatic"
 
-    ```{.python .lint-only}
+    ```python
     from zae_limiter import RateLimiter
 
     limiter = RateLimiter(name="limiter", region="us-east-1")
@@ -99,7 +99,7 @@ List all zae-limiter stacks in a region:
 
 === "Programmatic"
 
-    ```{.python .lint-only}
+    ```python
     from zae_limiter import RateLimiter, LimiterInfo
 
     # List all deployed limiters in a region
@@ -154,7 +154,7 @@ zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:500 -l tpm:50
 
 Application code connects to existing infrastructure without managing it:
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter
 
 # Connect only - no stack_options means no infrastructure changes
@@ -198,7 +198,7 @@ See [Configuration Hierarchy](../guide/config-hierarchy.md) for limit resolution
 
 In addition to the CLI, you can manage stack lifecycle programmatically using the `delete_stack()` method:
 
-```{.python .lint-only}
+```python
 from zae_limiter import RateLimiter, StackOptions
 
 # Create stack

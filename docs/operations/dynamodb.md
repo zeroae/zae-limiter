@@ -407,12 +407,12 @@ Split high-fanout parent into sharded parents. See [Write Sharding Guide](../per
 
 If hot partition is detected and write sharding isn't feasible:
 
-```{.python .lint-only}
+```python
 # Create entities without cascade
 await limiter.create_entity(entity_id="api-key", parent_id="project-1", cascade=False)
 
 # Then manually check parent limits if needed
-await limiter.available("project-1", "llm-api", [parent_rpm_limit])
+available = await limiter.available("project-1", "llm-api", [Limit.per_minute("rpm", 1000)])
 ```
 
 **Trade-off:** Parent limits no longer automatically enforced; you must check them explicitly.

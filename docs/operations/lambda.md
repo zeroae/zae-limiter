@@ -154,7 +154,7 @@ fields @timestamp, @message
 
 **Reprocess DLQ messages after fix:**
 
-```{.python .lint-only}
+```{.python .requires-external}
 import boto3
 import json
 

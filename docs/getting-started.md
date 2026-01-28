@@ -237,7 +237,7 @@ async with limiter.acquire(
 
 A `Limit` defines a rate limit using the [token bucket algorithm](guide/token-bucket.md):
 
-```{.python .lint-only}
+```python
 # 100 requests per minute
 Limit.per_minute("rpm", 100)
 
@@ -248,7 +248,7 @@ Limit.per_minute("tpm", 10_000, burst=15_000)
 Limit.per_hour("rph", 1_000)
 
 # Custom: 50 requests per 30 seconds
-Limit.custom("requests", capacity=50, refill_period_seconds=30)
+Limit.custom("requests", capacity=50, refill_amount=50, refill_period_seconds=30)
 ```
 
 | Parameter | Description |
@@ -305,7 +305,7 @@ zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:500 -l tpm:50
 
 With limits configured, application code becomes simpler—no need to pass limits:
 
-```{.python .lint-only}
+```python
 # Limits are resolved automatically from stored config
 async with limiter.acquire(
     entity_id="user-123",

@@ -71,7 +71,7 @@ zae-limiter deploy \
 
 ### 3. Use in Code
 
-```{.python .lint-only}
+```{.python .requires-localstack}
 from zae_limiter import RateLimiter, Limit
 
 limiter = RateLimiter(
@@ -116,7 +116,7 @@ AWS_SECRET_ACCESS_KEY=test
 AWS_DEFAULT_REGION=us-east-1
 ```
 
-```{.python .lint-only}
+```python
 import os
 
 limiter = RateLimiter(

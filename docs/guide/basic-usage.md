@@ -63,7 +63,7 @@ The bucket starts full at `burst` capacity and refills at `capacity` tokens per 
 
 Use `lease.adjust()` to modify consumption after the fact:
 
-```{.python .lint-only}
+```python
 async with limiter.acquire(
     entity_id="key-123",
     resource="gpt-4",
@@ -178,7 +178,7 @@ async with limiter.acquire(
 
 ### Create Entities
 
-```{.python .lint-only}
+```python
 # Create a standalone entity
 await limiter.create_entity(
     entity_id="user-123",

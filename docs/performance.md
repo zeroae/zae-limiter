@@ -154,7 +154,7 @@ DynamoDB enforces these limits:
 
 #### Multi-Limit Acquisition
 
-```{.python .lint-only}
+```python
 # Efficient: Single lease for multiple limits
 async with limiter.acquire(
     "entity-id",
@@ -164,7 +164,7 @@ async with limiter.acquire(
 ) as lease:
     # 2 GetItems + 1 TransactWrite (2 items)
     response = await call_llm()
-    lease.adjust({"tpm": response.usage.total_tokens})
+    await lease.adjust(tpm=response.usage.total_tokens)
 
 # Inefficient: Separate acquisitions
 async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
@@ -175,7 +175,7 @@ async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
 
 #### Cascade Optimization
 
-```{.python .lint-only}
+```python
 # Entity without cascade (default) — saves 1 GetEntity + parent bucket operations
 await limiter.create_entity(entity_id="api-key", parent_id="project-1")
 
@@ -197,7 +197,7 @@ When a parent entity has many children (1000+) with `cascade=True`, the parent p
 
 Instead of one parent, distribute ownership across multiple sharded parent entities:
 
-```{.python .lint-only}
+```python
 # OLD: Single parent becomes a hotspot
 # ├── project-1 (parent)
 # │   ├── api-key-1 (child, cascade=True)
@@ -257,10 +257,10 @@ async with limiter.acquire(api_key_id, "llm-api", limits, {"rpm": 1}):
 
 #### Stored Limits Optimization
 
-```{.python .lint-only}
+```python
 # Config caching reduces RCUs (60s TTL by default)
 limiter = RateLimiter(
-    name="rate_limits",
+    name="rate-limits",
     region="us-east-1",
     config_cache_ttl=60,  # seconds (0 to disable)
 )
@@ -277,14 +277,14 @@ async with limiter.acquire(
 
 ### Bulk Operations
 
-```{.python .lint-only}
+```python
 # Efficient bulk limit setup
 await limiter.set_limits("entity-1", [rpm_limit, tpm_limit], resource="llm-api")
 await limiter.set_limits("entity-2", [rpm_limit, tpm_limit], resource="llm-api")
 # Runs 2 Queries + 2×2 PutItems
 
 # Entity deletion (automatically batched in 25-item chunks)
-await limiter.delete_entity("entity-id")
+await limiter.delete_entity("entity-2")
 # Runs 1 Query + BatchWrite (up to 25 WCUs per chunk)
 ```
 
@@ -376,9 +376,9 @@ Each retry adds ~10-30ms latency.
 
 ### Mitigation Strategies
 
-```{.python .lint-only}
-# Strategy 1: Larger bucket windows (reduces update frequency)
-rpm_limit = Limit.per_minute("rpm", capacity=1000, window_seconds=60)
+```python
+# Strategy 1: Higher capacity (reduces contention per request)
+rpm_limit = Limit.per_minute("rpm", capacity=1000)
 
 # Strategy 2: Distribute load across entities
 # Instead of one shared entity, use sharded entities:
@@ -467,12 +467,12 @@ Total (provisioned with auto-scaling): ~$45/month
 
 ```{.python .lint-only}
 # Create entity without cascade if not needed (saves 1-2 WCUs per request)
-await limiter.create_entity(entity_id="entity", parent_id="parent")  # cascade=False by default
+await limiter.create_entity(entity_id="entity", parent_id="project-1")  # cascade=False by default
 async with limiter.acquire("entity", "api", limits, {"rpm": 1}):
     pass
 
 # Disable stored limits if static (saves 2 RCUs per request)
-limiter = RateLimiter(name="rate_limits", region="us-east-1")
+limiter = RateLimiter(name="rate-limits", region="us-east-1")
 ```
 
 #### 2. Optimize TTL Settings
@@ -480,9 +480,9 @@ limiter = RateLimiter(name="rate_limits", region="us-east-1")
 ```{.python .lint-only}
 # Shorter TTL = faster cleanup = less storage
 limiter = RateLimiter(
-    name="rate_limits",
+    name="rate-limits",
     region="us-east-1",
-    bucket_ttl_seconds=3600,  # 1 hour vs 24 hour default
+    # bucket_ttl_seconds is configured via StackOptions or CloudFormation
 )
 ```
 
@@ -501,7 +501,7 @@ zae-limiter deploy --table-name rate_limits --no-aggregator
 
 #### 5. Batch Similar Operations
 
-```{.python .lint-only}
+```python
 # Combine multiple limits into single acquire
 async with limiter.acquire(
     "entity",
@@ -595,7 +595,7 @@ With caching (default):
 
 After modifying config, you can force immediate refresh:
 
-```{.python .lint-only}
+```python
 # Update config
 await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
 
@@ -607,12 +607,13 @@ Without manual invalidation, changes propagate within the TTL period (max 60 sec
 
 ### Monitoring Cache Performance
 
-```{.python .lint-only}
+```python
 # Get cache statistics
 stats = limiter.get_cache_stats()
-print(f"Cache hit rate: {stats.hits / (stats.hits + stats.misses):.1%}")
+total = stats.hits + stats.misses
+print(f"Cache hit rate: {stats.hits / total:.1%}" if total else "No requests yet")
 print(f"Cache entries: {stats.size}")
-print(f"TTL: {stats.ttl}s")
+print(f"TTL: {stats.ttl_seconds}s")
 ```
 
 ### TTL Selection Guidelines

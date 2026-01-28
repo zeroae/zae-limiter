@@ -69,7 +69,7 @@ async with limiter.acquire(
 
 Set different limits for parents and children:
 
-```{.python .lint-only}
+```python
 # Set project-level limits (higher)
 await limiter.set_limits(
     entity_id="project-1",
@@ -100,7 +100,7 @@ async with limiter.acquire(
 
 ### Without Cascade
 
-```{.python .lint-only}
+```python
 # Entity created without cascade (default)
 await limiter.create_entity(entity_id="key-abc", parent_id="project-1")
 
@@ -116,7 +116,7 @@ async with limiter.acquire(
 
 ### With Cascade
 
-```{.python .lint-only}
+```python
 # Entity created with cascade enabled
 await limiter.create_entity(entity_id="key-abc", parent_id="project-1", cascade=True)
 
@@ -134,13 +134,15 @@ async with limiter.acquire(
 
 When an entity has cascade enabled, `RateLimitExceeded` includes statuses for all entities:
 
-```{.python .lint-only}
+```python
 try:
     async with limiter.acquire(
         entity_id="key-abc",  # Has cascade=True from create_entity()
         resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 100)],
+        consume={"rpm": 1},
     ):
-        ...
+        pass
 except RateLimitExceeded as e:
     for status in e.statuses:
         print(f"Entity: {status.entity_id}")
@@ -153,7 +155,7 @@ except RateLimitExceeded as e:
 
 ### Multi-Tenant SaaS
 
-```{.python .lint-only}
+```python
 # Tenant has 1M tokens/day
 await limiter.set_limits(
     entity_id="tenant-acme",
