@@ -47,6 +47,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --extra dev --extra plot
+      - name: Lint documentation examples
+        run: uv run pytest tests/doctest/test_docs_lint.py -v -p no:xdist -o "addopts="
+      - name: Test documentation examples (moto)
+        run: uv run pytest tests/doctest/test_docs_run.py -v -p no:xdist -o "addopts="
       - name: Run unit tests
         run: uv run pytest tests/unit/ --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
       - name: Upload coverage
@@ -96,6 +100,13 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --extra dev --extra plot
+      - name: Test documentation examples (LocalStack)
+        run: uv run pytest tests/doctest/test_docs_integration.py -v -m integration -p no:xdist -o "addopts="
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ENDPOINT_URL: http://localhost:4566
       - name: Run integration tests
         run: uv run pytest -m integration -v --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:
