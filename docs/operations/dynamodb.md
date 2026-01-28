@@ -121,14 +121,15 @@ aws cloudwatch get-metric-statistics \
 
 For detailed capacity calculations, see the [Performance Tuning Guide](../performance.md#1-dynamodb-capacity-planning).
 
-**Quick estimates:**
+**Quick estimates (v0.7.0+, O(1) costs):**
 
 | Operation | RCU | WCU |
 |-----------|-----|-----|
-| `acquire()` | ~2 | ~4 |
-| `acquire()` with cascade | ~4 | ~8 |
-| `available()` | ~2 | ~0 |
-| Aggregator (per record) | ~1 | ~2 |
+| `acquire()` | 1 | 1 |
+| `acquire()` with cascade | 2 | 4 |
+| `acquire()` retry (contention) | 0 | 1 |
+| `available()` | 1 | 0 |
+| Aggregator (per record) | 1 | 2 |
 
 ## Procedures
 

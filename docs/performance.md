@@ -10,19 +10,20 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 
 | Operation | RCUs | WCUs | Notes |
 |-----------|------|------|-------|
-| `acquire()` - single limit | 1 | 1 | BatchGetItem + TransactWrite |
-| `acquire()` - N limits | N | N | 1 BatchGetItem + TransactWrite(N items) |
-| `acquire()` with cascade entity | N×2 | N×2 | 1 GetEntity + 1 BatchGetItem + TransactWrite |
+| `acquire()` | 1 | 1 | O(1) regardless of limit count (composite bucket items) |
+| `acquire()` with cascade | 2 | 4 | Entity + parent bucket reads and writes |
+| `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
 | `acquire(limits=None)` with config cache miss | +3 | 0 | +3 GetItem operations for config hierarchy |
-| `available()` | 1 per limit | 0 | Read-only, no transaction |
+| `available()` | 1 | 0 | Read-only, single composite bucket item |
 | `get_limits()` | 1 | 0 | Query operation |
 | `set_limits()` | 1 | N+1 | Query + N PutItems |
 | `delete_entity()` | 1 | batched | Query + BatchWrite in 25-item chunks |
 
-!!! note "Read Optimization (v0.5.0)"
-    `acquire()` uses `BatchGetItem` to fetch all buckets in a single DynamoDB call,
-    reducing round trips for cascade scenarios. Previously, each bucket was fetched
-    with a separate `GetItem` call.
+!!! note "O(1) Cost Optimization (v0.7.0)"
+    ADR-114 (Composite Bucket Items) and ADR-115 (ADD-Based Writes) reduced `acquire()` costs
+    from O(N) to O(1) where N is the number of limits. All limits for an entity+resource are
+    stored in a single DynamoDB item, and ADD operations eliminate the need for read-modify-write
+    cycles on contention retries.
 
 !!! info "Capacity Validation"
     These costs are validated by automated tests. Run `uv run pytest tests/benchmark/test_capacity.py -v` to verify.
@@ -32,13 +33,17 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 Use these formulas to estimate hourly capacity requirements:
 
 ```
-Hourly RCUs = requests/hour × limits/request × (1 + cascade_pct × 2 + stored_limits_pct × 2)
-Hourly WCUs = requests/hour × limits/request × (1 + cascade_pct)
+Hourly RCUs = requests/hour × (1 + cascade_pct + config_cache_miss_pct × 3)
+Hourly WCUs = requests/hour × (1 + cascade_pct × 3)
 ```
+
+!!! note "O(1) Scaling (v0.7.0+)"
+    Costs no longer scale with the number of limits per request. Composite bucket items
+    store all limits in a single DynamoDB item, so 1 limit and 10 limits cost the same.
 
 With the Lambda aggregator enabled (2 windows: hourly, daily):
 ```
-Additional WCUs = requests/hour × limits/request × 2
+Additional WCUs = requests/hour × 2
 ```
 
 ### Example Calculations
@@ -47,25 +52,29 @@ Additional WCUs = requests/hour × limits/request × 2
 
 - 10,000 requests/hour
 - 2 limits per request (rpm, tpm)
-- No cascade, no stored limits
+- No cascade, config cached
 
 **Calculation:**
 ```
-RCUs = 10,000 × 2 × 1.0 = 20,000 RCUs/hour
-WCUs = 10,000 × 2 × 1.0 = 20,000 WCUs/hour
+RCUs = 10,000 × 1.0 = 10,000 RCUs/hour
+WCUs = 10,000 × 1.0 = 10,000 WCUs/hour
 ```
+
+!!! note "Limit count doesn't affect cost"
+    With composite bucket items (v0.7.0+), whether you track 1 limit or 10 limits,
+    the DynamoDB cost is identical—all limits are stored in a single item.
 
 #### Scenario 2: Hierarchical LLM Limiting
 
 - 10,000 requests/hour
 - 2 limits per request
 - 50% use cascade (API key → project)
-- 20% use stored limits
+- 2% config cache miss rate
 
 **Calculation:**
 ```
-RCUs = 10,000 × 2 × (1 + 0.5×2 + 0.2×2) = 10,000 × 2 × 2.4 = 48,000 RCUs/hour
-WCUs = 10,000 × 2 × (1 + 0.5) = 10,000 × 2 × 1.5 = 30,000 WCUs/hour
+RCUs = 10,000 × (1 + 0.5 + 0.02×3) = 10,000 × 1.56 = 15,600 RCUs/hour
+WCUs = 10,000 × (1 + 0.5×3) = 10,000 × 2.5 = 25,000 WCUs/hour
 ```
 
 ### Billing Mode Selection
@@ -435,30 +444,34 @@ Costs vary by region. Using us-east-1 as reference:
 
 ### Cost Estimation Examples
 
+!!! note "O(1) Costs (v0.7.0+)"
+    With composite bucket items, costs no longer multiply by number of limits.
+    Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same.
+
 #### Low Volume: 10K requests/day
 
 ```
 DynamoDB:
-  Writes: 10K × 2 limits × 30 days = 600K WCUs = $0.38
-  Reads:  10K × 2 limits × 30 days = 600K RCUs = $0.08
-  Streams: 600K events                         = $0.12
-Lambda: 600K invocations                       ≈ $0.12 + duration
+  Writes: 10K × 30 days = 300K WCUs            = $0.19
+  Reads:  10K × 30 days = 300K RCUs            = $0.04
+  Streams: 300K events                         = $0.06
+Lambda: 300K invocations                       ≈ $0.06 + duration
 Storage: ~10 MB                                = negligible
 ─────────────────────────────────────────────────────────
-Total: ~$0.70/month
+Total: ~$0.35/month
 ```
 
 #### Medium Volume: 1M requests/day
 
 ```
 DynamoDB:
-  Writes: 1M × 2 × 30 = 60M WCUs               = $37.50
-  Reads:  1M × 2 × 30 = 60M RCUs               = $7.50
-  Streams: 60M events                          = $12.00
-Lambda: 60M invocations                        ≈ $12.00 + duration
+  Writes: 1M × 30 = 30M WCUs                   = $18.75
+  Reads:  1M × 30 = 30M RCUs                   = $3.75
+  Streams: 30M events                          = $6.00
+Lambda: 30M invocations                        ≈ $6.00 + duration
 ─────────────────────────────────────────────────────────
-Total (on-demand): ~$70/month
-Total (provisioned with auto-scaling): ~$45/month
+Total (on-demand): ~$35/month
+Total (provisioned with auto-scaling): ~$22/month
 ```
 
 ### Cost Reduction Strategies

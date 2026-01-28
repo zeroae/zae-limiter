@@ -15,7 +15,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 - **Multiple limits** are tracked per call (requests per minute, tokens per minute)
 - **Consumption is unknown upfront** — adjust limits after the operation completes
 - **Hierarchical limits** exist (API key → project, tenant → user)
-- **Cost matters** — ~$1/1M requests ([details](performance.md#cost-model))
+- **Cost matters** — ~$0.75/1M requests ([details](performance.md#cost-optimization-strategies))
 
 ## Features
 

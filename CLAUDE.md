@@ -8,7 +8,7 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 - Multiple limits are tracked per call (rpm, tpm)
 - Consumption is unknown upfront (adjust after the operation completes)
 - Hierarchical limits exist (API key → project, tenant → user)
-- Cost matters (~$1/1M requests)
+- Cost matters (~$0.75/1M requests)
 
 **Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`, `local`. See `release-planning.md` for area labels.
 
@@ -436,7 +436,7 @@ Config fields are stored alongside limits in existing `#LIMIT#` records:
 
 **Caching:** 60s TTL in-memory cache per RateLimiter instance (configurable via `config_cache_ttl` parameter, 0 to disable). Use `invalidate_config_cache()` for immediate refresh. Use `get_cache_stats()` for monitoring. Negative caching for entities without custom config.
 
-**Cost impact:** 3 RCU per cache miss (one per level). With caching and negative caching, ~2.1 RCU per request for typical deployments (20K users, 5% with custom limits).
+**Cost impact:** 3 RCU per cache miss (one per level). With caching, `acquire()` costs 1-2 RCU per request regardless of limit count (O(1) via composite bucket items, ADR-114/115).
 
 ### Schema Design Notes
 

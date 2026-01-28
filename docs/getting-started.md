@@ -90,7 +90,7 @@ When you pass `stack_options=StackOptions()`, zae-limiter creates real AWS infra
 !!! info "Infrastructure Outlives Your Python Session"
     This infrastructure persists beyond your Python session. Restarting your application
     reconnects to existing resources. Rate limit state is preserved across restarts.
-    You only pay when the limiter is used (~$1/1M requests).
+    You only pay when the limiter is used (~$0.75/1M requests).
 
 ## Infrastructure Lifecycle
 
