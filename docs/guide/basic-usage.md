@@ -6,7 +6,7 @@ This guide covers common rate limiting patterns with zae-limiter.
 
 The `acquire()` method is the primary API for rate limiting:
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="user-123",      # Who is being rate limited
     resource="gpt-4",          # What resource they're accessing
@@ -27,7 +27,7 @@ async with limiter.acquire(
 
 Track multiple limits in a single call:
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="api-key-123",
     resource="gpt-4",
@@ -50,7 +50,7 @@ All limits are checked atomically. If any limit is exceeded, the request is reje
 
 Allow temporary bursts above the sustained rate:
 
-```python
+```{.python .lint-only}
 # Sustain 10k tokens/minute, but allow bursts up to 15k
 limits = [
     Limit.per_minute("tpm", 10_000, burst=15_000),
@@ -63,7 +63,7 @@ The bucket starts full at `burst` capacity and refills at `capacity` tokens per 
 
 Use `lease.adjust()` to modify consumption after the fact:
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="key-123",
     resource="gpt-4",
@@ -86,7 +86,7 @@ async with limiter.acquire(
 
 ### Check Available Tokens
 
-```python
+```{.python .lint-only}
 available = await limiter.available(
     entity_id="key-123",
     resource="gpt-4",
@@ -97,7 +97,7 @@ print(f"Available tokens: {available['tpm']}")
 
 ### Check Time Until Available
 
-```python
+```{.python .lint-only}
 wait_seconds = await limiter.time_until_available(
     entity_id="key-123",
     resource="gpt-4",
@@ -120,7 +120,7 @@ zae-limiter automatically resolves limits from stored configurations using a thr
 3. **System level** - Global defaults (all resources)
 4. **Override parameter** - Fallback if no stored config exists
 
-```python
+```{.python .lint-only}
 # Set system-wide defaults (lowest precedence)
 await limiter.set_system_defaults(
     limits=[Limit.per_minute("rpm", 100)],
@@ -178,7 +178,7 @@ async with limiter.acquire(
 
 ### Create Entities
 
-```python
+```{.python .lint-only}
 # Create a standalone entity
 await limiter.create_entity(
     entity_id="user-123",
@@ -195,7 +195,7 @@ await limiter.create_entity(
 
 ### Get Entity Information
 
-```python
+```{.python .lint-only}
 entity = await limiter.get_entity("user-123")
 print(f"Name: {entity.name}")
 print(f"Parent: {entity.parent_id}")
@@ -205,7 +205,7 @@ print(f"Parent: {entity.parent_id}")
 
 ### RateLimitExceeded Details
 
-```python
+```{.python .lint-only}
 try:
     async with limiter.acquire(...):
         ...
@@ -227,7 +227,7 @@ except RateLimitExceeded as e:
 
 ### Service Unavailable
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiterUnavailable
 
 try:
@@ -265,14 +265,14 @@ limiter = RateLimiter(
 
 After modifying config, force immediate refresh:
 
-```python
+```{.python .lint-only}
 await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
 await limiter.invalidate_config_cache()  # Optional: force refresh
 ```
 
 ### Monitoring Cache Performance
 
-```python
+```{.python .lint-only}
 stats = limiter.get_cache_stats()
 print(f"Hits: {stats.hits}, Misses: {stats.misses}")
 print(f"Cache entries: {stats.size}")

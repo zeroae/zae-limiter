@@ -39,7 +39,7 @@ limiter = SyncRateLimiter(
 
 ### Defining Limits
 
-```python
+```{.python .lint-only}
 from zae_limiter import Limit
 
 # Factory methods
@@ -57,7 +57,7 @@ Limit.custom("requests", capacity=50, refill_period_seconds=30)
 
 ### Acquiring Limits
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, Limit, RateLimitExceeded
 
 limiter = RateLimiter(name="limiter")
@@ -77,7 +77,7 @@ except RateLimitExceeded as e:
 
 ### Handling Exceptions
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimitExceeded, RateLimiterUnavailable
 
 try:

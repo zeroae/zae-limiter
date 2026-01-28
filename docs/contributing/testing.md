@@ -106,7 +106,7 @@ async def test_rate_limiting(limiter):
 
 For test suites where stack creation overhead is significant:
 
-```python
+```{.python .lint-only}
 @pytest.fixture(scope="session")
 async def shared_limiter(localstack_endpoint):
     """
@@ -129,7 +129,7 @@ async def shared_limiter(localstack_endpoint):
 
 ### Sync Fixture Example
 
-```python
+```{.python .lint-only}
 @pytest.fixture(scope="function")
 def sync_limiter(localstack_endpoint):
     """Synchronous rate limiter with cleanup."""
@@ -285,7 +285,7 @@ When adding performance-sensitive code:
 
 Example:
 
-```python
+```{.python .lint-only}
 @pytest.mark.benchmark
 def test_acquire_with_new_optimization(self, benchmark, sync_limiter):
     """Measure acquire with new optimization.

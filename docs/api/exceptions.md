@@ -98,7 +98,7 @@ ZAELimiterError (base)
 
 ### Basic Handling
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimitExceeded, RateLimiterUnavailable
 
 try:
@@ -119,7 +119,7 @@ except RateLimiterUnavailable as e:
 
 ### HTTP API Response
 
-```python
+```{.python .requires-external}
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
@@ -140,7 +140,7 @@ async def endpoint():
 
 ### Detailed Error Information
 
-```python
+```{.python .lint-only}
 try:
     async with limiter.acquire(...):
         pass

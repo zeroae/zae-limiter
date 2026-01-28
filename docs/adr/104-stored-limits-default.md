@@ -8,7 +8,7 @@
 
 Currently, `acquire()` requires explicit limits or opt-in via `use_stored_limits=True`:
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="user-1",
     resource="gpt-4",

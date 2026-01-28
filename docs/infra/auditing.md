@@ -55,7 +55,7 @@ event = AuditEvent(
 
 Track who performed each action by passing the `principal` parameter to entity and limit management methods:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, Limit
 
 limiter = RateLimiter(name="limiter", region="us-east-1")
@@ -92,7 +92,7 @@ await limiter.delete_entity(
 
 When `principal` is not provided, zae-limiter automatically detects the AWS caller identity (ARN) using STS `GetCallerIdentity`. This means audit events automatically capture who made changes without requiring explicit principal tracking:
 
-```python
+```{.python .lint-only}
 # No principal specified - AWS ARN is auto-detected
 await limiter.create_entity(
     entity_id="api-key-123",
@@ -116,7 +116,7 @@ await limiter.create_entity(
 
 Retrieve audit events for an entity using the `get_audit_events()` method:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter
 
 limiter = RateLimiter(name="limiter", region="us-east-1")
@@ -135,7 +135,7 @@ for event in events:
 
 For synchronous code, use `SyncRateLimiter`:
 
-```python
+```{.python .lint-only}
 from zae_limiter import SyncRateLimiter
 
 limiter = SyncRateLimiter(name="limiter", region="us-east-1")
@@ -149,7 +149,7 @@ for event in events:
 
 Use `start_event_id` for pagination through large result sets:
 
-```python
+```{.python .lint-only}
 # First page
 events = await limiter.get_audit_events(
     entity_id="api-key-123",
@@ -318,7 +318,7 @@ Audit events are stored in the same DynamoDB table with the following schema:
 
 For advanced use cases, query audit events directly:
 
-```python
+```{.python .lint-only}
 import boto3
 
 dynamodb = boto3.resource("dynamodb")
@@ -346,7 +346,7 @@ for item in response["Items"]:
 
 Answer "who changed what, when?" for SOC2, HIPAA, or internal audits:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter
 
 limiter = RateLimiter(name="limiter", region="us-east-1")
@@ -367,7 +367,7 @@ for event in events:
 
 Investigate when limits were changed:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, AuditAction
 
 limiter = RateLimiter(name="limiter", region="us-east-1")
@@ -390,7 +390,7 @@ for event in limit_changes:
 
 Track entity deletions during an incident window:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, AuditAction
 
 limiter = RateLimiter(name="limiter", region="us-east-1")

@@ -117,7 +117,7 @@ zae-limiter is designed for **single-region deployment**:
 
 ### Cross-Region Pattern
 
-```python
+```{.python .lint-only}
 # Deploy separate stacks per region
 us_limiter = RateLimiter(name="prod", region="us-east-1")
 eu_limiter = RateLimiter(name="prod", region="eu-west-1")

@@ -51,7 +51,7 @@ Every limit has two key parameters:
 - **Capacity**: The sustained rate (tokens that refill per period)
 - **Burst**: The maximum bucket size (can be larger than capacity)
 
-```python
+```{.python .lint-only}
 # 10,000 tokens/minute sustained, 15,000 burst
 Limit.per_minute("tpm", capacity=10_000, burst=15_000)
 ```
@@ -148,7 +148,7 @@ Negative buckets let you:
 
 The debt is automatically repaid as tokens refill over time.
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="user-123",
     resource="api",
@@ -175,7 +175,7 @@ Because buckets can go negative, your initial estimate doesn't need to be perfec
 
 The lazy refill with drift compensation means `retry_after` tells you exactly when tokens will be available:
 
-```python
+```{.python .lint-only}
 try:
     await limiter.check(entity_id, resource, limits, consume={"tpm": 1000})
 except RateLimitExceeded as e:

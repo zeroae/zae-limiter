@@ -45,7 +45,7 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 The `acquire()` operation uses `BatchGetItem` to fetch all required buckets in a
 single DynamoDB round trip (see [Issue #133](https://github.com/zeroae/zae-limiter/issues/133)):
 
-```python
+```{.python .lint-only}
 # Before: N sequential GetItem calls
 for entity_id, resource, limit_name in bucket_keys:
     bucket = await get_bucket(entity_id, resource, limit_name)
@@ -62,7 +62,7 @@ entity and parent buckets are fetched together, reducing latency from
 
 Most record types use a nested `data` map for business attributes:
 
-```python
+```{.python .lint-only}
 # Entity and Audit records use nested data.M:
 {
     "PK": "ENTITY#user-1",
@@ -242,7 +242,7 @@ Tokens are calculated on-demand rather than via a background timer. The `refill_
 2. Computes tokens to add using integer division
 3. Tracks "time consumed" to prevent drift
 
-```python
+```{.python .lint-only}
 # From bucket.py:refill_bucket()
 tokens_to_add = (elapsed_ms * refill_amount_milli) // refill_period_ms
 
@@ -257,7 +257,7 @@ Without drift compensation, repeated calls with small time intervals would accum
 
 Buckets can go negative to support post-hoc reconciliation:
 
-```python
+```{.python .lint-only}
 # Estimate 500 tokens, actually used 2000
 async with limiter.acquire(consume={"tpm": 500}) as lease:
     actual = await call_llm()  # Returns 2000 tokens
@@ -266,7 +266,7 @@ async with limiter.acquire(consume={"tpm": 500}) as lease:
 
 The `force_consume()` function handles this:
 
-```python
+```{.python .lint-only}
 # From bucket.py:force_consume()
 # Consume can go negative - no bounds checking
 new_tokens_milli = refill.new_tokens_milli - (amount * 1000)
@@ -278,7 +278,7 @@ The debt is repaid as tokens refill over time. A bucket at -1500 millitokens nee
 
 Burst allows temporary exceeding of sustained rate:
 
-```python
+```{.python .lint-only}
 # Sustained: 10k tokens/minute
 # Burst: 15k tokens (one-time)
 Limit.per_minute("tpm", 10_000, burst=15_000)

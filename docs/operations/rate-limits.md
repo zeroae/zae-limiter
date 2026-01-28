@@ -137,7 +137,7 @@ aws dynamodb get-item --table-name <name> \
 
 If cascade is not enabled, recreate the entity with cascade:
 
-```python
+```{.python .lint-only}
 await limiter.create_entity(
     entity_id="child-id",
     parent_id="parent-id",
@@ -149,7 +149,7 @@ await limiter.create_entity(
 
 Test that rate limiting is working correctly:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, Limit, RateLimitExceeded
 
 limiter = RateLimiter(name="<name>", region="<region>")
@@ -177,7 +177,7 @@ for i in range(100):
 
 Update stored limits for an entity without redeployment:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, Limit
 
 limiter = RateLimiter(name="<name>", region="<region>")

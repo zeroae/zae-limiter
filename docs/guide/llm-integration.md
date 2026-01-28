@@ -16,7 +16,7 @@ LLM APIs present unique rate limiting challenges:
 
 ## Basic Pattern: Estimate and Reconcile
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="api-key-123",
     resource="gpt-4",
@@ -50,7 +50,7 @@ consume={"tpm": 500}  # Always estimate 500 tokens
 
 Estimate based on input length:
 
-```python
+```{.python .lint-only}
 import tiktoken
 
 def estimate_tokens(messages: list, model: str = "gpt-4") -> int:
@@ -82,7 +82,7 @@ async with limiter.acquire(
 
 Use max_tokens as upper bound:
 
-```python
+```{.python .lint-only}
 max_tokens = 1000
 
 async with limiter.acquire(
@@ -103,7 +103,7 @@ async with limiter.acquire(
 
 For streaming responses, token count is only available after the stream completes:
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="api-key-123",
     resource="gpt-4",
@@ -132,7 +132,7 @@ async with limiter.acquire(
 
 Different models have different limits. Use the `resource` parameter:
 
-```python
+```{.python .lint-only}
 MODEL_LIMITS = {
     "gpt-4": [
         Limit.per_minute("rpm", 100),
@@ -175,7 +175,7 @@ async def rate_limited_completion(
 
 zae-limiter allows buckets to go negative, which is useful when actual usage exceeds estimates:
 
-```python
+```{.python .lint-only}
 # Estimate: 500 tokens
 async with limiter.acquire(
     entity_id="user-123",
@@ -231,7 +231,7 @@ async def call_with_capacity_check(
 
 Combine with retry libraries like `tenacity`:
 
-```python
+```{.python .requires-external}
 from tenacity import retry, retry_if_exception_type, wait_fixed
 
 @retry(

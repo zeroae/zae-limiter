@@ -8,7 +8,7 @@ zae-limiter supports two-level hierarchies for rate limiting, enabling patterns 
 
 ## Creating a Hierarchy
 
-```python
+```{.python .lint-only}
 # Create parent entity (project)
 await limiter.create_entity(
     entity_id="project-1",
@@ -35,7 +35,7 @@ await limiter.create_entity(
 
 Create entities with `cascade=True` to apply rate limits to both the child and parent on every `acquire()` call:
 
-```python
+```{.python .lint-only}
 # Cascade is set once at entity creation
 await limiter.create_entity(
     entity_id="key-abc",
@@ -69,7 +69,7 @@ async with limiter.acquire(
 
 Set different limits for parents and children:
 
-```python
+```{.python .lint-only}
 # Set project-level limits (higher)
 await limiter.set_limits(
     entity_id="project-1",
@@ -100,7 +100,7 @@ async with limiter.acquire(
 
 ### Without Cascade
 
-```python
+```{.python .lint-only}
 # Entity created without cascade (default)
 await limiter.create_entity(entity_id="key-abc", parent_id="project-1")
 
@@ -116,7 +116,7 @@ async with limiter.acquire(
 
 ### With Cascade
 
-```python
+```{.python .lint-only}
 # Entity created with cascade enabled
 await limiter.create_entity(entity_id="key-abc", parent_id="project-1", cascade=True)
 
@@ -134,7 +134,7 @@ async with limiter.acquire(
 
 When an entity has cascade enabled, `RateLimitExceeded` includes statuses for all entities:
 
-```python
+```{.python .lint-only}
 try:
     async with limiter.acquire(
         entity_id="key-abc",  # Has cascade=True from create_entity()
@@ -153,7 +153,7 @@ except RateLimitExceeded as e:
 
 ### Multi-Tenant SaaS
 
-```python
+```{.python .lint-only}
 # Tenant has 1M tokens/day
 await limiter.set_limits(
     entity_id="tenant-acme",
@@ -182,7 +182,7 @@ async with limiter.acquire(
 
 ### API Key Management
 
-```python
+```{.python .lint-only}
 # Project limit: 10k RPM
 await limiter.set_limits(
     entity_id="project-prod",

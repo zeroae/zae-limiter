@@ -407,7 +407,7 @@ Split high-fanout parent into sharded parents. See [Write Sharding Guide](../per
 
 If hot partition is detected and write sharding isn't feasible:
 
-```python
+```{.python .lint-only}
 # Create entities without cascade
 await limiter.create_entity(entity_id="api-key", parent_id="project-1", cascade=False)
 

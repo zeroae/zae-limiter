@@ -35,7 +35,7 @@ When DynamoDB is unavailable, reject all rate-limited requests by raising `RateL
 !!! warning "Exception Handling Required"
     When using `BLOCK` mode (the default), your application **must** catch `RateLimiterUnavailable` to handle infrastructure failures gracefully. This exception inherits from `InfrastructureError`, not `RateLimitExceeded`.
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, OnUnavailable, RateLimiterUnavailable
 
 limiter = RateLimiter(
@@ -65,7 +65,7 @@ except RateLimiterUnavailable as e:
 
 When DynamoDB is unavailable, allow requests to proceed:
 
-```python
+```{.python .lint-only}
 limiter = RateLimiter(
     name="limiter",
     on_unavailable=OnUnavailable.ALLOW,
@@ -111,7 +111,7 @@ async def acquire_with_metrics(limiter, **kwargs):
 
 Override the default mode for specific requests:
 
-```python
+```{.python .lint-only}
 # Default to BLOCK
 limiter = RateLimiter(
     name="limiter",
@@ -133,7 +133,7 @@ async with limiter.acquire(
 
 The `RateLimiterUnavailable` exception includes details about the failure:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiterUnavailable
 
 try:
@@ -155,7 +155,7 @@ except RateLimiterUnavailable as e:
 
 ### 1. Choose Based on Risk
 
-```python
+```{.python .lint-only}
 # High-risk: billing, security
 billing_limiter = RateLimiter(
     name="billing",
@@ -212,7 +212,7 @@ The `is_available()` method:
 - Uses a configurable timeout (default 1 second)
 - Works without requiring initialization
 
-```python
+```{.python .lint-only}
 # FastAPI health endpoint example
 @app.get("/health")
 async def health():

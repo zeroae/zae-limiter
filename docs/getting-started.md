@@ -34,7 +34,7 @@ zae-limiter creates its own infrastructure automatically. Here's a complete exam
 
 ### Async API (Recommended)
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, Limit, StackOptions, RateLimitExceeded
 
 # Create rate limiter with declarative infrastructure
@@ -58,7 +58,7 @@ except RateLimitExceeded as e:
 
 ### Sync API
 
-```python
+```{.python .lint-only}
 from zae_limiter import SyncRateLimiter, Limit, StackOptions
 
 limiter = SyncRateLimiter(
@@ -102,7 +102,7 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 
     Pass `stack_options` to declare the desired infrastructure state:
 
-    ```python
+    ```{.python .lint-only}
     limiter = RateLimiter(
         name="my-app",
         stack_options=StackOptions(),  # Desired state declaration
@@ -124,7 +124,7 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 If you omit `stack_options`, the limiter connects to existing infrastructure without
 attempting to create or modify it:
 
-```python
+```{.python .lint-only}
 # Connect only - fails if my-app stack doesn't exist
 limiter = RateLimiter(
     name="my-app",
@@ -151,7 +151,7 @@ This is useful when infrastructure is managed separately (e.g., via CLI or Terra
 
 === "Programmatic"
 
-    ```python
+    ```{.python .lint-only}
     status = await limiter.get_status()  # Async
     # or
     status = limiter.get_status()  # Sync
@@ -177,7 +177,7 @@ This is useful when infrastructure is managed separately (e.g., via CLI or Terra
 
 === "Programmatic"
 
-    ```python
+    ```{.python .lint-only}
     # After you're done with the limiter
     await limiter.delete_stack()  # Async
     # or
@@ -213,7 +213,7 @@ When you call `acquire()`, you specify:
 
 Each entity has **separate buckets per resource**. A user rate limited on `"gpt-4"` can still access `"gpt-3.5-turbo"`:
 
-```python
+```{.python .lint-only}
 # User 123 accessing GPT-4 - tracked separately from GPT-3.5
 async with limiter.acquire(
     entity_id="user-123",
@@ -237,7 +237,7 @@ async with limiter.acquire(
 
 A `Limit` defines a rate limit using the [token bucket algorithm](guide/token-bucket.md):
 
-```python
+```{.python .lint-only}
 # 100 requests per minute
 Limit.per_minute("rpm", 100)
 
@@ -263,7 +263,7 @@ See [Token Bucket Algorithm](guide/token-bucket.md) for details on how capacity,
 
 When a rate limit is exceeded, `RateLimitExceeded` is raised with full details:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimitExceeded
 
 try:
@@ -305,7 +305,7 @@ zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:500 -l tpm:50
 
 With limits configured, application code becomes simpler—no need to pass limits:
 
-```python
+```{.python .lint-only}
 # Limits are resolved automatically from stored config
 async with limiter.acquire(
     entity_id="user-123",

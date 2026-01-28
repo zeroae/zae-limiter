@@ -79,7 +79,7 @@ zae-limiter upgrade --name <name> --region <region>
 
 Or programmatically:
 
-```python
+```{.python .lint-only}
 from zae_limiter import RateLimiter, StackOptions
 
 # Auto-update Lambda on initialization
@@ -179,7 +179,7 @@ After upgrading, verify the system is healthy:
    ```
 
 2. **Run smoke tests:**
-   ```python
+   ```{.python .lint-only}
    from zae_limiter import RateLimiter, Limit
 
    limiter = RateLimiter(name="<name>", region="<region>")
