@@ -8,12 +8,12 @@
 
 Currently, `acquire()` requires explicit limits or opt-in via `use_stored_limits=True`:
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="user-123",
     resource="gpt-4",
     limits=[Limit.per_minute("tpm", 10000)],  # Required
-    consume={"tpm": 1},
+    use_stored_limits=False,  # Default
 ):
     pass
 ```
