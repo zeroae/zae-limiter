@@ -27,3 +27,13 @@ The PowerUserAccess profile lacks `iam:CreateRole`. For stacks with Lambda, use:
 ```
 
 Without aggregator (no IAM role needed): `--no-aggregator`
+
+## Debugging Failed Tests
+
+Use `--keep-stacks-on-failure` to preserve CloudFormation stacks after test failures:
+
+```bash
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run pytest tests/e2e/test_aws.py --run-aws -v --keep-stacks-on-failure
+```
+
+This allows inspecting the stack via AWS Console or CLI to diagnose issues. Stacks are automatically deleted on test success.
