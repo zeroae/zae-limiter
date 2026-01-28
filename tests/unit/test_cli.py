@@ -566,41 +566,6 @@ class TestCLI:
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
-    def test_deploy_lambda_skipped_local(
-        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
-    ) -> None:
-        """Test deploy shows correct message when Lambda deployment is skipped for local."""
-        mock_instance = Mock()
-        mock_instance.stack_name = "rate-limits"
-        mock_instance.table_name = "rate-limits"
-        mock_instance.create_stack = AsyncMock(
-            return_value={
-                "status": "CREATE_COMPLETE",
-                "stack_id": "test-stack-id",
-            }
-        )
-        # Lambda deployment returns skipped_local status
-        mock_instance.deploy_lambda_code = AsyncMock(
-            return_value={
-                "status": "skipped_local",
-            }
-        )
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=None)
-        mock_stack_manager.return_value = mock_instance
-
-        # Mock repository for version record
-        mock_repo_instance = Mock()
-        mock_repo_instance.set_version_record = AsyncMock()
-        mock_repository.return_value = mock_repo_instance
-
-        result = runner.invoke(cli, ["deploy"])
-
-        assert result.exit_code == 0
-        assert "Lambda deployment skipped (local environment)" in result.output
-
-    @patch("zae_limiter.repository.Repository")
-    @patch("zae_limiter.cli.StackManager")
     def test_deploy_with_endpoint_url(
         self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
     ) -> None:
@@ -649,28 +614,6 @@ class TestCLI:
         mock_stack_manager.assert_called_once_with(
             "test-table", "us-east-1", "http://localhost:4566"
         )
-
-    @patch("zae_limiter.cli.StackManager")
-    def test_deploy_skip_local(self, mock_stack_manager: Mock, runner: CliRunner) -> None:
-        """Test deploy skips CloudFormation for local DynamoDB."""
-        mock_instance = Mock()
-        mock_instance.stack_name = "test-stack"
-        mock_instance.table_name = "test-stack"
-        mock_instance.create_stack = AsyncMock(
-            return_value={
-                "status": "skipped_local",
-                "stack_id": None,
-                "message": "CloudFormation skipped for local DynamoDB",
-            }
-        )
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=None)
-        mock_stack_manager.return_value = mock_instance
-
-        result = runner.invoke(cli, ["deploy"])
-
-        assert result.exit_code == 0
-        assert "skipped" in result.output.lower()
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")

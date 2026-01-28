@@ -76,7 +76,7 @@ class TestE2EAWSFullWorkflow:
     """E2E tests against real AWS."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def aws_limiter(self, unique_name_class):
+    async def aws_limiter(self, unique_name_class, request, should_delete_stack):
         """
         Create RateLimiter with full stack on real AWS.
 
@@ -102,11 +102,12 @@ class TestE2EAWSFullWorkflow:
         async with limiter:
             yield limiter
 
-        # Explicitly delete the stack after test completes
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        # Clean up stack unless --keep-stacks-on-failure and test failed
+        if should_delete_stack():
+            try:
+                await limiter.delete_stack()
+            except Exception as e:
+                print(f"Warning: Stack cleanup failed: {e}")
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_complete_aws_workflow(self, aws_limiter):
@@ -331,7 +332,7 @@ class TestE2EAWSUsageSnapshots:
     """Tests for usage snapshot verification on real AWS."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def aws_limiter_with_snapshots(self, unique_name_class):
+    async def aws_limiter_with_snapshots(self, unique_name_class, request, should_delete_stack):
         """Create RateLimiter configured for snapshot testing. Class-scoped to share stack."""
         stack_options = StackOptions(
             enable_aggregator=True,
@@ -351,11 +352,12 @@ class TestE2EAWSUsageSnapshots:
         async with limiter:
             yield limiter
 
-        # Explicitly delete the stack after test completes
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        # Clean up stack unless --keep-stacks-on-failure and test failed
+        if should_delete_stack():
+            try:
+                await limiter.delete_stack()
+            except Exception as e:
+                print(f"Warning: Stack cleanup failed: {e}")
 
     @pytest.mark.asyncio(loop_scope="class")
     @pytest.mark.slow
@@ -496,7 +498,7 @@ class TestE2EAWSRateLimiting:
     """Additional rate limiting tests for real AWS."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def aws_limiter_minimal(self, unique_name_class):
+    async def aws_limiter_minimal(self, unique_name_class, request, should_delete_stack):
         """Create RateLimiter with minimal stack for faster tests. Class-scoped to share stack."""
         stack_options = StackOptions(
             enable_aggregator=False,
@@ -515,11 +517,12 @@ class TestE2EAWSRateLimiting:
         async with limiter:
             yield limiter
 
-        # Explicitly delete the stack after test completes
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        # Clean up stack unless --keep-stacks-on-failure and test failed
+        if should_delete_stack():
+            try:
+                await limiter.delete_stack()
+            except Exception as e:
+                print(f"Warning: Stack cleanup failed: {e}")
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_high_throughput_operations(self, aws_limiter_minimal):
@@ -616,7 +619,7 @@ class TestE2EAWSXRayTracingEnabled:
         return boto3.client("xray", region_name="us-east-1")
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def aws_limiter_with_tracing(self, unique_name_class):
+    async def aws_limiter_with_tracing(self, unique_name_class, request, should_delete_stack):
         """Create RateLimiter with X-Ray tracing enabled. Class-scoped to share stack."""
         stack_options = StackOptions(
             enable_aggregator=True,
@@ -636,10 +639,12 @@ class TestE2EAWSXRayTracingEnabled:
         async with limiter:
             yield limiter
 
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        # Clean up stack unless --keep-stacks-on-failure and test failed
+        if should_delete_stack():
+            try:
+                await limiter.delete_stack()
+            except Exception as e:
+                print(f"Warning: Stack cleanup failed: {e}")
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_lambda_tracing_enabled(
@@ -848,7 +853,7 @@ class TestE2EAWSXRayTracingDisabled:
     """Tests for X-Ray tracing when disabled."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def aws_limiter_without_tracing(self, unique_name_class):
+    async def aws_limiter_without_tracing(self, unique_name_class, request, should_delete_stack):
         """Create RateLimiter with X-Ray tracing disabled (default). Class-scoped to share stack."""
         stack_options = StackOptions(
             enable_aggregator=True,
@@ -868,10 +873,12 @@ class TestE2EAWSXRayTracingDisabled:
         async with limiter:
             yield limiter
 
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        # Clean up stack unless --keep-stacks-on-failure and test failed
+        if should_delete_stack():
+            try:
+                await limiter.delete_stack()
+            except Exception as e:
+                print(f"Warning: Stack cleanup failed: {e}")
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_lambda_tracing_disabled(

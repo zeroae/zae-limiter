@@ -555,6 +555,18 @@ class StackManager:
                             reason=f"Waiting for Lambda update failed: {e}",
                         ) from e
 
+                if wait:
+                    # Wait for Lambda to be Active before returning
+                    # This ensures the function is ready to process events
+                    waiter = lambda_client.get_waiter("function_active")
+                    try:
+                        await waiter.wait(FunctionName=function_name)
+                    except Exception as e:
+                        raise StackCreationError(
+                            stack_name=self.stack_name,
+                            reason=f"Waiting for Lambda to be active failed: {e}",
+                        ) from e
+
                 # Update Lambda tags to reflect new version
                 from .. import __version__
 

@@ -353,3 +353,48 @@ def check_lambda_invocations(
     except Exception:
         # Don't crash diagnostic code - return -1 to indicate query failed
         return -1
+
+
+@pytest.fixture
+def should_delete_stack(request):
+    """
+    Determine if CloudFormation stacks should be deleted after tests.
+
+    Usage in fixtures:
+        if should_delete_stack():
+            await limiter.delete_stack()
+
+    Behavior:
+    - Always delete on test success
+    - On test failure: delete unless --keep-stacks-on-failure flag is set
+
+    This allows keeping failed test stacks for debugging while still cleaning
+    up successful test runs.
+    """
+
+    def _should_delete():
+        # Check if test failed
+        test_failed = hasattr(request.node, "rep_call") and request.node.rep_call.failed
+
+        # If test passed, always delete
+        if not test_failed:
+            return True
+
+        # If test failed, only delete if --keep-stacks-on-failure is NOT set
+        keep_on_failure = request.config.getoption("--keep-stacks-on-failure")
+        return not keep_on_failure
+
+    return _should_delete
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """
+    Store test outcome in request.node for should_delete_stack fixture.
+
+    This hook runs after each test phase (setup, call, teardown) and stores
+    the outcome so fixtures can check if the test failed.
+    """
+    outcome = yield
+    rep = outcome.get_result()
+    setattr(item, f"rep_{rep.when}", rep)

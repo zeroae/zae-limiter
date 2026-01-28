@@ -180,6 +180,10 @@ class Repository:
         async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             await manager.create_stack(stack_options=self._stack_options)
 
+            # Deploy Lambda code if aggregator is enabled
+            if self._stack_options.enable_aggregator:
+                await manager.deploy_lambda_code()
+
     async def create_stack(
         self,
         stack_options: StackOptions | None = None,
