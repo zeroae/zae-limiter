@@ -12,13 +12,9 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/007-input-validation/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/115-add-based-writes-lazy-refill/">
       
       
-        <link rel="prev" href="../006-flat-schema-snapshots/">
-      
-      
-        <link rel="next" href="../008-security-audit-logging/">
       
       
         
@@ -29,7 +25,7 @@
     
     
       
-        <title>ADR-007 Input Validation - zae-limiter</title>
+        <title>ADR-115: ADD-Based Writes with Lazy Refill - zae-limiter</title>
       
     
     
@@ -82,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-007-input-validation-for-injection-prevention" class="md-skip">
+        <a href="#adr-115-add-based-writes-with-lazy-refill" class="md-skip">
           Skip to content
         </a>
       
@@ -122,7 +118,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-007 Input Validation
+              ADR-115: ADD-Based Writes with Lazy Refill
             
           </span>
         </div>
@@ -1349,20 +1345,18 @@
       
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
@@ -1383,7 +1377,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1426,20 +1420,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
         
           
           <label class="md-nav__link" for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
@@ -1460,7 +1452,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1643,37 +1635,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-007 Input Validation
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../007-input-validation/" class="md-nav__link">
         
   
   
@@ -1689,70 +1654,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -2566,6 +2467,45 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#putitem-with-optimistic-locking-version-counter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PutItem with optimistic locking (version counter)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-limit-refill-timestamps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-limit refill timestamps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#add-for-consumption-no-optimistic-lock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ADD for consumption, no optimistic lock
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -2585,7 +2525,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/007-input-validation.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/115-add-based-writes-lazy-refill.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2593,63 +2533,57 @@
   
 
 
-<h1 id="adr-007-input-validation-for-injection-prevention">ADR-007: Input Validation for Injection Prevention<a class="headerlink" href="#adr-007-input-validation-for-injection-prevention" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-01-12
-<strong>PR:</strong> <a href="https://github.com/zeroae/zae-limiter/pull/75">#75</a>
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/48">#48</a>
-<strong>Milestone:</strong> v0.2.0</p>
+<h1 id="adr-115-add-based-writes-with-lazy-refill">ADR-115: ADD-Based Writes with Lazy Refill<a class="headerlink" href="#adr-115-add-based-writes-with-lazy-refill" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
+<strong>Date:</strong> 2026-01-28
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/248">#248</a>
+<strong>Depends on:</strong> <a href="../114-composite-bucket-items/">ADR-114</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>DynamoDB keys use <code>#</code> as a delimiter (e.g., <code>ENTITY#user-1#BUCKET#gpt-4</code>). Without validation, malicious input containing <code>#</code> could:</p>
-<ul>
-<li>Traverse to different record types</li>
-<li>Access other entities' data</li>
-<li>Corrupt key structure</li>
-</ul>
-<p>This is analogous to SQL injection but for DynamoDB key-based access patterns.</p>
+<p>The current write pattern uses PutItem (full item replacement) inside
+TransactWriteItems. Under concurrent writes, the last writer overwrites previous
+writers' consumption and the <code>total_consumed_milli</code> counter — a lost update bug.
+Token balance and aggregator accuracy both degrade under contention.</p>
+<p>Refill is currently computed and stored in the token balance on each write. When
+two writers read the same state and both apply refill, the winning PutItem
+correctly reflects one refill window, but the losing writer's consumption is lost
+entirely. Separating refill from consumption in the write path would allow atomic
+consumption tracking independent of refill timing.</p>
+<p>The composite bucket item (ADR-114) provides a single item per entity+resource,
+enabling a shared refill timestamp that doubles as an optimistic lock for all
+limits simultaneously.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Add comprehensive input validation at model construction time, forbidding the <code>#</code> delimiter character in all user-provided identifiers.</p>
-<p><strong>Validation rules:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Pattern</th>
-<th>Max Length</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>entity_id</code>, <code>parent_id</code></td>
-<td><code>^[a-zA-Z0-9][a-zA-Z0-9_.\-:@]*$</code></td>
-<td>256</td>
-</tr>
-<tr>
-<td><code>limit_name</code>, <code>resource</code></td>
-<td><code>^[a-zA-Z][a-zA-Z0-9_.\-]*$</code></td>
-<td>64</td>
-</tr>
-</tbody>
-</table>
-<p><strong>New exceptions:</strong>
-- <code>ValidationError</code> (base)
-- <code>InvalidIdentifierError</code> (entity_id, parent_id)
-- <code>InvalidNameError</code> (limit_name, resource)</p>
+<p>Writers must use DynamoDB ADD to atomically decrement token balances and increment
+consumption counters. Refill must not be stored in <code>tk</code>; instead, effective tokens
+must be computed at read time as <code>min(stored_tk + elapsed * rate, burst)</code>. A single
+shared <code>rf</code> attribute must serve as both the refill baseline and the optimistic
+lock. The repository must implement four write paths: Create (PutItem with
+<code>attribute_not_exists</code>), Normal (ADD with refill+consumption, condition <code>rf =
+:expected</code>), Retry (ADD consumption only, condition <code>tk &gt;= :consumed</code> per limit),
+and Adjust (unconditional ADD, may go negative).</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Injection attacks impossible by construction
-- Early failure with clear error messages
-- Supports common ID formats: UUIDs, API keys, emails
-- Validation happens once at model creation, not on every operation</p>
+- No lost updates: concurrent consumptions are correctly counted via atomic ADD
+- No double refill: single <code>rf</code> lock ensures only one writer claims each refill window
+- Retry requires no re-read (1 WCU, consumption-only ADD)
+- Negative tokens prevented on acquire (condition <code>tk &gt;= :consumed</code>); allowed on adjust by design
+- Aggregator sees correct consumption counters regardless of contention
+- Lock condition is always <code>rf = :expected</code> regardless of limit count</p>
 <p><strong>Negative:</strong>
-- Some previously-valid IDs may be rejected (containing <code>#</code>)
-- Migration required for existing data with invalid characters</p>
+- Four write paths increase repository complexity
+- Retry path may reject requests that were initially approved on stale data
+- Under high contention (~500ms window), refill is slightly under-counted (limiter becomes more restrictive, not less)
+- Lease adjust becomes the only path that can push tokens negative, changing the current invariant</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<ul>
-<li><strong>Escape/encode special characters</strong>: Rejected; complex, error-prone, obscures data in DynamoDB console</li>
-<li><strong>Validate only at repository layer</strong>: Rejected; too late, models could be passed around with invalid data</li>
-<li><strong>Allowlist specific formats (UUID only)</strong>: Rejected; too restrictive for diverse use cases</li>
-</ul>
+<h3 id="putitem-with-optimistic-locking-version-counter">PutItem with optimistic locking (version counter)<a class="headerlink" href="#putitem-with-optimistic-locking-version-counter" title="Permanent link">&para;</a></h3>
+<p>Rejected because: full item replacement still loses concurrent writers'
+consumption — ADD is required for correct concurrent accounting.</p>
+<h3 id="per-limit-refill-timestamps">Per-limit refill timestamps<a class="headerlink" href="#per-limit-refill-timestamps" title="Permanent link">&para;</a></h3>
+<p>Rejected because: grows condition expression with limit count, risks partial
+refill window claims, and adds an attribute per limit. Single <code>rf</code> is simpler
+and free since all limits are updated on every acquire.</p>
+<h3 id="add-for-consumption-no-optimistic-lock">ADD for consumption, no optimistic lock<a class="headerlink" href="#add-for-consumption-no-optimistic-lock" title="Permanent link">&para;</a></h3>
+<p>Rejected because: without the <code>rf</code> lock, concurrent writers each compute and ADD
+refill independently, causing double-refill proportional to contention.</p>
 
 
 
@@ -2680,44 +2614,6 @@
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../006-flat-schema-snapshots/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-006 Flat Schema Snapshots">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                ADR-006 Flat Schema Snapshots
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../008-security-audit-logging/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-008 Audit Logging">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-008 Audit Logging
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">

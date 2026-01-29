@@ -12,13 +12,9 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/007-input-validation/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/114-composite-bucket-items/">
       
       
-        <link rel="prev" href="../006-flat-schema-snapshots/">
-      
-      
-        <link rel="next" href="../008-security-audit-logging/">
       
       
         
@@ -29,7 +25,7 @@
     
     
       
-        <title>ADR-007 Input Validation - zae-limiter</title>
+        <title>ADR-114: Composite Bucket Items - zae-limiter</title>
       
     
     
@@ -82,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-007-input-validation-for-injection-prevention" class="md-skip">
+        <a href="#adr-114-composite-bucket-items" class="md-skip">
           Skip to content
         </a>
       
@@ -122,7 +118,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-007 Input Validation
+              ADR-114: Composite Bucket Items
             
           </span>
         </div>
@@ -1349,20 +1345,18 @@
       
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
@@ -1383,7 +1377,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1426,20 +1420,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
         
           
           <label class="md-nav__link" for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
@@ -1460,7 +1452,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1643,37 +1635,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-007 Input Validation
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../007-input-validation/" class="md-nav__link">
         
   
   
@@ -1689,70 +1654,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -2566,6 +2467,45 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#keep-separate-items-use-updateitem-instead-of-putitem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keep separate items, use UpdateItem instead of PutItem
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#merge-entity-metadata-into-composite-bucket-item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Merge entity metadata into composite bucket item
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nested-map-per-limit-limitsrpmtokens_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nested map per limit (limits.rpm.tokens_milli)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -2585,7 +2525,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/007-input-validation.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/114-composite-bucket-items.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2593,63 +2533,50 @@
   
 
 
-<h1 id="adr-007-input-validation-for-injection-prevention">ADR-007: Input Validation for Injection Prevention<a class="headerlink" href="#adr-007-input-validation-for-injection-prevention" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-01-12
-<strong>PR:</strong> <a href="https://github.com/zeroae/zae-limiter/pull/75">#75</a>
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/48">#48</a>
-<strong>Milestone:</strong> v0.2.0</p>
+<h1 id="adr-114-composite-bucket-items">ADR-114: Composite Bucket Items<a class="headerlink" href="#adr-114-composite-bucket-items" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
+<strong>Date:</strong> 2026-01-28
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/248">#248</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>DynamoDB keys use <code>#</code> as a delimiter (e.g., <code>ENTITY#user-1#BUCKET#gpt-4</code>). Without validation, malicious input containing <code>#</code> could:</p>
-<ul>
-<li>Traverse to different record types</li>
-<li>Access other entities' data</li>
-<li>Corrupt key structure</li>
-</ul>
-<p>This is analogous to SQL injection but for DynamoDB key-based access patterns.</p>
+<p>Each rate limit (rpm, tpm) for an entity+resource is stored as a separate DynamoDB
+item with SK <code>#BUCKET#{resource}#{limit_name}</code>. For an entity with N limits,
+<code>acquire()</code> reads N+1 items via BatchGetItem and writes N items via
+TransactWriteItems. The transaction 2x WCU tax means 2 limits with cascade costs
+11 CU per acquire, scaling linearly with limit count.</p>
+<p>GSI2 produces N entries per entity+resource (one per limit), inflating resource
+aggregation queries. The per-limit item design also prevents atomic operations
+across limits — each item is updated independently within the transaction.</p>
+<p>Entity metadata (<code>#META</code>) must remain a separate item because it carries GSI1 keys
+for parent→children queries. Merging META into bucket items would duplicate it
+across resources and break GSI1 deduplication. The existing 60s config cache
+already skips META reads on cache hits.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Add comprehensive input validation at model construction time, forbidding the <code>#</code> delimiter character in all user-provided identifiers.</p>
-<p><strong>Validation rules:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Pattern</th>
-<th>Max Length</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>entity_id</code>, <code>parent_id</code></td>
-<td><code>^[a-zA-Z0-9][a-zA-Z0-9_.\-:@]*$</code></td>
-<td>256</td>
-</tr>
-<tr>
-<td><code>limit_name</code>, <code>resource</code></td>
-<td><code>^[a-zA-Z][a-zA-Z0-9_.\-]*$</code></td>
-<td>64</td>
-</tr>
-</tbody>
-</table>
-<p><strong>New exceptions:</strong>
-- <code>ValidationError</code> (base)
-- <code>InvalidIdentifierError</code> (entity_id, parent_id)
-- <code>InvalidNameError</code> (limit_name, resource)</p>
+<p>All limits for an entity+resource must be stored in a single composite DynamoDB
+item with SK <code>#BUCKET#{resource}</code>. Per-limit attributes must use the prefix
+<code>b_{limit_name}_{field}</code> with short field names: <code>tk</code> (tokens), <code>cp</code> (capacity),
+<code>bx</code> (burst), <code>ra</code> (refill amount), <code>rp</code> (refill period), <code>tc</code> (total consumed).
+GSI2SK must be per-entity (<code>BUCKET#{entity_id}</code>), not per-limit.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Injection attacks impossible by construction
-- Early failure with clear error messages
-- Supports common ID formats: UUIDs, API keys, emails
-- Validation happens once at model creation, not on every operation</p>
+- Acquire cost is constant regardless of limit count (1 item read, 1 item write)
+- Non-cascade acquire drops from 5.5 CU to 2 CU; cascade drops from 11 CU to 6 CU
+- GSI2 entries reduced from N per entity+resource to 1
+- All limits for an entity+resource are atomically readable and writable</p>
 <p><strong>Negative:</strong>
-- Some previously-valid IDs may be rejected (containing <code>#</code>)
-- Migration required for existing data with invalid characters</p>
+- Breaking schema change requiring migration (new SK format)
+- Per-limit attributes use short names (<code>tk</code>, <code>cp</code>) that are less readable than current names
+- Deserialization must enumerate prefixed attributes to reconstruct BucketState objects
+- Adding or removing limits requires updating a shared item rather than creating/deleting items</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<ul>
-<li><strong>Escape/encode special characters</strong>: Rejected; complex, error-prone, obscures data in DynamoDB console</li>
-<li><strong>Validate only at repository layer</strong>: Rejected; too late, models could be passed around with invalid data</li>
-<li><strong>Allowlist specific formats (UUID only)</strong>: Rejected; too restrictive for diverse use cases</li>
-</ul>
+<h3 id="keep-separate-items-use-updateitem-instead-of-putitem">Keep separate items, use UpdateItem instead of PutItem<a class="headerlink" href="#keep-separate-items-use-updateitem-instead-of-putitem" title="Permanent link">&para;</a></h3>
+<p>Rejected because: fixes lost updates but does not reduce item count, CU cost, or
+GSI2 inflation — the core scaling problem remains.</p>
+<h3 id="merge-entity-metadata-into-composite-bucket-item">Merge entity metadata into composite bucket item<a class="headerlink" href="#merge-entity-metadata-into-composite-bucket-item" title="Permanent link">&para;</a></h3>
+<p>Rejected because: duplicates META across resources, breaks GSI1 parent→children
+queries, and requires fan-out writes on metadata changes.</p>
+<h3 id="nested-map-per-limit-limitsrpmtokens_milli">Nested map per limit (limits.rpm.tokens_milli)<a class="headerlink" href="#nested-map-per-limit-limitsrpmtokens_milli" title="Permanent link">&para;</a></h3>
+<p>Rejected because: DynamoDB cannot use atomic ADD on nested paths without
+overlapping SET+ADD errors (ADR-111, issue #168).</p>
 
 
 
@@ -2680,44 +2607,6 @@
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../006-flat-schema-snapshots/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-006 Flat Schema Snapshots">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                ADR-006 Flat Schema Snapshots
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../008-security-audit-logging/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-008 Audit Logging">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-008 Audit Logging
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">
