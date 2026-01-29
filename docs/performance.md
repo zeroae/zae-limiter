@@ -305,28 +305,46 @@ await limiter.delete_entity("entity-2")
 
 Latencies vary by environment and depend on network conditions, DynamoDB utilization, and operation complexity.
 
-| Operation | Moto p50 | LocalStack p50 | AWS p50 |
-|-----------|----------|----------------|---------|
-| `acquire()` - single limit | 14ms | 36ms | 36ms |
-| `acquire()` - two limits | 30ms | 52ms | 43ms |
-| `acquire()` with cascade entity | 28ms | 57ms | 51ms |
-| `available()` check | 1ms | 9ms | 8ms |
+| Operation | Moto p50 | LocalStack p50 | AWS (external) p50 | AWS (in-region) p50 |
+|-----------|----------|----------------|--------------------|--------------------|
+| `acquire()` - single limit | 9ms | 43ms | 38ms | 15-20ms |
+| `acquire()` - two limits | 11ms | 43ms | 36ms | 15-20ms |
+| `acquire()` with cascade | 22ms | 47ms | 48ms | 25-35ms |
+| `available()` check | 1ms | 7ms | 10ms | 1-3ms |
 
 !!! note "Environment Differences"
     - **Moto**: In-memory mock, measures code overhead only
-    - **LocalStack**: Docker-based, includes local network latency
-    - **AWS**: Production DynamoDB with real network round-trips
+    - **LocalStack**: Docker-based, includes local network latency (varies by host)
+    - **AWS (external)**: From outside AWS, includes internet latency (~8-14ms per round-trip)
+    - **AWS (in-region)**: From EC2/Lambda in same region (~0.5-1ms per round-trip)
+
+!!! tip "In-Region Performance"
+    When running inside AWS (same region as DynamoDB), latency drops significantly because
+    network round-trips take <1ms instead of 8-14ms. For a typical LLM API call, rate limit
+    overhead is ~4% (20ms / 500ms) vs ~7% when calling from external networks.
 
 ### Latency Breakdown
 
 Typical `acquire()` latency breakdown for a single limit:
 
 ```
-acquire() latency breakdown:
-├── DynamoDB GetItem (bucket)     ~5-15ms   (network + read)
-├── Token bucket calculation      <1ms      (in-memory math)
-├── TransactWriteItems            ~10-25ms  (network + write + condition check)
-└── Network overhead              variable  (region, instance type)
+acquire() latency breakdown (external client):
+├── Network to AWS               ~8-10ms   (internet latency)
+├── DynamoDB GetItem             ~3-5ms    (server-side processing)
+├── Network back                 ~8-10ms
+├── TransactWriteItems           ~5-10ms   (server-side)
+└── Network back                 ~8-10ms
+                                 ─────────
+                         Total:  ~35-45ms
+
+acquire() latency breakdown (in-region):
+├── Network to DynamoDB          ~0.5-1ms  (VPC internal)
+├── DynamoDB GetItem             ~3-5ms
+├── Network back                 ~0.5-1ms
+├── TransactWriteItems           ~5-10ms
+└── Network back                 ~0.5-1ms
+                                 ─────────
+                         Total:  ~15-20ms
 ```
 
 ### Environment Selection
@@ -334,8 +352,9 @@ acquire() latency breakdown:
 | Environment | Use Case | Latency Factor |
 |-------------|----------|----------------|
 | Moto | Unit tests, CI/CD | 1× (baseline) |
-| LocalStack | Integration tests, local dev | 2-3× |
-| AWS | Production, load testing | 2-4× |
+| LocalStack | Integration tests, local dev | 4-5× |
+| AWS (external) | Development, testing | 4× |
+| AWS (in-region) | Production | 2× |
 
 Run benchmarks to measure your specific environment:
 
@@ -360,13 +379,19 @@ uv run pytest tests/benchmark/test_aws.py --run-aws -v
 
 Theoretical and practical throughput limits depend on contention patterns:
 
-| Scenario | Expected TPS | Bottleneck |
-|----------|--------------|------------|
-| Sequential, single entity | 50-200 | Serialized operations |
-| Sequential, multiple entities | 50-200 | Network round-trip |
-| Concurrent, separate entities | 100-500 | Scales with parallelism |
-| Concurrent, single entity | 20-100 | Optimistic locking contention |
-| Cascade operations | 30-100 | Parent bucket contention |
+| Scenario | Moto TPS | AWS TPS | Bottleneck |
+|----------|----------|---------|------------|
+| Sequential, single entity | 95 | 28 | Network round-trip |
+| Sequential, multiple entities | 76 | 26 | Network round-trip |
+| Concurrent, separate entities | 85 | 176 | Scales with parallelism |
+| Concurrent, single entity | 88 | — | Optimistic locking contention |
+| Cascade sequential | 27 | 19 | Parent bucket operations |
+| Cascade concurrent | 28 | 91 | Parent bucket contention |
+
+!!! note "AWS Concurrent Performance"
+    AWS concurrent throughput (176 TPS) exceeds sequential (28 TPS) because parallel
+    requests to separate entities eliminate serialization. In-region performance would
+    be ~2× higher due to reduced network latency.
 
 ### Contention Analysis
 
@@ -643,7 +668,7 @@ print(f"TTL: {stats.ttl_seconds}s")
 | Optimization Area | Key Recommendations |
 |-------------------|---------------------|
 | Capacity | Start with on-demand, switch to provisioned at 5M+ ops/month |
-| Latency | Expect 30-50ms p50 on AWS; use LocalStack for realistic testing |
+| Latency | Expect 15-20ms p50 in-region, 35-45ms external; network is the dominant factor |
 | Throughput | Distribute load across entities to avoid contention |
 | Cost | Disable cascade/stored_limits when not needed |
 | Config Cache | Use default 60s TTL; invalidate manually for immediate changes |
