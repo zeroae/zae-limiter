@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769570131091,
+  "lastUpdate": 1769658302372,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -8291,6 +8291,212 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.046376041601591325",
             "extra": "mean: 42.36260966799972 msec\nrounds: 250"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "663b687a3748078e447fe2c14692387a4f7e4034",
+          "message": "✨ feat: v0.7.0 developer experience improvements (#251)\n\n* ♻️ refactor(docs): slim down CLAUDE.md by extracting rules files\n\nExtract procedural content from CLAUDE.md (1017→470 lines, 54% reduction)\ninto 5 new .claude/rules/ files: testing, code-review, pull-request-workflow,\nrelease-planning, and localstack-parity. Condense verbose CLI/Python examples,\nremove sections duplicated in existing rules files, and update cross-references.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: fix documentation drift accumulated since v0.4.0\n\nAudit and fix ~25 discrepancies between docs and code across CLI,\nAPI, infrastructure, and project structure documentation.\n\nCLI (docs/cli.md):\n- Document local command group (up/down/status/logs)\n- Document entity create and entity show commands\n- Add missing deploy options (--enable-iam-roles, --tag, --lambda-duration-threshold-pct)\n- Add --wait/--no-wait to delete command\n- Fix incorrect required/optional flags for status and delete\n- Fix list output columns (4, not 6)\n\nAPI (docs/api/):\n- Add Repository and RepositoryProtocol documentation (new file)\n- Add StackOptions, Status, BackendCapabilities, ResourceCapacity,\n  EntityCapacity to models.md\n- Update public exports to match full __all__ (45 exports)\n- Update module structure tree\n\nInfrastructure (docs/contributing/localstack.md, docs/infra/deployment.md):\n- Make zae-limiter local CLI the preferred LocalStack method\n- Fix container name (zae-limiter-localstack, not localstack)\n- Fix services list (add sts, resourcegroupstaggingapi)\n- Fix hardcoded lambda function names to use {name}-aggregator pattern\n\nDeprecated API cleanup:\n- Replace use_stored_limits=True with limits=None across guides,\n  operations runbooks, and performance docs\n\nProject structure (mkdocs.yml, architecture.md):\n- Update project structure trees (add 7 missing modules + aggregator)\n- Add 7 missing ADRs to mkdocs nav (000, 012, 013, 107, 111, 112, 113)\n- Add Repository to API nav, benchmarks.md to Reference nav\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(docs): add pytest-examples lint pass for documentation code blocks\n\nAdd pytest-examples infrastructure to lint all Python code blocks in docs/.\nConfigure ruff with doc-appropriate ignore rules (F704, F706, F811, F821,\nF841, E741, I001, F401, N807) and fix 9 code blocks with real issues\n(syntax errors, mixed fences, deprecated patterns). All 170 blocks pass.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(docs): add moto-backed execution pass for doc code examples\n\nAdd test_docs_run.py that runs Python code blocks against moto. Update\nconftest with moto_env fixture, skip tag infrastructure, and aiobotocore\npatch. Tag 121 blocks as lint-only and 2 as requires-external across 24\ndoc files. Result: 47 blocks execute successfully, 123 skip by tag.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 👷 ci(docs): add documentation example testing to CI and update testing guide\n\nAdd doc lint and moto execution steps to unit job, LocalStack doc\nintegration step to integration job. Create test_docs_integration.py\nfor requires-localstack tagged blocks. Document the doctest workflow,\ncode fence tag convention, and commands in contributing/testing.md.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(docs): enhance runner with async wrapping and globals injection\n\nConvert 32 doc blocks from lint-only to fully executable against moto by\nadding async wrapping, pre-built limiter fixtures, stub functions, and\nRateLimiter/Repository monkeypatching to the test harness. Results: 79\nblocks now execute (up from 47), 91 skipped (down from 123).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(docs): fix doc drift and enhance harness to execute 125 blocks\n\nFix API drift in doc examples (Limit.custom missing refill_amount,\nacquire() missing limits param, stale attribute names) and enhance the\ntest harness with EntityExistsError tolerance, auto-seeded defaults for\nnew tables, mock OpenAI objects, and common globals injection. Promotes\n~80 blocks from lint-only to fully executing against moto.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(docs): rewrite 16 doc blocks from lint-only to fully executable\n\nReplace ellipsis arguments, placeholder values, and nonexistent API calls\nin doc code examples so they execute against moto. Add web framework stubs\n(JSONResponse, HTTPException) and context variables to the test harness.\n\nResults: 142 passed, 34 skipped (up from 125 passed, 45 skipped).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(schema): add composite bucket items design with test strategy\n\nDesign for consolidating per-limit DynamoDB items into single composite\nitems per entity+resource. Includes ADD-based writes with lazy refill,\noptimistic locking via shared rf timestamp, four write paths, and\ncategorized test strategy (untouchable/rewrite/benchmark).\n\nRefs: #248\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🔥 remove(docs): delete doc-example-testing plan file\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(schema): add ADR-114 and ADR-115 for composite bucket items\n\nADR-114: Composite bucket items — consolidate per-limit DynamoDB items\ninto a single item per entity+resource with b_{name}_{field} prefix.\n\nADR-115: ADD-based writes with lazy refill — atomic consumption via ADD,\nlazy refill on read, optimistic locking via shared rf timestamp, four\nwrite paths (Create/Normal/Retry/Adjust). Depends on ADR-114.\n\nRefs: #248\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ♻️ refactor(schema): implement composite bucket items with ADD-based writes\n\nConsolidate per-limit DynamoDB items into single composite items per\nentity+resource (ADR-114) and switch from PutItem to ADD-based writes\nwith lazy refill and optimistic locking (ADR-115).\n\nKey changes:\n- schema.py: sk_bucket(resource) drops limit_name, add b_{name}_{field}\n  attribute helpers\n- repository.py: add _deserialize_composite_bucket, build_composite_create/\n  normal/retry/adjust write paths, update all read methods\n- limiter.py: _do_acquire captures original tk/rf for ADD delta computation\n- lease.py: _commit groups entries by (entity_id, resource), uses Normal\n  path with Retry fallback on ConditionalCheckFailedException\n- processor.py: extract_deltas enumerates b_{name}_tc from composite\n  stream events\n- version.py: bump CURRENT_SCHEMA_VERSION to 2.0.0\n\nCloses #248\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(schema): add coverage for composite write paths and lease retry\n\nCover uncovered lines in schema.py (parse_bucket_attr, parse_bucket_sk),\nrepository.py (build_composite_retry, build_composite_adjust, edge cases),\nand lease.py (_is_condition_check_failure, _build_retry_failure_statuses,\nretry path).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): update e2e schema version assertion to 2.0.0\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🔧 chore(schema): change schema version to 0.7.0\n\nAlign schema version with the release milestone instead of using\nsemver major bump.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): shorten e2e stack names to fit IAM role name limit\n\nIAM role names must be <= 64 chars. With PowerUserPB-{name}-readonly-role\nformat, the old 30-char names could exceed this. Shortened to 16 chars.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): relax schema version assertion for pre-1.0 versions\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ⚡ perf(test): optimize e2e fixtures to share stacks across test classes\n\nReduce CloudFormation stack deployments from ~13 to 5 for AWS e2e tests by\nconverting fixtures from function-scoped to class-scoped with loop_scope=\"class\".\n\nChanges:\n- test_aws.py: Convert all limiter fixtures to @pytest_asyncio.fixture(scope=\"class\", loop_scope=\"class\")\n- test_aws.py: Split TestE2EAWSXRayTracing into two classes (tracing-enabled vs disabled need separate stacks)\n- test_aws.py: Add @pytest.mark.asyncio(loop_scope=\"class\") to all test methods\n- test_aws.py: Use unique_name_class instead of unique_name for class-level isolation\n- test_localstack.py: Convert TestE2ELocalStackAggregatorWorkflow fixture to class-scoped\n\nStack reduction per test run:\n- TestE2EAWSFullWorkflow: 5 tests → 1 shared stack\n- TestE2EAWSUsageSnapshots: 1 test → 1 shared stack\n- TestE2EAWSRateLimiting: 2 tests → 1 shared stack\n- TestE2EAWSXRayTracingEnabled: 3 tests → 1 shared stack\n- TestE2EAWSXRayTracingDisabled: 2 tests → 1 shared stack\n\nTime savings: ~10 minutes per AWS e2e test run (each stack deployment ~2-3 minutes).\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(infra): deploy Lambda code after stack creation\n\nensure_infrastructure() was creating CloudFormation stacks but never\ndeploying the actual Lambda code, leaving only a placeholder. Events\nwere being consumed by the placeholder and lost.\n\nChanges:\n- Repository.ensure_infrastructure() now calls deploy_lambda_code()\n- Placeholder Lambda errors out to force ESM retries until real code deployed\n- Added function_active waiter after function_updated waiter\n- Added --keep-stacks-on-failure pytest flag to preserve stacks for debugging\n- Removed dead skipped_local code from previous DynamoDB Local removal\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: add --keep-stacks-on-failure to AWS testing rules\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(infra): wait for ESM stabilization after Lambda deployment\n\nESM with StartingPosition: LATEST needs ~45s after stack creation to\nestablish its stream position before reliably capturing events. Without\nthis wait, the Lambda aggregator shows 0 invocations despite ESM\nreporting State: Enabled.\n\n- Add wait_for_esm_ready() to StackManager that waits for ESM to be\n  enabled AND have processed at least one poll (LastProcessingResult)\n  with a minimum 45s stabilization time\n- Call wait_for_esm_ready() at end of deploy_lambda_code() when wait=True\n- Add \"✓ Event Source Mapping ready\" CLI message\n- Simplify test helper since infrastructure now handles the wait\n- Remove should_delete_stack fixture (didn't work at class scope)\n- Reduce snapshot polling timeout from 180s to 90s\n\nCloses #249\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🔥 remove: --keep-stacks-on-failure (never implemented)\n\nThe pytest flag was defined but the actual implementation\n(should_delete_stack fixture) was removed because it didn't\nwork at class scope. Remove the dead code and misleading docs.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(test): update capacity tests for composite bucket items\n\nComposite buckets store all limits in single item, so BatchGetItem\nfetches 2 items (META + composite) regardless of number of limits,\nand transaction writes 1 item.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✅ test(doctest): add LocalStack fixture for doc integration tests\n\nAdd localstack_limiter fixture to deploy a 'limiter' stack before running\ndoc examples tagged with 'requires-localstack'. This matches the CLI deploy\nexample in docs/contributing/localstack.md.\n\nAlso add async wrapping for bare async code in doc examples.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: update cost estimates for ADR-114/115 O(1) optimizations\n\nComposite bucket items and ADD-based writes reduced acquire() costs\nfrom O(N) to O(1) where N is limit count. Updated all cost references\nfrom ~$1/1M to ~$0.75/1M requests (~50% reduction).\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: clean up ADR 104 and remove implemented plan\n\n- ADR 104: Use lint-only fence since example reflects existing code\n- Remove composite bucket items plan (implemented as ADR-114/115)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs: add stored-config-default design document\n\nDesign for making stored config the default approach:\n- limits parameter defaults to None in acquire()\n- ValidationError when no stored config exists\n- Restructure getting-started.md and basic-usage.md\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* ✨ feat(limiter): make limits=None the default in acquire()\n\nBREAKING CHANGE: The `limits` parameter in `acquire()` now defaults to\n`None` and comes after `consume`. Limits are resolved automatically from\nstored config (Entity > Resource > System).\n\n- Change parameter order: `acquire(entity_id, resource, consume, limits=None)`\n- Raise ValidationError if no limits configured at any level\n- Restructure docs to lead with stored config as recommended approach\n- Update getting-started.md with Minimalist and Stored Config sections\n- Update basic-usage.md examples to use new parameter order\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🐛 fix(docs): fix markdown code fences for doctests\n\n- Add missing closing ``` in getting-started.md\n- Add lint-only tag to design doc pseudo-code\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(performance): update acquire() parameter order\n\nUpdate examples to use new parameter order (consume before limits)\nintroduced by the stored-config-default change.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 🔥 remove: stored-config-default design plan (implemented)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n* 📝 docs(performance): update benchmark results from fresh measurements\n\n- Update latency table with Moto, LocalStack, and AWS p50 values\n- Add AWS (in-region) column for production latency estimates\n- Split latency breakdown into external vs in-region diagrams\n- Replace throughput ranges with actual measured TPS values\n- Add notes about concurrent performance and network overhead\n\nAlso fix AWS benchmark tests to use shorter stack names to avoid\nIAM role name length limit (64 chars). See issue #252.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.5 <noreply@anthropic.com>",
+          "timestamp": "2026-01-28T22:43:35-05:00",
+          "tree_id": "86ae6ea3162cf1836c87c447301333dd7595d38a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/663b687a3748078e447fe2c14692387a4f7e4034"
+        },
+        "date": 1769658301414,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 111.88806237121689,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01239723831026462",
+            "extra": "mean: 8.937503955357164 msec\nrounds: 112"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 88.97219518597414,
+            "unit": "iter/sec",
+            "range": "stddev: 0.016924286059464482",
+            "extra": "mean: 11.239466418803648 msec\nrounds: 117"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 42.0895798918339,
+            "unit": "iter/sec",
+            "range": "stddev: 0.024758614128532294",
+            "extra": "mean: 23.758849638554295 msec\nrounds: 83"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 1098.2111647517088,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000025975213882199896",
+            "extra": "mean: 910.5716934011384 usec\nrounds: 985"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 103.79093205041391,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012000227283325508",
+            "extra": "mean: 9.634753058333406 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 192.87308863973587,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00034834589607378116",
+            "extra": "mean: 5.184756500000276 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 43.70048014086891,
+            "unit": "iter/sec",
+            "range": "stddev: 0.022310395092965504",
+            "extra": "mean: 22.883043773809593 msec\nrounds: 84"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 95.28438195108814,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02406937234910146",
+            "extra": "mean: 10.494899368852758 msec\nrounds: 122"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 76.61920992207979,
+            "unit": "iter/sec",
+            "range": "stddev: 0.020743091767772844",
+            "extra": "mean: 13.051557188033915 msec\nrounds: 117"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 126.7141146260344,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002496799852698757",
+            "extra": "mean: 7.891780666670437 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 104.16814388173954,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01396460191581777",
+            "extra": "mean: 9.599863861789496 msec\nrounds: 123"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 84.88483893767057,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02073262133724638",
+            "extra": "mean: 11.780666754098245 msec\nrounds: 122"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 907.2043261915994,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005549612274966733",
+            "extra": "mean: 1.102287512448218 msec\nrounds: 964"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 105.67483404490397,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013711023813227136",
+            "extra": "mean: 9.462990966941799 msec\nrounds: 121"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 40.3176496207926,
+            "unit": "iter/sec",
+            "range": "stddev: 0.029865246500227507",
+            "extra": "mean: 24.8030331481496 msec\nrounds: 81"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 41.01386399391774,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03555190722563497",
+            "extra": "mean: 24.38199922222148 msec\nrounds: 81"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 42.03383563508112,
+            "unit": "iter/sec",
+            "range": "stddev: 0.025042794765859567",
+            "extra": "mean: 23.790358050632136 msec\nrounds: 79"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 70.80211321605512,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02631041699659867",
+            "extra": "mean: 14.123872220430274 msec\nrounds: 186"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 51.07262532294866,
+            "unit": "iter/sec",
+            "range": "stddev: 0.020128657523133888",
+            "extra": "mean: 19.579960765217727 msec\nrounds: 115"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 87.5892635322971,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004227867952627351",
+            "extra": "mean: 11.416924400000994 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 6.929780426372898,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06488457042233728",
+            "extra": "mean: 144.3047165238117 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 7.655256567387426,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06461838562036629",
+            "extra": "mean: 130.62919461904835 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 28.32853055907642,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05797538493708489",
+            "extra": "mean: 35.30010135593148 msec\nrounds: 59"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 35.839444708969296,
+            "unit": "iter/sec",
+            "range": "stddev: 0.030065250620372252",
+            "extra": "mean: 27.902218020407464 msec\nrounds: 98"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 44.12578468002361,
+            "unit": "iter/sec",
+            "range": "stddev: 0.020014553318926126",
+            "extra": "mean: 22.6624865087717 msec\nrounds: 114"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 28.479878362890656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.037691603551369184",
+            "extra": "mean: 35.11250951489323 msec\nrounds: 235"
           }
         ]
       }
