@@ -1,10 +1,18 @@
-# zae-limiter
+---
+title: ""
+---
 
-[![PyPI version](https://img.shields.io/pypi/v/zae-limiter)](https://pypi.org/project/zae-limiter/)
-[![Python versions](https://img.shields.io/pypi/pyversions/zae-limiter)](https://pypi.org/project/zae-limiter/)
-[![License](https://img.shields.io/pypi/l/zae-limiter)](https://github.com/zeroae/zae-limiter/blob/main/LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/zeroae/zae-limiter/ci.yml?branch=main)](https://github.com/zeroae/zae-limiter/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/zeroae/zae-limiter/graph/badge.svg)](https://codecov.io/gh/zeroae/zae-limiter)
+<div style="text-align: center; margin-bottom: 1rem;">
+  <img src="assets/zae-limiter-white-bg.svg" alt="zae-limiter" width="400" class="light-only">
+  <img src="assets/zae-limiter-dark-bg.svg" alt="zae-limiter" width="400" class="dark-only">
+</div>
+
+[![PyPI version](https://img.shields.io/pypi/v/zae-limiter?style=flat-square)](https://pypi.org/project/zae-limiter/)
+[![Conda version](https://img.shields.io/conda/v/conda-forge/zae-limiter?style=flat-square)](https://anaconda.org/conda-forge/zae-limiter)
+[![Python versions](https://img.shields.io/pypi/pyversions/zae-limiter?style=flat-square)](https://pypi.org/project/zae-limiter/)
+[![License](https://img.shields.io/pypi/l/zae-limiter?style=flat-square)](https://github.com/zeroae/zae-limiter/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/zeroae/zae-limiter/ci.yml?branch=main&style=flat-square)](https://github.com/zeroae/zae-limiter/actions/workflows/ci.yml)
+[![codecov](https://img.shields.io/codecov/c/github/zeroae/zae-limiter?style=flat-square)](https://codecov.io/gh/zeroae/zae-limiter)
 
 A rate limiting library backed by DynamoDB using the token bucket algorithm.
 

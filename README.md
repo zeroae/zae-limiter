@@ -1,4 +1,10 @@
-# zae-limiter
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/zae-limiter-dark-bg.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/zae-limiter-white-bg.svg">
+    <img alt="zae-limiter" src="docs/assets/zae-limiter-white-bg.svg" width="400">
+  </picture>
+</p>
 
 [![PyPI version](https://img.shields.io/pypi/v/zae-limiter)](https://pypi.org/project/zae-limiter/)
 [![Conda version](https://img.shields.io/conda/v/conda-forge/zae-limiter)](https://anaconda.org/conda-forge/zae-limiter)
