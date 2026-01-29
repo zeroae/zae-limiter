@@ -8,6 +8,7 @@ from zae_limiter import AuditAction, Limit
 from zae_limiter.exceptions import InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
+from zae_limiter.schema import parse_bucket_attr, parse_bucket_sk
 
 
 @pytest.fixture
@@ -24,12 +25,12 @@ async def repo(mock_dynamodb):
 
 @pytest.fixture
 async def repo_with_buckets(repo):
-    """Repository pre-populated with test buckets."""
+    """Repository pre-populated with test buckets (composite items, ADR-114)."""
     # Create test entities
     await repo.create_entity("entity-1", parent_id=None, name="Entity 1")
     await repo.create_entity("entity-2", parent_id="entity-1", name="Entity 2")
 
-    # Create some buckets
+    # Create composite buckets: one item per entity+resource with all limits
     limits = [
         Limit.per_minute("rpm", 100),
         Limit.per_minute("tpm", 10000),
@@ -38,11 +39,49 @@ async def repo_with_buckets(repo):
 
     for entity_id in ["entity-1", "entity-2"]:
         for resource in ["gpt-4", "gpt-3.5"]:
-            for limit in limits:
-                state = BucketState.from_limit(entity_id, resource, limit, now_ms)
-                await repo.transact_write([repo.build_bucket_put_item(state)])
+            states = [
+                BucketState.from_limit(entity_id, resource, limit, now_ms) for limit in limits
+            ]
+            put_item = repo.build_composite_create(entity_id, resource, states, now_ms)
+            await repo.transact_write([put_item])
 
     yield repo
+
+
+class TestSchemaCompositeKeys:
+    """Tests for composite bucket schema key builders."""
+
+    def test_parse_bucket_attr_valid(self):
+        """parse_bucket_attr returns (limit_name, field) for valid attributes."""
+        assert parse_bucket_attr("b_rpm_tk") == ("rpm", "tk")
+        assert parse_bucket_attr("b_tpm_cp") == ("tpm", "cp")
+        assert parse_bucket_attr("b_my_limit_bx") == ("my_limit", "bx")
+
+    def test_parse_bucket_attr_not_bucket(self):
+        """parse_bucket_attr returns None for non-bucket attributes."""
+        assert parse_bucket_attr("entity_id") is None
+        assert parse_bucket_attr("PK") is None
+        assert parse_bucket_attr("rf") is None
+
+    def test_parse_bucket_attr_no_field_separator(self):
+        """parse_bucket_attr returns None when no underscore after prefix."""
+        assert parse_bucket_attr("b_") is None
+        assert parse_bucket_attr("b_x") is None
+
+    def test_parse_bucket_sk_valid(self):
+        """parse_bucket_sk extracts resource from composite SK."""
+        assert parse_bucket_sk("#BUCKET#gpt-4") == "gpt-4"
+        assert parse_bucket_sk("#BUCKET#api") == "api"
+
+    def test_parse_bucket_sk_invalid_prefix(self):
+        """parse_bucket_sk raises ValueError for non-bucket SK."""
+        with pytest.raises(ValueError, match="Invalid bucket SK"):
+            parse_bucket_sk("#META")
+
+    def test_parse_bucket_sk_empty_resource(self):
+        """parse_bucket_sk raises ValueError for empty resource."""
+        with pytest.raises(ValueError, match="Invalid bucket SK format"):
+            parse_bucket_sk("#BUCKET#")
 
 
 class TestRepositoryBucketOperations:
@@ -98,21 +137,21 @@ class TestRepositoryBucketOperations:
         assert "Update" in update_item
         update_spec = update_item["Update"]
 
-        # Check update expression (flat paths, no #data prefix)
+        # Check update expression (composite bucket attributes)
         expected_expr = "SET #tokens = :tokens, #refill = :refill"
         assert update_spec["UpdateExpression"] == expected_expr
 
-        # Check attribute names (no #data key)
+        # Check attribute names (composite: b_rpm_tk, rf)
         assert "#data" not in update_spec["ExpressionAttributeNames"]
-        assert update_spec["ExpressionAttributeNames"]["#tokens"] == "tokens_milli"
-        assert update_spec["ExpressionAttributeNames"]["#refill"] == "last_refill_ms"
+        assert update_spec["ExpressionAttributeNames"]["#tokens"] == "b_rpm_tk"
+        assert update_spec["ExpressionAttributeNames"]["#refill"] == "rf"
 
         # Check attribute values
         assert update_spec["ExpressionAttributeValues"][":tokens"] == {"N": "75000"}
         assert update_spec["ExpressionAttributeValues"][":refill"] == {"N": "1234567890"}
         assert update_spec["ExpressionAttributeValues"][":expected"] == {"N": "100000"}
 
-        # Check condition (flat path)
+        # Check condition (composite attribute path)
         assert update_spec["ConditionExpression"] == "#tokens = :expected"
 
     @pytest.mark.asyncio
@@ -135,7 +174,7 @@ class TestRepositoryBucketOperations:
         assert "ConditionExpression" not in update_spec
         assert ":expected" not in update_spec["ExpressionAttributeValues"]
 
-        # Verify update expression is flat (no #data prefix)
+        # Verify update expression uses composite attributes
         expected_expr = "SET #tokens = :tokens, #refill = :refill"
         assert update_spec["UpdateExpression"] == expected_expr
 
@@ -227,7 +266,7 @@ class TestRepositoryTransactions:
 
     @pytest.mark.asyncio
     async def test_build_bucket_put_item_structure(self, repo):
-        """build_bucket_put_item should create flat DynamoDB structure."""
+        """build_bucket_put_item should create composite DynamoDB structure (ADR-114)."""
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("entity-1", "gpt-4", limit, now_ms)
@@ -240,23 +279,28 @@ class TestRepositoryTransactions:
 
         assert put_spec["TableName"] == "test-repo"
 
-        # Verify keys
+        # Verify keys (composite: no limit_name in SK)
         assert "PK" in put_spec["Item"]
         assert "SK" in put_spec["Item"]
         assert put_spec["Item"]["PK"]["S"] == "ENTITY#entity-1"
-        assert put_spec["Item"]["SK"]["S"] == "#BUCKET#gpt-4#rpm"
+        assert put_spec["Item"]["SK"]["S"] == "#BUCKET#gpt-4"
 
-        # Verify flat structure (no data.M wrapper)
+        # Verify composite bucket attributes (b_{name}_{field} format)
         assert "data" not in put_spec["Item"]
         item = put_spec["Item"]
 
-        assert item["tokens_milli"]["N"] == str(100_000)  # burst capacity
-        assert item["capacity_milli"]["N"] == str(100_000)
-        assert item["burst_milli"]["N"] == str(100_000)
-        assert item["refill_amount_milli"]["N"] == str(100_000)
-        assert item["refill_period_ms"]["N"] == str(60_000)
+        assert item["b_rpm_tk"]["N"] == str(100_000)  # burst capacity
+        assert item["b_rpm_cp"]["N"] == str(100_000)
+        assert item["b_rpm_bx"]["N"] == str(100_000)
+        assert item["b_rpm_ra"]["N"] == str(100_000)
+        assert item["b_rpm_rp"]["N"] == str(60_000)
         assert item["resource"]["S"] == "gpt-4"
-        assert item["limit_name"]["S"] == "rpm"
+
+        # Shared refill timestamp
+        assert "rf" in item
+
+        # Condition prevents overwriting existing composite item
+        assert "attribute_not_exists(PK)" in put_spec.get("ConditionExpression", "")
 
     @pytest.mark.asyncio
     async def test_batch_delete_pagination_over_25_items(self, repo):
@@ -280,6 +324,101 @@ class TestRepositoryTransactions:
         # Verify entity is deleted
         entity = await repo.get_entity("entity-0")
         assert entity is None
+
+
+class TestCompositeWritePaths:
+    """Tests for composite bucket write path builders (ADR-115)."""
+
+    @pytest.mark.asyncio
+    async def test_build_composite_retry_structure(self, repo):
+        """build_composite_retry produces ADD for tk and tc per limit."""
+        result = repo.build_composite_retry(
+            entity_id="entity-1",
+            resource="gpt-4",
+            consumed={"rpm": 5000, "tpm": 100000},
+        )
+
+        assert "Update" in result
+        update = result["Update"]
+        assert update["Key"]["PK"]["S"] == "ENTITY#entity-1"
+        assert update["Key"]["SK"]["S"] == "#BUCKET#gpt-4"
+
+        # Verify ADD expression contains both limits
+        expr = update["UpdateExpression"]
+        assert "ADD" in expr
+        assert "#b_rpm_tk" in expr
+        assert "#b_rpm_tc" in expr
+        assert "#b_tpm_tk" in expr
+        assert "#b_tpm_tc" in expr
+
+        # Verify condition requires sufficient tokens
+        cond = update["ConditionExpression"]
+        assert "#b_rpm_tk >= " in cond
+        assert "#b_tpm_tk >= " in cond
+
+        # Verify attribute mappings
+        names = update["ExpressionAttributeNames"]
+        assert names["#b_rpm_tk"] == "b_rpm_tk"
+        assert names["#b_rpm_tc"] == "b_rpm_tc"
+
+        # Verify values: tk gets negative (consumption), tc gets positive
+        vals = update["ExpressionAttributeValues"]
+        assert vals[":b_rpm_tk_neg"]["N"] == "-5000"
+        assert vals[":b_rpm_tc_delta"]["N"] == "5000"
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_structure(self, repo):
+        """build_composite_adjust produces unconditional ADD for tk and tc."""
+        result = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": 3000, "tpm": -500},
+        )
+
+        assert "Update" in result
+        update = result["Update"]
+
+        # Should have ADD but no condition
+        assert "ADD" in update["UpdateExpression"]
+        assert "ConditionExpression" not in update
+
+        # Positive delta: subtract from tk, add to tc
+        vals = update["ExpressionAttributeValues"]
+        assert vals[":b_rpm_tk_delta"]["N"] == "-3000"
+        assert vals[":b_rpm_tc_delta"]["N"] == "3000"
+        # Negative delta: add to tk, subtract from tc
+        assert vals[":b_tpm_tk_delta"]["N"] == "500"
+        assert vals[":b_tpm_tc_delta"]["N"] == "-500"
+
+    @pytest.mark.asyncio
+    async def test_build_composite_adjust_zero_deltas(self, repo):
+        """build_composite_adjust with all-zero deltas returns empty dict."""
+        result = repo.build_composite_adjust(
+            entity_id="entity-1",
+            resource="gpt-4",
+            deltas={"rpm": 0},
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_get_bucket_returns_none_for_missing_limit(
+        self,
+        repo_with_buckets,
+    ):
+        """get_bucket returns None when limit_name not found in composite item."""
+        result = await repo_with_buckets.get_bucket(
+            "entity-1",
+            "gpt-4",
+            "nonexistent",
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_buckets_returns_empty_for_missing_resource(self, repo):
+        """get_buckets returns empty list when no composite item exists."""
+        await repo.create_entity("entity-1")
+        result = await repo.get_buckets("entity-1", resource="nonexistent")
+        assert result == []
 
 
 class TestRepositorySerialization:

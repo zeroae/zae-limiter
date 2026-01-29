@@ -12,7 +12,7 @@ from zae_limiter_aggregator.processor import (
     ProcessResult,
     StructuredLogger,
     calculate_snapshot_ttl,
-    extract_delta,
+    extract_deltas,
     get_window_end,
     get_window_key,
     process_stream_records,
@@ -56,69 +56,68 @@ class TestProcessResult:
         assert result.errors == ["error1", "error2"]
 
 
-class TestExtractDelta:
-    """Tests for extract_delta function."""
+class TestExtractDeltas:
+    """Tests for extract_deltas function (composite bucket format, ADR-114)."""
 
     def _make_record(
         self,
-        sk: str = "#BUCKET#gpt-4#tpm",
+        sk: str = "#BUCKET#gpt-4",
         entity_id: str = "entity-1",
-        old_tokens: int = 10000,
-        new_tokens: int = 5000,
-        last_refill_ms: int = 1704067200000,
-        old_counter: int | None = 0,
-        new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
+        rf: int = 1704067200000,
+        limits: dict[str, tuple[int | None, int | None]] | None = None,
     ) -> dict:
-        """Helper to create a stream record.
+        """Helper to create a composite bucket stream record.
 
-        The counter values (old_counter, new_counter) track consumption in millitokens.
-        Set both to None to simulate old buckets without counter (issue #179).
+        Args:
+            sk: Sort key for the composite item.
+            entity_id: Entity ID.
+            rf: Shared refill timestamp (milliseconds).
+            limits: Dict of limit_name -> (old_tc, new_tc) pairs.
+                Defaults to {"tpm": (0, 5000000)} (5000 tokens consumed in millitokens).
+                Use None values to omit the tc attribute from that image.
         """
+        if limits is None:
+            limits = {"tpm": (0, 5000000)}
+
         new_image: dict = {
             "PK": {"S": f"ENTITY#{entity_id}"},
             "SK": {"S": sk},
             "entity_id": {"S": entity_id},
-            "tokens_milli": {"N": str(new_tokens)},
-            "last_refill_ms": {"N": str(last_refill_ms)},
+            "rf": {"N": str(rf)},
         }
         old_image: dict = {
             "PK": {"S": f"ENTITY#{entity_id}"},
             "SK": {"S": sk},
             "entity_id": {"S": entity_id},
-            "tokens_milli": {"N": str(old_tokens)},
-            "last_refill_ms": {"N": str(last_refill_ms - 1000)},
+            "rf": {"N": str(rf - 1000)},
         }
 
-        record: dict = {
+        for name, (old_tc, new_tc) in limits.items():
+            if new_tc is not None:
+                new_image[f"b_{name}_tc"] = {"N": str(new_tc)}
+            if old_tc is not None:
+                old_image[f"b_{name}_tc"] = {"N": str(old_tc)}
+
+        return {
             "eventName": "MODIFY",
             "dynamodb": {
                 "NewImage": new_image,
                 "OldImage": old_image,
             },
         }
-        # Add counter as FLAT top-level attribute - issue #179
-        if new_counter is not None:
-            record["dynamodb"]["NewImage"]["total_consumed_milli"] = {"N": str(new_counter)}
-        if old_counter is not None:
-            record["dynamodb"]["OldImage"]["total_consumed_milli"] = {"N": str(old_counter)}
-        return record
 
     def test_valid_bucket_record_consumption(self) -> None:
-        """Extract delta from valid BUCKET record with consumption."""
-        # Counter tracks consumption in millitokens: 5000 tokens = 5000000 millitokens
+        """Extract deltas from valid composite BUCKET record with consumption."""
         record = self._make_record(
-            sk="#BUCKET#gpt-4#tpm",
             entity_id="test-entity",
-            old_tokens=10000,
-            new_tokens=5000,
-            last_refill_ms=1704067200000,
-            old_counter=0,
-            new_counter=5000000,  # consumed 5000 tokens (in millitokens)
+            rf=1704067200000,
+            limits={"tpm": (0, 5000000)},
         )
 
-        delta = extract_delta(record)
+        deltas = extract_deltas(record)
 
-        assert delta is not None
+        assert len(deltas) == 1
+        delta = deltas[0]
         assert delta.entity_id == "test-entity"
         assert delta.resource == "gpt-4"
         assert delta.limit_name == "tpm"
@@ -127,96 +126,94 @@ class TestExtractDelta:
 
     def test_valid_bucket_record_refund(self) -> None:
         """Extract negative delta when tokens are released (refund)."""
-        # Counter decreases when tokens are released (net tracking)
         record = self._make_record(
-            old_tokens=5000,
-            new_tokens=10000,  # tokens increased (release)
-            old_counter=10000000,  # was at 10000 tokens consumed
-            new_counter=5000000,  # now at 5000 tokens (released 5000)
+            limits={"tpm": (10000000, 5000000)},  # counter decreased
         )
 
-        delta = extract_delta(record)
+        deltas = extract_deltas(record)
 
-        assert delta is not None
-        assert delta.tokens_delta == -5000000  # negative = returned (millitokens)
+        assert len(deltas) == 1
+        assert deltas[0].tokens_delta == -5000000  # negative = returned (millitokens)
 
-    def test_non_bucket_record_returns_none(self) -> None:
-        """Non-BUCKET records return None."""
+    def test_multiple_limits_from_single_record(self) -> None:
+        """Composite record with multiple limits produces multiple deltas."""
+        record = self._make_record(
+            entity_id="multi-limit",
+            limits={
+                "tpm": (0, 5000000),
+                "rpm": (0, 1000),
+            },
+        )
+
+        deltas = extract_deltas(record)
+
+        assert len(deltas) == 2
+        names = {d.limit_name for d in deltas}
+        assert names == {"tpm", "rpm"}
+        deltas_by_name = {d.limit_name: d for d in deltas}
+        assert deltas_by_name["tpm"].tokens_delta == 5000000
+        assert deltas_by_name["rpm"].tokens_delta == 1000
+
+    def test_non_bucket_record_returns_empty(self) -> None:
+        """Non-BUCKET records return empty list."""
         record = self._make_record(sk="#LIMIT#gpt-4#tpm")
-        assert extract_delta(record) is None
+        assert extract_deltas(record) == []
 
         record = self._make_record(sk="#META")
-        assert extract_delta(record) is None
+        assert extract_deltas(record) == []
 
         record = self._make_record(sk="#RESOURCE#gpt-4")
-        assert extract_delta(record) is None
+        assert extract_deltas(record) == []
 
-    def test_zero_delta_returns_none(self) -> None:
-        """Zero delta (no consumption) returns None."""
+    def test_zero_delta_returns_empty(self) -> None:
+        """Zero tc delta (no consumption change) returns empty list."""
         record = self._make_record(
-            old_tokens=5000,
-            new_tokens=5000,
-            old_counter=1000000,
-            new_counter=1000000,  # same counter = no consumption
+            limits={"tpm": (1000000, 1000000)},  # same counter = no consumption
         )
-        assert extract_delta(record) is None
+        assert extract_deltas(record) == []
 
-    def test_malformed_sk_returns_none(self) -> None:
-        """Malformed SK returns None."""
-        # Only one part after #BUCKET#
-        record = self._make_record(sk="#BUCKET#gpt-4")
-        assert extract_delta(record) is None
+    def test_empty_resource_returns_empty(self) -> None:
+        """Empty resource in SK returns empty list."""
+        record = self._make_record(sk="#BUCKET#")
+        assert extract_deltas(record) == []
 
-        # Empty parts - counter delta still valid
-        record = self._make_record(sk="#BUCKET##", old_counter=0, new_counter=1000000)
-        delta = extract_delta(record)
-        # This actually extracts "" and "" which is valid format
-        assert delta is not None
+    def test_missing_counter_returns_empty(self) -> None:
+        """Missing tc counter (no b_{name}_tc attributes) returns empty list."""
+        # No limits at all → no tc attributes to discover
+        record = self._make_record(limits={})
+        assert extract_deltas(record) == []
 
-    def test_missing_counter_returns_none(self) -> None:
-        """Missing counter (old bucket) returns None - issue #179."""
-        record = self._make_record(old_counter=None, new_counter=None)
-        assert extract_delta(record) is None
+    def test_partial_counter_returns_empty(self) -> None:
+        """Partial counter (only one image has it) is skipped."""
+        # Only new has counter (old doesn't)
+        record = self._make_record(limits={"tpm": (None, 1000000)})
+        assert extract_deltas(record) == []
 
-    def test_partial_counter_returns_none(self) -> None:
-        """Partial counter (only one image has it) returns None."""
-        record = self._make_record(old_counter=None, new_counter=1000000)
-        assert extract_delta(record) is None
+        # Only old has counter (new doesn't, so attribute not discovered)
+        record = self._make_record(limits={"tpm": (1000000, None)})
+        assert extract_deltas(record) == []
 
-        record = self._make_record(old_counter=1000000, new_counter=None)
-        assert extract_delta(record) is None
-
-    def test_missing_entity_id_returns_none(self) -> None:
-        """Missing entity_id returns None."""
+    def test_missing_entity_id_returns_empty(self) -> None:
+        """Missing entity_id returns empty list."""
         record = self._make_record()
         del record["dynamodb"]["NewImage"]["entity_id"]
-        assert extract_delta(record) is None
+        assert extract_deltas(record) == []
 
-    def test_empty_entity_id_returns_none(self) -> None:
-        """Empty entity_id returns None."""
+    def test_empty_entity_id_returns_empty(self) -> None:
+        """Empty entity_id returns empty list."""
         record = self._make_record()
         record["dynamodb"]["NewImage"]["entity_id"]["S"] = ""
-        assert extract_delta(record) is None
-
-    def test_missing_data_uses_defaults(self) -> None:
-        """Missing data fields default to 0 (but counter still works)."""
-        record = self._make_record(old_counter=0, new_counter=1000000)
-        del record["dynamodb"]["NewImage"]["tokens_milli"]
-        del record["dynamodb"]["OldImage"]["tokens_milli"]
-
-        delta = extract_delta(record)
-        assert delta is not None  # counter delta is 1000000
-        assert delta.tokens_delta == 1000000
+        assert extract_deltas(record) == []
 
     def test_missing_dynamodb_key(self) -> None:
-        """Missing dynamodb key returns None."""
+        """Missing dynamodb key returns empty list."""
         record = {"eventName": "MODIFY"}
-        assert extract_delta(record) is None
+        assert extract_deltas(record) == []
 
     def test_missing_new_image(self) -> None:
-        """Missing NewImage returns None."""
+        """Missing NewImage returns empty list."""
         record = {"eventName": "MODIFY", "dynamodb": {"OldImage": {}}}
-        assert extract_delta(record) is None
+        assert extract_deltas(record) == []
 
 
 class TestGetWindowKey:
@@ -488,39 +485,40 @@ class TestProcessStreamRecords:
     def _make_record(
         self,
         event_name: str = "MODIFY",
-        sk: str = "#BUCKET#gpt-4#tpm",
+        sk: str = "#BUCKET#gpt-4",
         entity_id: str = "entity-1",
-        old_tokens: int = 10000,
-        new_tokens: int = 5000,
-        old_counter: int | None = 0,
-        new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
+        limit_name: str = "tpm",
+        old_tc: int | None = 0,
+        new_tc: int | None = 5000000,  # 5000 tokens consumed in millitokens
+        rf: int = 1704067200000,
     ) -> dict:
-        """Helper to create a stream record with flat format (v0.6.0+)."""
-        record: dict = {
+        """Helper to create a composite bucket stream record (ADR-114)."""
+        new_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf)},
+        }
+        old_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf - 1000)},
+        }
+
+        # Add per-limit tc counter (composite format)
+        if new_tc is not None:
+            new_image[f"b_{limit_name}_tc"] = {"N": str(new_tc)}
+        if old_tc is not None:
+            old_image[f"b_{limit_name}_tc"] = {"N": str(old_tc)}
+
+        return {
             "eventName": event_name,
             "dynamodb": {
-                "NewImage": {
-                    "PK": {"S": f"ENTITY#{entity_id}"},
-                    "SK": {"S": sk},
-                    "entity_id": {"S": entity_id},
-                    "tokens_milli": {"N": str(new_tokens)},
-                    "last_refill_ms": {"N": "1704067200000"},
-                },
-                "OldImage": {
-                    "PK": {"S": f"ENTITY#{entity_id}"},
-                    "SK": {"S": sk},
-                    "entity_id": {"S": entity_id},
-                    "tokens_milli": {"N": str(old_tokens)},
-                    "last_refill_ms": {"N": "1704067199000"},
-                },
+                "NewImage": new_image,
+                "OldImage": old_image,
             },
         }
-        # Add counter as FLAT top-level attribute (issue #179)
-        if new_counter is not None:
-            record["dynamodb"]["NewImage"]["total_consumed_milli"] = {"N": str(new_counter)}
-        if old_counter is not None:
-            record["dynamodb"]["OldImage"]["total_consumed_milli"] = {"N": str(old_counter)}
-        return record
 
     def test_empty_records(self) -> None:
         """Empty records list returns zero counts."""
@@ -549,17 +547,13 @@ class TestProcessStreamRecords:
         records = [
             self._make_record(
                 entity_id="e1",
-                old_tokens=10000,
-                new_tokens=5000,
-                old_counter=0,
-                new_counter=5000000,
+                old_tc=0,
+                new_tc=5000000,
             ),
             self._make_record(
                 entity_id="e2",
-                old_tokens=8000,
-                new_tokens=3000,
-                old_counter=0,
-                new_counter=5000000,
+                old_tc=0,
+                new_tc=5000000,
             ),
         ]
 
@@ -587,26 +581,23 @@ class TestProcessStreamRecords:
         assert result.snapshots_updated == 2  # 1 delta * 2 windows
         assert mock_table.update_item.call_count == 2
 
-    def test_handles_extract_delta_exception(self) -> None:
-        """Handles exceptions during extract_delta."""
-        # Create a record that will cause an exception - counter value is not a number
+    def test_handles_extract_deltas_exception(self) -> None:
+        """Handles exceptions during extract_deltas."""
+        # Create a composite record with invalid tc counter value
         bad_record = {
             "eventName": "MODIFY",
             "dynamodb": {
                 "NewImage": {
-                    "SK": {"S": "#BUCKET#res#limit"},
+                    "SK": {"S": "#BUCKET#res"},
                     "entity_id": {"S": "entity"},
-                    "data": {
-                        "M": {
-                            "tokens_milli": {"N": "1000"},
-                            "last_refill_ms": {"N": "1704067200000"},
-                        }
-                    },
-                    "total_consumed_milli": {"N": "not_a_number"},  # invalid counter
+                    "rf": {"N": "1704067200000"},
+                    "b_limit_tc": {"N": "not_a_number"},  # invalid counter
                 },
                 "OldImage": {
-                    "data": {"M": {"tokens_milli": {"N": "1000"}}},
-                    "total_consumed_milli": {"N": "0"},
+                    "SK": {"S": "#BUCKET#res"},
+                    "entity_id": {"S": "entity"},
+                    "rf": {"N": "1704067200000"},
+                    "b_limit_tc": {"N": "0"},
                 },
             },
         }
@@ -634,14 +625,11 @@ class TestProcessStreamRecords:
         assert "Error updating snapshot" in result.errors[0]
 
     def test_skips_zero_delta_records(self) -> None:
-        """Records with zero delta are skipped."""
+        """Records with zero tc delta are skipped."""
         records = [
-            # Zero counter delta = no consumption change
             self._make_record(
-                old_tokens=5000,
-                new_tokens=5000,
-                old_counter=1000000,
-                new_counter=1000000,  # same counter = zero delta
+                old_tc=1000000,
+                new_tc=1000000,  # same counter = zero delta
             ),
         ]
 
@@ -654,22 +642,18 @@ class TestProcessStreamRecords:
     def test_mixed_valid_and_invalid_records(self) -> None:
         """Processes valid records even when some are invalid."""
         records = [
-            # Valid: has counter with positive delta
+            # Valid: has tc counter with positive delta
             self._make_record(
                 entity_id="valid",
-                old_tokens=10000,
-                new_tokens=5000,
-                old_counter=0,
-                new_counter=5000000,
+                old_tc=0,
+                new_tc=5000000,
             ),
-            # Invalid: non-bucket SK (will return None)
+            # Invalid: non-bucket SK (will return empty list)
             self._make_record(sk="#LIMIT#res#name"),
-            # Invalid: zero counter delta
+            # Invalid: zero tc delta
             self._make_record(
-                old_tokens=5000,
-                new_tokens=5000,
-                old_counter=1000000,
-                new_counter=1000000,
+                old_tc=1000000,
+                new_tc=1000000,
             ),
         ]
 
@@ -753,39 +737,40 @@ class TestStructuredLoggingIntegration:
     def _make_record(
         self,
         event_name: str = "MODIFY",
-        sk: str = "#BUCKET#gpt-4#tpm",
+        sk: str = "#BUCKET#gpt-4",
         entity_id: str = "entity-1",
-        old_tokens: int = 10000,
-        new_tokens: int = 5000,
-        old_counter: int | None = 0,
-        new_counter: int | None = 5000000,  # 5000 tokens consumed in millitokens
+        limit_name: str = "tpm",
+        old_tc: int | None = 0,
+        new_tc: int | None = 5000000,  # 5000 tokens consumed in millitokens
+        rf: int = 1704067200000,
     ) -> dict:
-        """Helper to create a stream record with flat format (v0.6.0+)."""
-        record: dict = {
+        """Helper to create a composite bucket stream record (ADR-114)."""
+        new_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf)},
+        }
+        old_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf - 1000)},
+        }
+
+        # Add per-limit tc counter (composite format)
+        if new_tc is not None:
+            new_image[f"b_{limit_name}_tc"] = {"N": str(new_tc)}
+        if old_tc is not None:
+            old_image[f"b_{limit_name}_tc"] = {"N": str(old_tc)}
+
+        return {
             "eventName": event_name,
             "dynamodb": {
-                "NewImage": {
-                    "PK": {"S": f"ENTITY#{entity_id}"},
-                    "SK": {"S": sk},
-                    "entity_id": {"S": entity_id},
-                    "tokens_milli": {"N": str(new_tokens)},
-                    "last_refill_ms": {"N": "1704067200000"},
-                },
-                "OldImage": {
-                    "PK": {"S": f"ENTITY#{entity_id}"},
-                    "SK": {"S": sk},
-                    "entity_id": {"S": entity_id},
-                    "tokens_milli": {"N": str(old_tokens)},
-                    "last_refill_ms": {"N": "1704067199000"},
-                },
+                "NewImage": new_image,
+                "OldImage": old_image,
             },
         }
-        # Add counter as FLAT top-level attribute (issue #179)
-        if new_counter is not None:
-            record["dynamodb"]["NewImage"]["total_consumed_milli"] = {"N": str(new_counter)}
-        if old_counter is not None:
-            record["dynamodb"]["OldImage"]["total_consumed_milli"] = {"N": str(old_counter)}
-        return record
 
     def test_batch_processing_logs_start_and_end(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Logs batch start and completion with metrics."""

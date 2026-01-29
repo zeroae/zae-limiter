@@ -336,8 +336,7 @@ response = table.query(
 )
 
 for item in response["Items"]:
-    data = item["data"]
-    print(f"{data['timestamp']}: {data['action']}")
+    print(f"{item['timestamp']}: {item['action']}")
 ```
 
 ## Use Cases

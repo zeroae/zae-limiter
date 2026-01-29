@@ -15,7 +15,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 - **Multiple limits** are tracked per call (requests per minute, tokens per minute)
 - **Consumption is unknown upfront** — adjust limits after the operation completes
 - **Hierarchical limits** exist (API key → project, tenant → user)
-- **Cost matters** — ~$1/1M requests ([details](performance.md#cost-model))
+- **Cost matters** — ~$0.75/1M requests ([details](performance.md#cost-optimization-strategies))
 
 ## Features
 
@@ -64,12 +64,12 @@ await limiter.set_limits("proj-1", [Limit.per_minute("tpm", 100_000)])
 await limiter.create_entity(entity_id="api-key-456", parent_id="proj-1", cascade=True)
 
 # cascade is an entity property — acquire() auto-cascades to parent
+# limits=None auto-resolves from stored config (Entity > Resource > System)
 async with limiter.acquire(
     entity_id="api-key-456",
     resource="gpt-4",
-    limits=default_limits,
+    limits=None,
     consume={"rpm": 1, "tpm": 500},
-    use_stored_limits=True,  # Uses proj-1's 100k tpm limit
 ) as lease:
     response = await call_llm()
 ```

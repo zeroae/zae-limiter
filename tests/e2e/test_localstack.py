@@ -122,7 +122,7 @@ class TestE2ELocalStackCLIWorkflow:
             assert "Client:" in result.output
             assert "Schema:" in result.output
             # Schema should be initialized by deploy (not N/A)
-            assert "Schema:        1.0.0" in result.output
+            assert "Schema:        0.7.0" in result.output
             assert "Lambda:" in result.output
             # Lambda is N/A for LocalStack (no real Lambda deployment)
             assert "Lambda:        N/A" in result.output
@@ -772,9 +772,9 @@ class TestE2ELocalStackFullWorkflow:
 class TestE2ELocalStackAggregatorWorkflow:
     """E2E tests for Lambda aggregator and usage snapshots."""
 
-    @pytest.fixture
-    async def e2e_limiter_with_aggregator(self, localstack_endpoint, unique_name):
-        """Create RateLimiter with aggregator enabled."""
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def e2e_limiter_with_aggregator(self, localstack_endpoint, unique_name_class):
+        """Create RateLimiter with aggregator enabled. Class-scoped to share stack."""
         stack_options = StackOptions(
             enable_aggregator=True,
             enable_alarms=False,  # Faster deployment
@@ -783,7 +783,7 @@ class TestE2ELocalStackAggregatorWorkflow:
         )
 
         limiter = RateLimiter(
-            name=unique_name,
+            name=unique_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=stack_options,
@@ -792,14 +792,13 @@ class TestE2ELocalStackAggregatorWorkflow:
         async with limiter:
             yield limiter
 
-        # Explicitly delete the stack after test completes
         try:
             await limiter.delete_stack()
         except Exception as e:
             # LocalStack may have issues with stack deletion, log but don't fail
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="class")
     async def test_usage_snapshot_generation(self, e2e_limiter_with_aggregator):
         """
         Test that aggregator creates usage snapshots.

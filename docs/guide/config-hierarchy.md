@@ -222,10 +222,12 @@ The `on_unavailable` setting controls behavior when DynamoDB is unreachable:
 ```python
 # Set at system level
 await limiter.set_system_defaults(
-    limits=[...],
+    limits=[Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)],
     on_unavailable=OnUnavailable.ALLOW,
 )
+```
 
+```bash
 # Or via CLI
 zae-limiter system set-defaults -l rpm:100 --on-unavailable allow
 ```

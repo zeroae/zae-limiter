@@ -83,6 +83,51 @@ Data models for rate limit configuration and status.
       members_order: source
       heading_level: 3
 
+## StackOptions
+
+::: zae_limiter.models.StackOptions
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
+## Status
+
+::: zae_limiter.models.Status
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
+## BackendCapabilities
+
+::: zae_limiter.models.BackendCapabilities
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
+## ResourceCapacity
+
+::: zae_limiter.models.ResourceCapacity
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
+## EntityCapacity
+
+::: zae_limiter.models.EntityCapacity
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
 ## CacheStats
 
 ::: zae_limiter.config_cache.CacheStats

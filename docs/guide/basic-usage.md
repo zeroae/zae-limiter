@@ -10,10 +10,9 @@ The `acquire()` method is the primary API for rate limiting:
 async with limiter.acquire(
     entity_id="user-123",      # Who is being rate limited
     resource="gpt-4",          # What resource they're accessing
-    limits=[...],              # Rate limit definitions
     consume={"rpm": 1},        # How much to consume
 ) as lease:
-    # Your code here
+    # Your code here - limits resolved from stored config
     pass
 ```
 
@@ -23,6 +22,8 @@ async with limiter.acquire(
 - On success: Commits the consumption
 - On exception: Rolls back the consumption
 
+Limits are resolved automatically from stored config (Entity > Resource > System). See [Configuration Hierarchy](config-hierarchy.md) for details.
+
 ## Multiple Limits
 
 Track multiple limits in a single call:
@@ -31,17 +32,34 @@ Track multiple limits in a single call:
 async with limiter.acquire(
     entity_id="api-key-123",
     resource="gpt-4",
-    limits=[
-        Limit.per_minute("rpm", 100),       # 100 requests/minute
-        Limit.per_minute("tpm", 10_000),    # 10,000 tokens/minute
-        Limit.per_hour("rph", 1_000),       # 1,000 requests/hour
-    ],
-    consume={"rpm": 1, "tpm": 500, "rph": 1},
+    consume={"rpm": 1, "tpm": 500},
 ) as lease:
     response = await call_llm()
 ```
 
 All limits are checked atomically. If any limit is exceeded, the request is rejected.
+
+When using stored config, configure multiple limits at setup time:
+
+=== "CLI"
+
+    ```bash
+    zae-limiter resource set-defaults gpt-4 \
+        -l rpm:100 \
+        -l tpm:10000
+    ```
+
+=== "Python"
+
+    ```python
+    await limiter.set_resource_defaults(
+        resource="gpt-4",
+        limits=[
+            Limit.per_minute("rpm", 100),       # 100 requests/minute
+            Limit.per_minute("tpm", 10_000),    # 10,000 tokens/minute
+        ],
+    )
+    ```
 
 !!! tip "Performance Tip"
     Combining multiple limits into a single `acquire()` call is more efficient than separate calls. See [Batch Operation Patterns](../performance.md#3-batch-operation-patterns) for details.
@@ -67,7 +85,6 @@ Use `lease.adjust()` to modify consumption after the fact:
 async with limiter.acquire(
     entity_id="key-123",
     resource="gpt-4",
-    limits=[Limit.per_minute("tpm", 10_000)],
     consume={"tpm": 500},  # Initial estimate
 ) as lease:
     response = await call_llm()
@@ -90,7 +107,6 @@ async with limiter.acquire(
 available = await limiter.available(
     entity_id="key-123",
     resource="gpt-4",
-    limits=[Limit.per_minute("tpm", 10_000)],
 )
 print(f"Available tokens: {available['tpm']}")
 ```
@@ -101,7 +117,6 @@ print(f"Available tokens: {available['tpm']}")
 wait_seconds = await limiter.time_until_available(
     entity_id="key-123",
     resource="gpt-4",
-    limits=[Limit.per_minute("tpm", 10_000)],
     needed={"tpm": 5_000},
 )
 
@@ -146,8 +161,7 @@ await limiter.set_limits(
 async with limiter.acquire(
     entity_id="user-premium",
     resource="gpt-4",
-    limits=None,  # Auto-resolves to entity-level (500 rpm)
-    consume={"rpm": 1},
+    consume={"rpm": 1},  # Auto-resolves to entity-level (500 rpm)
 ) as lease:
     ...
 
@@ -155,8 +169,7 @@ async with limiter.acquire(
 async with limiter.acquire(
     entity_id="user-free",
     resource="gpt-4",
-    limits=None,  # Auto-resolves to resource-level
-    consume={"rpm": 1},
+    consume={"rpm": 1},  # Auto-resolves to resource-level
 ) as lease:
     ...
 
@@ -164,8 +177,8 @@ async with limiter.acquire(
 async with limiter.acquire(
     entity_id="user-premium",
     resource="gpt-4",
-    limits=[Limit.per_minute("rpm", 10)],  # Explicit override
     consume={"rpm": 1},
+    limits=[Limit.per_minute("rpm", 10)],  # Explicit override
 ) as lease:
     ...
 ```
@@ -207,8 +220,13 @@ print(f"Parent: {entity.parent_id}")
 
 ```python
 try:
-    async with limiter.acquire(...):
-        ...
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        consume={"rpm": 2},  # Exceeds capacity to trigger error
+        limits=[Limit.per_minute("rpm", 1)],
+    ):
+        pass
 except RateLimitExceeded as e:
     # All limit statuses
     for status in e.statuses:
@@ -222,7 +240,7 @@ except RateLimitExceeded as e:
     print(f"Bottleneck: {e.primary_violation.limit_name}")
 
     # For API responses
-    return e.as_dict()
+    print(e.as_dict())
 ```
 
 ### Service Unavailable
@@ -231,8 +249,12 @@ except RateLimitExceeded as e:
 from zae_limiter import RateLimiterUnavailable
 
 try:
-    async with limiter.acquire(...):
-        ...
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        consume={"rpm": 1},
+    ):
+        pass
 except RateLimiterUnavailable as e:
     # DynamoDB is unavailable
     # Behavior depends on on_unavailable setting

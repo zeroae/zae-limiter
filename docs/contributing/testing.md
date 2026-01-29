@@ -18,6 +18,11 @@ tests/
 ├── e2e/                         # Full workflow tests (LocalStack + AWS)
 │   ├── test_localstack.py
 │   └── test_aws.py
+├── doctest/                     # Documentation code example tests
+│   ├── conftest.py              # Ruff config, moto fixtures, skip tags
+│   ├── test_docs_lint.py        # Lint all Python blocks with ruff
+│   ├── test_docs_run.py         # Execute blocks against moto
+│   └── test_docs_integration.py # Execute blocks against LocalStack
 └── benchmark/                   # Performance benchmarks (pytest-benchmark)
     ├── test_operations.py       # Mocked benchmarks
     └── test_localstack.py       # LocalStack benchmarks
@@ -30,6 +35,7 @@ tests/
 | **Unit** | `tests/unit/` | moto (mocked) | Business logic, bucket math, schema, exceptions | Fast (~seconds) |
 | **Integration** | `tests/integration/` | LocalStack | Repository operations, transactions, GSI queries | Medium |
 | **E2E** | `tests/e2e/` | LocalStack or AWS | Full workflows: CLI, rate limiting, hierarchical limits | Slow |
+| **Doctest** | `tests/doctest/` | ruff / moto / LocalStack | Documentation code examples are valid and runnable | Fast |
 | **Benchmark** | `tests/benchmark/` | moto or LocalStack | Latency (p50/p95/p99), throughput, cascade overhead | Variable |
 
 ## Pytest Markers
@@ -41,6 +47,7 @@ tests/
 | `@pytest.mark.e2e` | End-to-end workflows | `pytest -m e2e` |
 | `@pytest.mark.aws` | Real AWS (requires `--run-aws`) | `pytest -m aws --run-aws` |
 | `@pytest.mark.benchmark` | Performance benchmarks | `pytest -m benchmark` |
+| `@pytest.mark.doctest` | Documentation code examples | `pytest tests/doctest/` |
 | `@pytest.mark.slow` | Tests with >30s waits | Skip with `-m "not slow"` |
 
 ## pytest Fixtures
@@ -106,7 +113,7 @@ async def test_rate_limiting(limiter):
 
 For test suites where stack creation overhead is significant:
 
-```python
+```{.python .lint-only}
 @pytest.fixture(scope="session")
 async def shared_limiter(localstack_endpoint):
     """
@@ -129,7 +136,7 @@ async def shared_limiter(localstack_endpoint):
 
 ### Sync Fixture Example
 
-```python
+```{.python .lint-only}
 @pytest.fixture(scope="function")
 def sync_limiter(localstack_endpoint):
     """Synchronous rate limiter with cleanup."""
@@ -150,6 +157,51 @@ def sync_limiter(localstack_endpoint):
 
     limiter.delete_stack()
 ```
+
+## Documentation Code Examples
+
+All Python code blocks in `docs/` are automatically tested using [pytest-examples](https://github.com/pydantic/pytest-examples). Three test passes validate documentation quality:
+
+| Pass | File | What it checks |
+|------|------|----------------|
+| **Lint** | `test_docs_lint.py` | All blocks pass ruff linting |
+| **Run (moto)** | `test_docs_run.py` | Runnable blocks execute against moto |
+| **Integration** | `test_docs_integration.py` | LocalStack-tagged blocks execute against LocalStack |
+
+### Running Doc Tests
+
+```bash
+# Lint all Python code blocks
+uv run pytest tests/doctest/test_docs_lint.py -v -p no:xdist -o "addopts="
+
+# Run executable blocks against moto
+uv run pytest tests/doctest/test_docs_run.py -v -p no:xdist -o "addopts="
+
+# Run LocalStack blocks (requires LocalStack running)
+uv run pytest tests/doctest/test_docs_integration.py -v -m integration -p no:xdist -o "addopts="
+```
+
+### Code Fence Tags
+
+Use tags to classify code blocks that can't run in the default (moto) environment:
+
+| Tag | Effect | When to use |
+|-----|--------|-------------|
+| (none) | Lint + run with moto | Default for most blocks |
+| `{.python .lint-only}` | Lint only, skip execution | Fragments, pseudo-code, undefined helpers |
+| `{.python .requires-external}` | Skip lint + execution | Needs packages not in project deps |
+| `{.python .requires-localstack}` | Run with LocalStack only | Needs real CloudFormation/Lambda |
+
+The `{.python .tag}` syntax is compatible with MkDocs Material — the extra classes are silently ignored during rendering.
+
+### Adding New Code Blocks
+
+When adding Python code blocks to documentation:
+
+1. Write the block as standard `` ```python ``
+2. Run `uv run pytest tests/doctest/ -v -p no:xdist -o "addopts="` to check
+3. If the block can't run standalone (uses undefined variables, bare `await`, etc.), change the fence to `` ```{.python .lint-only} ``
+4. If the block needs external packages, use `` ```{.python .requires-external} ``
 
 ## Running Tests
 
@@ -285,7 +337,7 @@ When adding performance-sensitive code:
 
 Example:
 
-```python
+```{.python .lint-only}
 @pytest.mark.benchmark
 def test_acquire_with_new_optimization(self, benchmark, sync_limiter):
     """Measure acquire with new optimization.

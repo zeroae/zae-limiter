@@ -564,8 +564,9 @@ Resources:
       Code:
         ZipFile: |
           def handler(event, context):
-              # Placeholder - replace with actual deployment
-              return {"statusCode": 200, "body": "Placeholder"}
+              # Placeholder Lambda - intentionally fails to trigger ESM retries.
+              # Events will be retried and processed by real code after deployment.
+              raise RuntimeError("Placeholder Lambda - waiting for code deployment")
 
       Tags:
         - Key: Application

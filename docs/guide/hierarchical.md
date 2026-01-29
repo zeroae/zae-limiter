@@ -90,9 +90,8 @@ await limiter.set_limits(
 async with limiter.acquire(
     entity_id="key-abc",
     resource="gpt-4",
-    limits=[Limit.per_minute("tpm", 5_000)],  # Default
+    limits=None,  # Auto-resolves from stored config
     consume={"tpm": 500},
-    use_stored_limits=True,  # Uses stored limits for both levels
 ) as lease:
     await call_api()
 ```
@@ -139,9 +138,11 @@ When an entity has cascade enabled, `RateLimitExceeded` includes statuses for al
 try:
     async with limiter.acquire(
         entity_id="key-abc",  # Has cascade=True from create_entity()
-        ...
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 100)],
+        consume={"rpm": 1},
     ):
-        ...
+        pass
 except RateLimitExceeded as e:
     for status in e.statuses:
         print(f"Entity: {status.entity_id}")
@@ -171,11 +172,13 @@ await limiter.set_limits(
 )
 
 # Rate limit user — auto-cascades to tenant
+# limits=None auto-resolves from stored config
 async with limiter.acquire(
     entity_id="user-123",
-    use_stored_limits=True,
-    ...
-):
+    resource="gpt-4",
+    limits=None,
+    consume={"tpm": 500},
+) as lease:
     ...
 ```
 

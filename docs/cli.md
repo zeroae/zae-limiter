@@ -49,6 +49,9 @@ zae-limiter deploy [OPTIONS]
 | `--enable-audit-archival/--no-audit-archival` | Archive expired audit events to S3 | `true` |
 | `--audit-archive-glacier-days` | Days before Glacier IR transition (1-3650) | `90` |
 | `--enable-tracing/--no-tracing` | Enable AWS X-Ray tracing | `false` |
+| `--enable-iam-roles/--no-iam-roles` | Create App/Admin/ReadOnly IAM roles | `true` |
+| `--tag`, `-t` | User-defined tag in KEY=VALUE format (repeatable) | None |
+| `--lambda-duration-threshold-pct` | Lambda duration alarm threshold (1-100%) | `80` |
 | `--wait/--no-wait` | Wait for stack creation | `true` |
 
 **Examples:**
@@ -129,25 +132,23 @@ zae-limiter list --endpoint-url http://localhost:4566 --region us-east-1
 
 ```
 Rate Limiter Instances (us-east-1)
-===========================================================================================
 
-Name                 Status                    Version      Lambda       Schema     Created
--------------------------------------------------------------------------------------------
-prod-api             CREATE_COMPLETE           0.2.0        0.2.0        1.0.0      2024-01-15
-staging              CREATE_COMPLETE           0.2.0        0.2.0        1.0.0      2024-01-10
-dev-test             UPDATE_IN_PROGRESS        0.1.0        0.1.0        1.0.0      2023-12-01
+Name                 Status                    Version      Created
+--------------------------------------------------------------------
+prod-api             CREATE_COMPLETE           0.2.0        2024-01-15
+staging              CREATE_COMPLETE           0.2.0        2024-01-10
+dev-test             UPDATE_IN_PROGRESS        0.1.0        2023-12-01
 
 Total: 3 instance(s)
-  1 instance(s) need attention
+  1 failed
+  1 in progress
 ```
 
 The output includes:
 
 - **Name**: User-friendly name
-- **Status**: CloudFormation stack status with visual indicator
+- **Status**: CloudFormation stack status
 - **Version**: Client version at deployment (from stack tag)
-- **Lambda**: Lambda aggregator version
-- **Schema**: DynamoDB schema version
 - **Created**: Stack creation date
 
 ---
@@ -164,8 +165,8 @@ zae-limiter status [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier | Required |
-| `--region` | AWS region | Required |
+| `--name`, `-n` | Resource identifier | Required |
+| `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
 
 **Example:**
@@ -216,10 +217,11 @@ zae-limiter delete [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--name` | Resource identifier | Required |
-| `--region` | AWS region | Required |
-| `--yes` | Skip confirmation prompt | `false` |
+| `--name`, `-n` | Resource identifier | Required |
+| `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom AWS endpoint | None |
+| `--wait/--no-wait` | Wait for stack deletion | `true` |
+| `--yes`, `-y` | Skip confirmation prompt | `false` |
 
 **Example:**
 
@@ -896,6 +898,87 @@ zae-limiter system delete-defaults --yes
 
 Manage entity-level limit configurations. These limits apply to a specific entity and resource combination, overriding both system and resource defaults.
 
+### entity create
+
+Create a new entity.
+
+```bash
+zae-limiter entity create <ENTITY_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `ENTITY_ID` | Unique identifier for the entity (e.g., 'user-123', 'api-key-abc') |
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--display-name` | Human-readable name | entity_id |
+| `--parent` | Parent entity ID (for hierarchical limits) | None |
+| `--cascade/--no-cascade` | Cascade acquire() to parent entity | `false` |
+| `--name`, `-n` | Stack identifier | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+
+**Examples:**
+
+```bash
+# Create a standalone entity
+zae-limiter entity create user-123
+
+# Create with a display name
+zae-limiter entity create api-key-abc --display-name "Production API Key"
+
+# Create with parent and cascade
+zae-limiter entity create user-123 --parent org-456 --cascade
+```
+
+---
+
+### entity show
+
+Show details for an entity.
+
+```bash
+zae-limiter entity show <ENTITY_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `ENTITY_ID` | The entity to query |
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--name`, `-n` | Stack identifier | `limiter` |
+| `--region` | AWS region | boto3 default |
+| `--endpoint-url` | Custom AWS endpoint (LocalStack) | None |
+
+**Examples:**
+
+```bash
+# Show entity details
+zae-limiter entity show user-123
+```
+
+**Output:**
+
+```
+Entity: user-123
+  Name:       Production User
+  Parent:     org-456
+  Cascade:    True
+  Created:    2024-01-15T10:00:00Z
+```
+
+---
+
 ### entity set-limits
 
 Set limits for a specific entity and resource.
@@ -1006,6 +1089,118 @@ zae-limiter entity delete-limits user-premium --resource gpt-4
 
 # Skip confirmation
 zae-limiter entity delete-limits user-premium --resource gpt-4 --yes
+```
+
+---
+
+## local
+
+Manage LocalStack for local development. Requires Docker.
+
+### local up
+
+Start a LocalStack container for local development.
+
+```bash
+zae-limiter local up [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--docker-host` | Docker daemon URL | `DOCKER_HOST` env var |
+| `--image` | LocalStack Docker image | `localstack/localstack:4` |
+| `--name`, `-n` | Stack name for deploy instructions | None |
+| `--port` | Host port to bind | `4566` |
+
+**Examples:**
+
+```bash
+# Start LocalStack
+zae-limiter local up
+
+# Start and show deploy instructions for a named stack
+zae-limiter local up --name my-app
+```
+
+---
+
+### local down
+
+Stop and remove the LocalStack container.
+
+```bash
+zae-limiter local down [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--docker-host` | Docker daemon URL | `DOCKER_HOST` env var |
+
+---
+
+### local status
+
+Show LocalStack container status, endpoint, health, and image.
+
+```bash
+zae-limiter local status [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--docker-host` | Docker daemon URL | `DOCKER_HOST` env var |
+
+**Output (when running):**
+
+```
+LocalStack: running
+Endpoint:   http://localhost:4566
+Health:     healthy
+Image:      localstack/localstack:4
+Services:   dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3,sts,resourcegroupstaggingapi
+
+To use with zae-limiter:
+  export AWS_ENDPOINT_URL=http://localhost:4566
+  export AWS_ACCESS_KEY_ID=test
+  export AWS_SECRET_ACCESS_KEY=test
+  export AWS_DEFAULT_REGION=us-east-1
+```
+
+---
+
+### local logs
+
+Show LocalStack container logs.
+
+```bash
+zae-limiter local logs [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--docker-host` | Docker daemon URL | `DOCKER_HOST` env var |
+| `--follow`, `-f` | Follow log output | `false` |
+| `--tail` | Number of lines from end of logs | `100` |
+
+**Examples:**
+
+```bash
+# Show recent logs
+zae-limiter local logs
+
+# Follow logs
+zae-limiter local logs --follow
+
+# Show last 50 lines
+zae-limiter local logs --tail 50
 ```
 
 ---

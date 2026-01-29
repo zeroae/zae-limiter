@@ -85,7 +85,7 @@ while True:
 
 For aggregated statistics, use `get_usage_summary()`:
 
-```python
+```{.python .lint-only}
 summary = await limiter.get_usage_summary(
     entity_id="user-123",
     resource="gpt-4",

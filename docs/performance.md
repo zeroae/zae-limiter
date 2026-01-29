@@ -10,19 +10,20 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 
 | Operation | RCUs | WCUs | Notes |
 |-----------|------|------|-------|
-| `acquire()` - single limit | 1 | 1 | BatchGetItem + TransactWrite |
-| `acquire()` - N limits | N | N | 1 BatchGetItem + TransactWrite(N items) |
-| `acquire()` with cascade entity | N×2 | N×2 | 1 GetEntity + 1 BatchGetItem + TransactWrite |
-| `acquire(use_stored_limits=True)` | +2 | 0 | +2 Query operations for limits |
-| `available()` | 1 per limit | 0 | Read-only, no transaction |
+| `acquire()` | 1 | 1 | O(1) regardless of limit count (composite bucket items) |
+| `acquire()` with cascade | 2 | 4 | Entity + parent bucket reads and writes |
+| `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
+| `acquire(limits=None)` with config cache miss | +3 | 0 | +3 GetItem operations for config hierarchy |
+| `available()` | 1 | 0 | Read-only, single composite bucket item |
 | `get_limits()` | 1 | 0 | Query operation |
 | `set_limits()` | 1 | N+1 | Query + N PutItems |
 | `delete_entity()` | 1 | batched | Query + BatchWrite in 25-item chunks |
 
-!!! note "Read Optimization (v0.5.0)"
-    `acquire()` uses `BatchGetItem` to fetch all buckets in a single DynamoDB call,
-    reducing round trips for cascade scenarios. Previously, each bucket was fetched
-    with a separate `GetItem` call.
+!!! note "O(1) Cost Optimization (v0.7.0)"
+    ADR-114 (Composite Bucket Items) and ADR-115 (ADD-Based Writes) reduced `acquire()` costs
+    from O(N) to O(1) where N is the number of limits. All limits for an entity+resource are
+    stored in a single DynamoDB item, and ADD operations eliminate the need for read-modify-write
+    cycles on contention retries.
 
 !!! info "Capacity Validation"
     These costs are validated by automated tests. Run `uv run pytest tests/benchmark/test_capacity.py -v` to verify.
@@ -32,13 +33,17 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 Use these formulas to estimate hourly capacity requirements:
 
 ```
-Hourly RCUs = requests/hour × limits/request × (1 + cascade_pct × 2 + stored_limits_pct × 2)
-Hourly WCUs = requests/hour × limits/request × (1 + cascade_pct)
+Hourly RCUs = requests/hour × (1 + cascade_pct + config_cache_miss_pct × 3)
+Hourly WCUs = requests/hour × (1 + cascade_pct × 3)
 ```
+
+!!! note "O(1) Scaling (v0.7.0+)"
+    Costs no longer scale with the number of limits per request. Composite bucket items
+    store all limits in a single DynamoDB item, so 1 limit and 10 limits cost the same.
 
 With the Lambda aggregator enabled (2 windows: hourly, daily):
 ```
-Additional WCUs = requests/hour × limits/request × 2
+Additional WCUs = requests/hour × 2
 ```
 
 ### Example Calculations
@@ -47,25 +52,29 @@ Additional WCUs = requests/hour × limits/request × 2
 
 - 10,000 requests/hour
 - 2 limits per request (rpm, tpm)
-- No cascade, no stored limits
+- No cascade, config cached
 
 **Calculation:**
 ```
-RCUs = 10,000 × 2 × 1.0 = 20,000 RCUs/hour
-WCUs = 10,000 × 2 × 1.0 = 20,000 WCUs/hour
+RCUs = 10,000 × 1.0 = 10,000 RCUs/hour
+WCUs = 10,000 × 1.0 = 10,000 WCUs/hour
 ```
+
+!!! note "Limit count doesn't affect cost"
+    With composite bucket items (v0.7.0+), whether you track 1 limit or 10 limits,
+    the DynamoDB cost is identical—all limits are stored in a single item.
 
 #### Scenario 2: Hierarchical LLM Limiting
 
 - 10,000 requests/hour
 - 2 limits per request
 - 50% use cascade (API key → project)
-- 20% use stored limits
+- 2% config cache miss rate
 
 **Calculation:**
 ```
-RCUs = 10,000 × 2 × (1 + 0.5×2 + 0.2×2) = 10,000 × 2 × 2.4 = 48,000 RCUs/hour
-WCUs = 10,000 × 2 × (1 + 0.5) = 10,000 × 2 × 1.5 = 30,000 WCUs/hour
+RCUs = 10,000 × (1 + 0.5 + 0.02×3) = 10,000 × 1.56 = 15,600 RCUs/hour
+WCUs = 10,000 × (1 + 0.5×3) = 10,000 × 2.5 = 25,000 WCUs/hour
 ```
 
 ### Billing Mode Selection
@@ -159,16 +168,16 @@ DynamoDB enforces these limits:
 async with limiter.acquire(
     "entity-id",
     "llm-api",
-    [rpm_limit, tpm_limit],
     {"rpm": 1},  # Initial consumption (1 request)
+    limits=[rpm_limit, tpm_limit],
 ) as lease:
     # 2 GetItems + 1 TransactWrite (2 items)
     response = await call_llm()
-    lease.adjust({"tpm": response.usage.total_tokens})
+    await lease.adjust(tpm=response.usage.total_tokens)
 
 # Inefficient: Separate acquisitions
-async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
-    async with limiter.acquire("entity-id", "llm-api", [tpm_limit], {"tpm": 100}):
+async with limiter.acquire("entity-id", "llm-api", {"rpm": 1}, limits=[rpm_limit]):
+    async with limiter.acquire("entity-id", "llm-api", {"tpm": 100}, limits=[tpm_limit]):
         # 2 GetItems + 2 TransactWrites (doubles write cost!)
         pass
 ```
@@ -179,13 +188,13 @@ async with limiter.acquire("entity-id", "llm-api", [rpm_limit], {"rpm": 1}):
 # Entity without cascade (default) — saves 1 GetEntity + parent bucket operations
 await limiter.create_entity(entity_id="api-key", parent_id="project-1")
 
-async with limiter.acquire("api-key", "llm-api", limits, {"rpm": 1}):
+async with limiter.acquire("api-key", "llm-api", {"rpm": 1}, limits=limits):
     pass  # Only checks api-key's limits
 
 # Entity with cascade — checks and updates parent limits too
 await limiter.create_entity(entity_id="api-key", parent_id="project-1", cascade=True)
 
-async with limiter.acquire("api-key", "llm-api", limits, {"rpm": 1}):
+async with limiter.acquire("api-key", "llm-api", {"rpm": 1}, limits=limits):
     pass  # Checks both api-key AND project-1 limits
 ```
 
@@ -236,7 +245,7 @@ await limiter.create_entity(
 # On acquire, use the same sharding logic
 shard_id = hash(api_key_id) % num_shards
 sharded_parent = f"project-1-shard-{shard_id}"
-async with limiter.acquire(api_key_id, "llm-api", limits, {"rpm": 1}):
+async with limiter.acquire(api_key_id, "llm-api", {"rpm": 1}, limits=limits):
     pass  # Cascades to sharded parent instead of single hotspot
 ```
 
@@ -258,18 +267,21 @@ async with limiter.acquire(api_key_id, "llm-api", limits, {"rpm": 1}):
 #### Stored Limits Optimization
 
 ```python
-# Default: No stored limits lookup (saves 2 RCUs per acquire)
+# Config caching reduces RCUs (60s TTL by default)
 limiter = RateLimiter(
-    name="rate_limits",
+    name="rate-limits",
     region="us-east-1",
+    config_cache_ttl=60,  # seconds (0 to disable)
 )
 
-# Enable only when limits vary per entity
-limiter = RateLimiter(
-    name="rate_limits",
-    region="us-east-1",
-    use_stored_limits=True,  # +2 Queries per acquire
-)
+# Pass explicit limits to skip config resolution entirely
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="api",
+    limits=[Limit.per_minute("rpm", 100)],  # No config lookup
+    consume={"rpm": 1},
+) as lease:
+    ...
 ```
 
 ### Bulk Operations
@@ -281,7 +293,7 @@ await limiter.set_limits("entity-2", [rpm_limit, tpm_limit], resource="llm-api")
 # Runs 2 Queries + 2×2 PutItems
 
 # Entity deletion (automatically batched in 25-item chunks)
-await limiter.delete_entity("entity-id")
+await limiter.delete_entity("entity-2")
 # Runs 1 Query + BatchWrite (up to 25 WCUs per chunk)
 ```
 
@@ -293,28 +305,46 @@ await limiter.delete_entity("entity-id")
 
 Latencies vary by environment and depend on network conditions, DynamoDB utilization, and operation complexity.
 
-| Operation | Moto p50 | LocalStack p50 | AWS p50 |
-|-----------|----------|----------------|---------|
-| `acquire()` - single limit | 14ms | 36ms | 36ms |
-| `acquire()` - two limits | 30ms | 52ms | 43ms |
-| `acquire()` with cascade entity | 28ms | 57ms | 51ms |
-| `available()` check | 1ms | 9ms | 8ms |
+| Operation | Moto p50 | LocalStack p50 | AWS (external) p50 | AWS (in-region) p50 |
+|-----------|----------|----------------|--------------------|--------------------|
+| `acquire()` - single limit | 9ms | 43ms | 38ms | 15-20ms |
+| `acquire()` - two limits | 11ms | 43ms | 36ms | 15-20ms |
+| `acquire()` with cascade | 22ms | 47ms | 48ms | 25-35ms |
+| `available()` check | 1ms | 7ms | 10ms | 1-3ms |
 
 !!! note "Environment Differences"
     - **Moto**: In-memory mock, measures code overhead only
-    - **LocalStack**: Docker-based, includes local network latency
-    - **AWS**: Production DynamoDB with real network round-trips
+    - **LocalStack**: Docker-based, includes local network latency (varies by host)
+    - **AWS (external)**: From outside AWS, includes internet latency (~8-14ms per round-trip)
+    - **AWS (in-region)**: From EC2/Lambda in same region (~0.5-1ms per round-trip)
+
+!!! tip "In-Region Performance"
+    When running inside AWS (same region as DynamoDB), latency drops significantly because
+    network round-trips take <1ms instead of 8-14ms. For a typical LLM API call, rate limit
+    overhead is ~4% (20ms / 500ms) vs ~7% when calling from external networks.
 
 ### Latency Breakdown
 
 Typical `acquire()` latency breakdown for a single limit:
 
 ```
-acquire() latency breakdown:
-├── DynamoDB GetItem (bucket)     ~5-15ms   (network + read)
-├── Token bucket calculation      <1ms      (in-memory math)
-├── TransactWriteItems            ~10-25ms  (network + write + condition check)
-└── Network overhead              variable  (region, instance type)
+acquire() latency breakdown (external client):
+├── Network to AWS               ~8-10ms   (internet latency)
+├── DynamoDB GetItem             ~3-5ms    (server-side processing)
+├── Network back                 ~8-10ms
+├── TransactWriteItems           ~5-10ms   (server-side)
+└── Network back                 ~8-10ms
+                                 ─────────
+                         Total:  ~35-45ms
+
+acquire() latency breakdown (in-region):
+├── Network to DynamoDB          ~0.5-1ms  (VPC internal)
+├── DynamoDB GetItem             ~3-5ms
+├── Network back                 ~0.5-1ms
+├── TransactWriteItems           ~5-10ms
+└── Network back                 ~0.5-1ms
+                                 ─────────
+                         Total:  ~15-20ms
 ```
 
 ### Environment Selection
@@ -322,8 +352,9 @@ acquire() latency breakdown:
 | Environment | Use Case | Latency Factor |
 |-------------|----------|----------------|
 | Moto | Unit tests, CI/CD | 1× (baseline) |
-| LocalStack | Integration tests, local dev | 2-3× |
-| AWS | Production, load testing | 2-4× |
+| LocalStack | Integration tests, local dev | 4-5× |
+| AWS (external) | Development, testing | 4× |
+| AWS (in-region) | Production | 2× |
 
 Run benchmarks to measure your specific environment:
 
@@ -348,13 +379,19 @@ uv run pytest tests/benchmark/test_aws.py --run-aws -v
 
 Theoretical and practical throughput limits depend on contention patterns:
 
-| Scenario | Expected TPS | Bottleneck |
-|----------|--------------|------------|
-| Sequential, single entity | 50-200 | Serialized operations |
-| Sequential, multiple entities | 50-200 | Network round-trip |
-| Concurrent, separate entities | 100-500 | Scales with parallelism |
-| Concurrent, single entity | 20-100 | Optimistic locking contention |
-| Cascade operations | 30-100 | Parent bucket contention |
+| Scenario | Moto TPS | AWS TPS | Bottleneck |
+|----------|----------|---------|------------|
+| Sequential, single entity | 95 | 28 | Network round-trip |
+| Sequential, multiple entities | 76 | 26 | Network round-trip |
+| Concurrent, separate entities | 85 | 176 | Scales with parallelism |
+| Concurrent, single entity | 88 | — | Optimistic locking contention |
+| Cascade sequential | 27 | 19 | Parent bucket operations |
+| Cascade concurrent | 28 | 91 | Parent bucket contention |
+
+!!! note "AWS Concurrent Performance"
+    AWS concurrent throughput (176 TPS) exceeds sequential (28 TPS) because parallel
+    requests to separate entities eliminate serialization. In-region performance would
+    be ~2× higher due to reduced network latency.
 
 ### Contention Analysis
 
@@ -374,8 +411,8 @@ Each retry adds ~10-30ms latency.
 ### Mitigation Strategies
 
 ```python
-# Strategy 1: Larger bucket windows (reduces update frequency)
-rpm_limit = Limit.per_minute("rpm", capacity=1000, window_seconds=60)
+# Strategy 1: Higher capacity (reduces contention per request)
+rpm_limit = Limit.per_minute("rpm", capacity=1000)
 
 # Strategy 2: Distribute load across entities
 # Instead of one shared entity, use sharded entities:
@@ -432,55 +469,56 @@ Costs vary by region. Using us-east-1 as reference:
 
 ### Cost Estimation Examples
 
+!!! note "O(1) Costs (v0.7.0+)"
+    With composite bucket items, costs no longer multiply by number of limits.
+    Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same.
+
 #### Low Volume: 10K requests/day
 
 ```
 DynamoDB:
-  Writes: 10K × 2 limits × 30 days = 600K WCUs = $0.38
-  Reads:  10K × 2 limits × 30 days = 600K RCUs = $0.08
-  Streams: 600K events                         = $0.12
-Lambda: 600K invocations                       ≈ $0.12 + duration
+  Writes: 10K × 30 days = 300K WCUs            = $0.19
+  Reads:  10K × 30 days = 300K RCUs            = $0.04
+  Streams: 300K events                         = $0.06
+Lambda: 300K invocations                       ≈ $0.06 + duration
 Storage: ~10 MB                                = negligible
 ─────────────────────────────────────────────────────────
-Total: ~$0.70/month
+Total: ~$0.35/month
 ```
 
 #### Medium Volume: 1M requests/day
 
 ```
 DynamoDB:
-  Writes: 1M × 2 × 30 = 60M WCUs               = $37.50
-  Reads:  1M × 2 × 30 = 60M RCUs               = $7.50
-  Streams: 60M events                          = $12.00
-Lambda: 60M invocations                        ≈ $12.00 + duration
+  Writes: 1M × 30 = 30M WCUs                   = $18.75
+  Reads:  1M × 30 = 30M RCUs                   = $3.75
+  Streams: 30M events                          = $6.00
+Lambda: 30M invocations                        ≈ $6.00 + duration
 ─────────────────────────────────────────────────────────
-Total (on-demand): ~$70/month
-Total (provisioned with auto-scaling): ~$45/month
+Total (on-demand): ~$35/month
+Total (provisioned with auto-scaling): ~$22/month
 ```
 
 ### Cost Reduction Strategies
 
 #### 1. Disable Unused Features
 
-```python
+```{.python .lint-only}
 # Create entity without cascade if not needed (saves 1-2 WCUs per request)
-await limiter.create_entity(entity_id="entity", parent_id="parent")  # cascade=False by default
+await limiter.create_entity(entity_id="entity", parent_id="project-1")  # cascade=False by default
 async with limiter.acquire("entity", "api", limits, {"rpm": 1}):
     pass
 
 # Disable stored limits if static (saves 2 RCUs per request)
-limiter = RateLimiter(name="rate_limits", region="us-east-1")
+limiter = RateLimiter(name="rate-limits", region="us-east-1")
 ```
 
 #### 2. Optimize TTL Settings
 
 ```python
 # Shorter TTL = faster cleanup = less storage
-limiter = RateLimiter(
-    name="rate_limits",
-    region="us-east-1",
-    bucket_ttl_seconds=3600,  # 1 hour vs 24 hour default
-)
+# bucket_ttl_seconds is configured via StackOptions or CloudFormation
+limiter = RateLimiter(name="rate-limits", region="us-east-1")
 ```
 
 #### 3. Reduce Snapshot Granularity
@@ -501,10 +539,10 @@ zae-limiter deploy --table-name rate_limits --no-aggregator
 ```python
 # Combine multiple limits into single acquire
 async with limiter.acquire(
-    "entity",
-    "api",
-    [rpm_limit, tpm_limit, daily_limit],
-    {"rpm": 1},  # 1 transaction vs 3
+    entity_id="entity",
+    resource="api",
+    consume={"rpm": 1},  # 1 transaction vs 3
+    limits=[rpm_limit, tpm_limit, daily_limit],
 ):
     pass
 ```
@@ -607,9 +645,10 @@ Without manual invalidation, changes propagate within the TTL period (max 60 sec
 ```python
 # Get cache statistics
 stats = limiter.get_cache_stats()
-print(f"Cache hit rate: {stats.hits / (stats.hits + stats.misses):.1%}")
+total = stats.hits + stats.misses
+print(f"Cache hit rate: {stats.hits / total:.1%}" if total else "No requests yet")
 print(f"Cache entries: {stats.size}")
-print(f"TTL: {stats.ttl}s")
+print(f"TTL: {stats.ttl_seconds}s")
 ```
 
 ### TTL Selection Guidelines
@@ -629,7 +668,7 @@ print(f"TTL: {stats.ttl}s")
 | Optimization Area | Key Recommendations |
 |-------------------|---------------------|
 | Capacity | Start with on-demand, switch to provisioned at 5M+ ops/month |
-| Latency | Expect 30-50ms p50 on AWS; use LocalStack for realistic testing |
+| Latency | Expect 15-20ms p50 in-region, 35-45ms external; network is the dominant factor |
 | Throughput | Distribute load across entities to avoid contention |
 | Cost | Disable cascade/stored_limits when not needed |
 | Config Cache | Use default 60s TTL; invalidate manually for immediate changes |

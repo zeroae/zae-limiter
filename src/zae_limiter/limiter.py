@@ -657,16 +657,16 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit] | None,
         consume: dict[str, int],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
     ) -> AsyncIterator[Lease]:
         """
         Acquire rate limit capacity.
 
-        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
-        If no stored limits found, falls back to the `limits` parameter.
+        Limits are resolved automatically from stored config using three-tier
+        hierarchy: Entity > Resource > System. Pass ``limits`` to override.
 
         Cascade behavior is controlled by the entity's ``cascade`` flag, set at
         entity creation time via ``create_entity(cascade=True)``. When enabled,
@@ -676,7 +676,7 @@ class RateLimiter:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
             consume: Amounts to consume by limit name
-            limits: Override limits (optional, falls back to stored config)
+            limits: Override stored config with explicit limits (optional)
             use_stored_limits: DEPRECATED - limits are now always resolved from
                 stored config. This parameter will be removed in v1.0.
             on_unavailable: Override default on_unavailable behavior
@@ -687,7 +687,7 @@ class RateLimiter:
         Raises:
             RateLimitExceeded: If any limit would be exceeded
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
-            ValidationError: If no limits found at any level and no override provided
+            ValidationError: If no limits configured at any level
         """
         await self._ensure_initialized()
 
@@ -754,9 +754,7 @@ class RateLimiter:
         # in a single BatchGetItem call (no separate get_entity round trip).
         child_limits = await self._resolve_limits(entity_id, resource, limits_override)
 
-        entity, child_buckets = await self._fetch_entity_and_buckets(
-            entity_id, resource, child_limits
-        )
+        entity, child_buckets = await self._fetch_entity_and_buckets(entity_id, resource)
 
         # Determine cascade
         entity_ids = [entity_id]
@@ -770,9 +768,7 @@ class RateLimiter:
             # Phase 2: Resolve parent limits + fetch parent buckets
             parent_limits = await self._resolve_limits(parent_id, resource, limits_override)
             entity_limits[parent_id] = parent_limits
-            parent_buckets = await self._fetch_buckets(
-                [parent_id], resource, {parent_id: parent_limits}
-            )
+            parent_buckets = await self._fetch_buckets([parent_id], resource)
             existing_buckets.update(parent_buckets)
 
         # Process buckets and build lease entries
@@ -780,12 +776,25 @@ class RateLimiter:
         statuses: list[LimitStatus] = []
 
         for eid in entity_ids:
+            # Track whether any bucket existed for this entity+resource
+            any_existing = any(
+                (eid, resource, limit.name) in existing_buckets for limit in entity_limits[eid]
+            )
+
             for limit in entity_limits[eid]:
                 # Get existing bucket from batch result or create new one
                 bucket_key = (eid, resource, limit.name)
-                state = existing_buckets.get(bucket_key)
-                if state is None:
+                existing = existing_buckets.get(bucket_key)
+                if existing is None:
+                    is_new = True
                     state = BucketState.from_limit(eid, resource, limit, now_ms)
+                else:
+                    is_new = False
+                    state = existing
+
+                # Capture original values before try_consume modifies them (ADR-115)
+                original_tk = state.tokens_milli
+                original_rf = state.last_refill_ms
 
                 # Try to consume
                 amount = consume.get(limit.name, 0)
@@ -818,6 +827,9 @@ class RateLimiter:
                         limit=limit,
                         state=state,
                         consumed=amount if result.success else 0,
+                        _original_tokens_milli=original_tk,
+                        _original_rf_ms=original_rf,
+                        _is_new=is_new and not any_existing,
                     )
                 )
 
@@ -832,16 +844,17 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit],
     ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
         """
-        Fetch entity metadata and its buckets in a single call.
+        Fetch entity metadata and its composite bucket in a single call.
 
-        Uses batch_get_entity_and_buckets if the backend supports batch
-        operations, otherwise falls back to separate get_entity + get_buckets.
+        With composite items (ADR-114), one item per (entity_id, resource)
+        contains all limits. Uses batch_get_entity_and_buckets if the backend
+        supports batch operations, otherwise falls back to separate calls.
         """
         if self._repository.capabilities.supports_batch_operations:
-            bucket_keys = [(entity_id, resource, limit.name) for limit in limits]
+            # Composite key: one item per (entity_id, resource)
+            bucket_keys = [(entity_id, resource)]
             # batch_get_entity_and_buckets exists when supports_batch_operations is True
             result: tuple[
                 Entity | None, dict[tuple[str, str, str], BucketState]
@@ -862,18 +875,17 @@ class RateLimiter:
         self,
         entity_ids: list[str],
         resource: str,
-        entity_limits: dict[str, list[Limit]],
     ) -> dict[tuple[str, str, str], BucketState]:
         """
-        Fetch buckets for all entity/resource/limit combinations.
+        Fetch composite buckets for entity/resource pairs.
 
-        Uses batch_get_buckets if the backend supports it (DynamoDB),
-        otherwise falls back to sequential get_buckets calls.
+        With composite items (ADR-114), each (entity_id, resource) is one
+        DynamoDB item containing all limits. Uses batch_get_buckets if the
+        backend supports it, otherwise falls back to sequential calls.
 
         Args:
             entity_ids: List of entity IDs to fetch buckets for
             resource: Resource name
-            entity_limits: Map of entity_id -> limits for that entity
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -881,9 +893,8 @@ class RateLimiter:
         """
         # Use batch operation if backend supports it (issue #133)
         if self._repository.capabilities.supports_batch_operations:
-            bucket_keys: list[tuple[str, str, str]] = [
-                (eid, resource, limit.name) for eid in entity_ids for limit in entity_limits[eid]
-            ]
+            # Composite key: one item per (entity_id, resource)
+            bucket_keys: list[tuple[str, str]] = [(eid, resource) for eid in entity_ids]
             # batch_get_buckets exists when supports_batch_operations is True
             batch_result: dict[tuple[str, str, str], BucketState] = (
                 await self._repository.batch_get_buckets(bucket_keys)  # type: ignore[attr-defined]
@@ -1819,16 +1830,16 @@ class SyncRateLimiter:
         self,
         entity_id: str,
         resource: str,
-        limits: list[Limit] | None,
         consume: dict[str, int],
+        limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
     ) -> Iterator[SyncLease]:
         """
         Acquire rate limit capacity (synchronous).
 
-        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
-        If no stored limits found, falls back to the `limits` parameter.
+        Limits are resolved automatically from stored config using three-tier
+        hierarchy: Entity > Resource > System. Pass ``limits`` to override.
 
         Cascade behavior is controlled by the entity's ``cascade`` flag, set at
         entity creation time via ``create_entity(cascade=True)``.

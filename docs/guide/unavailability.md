@@ -44,14 +44,19 @@ limiter = RateLimiter(
 )
 
 try:
-    async with limiter.acquire(...):
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 100)],
+        consume={"rpm": 1},
+    ):
         await do_work()
 except RateLimiterUnavailable as e:
     # DynamoDB is unavailable - handle degraded mode
-    return JSONResponse(
+    print(JSONResponse(
         status_code=503,
         content={"error": "Service temporarily unavailable"},
-    )
+    ).status_code)
 ```
 
 **When to use:**
@@ -72,7 +77,12 @@ limiter = RateLimiter(
 )
 
 # Requests proceed even if DynamoDB is down
-async with limiter.acquire(...):
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="gpt-4",
+    limits=[Limit.per_minute("rpm", 100)],
+    consume={"rpm": 1},
+):
     await do_work()  # Runs without rate limiting
 ```
 
@@ -137,7 +147,12 @@ The `RateLimiterUnavailable` exception includes details about the failure:
 from zae_limiter import RateLimiterUnavailable
 
 try:
-    async with limiter.acquire(...):
+    async with limiter.acquire(
+        entity_id="user-123",
+        resource="gpt-4",
+        limits=[Limit.per_minute("rpm", 100)],
+        consume={"rpm": 1},
+    ):
         await do_work()
 except RateLimiterUnavailable as e:
     # Log the underlying error
@@ -178,8 +193,8 @@ async def resilient_operation(entity_id: str):
     try:
         async with limiter.acquire(
             entity_id=entity_id,
+            resource="api",
             on_unavailable=OnUnavailable.BLOCK,
-            ...
         ):
             return await premium_operation()
     except RateLimiterUnavailable:
@@ -212,7 +227,7 @@ The `is_available()` method:
 - Uses a configurable timeout (default 1 second)
 - Works without requiring initialization
 
-```python
+```{.python .requires-external}
 # FastAPI health endpoint example
 @app.get("/health")
 async def health():

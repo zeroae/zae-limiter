@@ -127,7 +127,7 @@ update_expression = "SET #data.#metrics = if_not_exists(#data.#metrics, :empty_m
 ```
 
 **Adding conditional logic for missing attributes:**
-```python
+```{.python .lint-only}
 # Handle missing attribute gracefully
 metrics = item.get("data", {}).get("metrics", {})
 request_count = metrics.get("requests", 0)
@@ -153,7 +153,7 @@ These changes require migrations and major version bumps:
 
 **Key Pattern Changes:**
 
-```python
+```{.python .lint-only}
 # v1.0.0 pattern
 PK = f"ENTITY#{entity_id}"
 SK = f"#BUCKET#{resource}#{limit_name}"
@@ -171,7 +171,7 @@ Key pattern changes require migrating all existing data.
 
 Create a new file in `src/zae_limiter/migrations/`:
 
-```python
+```{.python .lint-only}
 # src/zae_limiter/migrations/v1_1_0.py
 """
 Migration: v1.1.0 (Add metrics tracking)
@@ -250,7 +250,7 @@ Key requirements:
 
 Migrations are auto-registered when imported. Ensure your migration module is imported in `migrations/__init__.py`:
 
-```python
+```{.python .lint-only}
 # src/zae_limiter/migrations/__init__.py
 
 # ... existing code ...
@@ -423,7 +423,7 @@ aws dynamodb describe-continuous-backups \
 
 For migrations that can be safely undone:
 
-```python
+```{.python .lint-only}
 register_migration(
     Migration(
         version="1.1.0",
@@ -448,7 +448,7 @@ async def rollback_v1_1_0(repository: Repository) -> None:
 
 Some migrations cannot be reversed:
 
-```python
+```{.python .lint-only}
 register_migration(
     Migration(
         version="2.0.0",
@@ -504,7 +504,7 @@ async def emergency_rollback():
 ```
 
 **4. Update version record:**
-```python
+```{.python .lint-only}
 await repo.set_version_record(
     schema_version="1.0.0",  # Reverted version
     lambda_version="1.0.0",
@@ -527,7 +527,7 @@ This example demonstrates a complete migration scenario for a hypothetical v2.0.
 
 ### Migration Implementation
 
-```python
+```{.python .lint-only}
 # src/zae_limiter/migrations/v2_0_0.py
 """
 Migration: v2.0.0 (Add creation timestamp tracking)
@@ -551,7 +551,7 @@ Rollback:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from . import Migration, register_migration
@@ -572,8 +572,8 @@ async def migrate_v2_0_0(repository: Repository) -> None:
     2. Add created_at if missing (set to migration timestamp)
     3. Add GSI3 keys for index population
     """
-    migration_time = datetime.now(timezone.utc).isoformat()
-    migration_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    migration_time = datetime.now(UTC).isoformat()
+    migration_month = datetime.now(UTC).strftime("%Y-%m")
 
     # Get DynamoDB client
     client = await repository._get_client()
@@ -718,7 +718,7 @@ zae-limiter version --name limiter --region us-east-1
 
 ### Testing the Migration
 
-```python
+```{.python .lint-only}
 @pytest.mark.asyncio
 async def test_v2_migration_adds_created_at(mock_dynamodb):
     """Test v2.0.0 migration adds created_at to entities."""

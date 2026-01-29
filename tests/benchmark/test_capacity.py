@@ -60,15 +60,16 @@ class TestCapacityConsumption:
 
     @pytest.mark.parametrize("num_limits", [2, 3, 5])
     def test_acquire_multiple_limits_capacity(self, sync_limiter, capacity_counter, num_limits):
-        """Verify: acquire() with N limits uses single BatchGetItem for all buckets.
+        """Verify: acquire() with N limits uses single BatchGetItem for composite bucket.
 
-        Expected calls (with META folded into BatchGetItem - issue #116):
+        Expected calls (with composite bucket items - ADR-114):
         - 1 GetItem (version check)
         - 4 Query (three-tier limit resolution + parent check)
-        - 1 BatchGetItem with N+1 keys = entity META + N buckets
-        - 1 TransactWriteItems with N items = N WCUs
+        - 1 BatchGetItem with 2 keys = entity META + 1 composite bucket
+        - 1 TransactWriteItems with 1 item (composite bucket with N limits)
 
-        Note: Query operations will be reduced by config caching (issue #130).
+        Note: With composite bucket items, all limits for the same entity/resource
+        are stored in a single DynamoDB item, reducing both read and write costs.
         """
         limits = [Limit.per_minute(f"limit_{i}", 1_000_000) for i in range(num_limits)]
         consume = {f"limit_{i}": 1 for i in range(num_limits)}
@@ -82,15 +83,15 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify BatchGetItem optimization (issue #133 + #116)
-        # Entity META + all bucket reads folded into single BatchGetItem
+        # Verify composite bucket optimization (ADR-114)
+        # Entity META + 1 composite bucket (all limits in single item)
         assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
-        assert capacity_counter.batch_get_item[0] == num_limits + 1, (
-            f"BatchGetItem should fetch {num_limits} buckets + 1 META"
+        assert capacity_counter.batch_get_item[0] == 2, (
+            "BatchGetItem should fetch 1 composite bucket + 1 META"
         )
         assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
-        assert capacity_counter.transact_write_items[0] == num_limits, (
-            f"Transaction should write {num_limits} items"
+        assert capacity_counter.transact_write_items[0] == 1, (
+            "Transaction should write 1 composite bucket item"
         )
 
     def test_acquire_with_cascade_capacity(self, sync_limiter, capacity_counter):

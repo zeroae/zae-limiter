@@ -270,7 +270,7 @@ class TestRepositoryLocalStackResourceAggregation:
         for entity_id in entity_ids:
             await localstack_repo.create_entity(entity_id)
 
-        # Create buckets for same resource
+        # Create composite buckets: one item per entity+resource with all limits
         limits = [
             Limit.per_minute("rpm", 100),
             Limit.per_minute("tpm", 10_000),
@@ -278,9 +278,9 @@ class TestRepositoryLocalStackResourceAggregation:
         now_ms = int(time.time() * 1000)
 
         for entity_id in entity_ids:
-            for limit in limits:
-                state = BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)
-                await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
+            states = [BucketState.from_limit(entity_id, "gpt-4", limit, now_ms) for limit in limits]
+            put_item = localstack_repo.build_composite_create(entity_id, "gpt-4", states, now_ms)
+            await localstack_repo.transact_write([put_item])
 
         # Query resource buckets via GSI2
         rpm_buckets = await localstack_repo.get_resource_buckets("gpt-4", "rpm")
@@ -308,13 +308,13 @@ class TestRepositoryBatchGetBuckets:
 
     @pytest.mark.asyncio
     async def test_batch_get_buckets_multiple_buckets(self, localstack_repo):
-        """Should fetch multiple buckets in a single batch call."""
+        """Should fetch multiple composite buckets in a single batch call."""
         # Create test entities
         entity_ids = ["batch-entity-1", "batch-entity-2", "batch-entity-3"]
         for entity_id in entity_ids:
             await localstack_repo.create_entity(entity_id)
 
-        # Create buckets for each entity
+        # Create composite buckets: one item per entity+resource with all limits
         limits = [
             Limit.per_minute("rpm", 100),
             Limit.per_minute("tpm", 10_000),
@@ -322,18 +322,18 @@ class TestRepositoryBatchGetBuckets:
         now_ms = int(time.time() * 1000)
 
         for entity_id in entity_ids:
-            for limit in limits:
-                state = BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)
-                await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
+            states = [BucketState.from_limit(entity_id, "gpt-4", limit, now_ms) for limit in limits]
+            put_item = localstack_repo.build_composite_create(entity_id, "gpt-4", states, now_ms)
+            await localstack_repo.transact_write([put_item])
 
-        # Batch get all buckets
-        keys = [(entity_id, "gpt-4", limit.name) for entity_id in entity_ids for limit in limits]
+        # Batch get composite items (2-tuple keys: entity_id, resource)
+        keys = [(entity_id, "gpt-4") for entity_id in entity_ids]
         result = await localstack_repo.batch_get_buckets(keys)
 
-        # Should return all 6 buckets (3 entities × 2 limits)
+        # Should return all 6 bucket states (3 entities × 2 limits per composite item)
         assert len(result) == 6
 
-        # Verify correct keys in result
+        # Result uses 3-tuple keys for backward compatibility
         for entity_id in entity_ids:
             for limit in limits:
                 key = (entity_id, "gpt-4", limit.name)
@@ -352,48 +352,46 @@ class TestRepositoryBatchGetBuckets:
     @pytest.mark.asyncio
     async def test_batch_get_buckets_deduplication(self, localstack_repo):
         """Should deduplicate duplicate keys in the request."""
-        # Create entity and bucket
+        # Create entity and composite bucket
         await localstack_repo.create_entity("dedup-entity")
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("dedup-entity", "api", limit, now_ms)
         await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
 
-        # Request with duplicate keys
+        # Request with duplicate 2-tuple keys
         keys = [
-            ("dedup-entity", "api", "rpm"),
-            ("dedup-entity", "api", "rpm"),  # Duplicate
-            ("dedup-entity", "api", "rpm"),  # Another duplicate
+            ("dedup-entity", "api"),
+            ("dedup-entity", "api"),  # Duplicate
+            ("dedup-entity", "api"),  # Another duplicate
         ]
         result = await localstack_repo.batch_get_buckets(keys)
 
-        # Should return single bucket (deduplication worked)
+        # Should return single bucket state (deduplication worked)
         assert len(result) == 1
         assert ("dedup-entity", "api", "rpm") in result
 
     @pytest.mark.asyncio
     async def test_batch_get_buckets_missing_buckets(self, localstack_repo):
         """Should only return existing buckets, omitting missing ones."""
-        # Create one entity with one bucket
+        # Create one entity with one composite bucket (single limit)
         await localstack_repo.create_entity("exists-entity")
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("exists-entity", "api", limit, now_ms)
         await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
 
-        # Request mix of existing and non-existing buckets
+        # Request mix of existing and non-existing composite items (2-tuple keys)
         keys = [
-            ("exists-entity", "api", "rpm"),  # Exists
-            ("exists-entity", "api", "tpm"),  # Does not exist
-            ("missing-entity", "api", "rpm"),  # Entity doesn't exist
+            ("exists-entity", "api"),  # Exists (has rpm)
+            ("exists-entity", "other"),  # Resource doesn't exist
+            ("missing-entity", "api"),  # Entity doesn't exist
         ]
         result = await localstack_repo.batch_get_buckets(keys)
 
         # Should only return the one existing bucket
         assert len(result) == 1
         assert ("exists-entity", "api", "rpm") in result
-        assert ("exists-entity", "api", "tpm") not in result
-        assert ("missing-entity", "api", "rpm") not in result
 
     @pytest.mark.asyncio
     async def test_batch_get_buckets_chunking_over_100_items(self, localstack_repo):
@@ -403,7 +401,7 @@ class TestRepositoryBatchGetBuckets:
         for entity_id in entity_ids:
             await localstack_repo.create_entity(entity_id)
 
-        # Create one bucket per entity
+        # Create one composite bucket per entity
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
 
@@ -411,14 +409,14 @@ class TestRepositoryBatchGetBuckets:
             state = BucketState.from_limit(entity_id, "api", limit, now_ms)
             await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
 
-        # Batch get all 110 buckets (requires 2 DynamoDB calls)
-        keys = [(entity_id, "api", "rpm") for entity_id in entity_ids]
+        # Batch get all 110 composite items (2-tuple keys, requires 2 DynamoDB calls)
+        keys = [(entity_id, "api") for entity_id in entity_ids]
         result = await localstack_repo.batch_get_buckets(keys)
 
-        # Should return all 110 buckets
+        # Should return all 110 bucket states
         assert len(result) == 110
 
-        # Verify all buckets are present
+        # Result uses 3-tuple keys for backward compatibility
         for entity_id in entity_ids:
             key = (entity_id, "api", "rpm")
             assert key in result

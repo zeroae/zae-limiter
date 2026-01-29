@@ -59,10 +59,12 @@ def unique_name():
 
     Uses hyphens instead of underscores because CloudFormation stack names
     must match pattern [a-zA-Z][-a-zA-Z0-9]*.
+
+    Kept short (max 20 chars) so IAM role names stay under 64 chars
+    when combined with role_name_format prefix and role suffix.
     """
-    timestamp = int(time.time())
-    unique_id = uuid.uuid4().hex[:8]
-    return f"e2e-test-{timestamp}-{unique_id}"
+    unique_id = uuid.uuid4().hex[:12]
+    return f"e2e-{unique_id}"
 
 
 @pytest.fixture(scope="class")
@@ -73,11 +75,10 @@ def unique_name_class():
     must match pattern [a-zA-Z][-a-zA-Z0-9]*.
 
     This fixture is class-scoped to allow sharing a single stack across
-    all tests within a test class.
+    all tests within a test class. Kept short for IAM role name limits.
     """
-    timestamp = int(time.time())
-    unique_id = uuid.uuid4().hex[:8]
-    return f"e2e-test-{timestamp}-{unique_id}"
+    unique_id = uuid.uuid4().hex[:12]
+    return f"e2e-{unique_id}"
 
 
 # LocalStack limiter fixtures
@@ -273,6 +274,10 @@ async def wait_for_event_source_mapping(
 
     After CloudFormation stack creation completes, the ESM may still be in
     "Creating" or "Enabling" state. This function polls until it's "Enabled".
+
+    Note: The infrastructure layer (StackManager.deploy_lambda_code) now handles
+    the full ESM stabilization wait (~45s). This test helper just verifies the
+    ESM reached "Enabled" state.
 
     Args:
         lambda_client: boto3 Lambda client

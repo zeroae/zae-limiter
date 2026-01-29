@@ -141,13 +141,13 @@ For dashboard templates and Logs Insights queries, see [Monitoring Guide](../mon
 
 ## Cost Estimation
 
-Costs scale with request volume (us-east-1 pricing):
+Costs scale with request volume (us-east-1 pricing, v0.7.0+ O(1) costs):
 
 | Volume | DynamoDB | Lambda | CloudWatch | S3 Archive | Total |
 |--------|----------|--------|------------|------------|-------|
-| 10K req/day | ~$0.50 | ~$0.20 | ~$0.10 | ~$0.01 | ~$1/month |
-| 100K req/day | ~$5 | ~$2 | ~$1 | ~$0.10 | ~$8/month |
-| 1M req/day | ~$45 | ~$12 | ~$5 | ~$1 | ~$63/month |
+| 10K req/day | ~$0.25 | ~$0.20 | ~$0.10 | ~$0.01 | ~$0.56/month |
+| 100K req/day | ~$2.50 | ~$2 | ~$1 | ~$0.10 | ~$5.60/month |
+| 1M req/day | ~$22 | ~$12 | ~$5 | ~$1 | ~$40/month |
 
 S3 costs include:
 - **Standard storage**: First 90 days (or configured `--audit-archive-glacier-days`)

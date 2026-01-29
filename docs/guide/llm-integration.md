@@ -50,7 +50,7 @@ consume={"tpm": 500}  # Always estimate 500 tokens
 
 Estimate based on input length:
 
-```python
+```{.python .requires-external}
 import tiktoken
 
 def estimate_tokens(messages: list, model: str = "gpt-4") -> int:
@@ -69,7 +69,8 @@ estimated_output = 500  # Rough estimate for output
 total_estimate = input_tokens + estimated_output
 
 async with limiter.acquire(
-    ...
+    entity_id="user-123",
+    resource="gpt-4",
     consume={"tpm": total_estimate},
 ) as lease:
     response = await call_llm()
@@ -85,7 +86,9 @@ Use max_tokens as upper bound:
 max_tokens = 1000
 
 async with limiter.acquire(
-    ...
+    entity_id="user-123",
+    resource="gpt-4",
+    limits=[Limit.per_minute("tpm", 10_000)],
     consume={"tpm": input_tokens + max_tokens},
 ) as lease:
     response = await openai.chat.completions.create(
@@ -101,7 +104,7 @@ async with limiter.acquire(
 
 For streaming responses, token count is only available after the stream completes:
 
-```python
+```{.python .lint-only}
 async with limiter.acquire(
     entity_id="api-key-123",
     resource="gpt-4",
@@ -176,8 +179,10 @@ zae-limiter allows buckets to go negative, which is useful when actual usage exc
 ```python
 # Estimate: 500 tokens
 async with limiter.acquire(
+    entity_id="user-123",
+    resource="gpt-4",
+    limits=[Limit.per_minute("tpm", 10_000)],
     consume={"tpm": 500},
-    ...
 ) as lease:
     response = await call_llm()
 
@@ -228,7 +233,7 @@ async def call_with_capacity_check(
 
 Combine with retry libraries like `tenacity`:
 
-```python
+```{.python .requires-external}
 from tenacity import retry, retry_if_exception_type, wait_fixed
 
 @retry(

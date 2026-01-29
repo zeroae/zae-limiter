@@ -283,10 +283,6 @@ def deploy(
                 )
 
                 status = result.get("status", "unknown")
-                if status == "skipped_local":
-                    click.echo("⚠️  CloudFormation deployment skipped (local DynamoDB detected)")
-                    sys.exit(0)
-
                 click.echo(f"✓ Stack {status.lower().replace('_', ' ')}")
 
                 if result.get("stack_id"):
@@ -305,8 +301,8 @@ def deploy(
                             click.echo(f"✓ Lambda code deployed ({size_kb:.1f} KB)")
                             click.echo(f"  Function ARN: {lambda_result['function_arn']}")
                             click.echo(f"  Code SHA256: {lambda_result['code_sha256'][:16]}...")
-                        elif lambda_result.get("status") == "skipped_local":
-                            click.echo("  Lambda deployment skipped (local environment)")
+                            if lambda_result.get("esm_ready"):
+                                click.echo("✓ Event Source Mapping ready")
                     except Exception as e:
                         click.echo(f"⚠️  Lambda deployment failed: {e}", err=True)
                         click.echo(
@@ -991,8 +987,6 @@ def upgrade(
                     if result.get("status") == "deployed":
                         size_kb = result.get("size_bytes", 0) / 1024
                         click.echo(f"      Lambda code deployed ({size_kb:.1f} KB)")
-                    elif result.get("status") == "skipped_local":
-                        click.echo("      Skipped (local environment)")
 
                 except Exception as e:
                     click.echo(f"✗ Lambda deployment failed: {e}", err=True)

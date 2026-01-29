@@ -7,7 +7,7 @@ IMPORTANT: These tests require:
 1. Valid AWS credentials with permissions for:
    - CloudFormation (create/delete stacks)
    - DynamoDB (full access)
-   - IAM (create roles)
+   - IAM (create roles) - unless using --no-aggregator with permission boundary
 2. The --run-aws pytest flag
 
 To run:
@@ -18,12 +18,25 @@ Resources are cleaned up after tests, but verify via AWS Console.
 """
 
 import time
+import uuid
 
 import pytest
 
 from zae_limiter import Limit, StackOptions, SyncRateLimiter
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.aws]
+
+
+@pytest.fixture(scope="class")
+def aws_unique_name():
+    """Generate short unique name for AWS benchmark tests.
+
+    Uses a short prefix to avoid IAM role name length issues when
+    combined with role_name_format (see issue #252).
+    Max length: 16 chars to leave room for role suffixes.
+    """
+    unique_id = uuid.uuid4().hex[:8]
+    return f"awsbench-{unique_id}"
 
 
 class TestAWSLatencyBenchmarks:
@@ -34,7 +47,7 @@ class TestAWSLatencyBenchmarks:
     """
 
     @pytest.fixture(scope="class")
-    def aws_benchmark_limiter(self, unique_name_class):
+    def aws_benchmark_limiter(self, aws_unique_name):
         """Create SyncRateLimiter on real AWS with minimal stack.
 
         Uses class scope to share the stack across all tests in the class,
@@ -49,7 +62,7 @@ class TestAWSLatencyBenchmarks:
         )
 
         limiter = SyncRateLimiter(
-            name=unique_name_class,
+            name=aws_unique_name,
             region="us-east-1",
             stack_options=stack_options,
         )
@@ -170,10 +183,10 @@ class TestAWSThroughputBenchmarks:
     """
 
     @pytest.fixture(scope="class")
-    def aws_throughput_limiter(self, unique_name_class):
+    def aws_throughput_limiter(self, aws_unique_name):
         """Create SyncRateLimiter for throughput tests."""
         # Use a different table from latency tests
-        table_name = f"{unique_name_class}-throughput"
+        table_name = f"{aws_unique_name}-tp"
 
         stack_options = StackOptions(
             enable_aggregator=False,
@@ -375,9 +388,9 @@ class TestAWSCascadeBenchmarks:
     """
 
     @pytest.fixture(scope="class")
-    def aws_cascade_limiter(self, unique_name_class):
+    def aws_cascade_limiter(self, aws_unique_name):
         """Create SyncRateLimiter for cascade tests."""
-        table_name = f"{unique_name_class}-cascade"
+        table_name = f"{aws_unique_name}-cas"
 
         stack_options = StackOptions(
             enable_aggregator=False,
