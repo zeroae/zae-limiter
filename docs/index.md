@@ -2,7 +2,7 @@
 title: ""
 ---
 
-<div style="text-align: center; margin-bottom: 1rem;">
+<div style="text-align: right; margin-bottom: 1rem;">
   <img src="assets/zae-limiter-white-bg.svg" alt="zae-limiter" width="400" class="light-only">
   <img src="assets/zae-limiter-dark-bg.svg" alt="zae-limiter" width="400" class="dark-only">
 </div>
