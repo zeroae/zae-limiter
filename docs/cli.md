@@ -1110,7 +1110,7 @@ zae-limiter local up [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--docker-host` | Docker daemon URL | `DOCKER_HOST` env var |
-| `--image` | LocalStack Docker image | `localstack/localstack:4` |
+| `--image` | LocalStack Docker image | `localstack/localstack:4.14.0` |
 | `--name`, `-n` | Stack name for deploy instructions | None |
 | `--port` | Host port to bind | `4566` |
 
@@ -1162,7 +1162,7 @@ zae-limiter local status [OPTIONS]
 LocalStack: running
 Endpoint:   http://localhost:4566
 Health:     healthy
-Image:      localstack/localstack:4
+Image:      localstack/localstack:4.14.0
 Services:   dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3,sts,resourcegroupstaggingapi
 
 To use with zae-limiter:

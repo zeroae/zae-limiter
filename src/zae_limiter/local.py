@@ -43,7 +43,7 @@ docker: Any = _import_docker()
 # ---------------------------------------------------------------------------
 
 CONTAINER_NAME = "zae-limiter-localstack"
-DEFAULT_IMAGE = "localstack/localstack:4"
+DEFAULT_IMAGE = "localstack/localstack:4.14.0"
 DEFAULT_PORT = 4566
 LOCALSTACK_SERVICES = (
     "dynamodb,dynamodbstreams,lambda,cloudformation,"

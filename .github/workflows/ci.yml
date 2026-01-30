@@ -78,7 +78,7 @@ jobs:
         python-version: ["3.11", "3.12"]
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:4.14.0
         ports:
           - 4566:4566
         env:
@@ -139,7 +139,7 @@ jobs:
         python-version: ["3.11", "3.12"]
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:4.14.0
         ports:
           - 4566:4566
         env:
@@ -216,7 +216,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:4.14.0
         ports:
           - 4566:4566
         env:
