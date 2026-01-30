@@ -1,25 +1,27 @@
 # Status Mode
 
-When arguments contain a version (e.g., "0.4.0", "v0.4.0"):
+Replace `VERSION` below with the milestone version (add "v" prefix if missing, e.g., "0.4.0" → "v0.4.0").
 
-## Instructions
+## Step 1: Get milestone details
 
-1. **Normalize the version:** If user provides "0.4.0", search for "v0.4.0"
+Run now:
+```bash
+gh api repos/zeroae/zae-limiter/milestones --jq '.[] | select(.title == "VERSION") | {title, description, state, open_issues, closed_issues}'
+```
 
-2. **Get milestone details:**
-   ```bash
-   gh api repos/zeroae/zae-limiter/milestones --jq '.[] | select(.title == "vX.Y.Z") | {title, description, state, open_issues, closed_issues}'
-   ```
+## Step 2: List all issues
 
-3. **List all issues in the milestone:**
-   ```bash
-   gh issue list --milestone "vX.Y.Z" --state all --json number,title,state,labels --jq '.[] | "\(.state)\t#\(.number)\t\(.title)"'
-   ```
+Run now:
+```bash
+gh issue list --milestone "VERSION" --state all --json number,title,state,labels --jq '.[] | "\(.state)\t#\(.number)\t\(.title)"'
+```
 
-4. **If there's an epic issue (title starts with "🎯"), get its body for context:**
-   ```bash
-   gh issue view <epic-number> --json title,body
-   ```
+## Step 3: Get epic context (if present)
+
+If any issue title starts with "🎯", run:
+```bash
+gh issue view <epic-number> --json title,body
+```
 
 ## Output Format
 
