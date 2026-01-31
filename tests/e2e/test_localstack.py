@@ -1030,3 +1030,106 @@ class TestE2ECloudFormationStackVariations:
             await limiter.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
+
+
+class TestE2ERoleNaming:
+    """E2E tests for IAM role naming (Issue #252, ADR-116)."""
+
+    @pytest.fixture
+    def cli_runner(self):
+        """Create Click CLI runner."""
+        return CliRunner()
+
+    def test_role_naming_with_prefix_format(self, cli_runner, localstack_endpoint, unique_name):
+        """Test deploying with role_name_format creates correctly named roles."""
+        try:
+            # Deploy with role_name_format
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "deploy",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--role-name-format",
+                    "test-{}",
+                    "--no-alarms",
+                    "--wait",
+                ],
+            )
+            assert result.exit_code == 0, f"Deploy failed: {result.output}"
+            assert "Stack create complete" in result.output
+
+            # Verify status command succeeds (stack is functional)
+            status_result = cli_runner.invoke(
+                cli,
+                [
+                    "status",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                ],
+            )
+            assert status_result.exit_code == 0, f"Status failed: {status_result.output}"
+            assert "✓ Yes" in status_result.output  # Available check
+
+        finally:
+            # Cleanup
+            cli_runner.invoke(
+                cli,
+                [
+                    "delete",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--yes",
+                ],
+            )
+
+    def test_role_naming_with_suffix_format(self, cli_runner, localstack_endpoint, unique_name):
+        """Test deploying with suffix role_name_format."""
+        try:
+            # Deploy with suffix format
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "deploy",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--role-name-format",
+                    "{}-suffix",
+                    "--no-alarms",
+                    "--no-aggregator",  # Faster for this test
+                    "--wait",
+                ],
+            )
+            assert result.exit_code == 0, f"Deploy failed: {result.output}"
+
+        finally:
+            # Cleanup
+            cli_runner.invoke(
+                cli,
+                [
+                    "delete",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--yes",
+                ],
+            )

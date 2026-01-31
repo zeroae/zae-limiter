@@ -682,14 +682,15 @@ class TestSyncRateLimiterRollback:
 
     def test_acquire_rollback_on_exception(self, sync_limiter):
         """Test that rollback is called when exception occurs in context."""
-        limits = [Limit.per_minute("rpm", 100)]
+        # Use per_day to avoid timing flakiness (per_minute refills ~1.67 tokens/sec)
+        limits = [Limit.per_day("rpd", 100)]
 
         # First acquire
         with sync_limiter.acquire(
             entity_id="rollback-1",
             resource="api",
             limits=limits,
-            consume={"rpm": 10},
+            consume={"rpd": 10},
         ):
             pass
 
@@ -706,7 +707,7 @@ class TestSyncRateLimiterRollback:
                 entity_id="rollback-1",
                 resource="api",
                 limits=limits,
-                consume={"rpm": 20},
+                consume={"rpd": 20},
             ):
                 raise ValueError("Simulated error")
         except ValueError:
@@ -719,7 +720,7 @@ class TestSyncRateLimiterRollback:
             limits=limits,
         )
         # After rollback, the tokens from the failed acquire should be restored
-        assert available_after_rollback["rpm"] == available_after_first["rpm"]
+        assert available_after_rollback["rpd"] == available_after_first["rpd"]
 
 
 class TestSyncRateLimiterThreeTierResolution:

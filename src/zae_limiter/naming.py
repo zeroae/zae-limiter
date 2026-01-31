@@ -4,7 +4,7 @@ This module provides centralized validation and normalization for resource names
 Names must satisfy the most restrictive cloud provider rules (currently AWS):
 - Alphanumeric characters and hyphens only
 - Must start with a letter
-- Maximum 64 characters (IAM role name limit with suffix room)
+- Maximum 55 characters (IAM role name limit with 8-char component suffix room)
 """
 
 import re
@@ -65,13 +65,13 @@ def validate_name(name: str) -> None:
             "Must start with a letter and contain only alphanumeric characters and hyphens.",
         )
 
-    # Length validation (IAM role suffix is up to "-aggregator-role" = 16 chars)
-    # IAM roles are limited to 64 chars total
-    if len(name) > 48:
+    # Length validation: With 8-char max component (ADR-116), 55 chars leaves room
+    # for format template. Formula: 64 (IAM limit) - 8 (max component) - 1 (dash) = 55
+    if len(name) > 55:
         raise ValidationError(
             "name",
             name,
-            "Too long. Name exceeds 48 character limit (IAM role constraints).",
+            "Too long. Name exceeds 55 character limit (IAM role constraints).",
         )
 
 

@@ -84,17 +84,23 @@ class TestValidateName:
             with pytest.raises(ValidationError):
                 validate_name(f"app{char}name")
 
-    def test_too_long_raises(self) -> None:
-        """Name > 48 chars raises ValidationError."""
-        long_name = "a" * 49
-        with pytest.raises(ValidationError) as exc_info:
-            validate_name(long_name)
-        assert "48 character" in exc_info.value.reason
-        assert "Too long" in exc_info.value.reason
+    def test_max_stack_name_length_is_55(self) -> None:
+        """Test stack names up to 55 chars are valid.
 
-    def test_max_length_valid(self) -> None:
-        """Name exactly 48 chars is valid."""
-        validate_name("a" * 48)  # No exception
+        With 8-char max component (ADR-116), 55 chars leaves room for format template.
+        Formula: 64 (IAM limit) - 8 (max component) - 1 (dash) = 55
+        """
+        # 55 chars should be valid
+        name = "a" * 55
+        validate_name(name)  # Should not raise
+
+    def test_stack_name_56_chars_rejected(self) -> None:
+        """Test stack names over 55 chars are rejected."""
+        name = "a" * 56
+        with pytest.raises(ValidationError) as exc_info:
+            validate_name(name)
+        assert "55 character" in exc_info.value.reason
+        assert "Too long" in exc_info.value.reason
 
     def test_single_char_valid(self) -> None:
         """Single character name is valid."""

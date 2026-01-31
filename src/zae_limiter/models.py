@@ -603,6 +603,10 @@ class LimitName:
     TPD = "tpd"  # tokens per day
 
 
+# IAM role component suffixes (ADR-116)
+# Invariant: all components must be <= 8 characters
+ROLE_COMPONENTS = ("aggr", "app", "admin", "read")
+
 # Valid CloudWatch Logs retention periods (in days)
 # See: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutRetentionPolicy.html
 VALID_LOG_RETENTION_DAYS = frozenset(
@@ -706,9 +710,10 @@ class StackOptions:
                     f"found {placeholder_count}"
                 )
             # Validate resulting name won't exceed IAM limits (64 chars)
-            # We can't fully validate without stack_name, but we can check the format length
-            format_len = len(self.role_name_format) - 2  # subtract {}
-            if format_len > 40:  # leave room for stack_name-aggregator-role
+            # Formula: 64 - max_component(8) - dash(1) = 55 max format length
+            # See ADR-116 for role naming convention
+            format_len = len(self.role_name_format)
+            if format_len > 55:
                 raise ValueError(
                     "role_name_format template is too long, resulting role name "
                     "may exceed IAM 64 character limit"
@@ -731,20 +736,35 @@ class StackOptions:
                 if len(value) > 256:
                     raise ValueError(f"tag value for '{key}' exceeds 256 characters")
 
-    def get_role_name(self, stack_name: str) -> str | None:
+    def get_role_name(self, stack_name: str, component: str) -> str | None:
         """
-        Get the final role name for a given stack name.
+        Get the final role name for a given stack name and component.
 
         Args:
             stack_name: Stack name
+            component: Role component (aggr, app, admin, read)
 
         Returns:
-            Final role name, or None to use CloudFormation default
+            Final role name, or None if role_name_format not set
+
+        Raises:
+            ValidationError: If resulting name exceeds 64 characters
         """
         if self.role_name_format is None:
             return None
-        default_role = f"{stack_name}-aggregator-role"
-        return self.role_name_format.replace("{}", default_role)
+        role_name = self.role_name_format.replace("{}", f"{stack_name}-{component}")
+        if len(role_name) > 64:
+            format_overhead = len(self.role_name_format) - 2  # subtract {}
+            max_stack_len = 64 - format_overhead - 1 - len(component)  # -1 for dash
+            from .exceptions import ValidationError
+
+            raise ValidationError(
+                "role_name",
+                role_name,
+                f"exceeds IAM 64-character limit by {len(role_name) - 64} characters. "
+                f"Shorten stack name to max {max_stack_len} characters with this format.",
+            )
+        return role_name
 
     def to_parameters(self, stack_name: str | None = None) -> dict[str, str]:
         """
@@ -777,10 +797,22 @@ class StackOptions:
             params["alarm_sns_topic_arn"] = self.alarm_sns_topic
         if self.permission_boundary:
             params["permission_boundary"] = self.permission_boundary
+        # Generate 4 separate role name parameters (ADR-116)
+        # get_role_name returns str when role_name_format is set (which we check above)
         if self.role_name_format and stack_name:
-            role_name = self.get_role_name(stack_name)
-            if role_name:
-                params["role_name"] = role_name
+            aggregator_role = self.get_role_name(stack_name, "aggr")
+            app_role = self.get_role_name(stack_name, "app")
+            admin_role = self.get_role_name(stack_name, "admin")
+            readonly_role = self.get_role_name(stack_name, "read")
+            # These assertions are guaranteed by the if condition above
+            assert aggregator_role is not None
+            assert app_role is not None
+            assert admin_role is not None
+            assert readonly_role is not None
+            params["aggregator_role_name"] = aggregator_role
+            params["app_role_name"] = app_role
+            params["admin_role_name"] = admin_role
+            params["readonly_role_name"] = readonly_role
         # Audit archival parameters
         params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
         params["audit_archive_glacier_days"] = str(self.audit_archive_glacier_days)

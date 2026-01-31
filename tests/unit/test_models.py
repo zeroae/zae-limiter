@@ -301,23 +301,27 @@ class TestStackOptions:
         assert "permission_boundary" not in params
 
     # -------------------------------------------------------------------------
-    # Role Name Format Tests
+    # Role Name Format Tests (Updated for component-based naming, ADR-116)
     # -------------------------------------------------------------------------
 
-    def test_role_name_format_valid(self):
-        """Test role_name_format with valid placeholder."""
+    def test_role_name_format_valid_prefix(self):
+        """Test role_name_format with prefix pattern."""
         opts = StackOptions(role_name_format="app-{}")
-        assert opts.get_role_name("mytable") == "app-mytable-aggregator-role"
+        assert opts.get_role_name("mytable", "aggr") == "app-mytable-aggr"
+        assert opts.get_role_name("mytable", "app") == "app-mytable-app"
+        assert opts.get_role_name("mytable", "admin") == "app-mytable-admin"
+        assert opts.get_role_name("mytable", "read") == "app-mytable-read"
 
     def test_role_name_format_prefix_suffix(self):
         """Test role_name_format with both prefix and suffix."""
         opts = StackOptions(role_name_format="pb-{}-PowerUser")
-        assert opts.get_role_name("mytable") == "pb-mytable-aggregator-role-PowerUser"
+        assert opts.get_role_name("mytable", "aggr") == "pb-mytable-aggr-PowerUser"
+        assert opts.get_role_name("mytable", "app") == "pb-mytable-app-PowerUser"
 
     def test_role_name_format_suffix_only(self):
         """Test role_name_format with suffix only."""
         opts = StackOptions(role_name_format="{}-prod")
-        assert opts.get_role_name("mytable") == "mytable-aggregator-role-prod"
+        assert opts.get_role_name("mytable", "aggr") == "mytable-aggr-prod"
 
     def test_role_name_format_no_placeholder(self):
         """Test role_name_format without placeholder raises ValueError."""
@@ -329,33 +333,55 @@ class TestStackOptions:
         with pytest.raises(ValueError, match="exactly one"):
             StackOptions(role_name_format="app-{}-{}-role")
 
-    def test_role_name_format_too_long(self):
-        """Test role_name_format that would exceed IAM 64 char limit."""
+    def test_role_name_format_max_length_55(self):
+        """Test role_name_format template up to 55 chars is valid."""
+        # 55 chars total: 52 'a's + "-{}" (3 chars) = 55
+        template = "a" * 52 + "-{}"  # 55 total
+        opts = StackOptions(role_name_format=template)
+        assert opts.role_name_format == template
+
+    def test_role_name_format_56_chars_rejected(self):
+        """Test role_name_format over 55 chars is rejected."""
+        # 56 chars total: 53 'a's + "-{}" (3 chars) = 56
+        template = "a" * 53 + "-{}"  # 56 total
         with pytest.raises(ValueError, match="too long"):
-            StackOptions(role_name_format="a" * 50 + "-{}")
+            StackOptions(role_name_format=template)
 
     def test_get_role_name_returns_none_when_format_not_set(self):
         """Test get_role_name returns None when role_name_format is None."""
         opts = StackOptions()
-        assert opts.get_role_name("mytable") is None
+        assert opts.get_role_name("mytable", "aggr") is None
 
-    def test_role_name_in_params_with_stack_name(self):
-        """Test role_name is in params when stack_name is provided."""
+    def test_to_parameters_generates_four_role_names(self):
+        """Test to_parameters generates separate role name params for each component."""
         opts = StackOptions(role_name_format="app-{}")
-        params = opts.to_parameters(stack_name="ZAEL-mytable")
-        assert params["role_name"] == "app-ZAEL-mytable-aggregator-role"
+        params = opts.to_parameters(stack_name="mystack")
 
-    def test_role_name_not_in_params_without_stack_name(self):
-        """Test role_name is not in params when stack_name is not provided."""
+        assert params["aggregator_role_name"] == "app-mystack-aggr"
+        assert params["app_role_name"] == "app-mystack-app"
+        assert params["admin_role_name"] == "app-mystack-admin"
+        assert params["readonly_role_name"] == "app-mystack-read"
+        # Old single role_name param should not be present
+        assert "role_name" not in params
+
+    def test_to_parameters_no_role_names_when_format_none(self):
+        """Test to_parameters omits role names when format is None."""
+        opts = StackOptions()
+        params = opts.to_parameters(stack_name="mystack")
+
+        assert "aggregator_role_name" not in params
+        assert "app_role_name" not in params
+        assert "admin_role_name" not in params
+        assert "readonly_role_name" not in params
+
+    def test_role_names_not_in_params_without_stack_name(self):
+        """Test role names are not in params when stack_name is not provided."""
         opts = StackOptions(role_name_format="app-{}")
         params = opts.to_parameters()
-        assert "role_name" not in params
-
-    def test_role_name_not_in_params_when_format_none(self):
-        """Test role_name is not in params when role_name_format is None."""
-        opts = StackOptions()
-        params = opts.to_parameters(stack_name="ZAEL-mytable")
-        assert "role_name" not in params
+        assert "aggregator_role_name" not in params
+        assert "app_role_name" not in params
+        assert "admin_role_name" not in params
+        assert "readonly_role_name" not in params
 
     # -------------------------------------------------------------------------
     # IAM Roles Tests (Issue #132)
@@ -382,6 +408,53 @@ class TestStackOptions:
         opts = StackOptions(create_iam_roles=False)
         params = opts.to_parameters()
         assert params["enable_iam_roles"] == "false"
+
+    # -------------------------------------------------------------------------
+    # ROLE_COMPONENTS Constant Tests (ADR-116)
+    # -------------------------------------------------------------------------
+
+    def test_role_components_constant_exists(self):
+        """Test ROLE_COMPONENTS constant is defined."""
+        from zae_limiter.models import ROLE_COMPONENTS
+
+        assert ROLE_COMPONENTS == ("aggr", "app", "admin", "read")
+
+    def test_role_components_max_length_invariant(self):
+        """Test all role components are <= 8 characters (ADR-116 invariant)."""
+        from zae_limiter.models import ROLE_COMPONENTS
+
+        for component in ROLE_COMPONENTS:
+            assert len(component) <= 8, f"Component '{component}' exceeds 8 chars"
+
+    def test_get_role_name_requires_component(self):
+        """Test get_role_name requires component parameter."""
+        opts = StackOptions(role_name_format="app-{}")
+        # New signature: get_role_name(stack_name, component)
+        result = opts.get_role_name("mystack", "aggr")
+        assert result == "app-mystack-aggr"
+
+    def test_get_role_name_with_different_components(self):
+        """Test get_role_name works with all component types."""
+        opts = StackOptions(role_name_format="pb-{}")
+        assert opts.get_role_name("mystack", "aggr") == "pb-mystack-aggr"
+        assert opts.get_role_name("mystack", "app") == "pb-mystack-app"
+        assert opts.get_role_name("mystack", "admin") == "pb-mystack-admin"
+        assert opts.get_role_name("mystack", "read") == "pb-mystack-read"
+
+    def test_get_role_name_validates_length(self):
+        """Test get_role_name raises ValidationError when exceeding 64 chars."""
+        # Format with long prefix that will exceed 64 chars with a long stack name
+        opts = StackOptions(role_name_format="very-long-prefix-{}")
+        # 19 (prefix) + 50 (stack) + 1 (-) + 5 (admin) = 75 chars > 64
+        long_stack = "a" * 50
+        with pytest.raises(ValidationError) as exc_info:
+            opts.get_role_name(long_stack, "admin")
+        assert "exceeds IAM 64-character limit" in str(exc_info.value)
+
+    def test_get_role_name_returns_none_when_format_not_set_with_component(self):
+        """Test get_role_name returns None when role_name_format is None."""
+        opts = StackOptions()
+        assert opts.get_role_name("mytable", "aggr") is None
 
 
 class TestInputValidation:
