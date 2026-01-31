@@ -165,6 +165,14 @@ Parameters:
       - 'false'
     Description: Whether to create App/Admin/ReadOnly IAM roles for application access
 
+  EnableDeletionProtection:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable DynamoDB table deletion protection
+
 Conditions:
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
   UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
@@ -188,6 +196,7 @@ Conditions:
     - !Condition DeployAggregator
     - !Equals [!Ref EnableTracing, 'true']
   DeployIAMRoles: !Equals [!Ref EnableIAMRoles, 'true']
+  EnableTableDeletionProtection: !Equals [!Ref EnableDeletionProtection, 'true']
 
 Resources:
   # -------------------------------------------------------------------------
@@ -198,6 +207,10 @@ Resources:
     Properties:
       TableName: !Ref AWS::StackName
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If
+        - EnableTableDeletionProtection
+        - true
+        - false
 
       AttributeDefinitions:
         - AttributeName: PK

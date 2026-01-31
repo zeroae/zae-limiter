@@ -119,7 +119,7 @@ limiter = RateLimiter(
 )
 ```
 
-Other `StackOptions` fields: `lambda_memory`, `retention_days`, `enable_alarms`, `alarm_sns_topic`, `enable_audit_archival`, `audit_archive_glacier_days`, `enable_tracing`, `create_iam_roles`.
+Other `StackOptions` fields: `lambda_memory`, `retention_days`, `enable_alarms`, `alarm_sns_topic`, `enable_audit_archival`, `audit_archive_glacier_days`, `enable_tracing`, `create_iam_roles`, `enable_deletion_protection`.
 
 **When to use `StackOptions` vs CLI:**
 - **StackOptions**: Self-contained apps, serverless deployments, minimal onboarding friction

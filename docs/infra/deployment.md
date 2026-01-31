@@ -42,6 +42,7 @@ zae-limiter deploy \
 | `--enable-audit-archival/--no-audit-archival` | Archive expired audit events to S3 | `true` |
 | `--audit-archive-glacier-days` | Days before Glacier IR transition | `90` |
 | `--enable-iam-roles/--no-iam-roles` | Create App/Admin/ReadOnly IAM roles | `true` |
+| `--enable-deletion-protection/--no-deletion-protection` | Enable DynamoDB table deletion protection | `false` |
 
 For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
