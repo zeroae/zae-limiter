@@ -20,7 +20,7 @@ from .models import (
     UsageSnapshot,
     UsageSummary,
     validate_identifier,
-    validate_name,
+    validate_resource,
 )
 from .naming import normalize_stack_name
 
@@ -1076,7 +1076,7 @@ class Repository:
             limits: List of Limit configurations to store
             principal: Caller identity for audit logging
         """
-        validate_name(resource, "resource")
+        validate_resource(resource)
         client = await self._get_client()
 
         # Delete existing limits for this resource
@@ -1125,7 +1125,7 @@ class Repository:
         resource: str,
     ) -> list[Limit]:
         """Get stored default limit configs for a resource."""
-        validate_name(resource, "resource")
+        validate_resource(resource)
         client = await self._get_client()
 
         # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
@@ -1166,7 +1166,7 @@ class Repository:
             resource: Resource name
             principal: Caller identity for audit logging
         """
-        validate_name(resource, "resource")
+        validate_resource(resource)
         await self._delete_resource_defaults_internal(resource)
 
         # Log audit event

@@ -241,6 +241,27 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
 - `my.app` (periods not allowed)
 - `123app` (must start with letter)
 
+### Rate Limiting Resource Names
+
+Resource names (used in `acquire()`, `set_resource_defaults()`, etc.) have different rules than stack names:
+
+| Character | Allowed |
+|-----------|---------|
+| Letters | ✅ |
+| Numbers | ✅ (not first char) |
+| Underscore `_` | ✅ |
+| Hyphen `-` | ✅ |
+| Dot `.` | ✅ |
+| Slash `/` | ✅ (for provider/model grouping) |
+| Hash `#` | ❌ (DynamoDB delimiter) |
+
+**Valid resource names:**
+- `api`, `gpt-4`, `gpt-3.5-turbo`
+- `openai/gpt-4`, `anthropic/claude-3` (provider/model grouping)
+- `anthropic/claude-3/opus` (nested paths)
+
+**Note:** Limit names (e.g., `rpm`, `tpm`) do NOT allow slashes.
+
 ### Hot Partition Risk Mitigation (Issue #116)
 
 Cascade (`cascade=True`) causes parent entities to receive traffic proportional to child count. High-fanout parents (1000+ children) risk exceeding per-partition throughput (~3,000 RCU / 1,000 WCU).
