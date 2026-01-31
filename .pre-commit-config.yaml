@@ -25,6 +25,15 @@ repos:
       - id: cfn-lint
         files: cfn_template\.yaml$
 
+  - repo: local
+    hooks:
+      - id: check-aws-partition
+        name: Check for hardcoded AWS partition in CloudFormation
+        entry: bash -c 'if grep -n "arn:aws:" "$@" 2>/dev/null; then echo "Use ${AWS::Partition} instead of hardcoded aws partition"; exit 1; fi'
+        language: system
+        files: cfn_template\.yaml$
+        stages: [pre-commit]
+
   # Pre-push hooks (run before git push)
   - repo: local
     hooks:
