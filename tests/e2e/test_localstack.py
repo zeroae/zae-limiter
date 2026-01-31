@@ -29,7 +29,14 @@ import pytest
 import pytest_asyncio
 from click.testing import CliRunner
 
-from zae_limiter import Limit, RateLimiter, RateLimitExceeded, StackOptions, SyncRateLimiter
+from zae_limiter import (
+    Limit,
+    RateLimiter,
+    RateLimitExceeded,
+    StackOptions,
+    SyncRateLimiter,
+    __version__,
+)
 from zae_limiter.cli import cli
 
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
@@ -124,8 +131,8 @@ class TestE2ELocalStackCLIWorkflow:
             # Schema should be initialized by deploy (not N/A)
             assert "Schema:        0.7.0" in result.output
             assert "Lambda:" in result.output
-            # Lambda version is now recorded for LocalStack deployments (fix #274)
-            assert "Lambda:        N/A" not in result.output
+            # Lambda version should match client version (fix #274)
+            assert f"Lambda:        {__version__}" in result.output
 
             # Table Metrics section
             assert "Table Metrics" in result.output
