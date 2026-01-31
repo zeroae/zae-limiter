@@ -157,9 +157,9 @@ class TestE2EAWSFullWorkflow:
 
         iam = boto3.client("iam", region_name="us-east-1")
 
-        # The role name format "PowerUserPB-{}" produces "PowerUserPB-{name}-aggregator-role"
-        # The {} is replaced with the full default role name: {name}-aggregator-role
-        expected_role_name = f"PowerUserPB-{unique_name_class}-aggregator-role"
+        # The role name format "PowerUserPB-{}" produces "PowerUserPB-{name}-aggr"
+        # The {} is replaced with the component name: {name}-aggr (ADR-116)
+        expected_role_name = f"PowerUserPB-{unique_name_class}-aggr"
 
         role = iam.get_role(RoleName=expected_role_name)
 
@@ -670,7 +670,7 @@ class TestE2EAWSXRayTracingEnabled:
         import boto3
 
         iam = boto3.client("iam", region_name="us-east-1")
-        role_name = f"PowerUserPB-{unique_name_class}-aggregator-role"
+        role_name = f"PowerUserPB-{unique_name_class}-aggr"
 
         # Get inline policies
         response = iam.list_role_policies(RoleName=role_name)
@@ -902,7 +902,7 @@ class TestE2EAWSXRayTracingDisabled:
         import boto3
 
         iam = boto3.client("iam", region_name="us-east-1")
-        role_name = f"PowerUserPB-{unique_name_class}-aggregator-role"
+        role_name = f"PowerUserPB-{unique_name_class}-aggr"
 
         # Get inline policies
         response = iam.list_role_policies(RoleName=role_name)
