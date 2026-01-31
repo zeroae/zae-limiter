@@ -301,23 +301,27 @@ class TestStackOptions:
         assert "permission_boundary" not in params
 
     # -------------------------------------------------------------------------
-    # Role Name Format Tests
+    # Role Name Format Tests (Updated for component-based naming, ADR-116)
     # -------------------------------------------------------------------------
 
-    def test_role_name_format_valid(self):
-        """Test role_name_format with valid placeholder."""
+    def test_role_name_format_valid_prefix(self):
+        """Test role_name_format with prefix pattern."""
         opts = StackOptions(role_name_format="app-{}")
-        assert opts.get_role_name("mytable") == "app-mytable-aggregator-role"
+        assert opts.get_role_name("mytable", "aggr") == "app-mytable-aggr"
+        assert opts.get_role_name("mytable", "app") == "app-mytable-app"
+        assert opts.get_role_name("mytable", "admin") == "app-mytable-admin"
+        assert opts.get_role_name("mytable", "read") == "app-mytable-read"
 
     def test_role_name_format_prefix_suffix(self):
         """Test role_name_format with both prefix and suffix."""
         opts = StackOptions(role_name_format="pb-{}-PowerUser")
-        assert opts.get_role_name("mytable") == "pb-mytable-aggregator-role-PowerUser"
+        assert opts.get_role_name("mytable", "aggr") == "pb-mytable-aggr-PowerUser"
+        assert opts.get_role_name("mytable", "app") == "pb-mytable-app-PowerUser"
 
     def test_role_name_format_suffix_only(self):
         """Test role_name_format with suffix only."""
         opts = StackOptions(role_name_format="{}-prod")
-        assert opts.get_role_name("mytable") == "mytable-aggregator-role-prod"
+        assert opts.get_role_name("mytable", "aggr") == "mytable-aggr-prod"
 
     def test_role_name_format_no_placeholder(self):
         """Test role_name_format without placeholder raises ValueError."""
@@ -337,13 +341,14 @@ class TestStackOptions:
     def test_get_role_name_returns_none_when_format_not_set(self):
         """Test get_role_name returns None when role_name_format is None."""
         opts = StackOptions()
-        assert opts.get_role_name("mytable") is None
+        assert opts.get_role_name("mytable", "aggr") is None
 
     def test_role_name_in_params_with_stack_name(self):
         """Test role_name is in params when stack_name is provided."""
         opts = StackOptions(role_name_format="app-{}")
         params = opts.to_parameters(stack_name="ZAEL-mytable")
-        assert params["role_name"] == "app-ZAEL-mytable-aggregator-role"
+        # Temporary: to_parameters generates role_name with "admin" component until Task 4
+        assert params["role_name"] == "app-ZAEL-mytable-admin"
 
     def test_role_name_not_in_params_without_stack_name(self):
         """Test role_name is not in params when stack_name is not provided."""
