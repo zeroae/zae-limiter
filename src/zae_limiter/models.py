@@ -566,6 +566,10 @@ class LimitName:
     TPD = "tpd"  # tokens per day
 
 
+# IAM role component suffixes (ADR-116)
+# Invariant: all components must be <= 8 characters
+ROLE_COMPONENTS = ("aggr", "app", "admin", "read")
+
 # Valid CloudWatch Logs retention periods (in days)
 # See: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutRetentionPolicy.html
 VALID_LOG_RETENTION_DAYS = frozenset(
@@ -694,20 +698,35 @@ class StackOptions:
                 if len(value) > 256:
                     raise ValueError(f"tag value for '{key}' exceeds 256 characters")
 
-    def get_role_name(self, stack_name: str) -> str | None:
+    def get_role_name(self, stack_name: str, component: str) -> str | None:
         """
-        Get the final role name for a given stack name.
+        Get the final role name for a given stack name and component.
 
         Args:
             stack_name: Stack name
+            component: Role component (aggr, app, admin, read)
 
         Returns:
-            Final role name, or None to use CloudFormation default
+            Final role name, or None if role_name_format not set
+
+        Raises:
+            ValidationError: If resulting name exceeds 64 characters
         """
         if self.role_name_format is None:
             return None
-        default_role = f"{stack_name}-aggregator-role"
-        return self.role_name_format.replace("{}", default_role)
+        role_name = self.role_name_format.replace("{}", f"{stack_name}-{component}")
+        if len(role_name) > 64:
+            format_overhead = len(self.role_name_format) - 2  # subtract {}
+            max_stack_len = 64 - format_overhead - 1 - len(component)  # -1 for dash
+            from .exceptions import ValidationError
+
+            raise ValidationError(
+                "role_name",
+                role_name,
+                f"exceeds IAM 64-character limit by {len(role_name) - 64} characters. "
+                f"Shorten stack name to max {max_stack_len} characters with this format.",
+            )
+        return role_name
 
     def to_parameters(self, stack_name: str | None = None) -> dict[str, str]:
         """
@@ -741,7 +760,9 @@ class StackOptions:
         if self.permission_boundary:
             params["permission_boundary"] = self.permission_boundary
         if self.role_name_format and stack_name:
-            role_name = self.get_role_name(stack_name)
+            # TODO(Task 4): Generate all 4 role name parameters
+            # For now, just validate with the longest component ("admin")
+            role_name = self.get_role_name(stack_name, "admin")
             if role_name:
                 params["role_name"] = role_name
         # Audit archival parameters

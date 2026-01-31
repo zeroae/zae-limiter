@@ -383,6 +383,53 @@ class TestStackOptions:
         params = opts.to_parameters()
         assert params["enable_iam_roles"] == "false"
 
+    # -------------------------------------------------------------------------
+    # ROLE_COMPONENTS Constant Tests (ADR-116)
+    # -------------------------------------------------------------------------
+
+    def test_role_components_constant_exists(self):
+        """Test ROLE_COMPONENTS constant is defined."""
+        from zae_limiter.models import ROLE_COMPONENTS
+
+        assert ROLE_COMPONENTS == ("aggr", "app", "admin", "read")
+
+    def test_role_components_max_length_invariant(self):
+        """Test all role components are <= 8 characters (ADR-116 invariant)."""
+        from zae_limiter.models import ROLE_COMPONENTS
+
+        for component in ROLE_COMPONENTS:
+            assert len(component) <= 8, f"Component '{component}' exceeds 8 chars"
+
+    def test_get_role_name_requires_component(self):
+        """Test get_role_name requires component parameter."""
+        opts = StackOptions(role_name_format="app-{}")
+        # New signature: get_role_name(stack_name, component)
+        result = opts.get_role_name("mystack", "aggr")
+        assert result == "app-mystack-aggr"
+
+    def test_get_role_name_with_different_components(self):
+        """Test get_role_name works with all component types."""
+        opts = StackOptions(role_name_format="pb-{}")
+        assert opts.get_role_name("mystack", "aggr") == "pb-mystack-aggr"
+        assert opts.get_role_name("mystack", "app") == "pb-mystack-app"
+        assert opts.get_role_name("mystack", "admin") == "pb-mystack-admin"
+        assert opts.get_role_name("mystack", "read") == "pb-mystack-read"
+
+    def test_get_role_name_validates_length(self):
+        """Test get_role_name raises ValidationError when exceeding 64 chars."""
+        # Format with long prefix that will exceed 64 chars with a long stack name
+        opts = StackOptions(role_name_format="very-long-prefix-{}")
+        # 19 (prefix) + 50 (stack) + 1 (-) + 5 (admin) = 75 chars > 64
+        long_stack = "a" * 50
+        with pytest.raises(ValidationError) as exc_info:
+            opts.get_role_name(long_stack, "admin")
+        assert "exceeds IAM 64-character limit" in str(exc_info.value)
+
+    def test_get_role_name_returns_none_when_format_not_set_with_component(self):
+        """Test get_role_name returns None when role_name_format is None."""
+        opts = StackOptions()
+        assert opts.get_role_name("mytable", "aggr") is None
+
 
 class TestInputValidation:
     """Tests for input validation security (issue #48)."""
