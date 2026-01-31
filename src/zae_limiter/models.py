@@ -19,8 +19,12 @@ MAX_NAME_LENGTH = 64  # limit_name, resource
 IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-:@]*$")
 
 # Names: letter start, then alphanumeric + _ - .
-# Used for limit names (rpm, tpm) and resources (api, gpt-3.5-turbo)
+# Used for limit names (rpm, tpm)
 NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.\-]*$")
+
+# Resources: letter start, then alphanumeric + _ - . /
+# Allows provider/model grouping (openai/gpt-4, anthropic/claude-3)
+RESOURCE_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.\-/]*$")
 
 # The '#' character is used as a key delimiter in DynamoDB and must be forbidden
 FORBIDDEN_CHAR = "#"
@@ -92,6 +96,39 @@ def validate_name(value: str, field_name: str) -> None:
             value,
             "must start with a letter and contain only alphanumeric, "
             "underscore, hyphen, or dot characters",
+        )
+
+
+def validate_resource(value: str, field_name: str = "resource") -> None:
+    """
+    Validate a resource name.
+
+    Resource names allow "/" for provider/model grouping (e.g., openai/gpt-4).
+
+    Args:
+        value: The resource name to validate
+        field_name: Name of the field (for error messages)
+
+    Raises:
+        InvalidNameError: If validation fails
+    """
+    if not value:
+        raise InvalidNameError(field_name, value, "cannot be empty")
+
+    if len(value) > MAX_NAME_LENGTH:
+        raise InvalidNameError(field_name, value, f"exceeds maximum length of {MAX_NAME_LENGTH}")
+
+    if FORBIDDEN_CHAR in value:
+        raise InvalidNameError(
+            field_name, value, f"cannot contain '{FORBIDDEN_CHAR}' (reserved delimiter)"
+        )
+
+    if not RESOURCE_PATTERN.match(value):
+        raise InvalidNameError(
+            field_name,
+            value,
+            "must start with a letter and contain only alphanumeric, "
+            "underscore, hyphen, dot, or slash characters",
         )
 
 

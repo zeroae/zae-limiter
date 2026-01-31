@@ -469,6 +469,84 @@ class TestInputValidation:
             with pytest.raises(InvalidNameError):
                 Limit.per_minute(name, 100)
 
+    def test_limit_name_rejects_slash(self):
+        """Test limit name with / is rejected (slash only allowed for resources)."""
+        with pytest.raises(InvalidNameError) as exc_info:
+            Limit.per_minute("rpm/tpm", 100)
+        assert exc_info.value.field == "name"
+        assert "slash" not in exc_info.value.reason  # slash not in allowed chars
+
+    # -------------------------------------------------------------------------
+    # Resource Name Validation Tests
+    # -------------------------------------------------------------------------
+
+    def test_resource_name_valid(self):
+        """Test valid resource names are accepted."""
+        from zae_limiter.models import validate_resource
+
+        valid_names = [
+            "api",
+            "gpt-4",
+            "gpt-3.5-turbo",
+            "openai/gpt-4",  # provider/model grouping
+            "anthropic/claude-3",
+            "anthropic/claude-3/opus",  # nested paths
+            "a/b/c/d",  # deep nesting
+        ]
+        for name in valid_names:
+            validate_resource(name)  # Should not raise
+
+    def test_resource_name_with_trailing_slash(self):
+        """Test resource name with trailing slash is valid."""
+        from zae_limiter.models import validate_resource
+
+        validate_resource("openai/")  # Should not raise
+
+    def test_resource_name_rejects_leading_slash(self):
+        """Test resource name starting with / is rejected (must start with letter)."""
+        from zae_limiter.models import validate_resource
+
+        with pytest.raises(InvalidNameError) as exc_info:
+            validate_resource("/gpt-4")
+        assert exc_info.value.field == "resource"
+        assert "letter" in exc_info.value.reason
+
+    def test_resource_name_rejects_hash(self):
+        """Test resource name with # is rejected."""
+        from zae_limiter.models import validate_resource
+
+        with pytest.raises(InvalidNameError) as exc_info:
+            validate_resource("openai#gpt-4")
+        assert exc_info.value.field == "resource"
+        assert "#" in exc_info.value.reason
+
+    def test_resource_name_rejects_empty(self):
+        """Test empty resource name is rejected."""
+        from zae_limiter.models import validate_resource
+
+        with pytest.raises(InvalidNameError) as exc_info:
+            validate_resource("")
+        assert exc_info.value.field == "resource"
+        assert "empty" in exc_info.value.reason
+
+    def test_resource_name_rejects_too_long(self):
+        """Test resource name exceeding max length is rejected."""
+        from zae_limiter.models import validate_resource
+
+        with pytest.raises(InvalidNameError) as exc_info:
+            validate_resource("a" * 100)
+        assert exc_info.value.field == "resource"
+        assert "length" in exc_info.value.reason
+
+    def test_resource_name_must_start_with_letter(self):
+        """Test resource name starting with number is rejected."""
+        from zae_limiter.models import validate_resource
+
+        with pytest.raises(InvalidNameError) as exc_info:
+            validate_resource("123api")
+        assert exc_info.value.field == "resource"
+        assert "letter" in exc_info.value.reason
+
     # -------------------------------------------------------------------------
     # Entity Tests (internal model - no __post_init__ validation)
     # -------------------------------------------------------------------------

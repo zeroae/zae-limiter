@@ -40,7 +40,7 @@ from .models import (
     UsageSnapshot,
     UsageSummary,
     validate_identifier,
-    validate_name,
+    validate_resource,
 )
 from .repository import Repository
 from .schema import DEFAULT_RESOURCE
@@ -746,7 +746,7 @@ class RateLimiter:
         """Internal acquire implementation."""
         # Validate inputs at API boundary
         validate_identifier(entity_id, "entity_id")
-        validate_name(resource, "resource")
+        validate_resource(resource)
 
         now_ms = int(time.time() * 1000)
 
