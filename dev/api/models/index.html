@@ -5902,12 +5902,12 @@ key 1-128 chars, value 0-256 chars). The <code>aws:</code> prefix is reserved.</
 
 
 <a href="#zae_limiter.models.StackOptions.get_role_name" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_role_name</span><span class="p">(</span><span class="n">stack_name</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_role_name</span><span class="p">(</span><span class="n">stack_name</span><span class="p">,</span> <span class="n">component</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Get the final role name for a given stack name.</p>
+        <p>Get the final role name for a given stack name and component.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5937,6 +5937,22 @@ key 1-128 chars, value 0-256 chars). The <code>aws:</code> prefix is reserved.</
                 <em>required</em>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>component</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Role component (aggr, app, admin, read)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -5956,7 +5972,30 @@ key 1-128 chars, value 0-256 chars). The <code>aws:</code> prefix is reserved.</
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Final role name, or None to use CloudFormation default</p>
+                <p>Final role name, or None if role_name_format not set</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="zae_limiter.exceptions.ValidationError">ValidationError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If resulting name exceeds 64 characters</p>
               </div>
             </td>
           </tr>
