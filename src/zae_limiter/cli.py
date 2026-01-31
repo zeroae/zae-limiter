@@ -163,9 +163,19 @@ Examples:
     type=str,
     default=None,
     help=(
-        "Format template for Lambda role name. "
+        "Format template for role name. "
         "Use {} as placeholder for default name. "
-        "Example: 'app-{}' produces 'app-mytable-aggregator-role'."
+        "Example: 'pb-{}' produces 'pb-mystack-aggr'."
+    ),
+)
+@click.option(
+    "--policy-name-format",
+    type=str,
+    default=None,
+    help=(
+        "Format template for managed policy name. "
+        "Use {} as placeholder for default name. "
+        "Example: 'pb-{}' produces 'pb-mystack-app'."
     ),
 )
 @click.option(
@@ -185,9 +195,10 @@ Examples:
     help="Enable AWS X-Ray tracing for Lambda aggregator (default: disabled)",
 )
 @click.option(
-    "--enable-iam-roles/--no-iam-roles",
-    default=True,
-    help="Create App/Admin/ReadOnly IAM roles for application access (default: enabled)",
+    "--create-iam-roles/--no-create-iam-roles",
+    "create_iam_roles",
+    default=False,
+    help="Create App/Admin/ReadOnly IAM roles (default: disabled). Policies always created.",
 )
 @click.option(
     "--enable-deletion-protection/--no-deletion-protection",
@@ -218,10 +229,11 @@ def deploy(
     wait: bool,
     permission_boundary: str | None,
     role_name_format: str | None,
+    policy_name_format: str | None,
     enable_audit_archival: bool,
     audit_archive_glacier_days: int,
     enable_tracing: bool,
-    enable_iam_roles: bool,
+    create_iam_roles: bool,
     enable_deletion_protection: bool,
     tags: tuple[str, ...],
 ) -> None:
@@ -293,10 +305,11 @@ def deploy(
                 lambda_duration_threshold_pct=lambda_duration_threshold_pct,
                 permission_boundary=permission_boundary,
                 role_name_format=role_name_format,
+                policy_name_format=policy_name_format,
                 enable_audit_archival=enable_audit_archival,
                 audit_archive_glacier_days=audit_archive_glacier_days,
                 enable_tracing=enable_tracing,
-                create_iam_roles=enable_iam_roles,
+                create_iam_roles=create_iam_roles,
                 enable_deletion_protection=enable_deletion_protection,
                 tags=user_tags,
             )

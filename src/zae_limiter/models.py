@@ -658,10 +658,12 @@ class StackOptions:
         lambda_duration_threshold_pct: Duration alarm threshold as percentage of timeout (1-100)
         permission_boundary: IAM permission boundary (policy name or full ARN)
         role_name_format: Format template for role name, {} = default role name
+        policy_name_format: Format template for managed policy name, {} = default policy name
         enable_audit_archival: Archive expired audit events to S3 via TTL
         audit_archive_glacier_days: Days before transitioning archives to Glacier IR (1-3650)
         enable_tracing: Enable AWS X-Ray tracing for Lambda aggregator
-        create_iam_roles: Create App/Admin/ReadOnly IAM roles for application access
+        create_iam_roles: Create App/Admin/ReadOnly IAM roles (default: False).
+            Managed policies are always created.
         enable_deletion_protection: Enable DynamoDB table deletion protection
         tags: User-defined tags to apply to the CloudFormation stack. Dict of key-value
             pairs. AWS tag constraints apply (max 50 total including managed tags,
@@ -680,10 +682,11 @@ class StackOptions:
     lambda_duration_threshold_pct: int = 80
     permission_boundary: str | None = None
     role_name_format: str | None = None
+    policy_name_format: str | None = None
     enable_audit_archival: bool = True
     audit_archive_glacier_days: int = 90
     enable_tracing: bool = False
-    create_iam_roles: bool = True
+    create_iam_roles: bool = False
     enable_deletion_protection: bool = False
     tags: dict[str, str] | None = None
 
@@ -719,6 +722,23 @@ class StackOptions:
                 raise ValueError(
                     "role_name_format template is too long, resulting role name "
                     "may exceed IAM 64 character limit"
+                )
+        # Validate policy_name_format contains exactly one {}
+        if self.policy_name_format is not None:
+            placeholder_count = self.policy_name_format.count("{}")
+            if placeholder_count != 1:
+                raise ValueError(
+                    f"policy_name_format must contain exactly one '{{}}' placeholder, "
+                    f"found {placeholder_count}"
+                )
+            # IAM managed policy names max 128 chars
+            # Policy components: app, admin, read (max 5 chars)
+            # Formula: 128 - max_component(5) - dash(1) = 122 max format length
+            format_len = len(self.policy_name_format)
+            if format_len > 122:
+                raise ValueError(
+                    "policy_name_format template is too long, resulting policy name "
+                    "may exceed IAM 128 character limit"
                 )
         # Validate audit archival options
         if not (1 <= self.audit_archive_glacier_days <= 3650):
@@ -768,6 +788,36 @@ class StackOptions:
             )
         return role_name
 
+    def get_policy_name(self, stack_name: str, component: str) -> str | None:
+        """
+        Get the final policy name for a given stack name and component.
+
+        Args:
+            stack_name: Stack name
+            component: Policy component (app, admin, read)
+
+        Returns:
+            Final policy name, or None if policy_name_format not set
+
+        Raises:
+            ValidationError: If resulting name exceeds 128 characters
+        """
+        if self.policy_name_format is None:
+            return None
+        policy_name = self.policy_name_format.replace("{}", f"{stack_name}-{component}")
+        if len(policy_name) > 128:
+            format_overhead = len(self.policy_name_format) - 2  # subtract {}
+            max_stack_len = 128 - format_overhead - 1 - len(component)  # -1 for dash
+            from .exceptions import ValidationError
+
+            raise ValidationError(
+                "policy_name",
+                policy_name,
+                f"exceeds IAM 128-character limit by {len(policy_name) - 128} characters. "
+                f"Shorten stack name to max {max_stack_len} characters with this format.",
+            )
+        return policy_name
+
     def to_parameters(self, stack_name: str | None = None) -> dict[str, str]:
         """
         Convert to stack parameters dict for StackManager.
@@ -815,6 +865,17 @@ class StackOptions:
             params["app_role_name"] = app_role
             params["admin_role_name"] = admin_role
             params["readonly_role_name"] = readonly_role
+        # Generate 3 separate policy name parameters
+        if self.policy_name_format and stack_name:
+            app_policy = self.get_policy_name(stack_name, "app")
+            admin_policy = self.get_policy_name(stack_name, "admin")
+            readonly_policy = self.get_policy_name(stack_name, "read")
+            assert app_policy is not None
+            assert admin_policy is not None
+            assert readonly_policy is not None
+            params["app_policy_name"] = app_policy
+            params["admin_policy_name"] = admin_policy
+            params["readonly_policy_name"] = readonly_policy
         # Audit archival parameters
         params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
         params["audit_archive_glacier_days"] = str(self.audit_archive_glacier_days)

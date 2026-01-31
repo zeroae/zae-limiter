@@ -42,18 +42,17 @@ def _load_cfn_template() -> dict:
     return yaml.load(template_text, Loader=loader)
 
 
-def _extract_role_actions(template: dict, role_key: str) -> set[str]:
-    """Extract DynamoDB actions from a role's inline policy."""
-    role = template["Resources"][role_key]
-    policies = role["Properties"]["Policies"]
+def _extract_policy_actions(template: dict, policy_key: str) -> set[str]:
+    """Extract DynamoDB actions from a managed policy."""
+    policy = template["Resources"][policy_key]
+    policy_doc = policy["Properties"]["PolicyDocument"]
     actions: set[str] = set()
-    for policy in policies:
-        for stmt in policy["PolicyDocument"]["Statement"]:
-            if stmt["Effect"] == "Allow":
-                stmt_actions = stmt["Action"]
-                if isinstance(stmt_actions, str):
-                    stmt_actions = [stmt_actions]
-                actions.update(stmt_actions)
+    for stmt in policy_doc["Statement"]:
+        if stmt["Effect"] == "Allow":
+            stmt_actions = stmt["Action"]
+            if isinstance(stmt_actions, str):
+                stmt_actions = [stmt_actions]
+            actions.update(stmt_actions)
     return actions
 
 
@@ -119,30 +118,30 @@ class TestIAMRoleParity:
         )
 
     def test_admin_role_covers_all_repository_operations(self) -> None:
-        """AdminRole should have every DynamoDB action used in repository.py.
+        """AdminPolicy should have every DynamoDB action used in repository.py.
 
-        AdminRole is for ops teams managing config — it needs full CRUD access
+        AdminPolicy is for ops teams managing config — it needs full CRUD access
         to all operations the library performs.
         """
-        admin_actions = _extract_role_actions(self.template, "AdminRole")
+        admin_actions = _extract_policy_actions(self.template, "AdminPolicy")
         missing = self.repo_actions - admin_actions
 
         assert not missing, (
-            f"AdminRole is missing DynamoDB actions used in repository.py: {missing}. "
-            f"Add them to the AdminRole policy in cfn_template.yaml."
+            f"AdminPolicy is missing DynamoDB actions used in repository.py: {missing}. "
+            f"Add them to the AdminPolicy in cfn_template.yaml."
         )
 
     def test_app_role_covers_read_and_transact_operations(self) -> None:
-        """AppRole should have read + transact operations for acquire() workflow.
+        """AppPolicy should have read + transact operations for acquire() workflow.
 
-        AppRole is for applications running acquire(). It needs:
+        AppPolicy is for applications running acquire(). It needs:
         - Read operations: GetItem, BatchGetItem, Query
         - Write: TransactWriteItems (atomic bucket updates)
 
         It intentionally excludes PutItem, DeleteItem, UpdateItem,
         BatchWriteItem (admin-only operations).
         """
-        app_actions = _extract_role_actions(self.template, "AppRole")
+        app_actions = _extract_policy_actions(self.template, "AppPolicy")
         required_app_actions = {
             "dynamodb:GetItem",
             "dynamodb:BatchGetItem",
@@ -152,16 +151,16 @@ class TestIAMRoleParity:
         missing = required_app_actions - app_actions
 
         assert not missing, (
-            f"AppRole is missing required DynamoDB actions: {missing}. "
-            f"Add them to the AppRole policy in cfn_template.yaml."
+            f"AppPolicy is missing required DynamoDB actions: {missing}. "
+            f"Add them to the AppPolicy in cfn_template.yaml."
         )
 
     def test_readonly_role_has_only_read_operations(self) -> None:
-        """ReadOnlyRole should have read-only DynamoDB actions.
+        """ReadOnlyPolicy should have read-only DynamoDB actions.
 
         It should not have any write operations.
         """
-        readonly_actions = _extract_role_actions(self.template, "ReadOnlyRole")
+        readonly_actions = _extract_policy_actions(self.template, "ReadOnlyPolicy")
         write_actions = {
             "dynamodb:PutItem",
             "dynamodb:DeleteItem",
@@ -172,5 +171,5 @@ class TestIAMRoleParity:
         unexpected_writes = readonly_actions & write_actions
 
         assert not unexpected_writes, (
-            f"ReadOnlyRole has write actions it shouldn't: {unexpected_writes}"
+            f"ReadOnlyPolicy has write actions it shouldn't: {unexpected_writes}"
         )

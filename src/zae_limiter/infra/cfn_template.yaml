@@ -134,6 +134,27 @@ Parameters:
       (Optional) Custom name for the read-only IAM role.
       If empty, uses default: {stack_name}-read.
 
+  AppPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the application IAM managed policy.
+      If empty, uses default: {stack_name}-app.
+
+  AdminPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the admin IAM managed policy.
+      If empty, uses default: {stack_name}-admin.
+
+  ReadOnlyPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the read-only IAM managed policy.
+      If empty, uses default: {stack_name}-read.
+
   EnableAuditArchival:
     Type: String
     Default: 'true'
@@ -186,6 +207,9 @@ Conditions:
   HasCustomAppRoleName: !Not [!Equals [!Ref AppRoleName, '']]
   HasCustomAdminRoleName: !Not [!Equals [!Ref AdminRoleName, '']]
   HasCustomReadOnlyRoleName: !Not [!Equals [!Ref ReadOnlyRoleName, '']]
+  HasCustomAppPolicyName: !Not [!Equals [!Ref AppPolicyName, '']]
+  HasCustomAdminPolicyName: !Not [!Equals [!Ref AdminPolicyName, '']]
+  HasCustomReadOnlyPolicyName: !Not [!Equals [!Ref ReadOnlyPolicyName, '']]
   PermissionBoundaryIsArn: !Equals
     - !Select [0, !Split [':', !Ref PermissionBoundary]]
     - 'arn'
@@ -296,6 +320,90 @@ Resources:
       Tags:
         - Key: Application
           Value: zae-limiter
+
+  # -------------------------------------------------------------------------
+  # IAM Managed Policies (Always Created)
+  # -------------------------------------------------------------------------
+
+  # AppPolicy: For applications running acquire() - read + transact write
+  AppPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomAppPolicyName
+        - !Ref AppPolicyName
+        - !Sub ${AWS::StackName}-app
+      Description: Rate limiter application access (read + transact write)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+              - dynamodb:TransactWriteItems
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+
+  # AdminPolicy: For ops team managing config - full CRUD
+  AdminPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomAdminPolicyName
+        - !Ref AdminPolicyName
+        - !Sub ${AWS::StackName}-admin
+      Description: Rate limiter admin access (full CRUD)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+              - dynamodb:TransactWriteItems
+              - dynamodb:PutItem
+              - dynamodb:DeleteItem
+              - dynamodb:UpdateItem
+              - dynamodb:BatchWriteItem
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+
+  # ReadOnlyPolicy: For observability/monitoring - read only
+  ReadOnlyPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomReadOnlyPolicyName
+        - !Ref ReadOnlyPolicyName
+        - !Sub ${AWS::StackName}-read
+      Description: Rate limiter read-only access (monitoring)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:DescribeTable
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
 
   # -------------------------------------------------------------------------
   # Lambda Aggregator
@@ -429,11 +537,6 @@ Resources:
   AppRole:
     Type: AWS::IAM::Role
     Condition: DeployIAMRoles
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       RoleName: !If
         - HasCustomAppRoleName
@@ -453,20 +556,8 @@ Resources:
             Principal:
               AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: RateLimiterApp
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:Query
-                  - dynamodb:TransactWriteItems
-                Resource:
-                  - !GetAtt RateLimitsTable.Arn
-                  - !Sub ${RateLimitsTable.Arn}/index/*
+      ManagedPolicyArns:
+        - !Ref AppPolicy
       Tags:
         - Key: Application
           Value: zae-limiter
@@ -477,11 +568,6 @@ Resources:
   AdminRole:
     Type: AWS::IAM::Role
     Condition: DeployIAMRoles
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       RoleName: !If
         - HasCustomAdminRoleName
@@ -501,24 +587,8 @@ Resources:
             Principal:
               AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: RateLimiterAdmin
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:Query
-                  - dynamodb:TransactWriteItems
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:BatchWriteItem
-                Resource:
-                  - !GetAtt RateLimitsTable.Arn
-                  - !Sub ${RateLimitsTable.Arn}/index/*
+      ManagedPolicyArns:
+        - !Ref AdminPolicy
       Tags:
         - Key: Application
           Value: zae-limiter
@@ -548,20 +618,8 @@ Resources:
             Principal:
               AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: RateLimiterReadOnly
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:DescribeTable
-                Resource:
-                  - !GetAtt RateLimitsTable.Arn
-                  - !Sub ${RateLimitsTable.Arn}/index/*
+      ManagedPolicyArns:
+        - !Ref ReadOnlyPolicy
       Tags:
         - Key: Application
           Value: zae-limiter
@@ -872,6 +930,28 @@ Outputs:
     Value: !GetAtt AuditArchiveBucket.Arn
     Export:
       Name: !Sub ${AWS::StackName}-AuditArchiveBucketArn
+
+  # -------------------------------------------------------------------------
+  # IAM Managed Policy Outputs (Always Created)
+  # -------------------------------------------------------------------------
+
+  AppPolicyArn:
+    Description: IAM managed policy ARN for applications (acquire/release operations)
+    Value: !Ref AppPolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-AppPolicyArn
+
+  AdminPolicyArn:
+    Description: IAM managed policy ARN for administrators (config management)
+    Value: !Ref AdminPolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-AdminPolicyArn
+
+  ReadOnlyPolicyArn:
+    Description: IAM managed policy ARN for read-only access (monitoring)
+    Value: !Ref ReadOnlyPolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-ReadOnlyPolicyArn
 
   # -------------------------------------------------------------------------
   # Application IAM Role Outputs
