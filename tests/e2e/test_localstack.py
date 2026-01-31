@@ -124,8 +124,8 @@ class TestE2ELocalStackCLIWorkflow:
             # Schema should be initialized by deploy (not N/A)
             assert "Schema:        0.7.0" in result.output
             assert "Lambda:" in result.output
-            # Lambda is N/A for LocalStack (no real Lambda deployment)
-            assert "Lambda:        N/A" in result.output
+            # Lambda version is now recorded for LocalStack deployments (fix #274)
+            assert "Lambda:        N/A" not in result.output
 
             # Table Metrics section
             assert "Table Metrics" in result.output
