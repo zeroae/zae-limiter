@@ -106,12 +106,33 @@ Parameters:
       Accepts policy name or full ARN. If a name is provided,
       the ARN is constructed automatically.
 
-  RoleName:
+  AggregatorRoleName:
     Type: String
     Default: ''
     Description: >
-      (Optional) Custom name for the Lambda execution role.
-      If empty, uses default: {stack_name}-aggregator-role.
+      (Optional) Custom name for the Lambda aggregator execution role.
+      If empty, uses default: {stack_name}-aggr.
+
+  AppRoleName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the application IAM role.
+      If empty, uses default: {stack_name}-app.
+
+  AdminRoleName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the admin IAM role.
+      If empty, uses default: {stack_name}-admin.
+
+  ReadOnlyRoleName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the read-only IAM role.
+      If empty, uses default: {stack_name}-read.
 
   EnableAuditArchival:
     Type: String
@@ -153,7 +174,10 @@ Conditions:
     - !Condition DeployAlarms
   HasSNSTopic: !Not [!Equals [!Ref AlarmSNSTopicArn, '']]
   HasPermissionBoundary: !Not [!Equals [!Ref PermissionBoundary, '']]
-  HasCustomRoleName: !Not [!Equals [!Ref RoleName, '']]
+  HasCustomAggregatorRoleName: !Not [!Equals [!Ref AggregatorRoleName, '']]
+  HasCustomAppRoleName: !Not [!Equals [!Ref AppRoleName, '']]
+  HasCustomAdminRoleName: !Not [!Equals [!Ref AdminRoleName, '']]
+  HasCustomReadOnlyRoleName: !Not [!Equals [!Ref ReadOnlyRoleName, '']]
   PermissionBoundaryIsArn: !Equals
     - !Select [0, !Split [':', !Ref PermissionBoundary]]
     - 'arn'
@@ -304,9 +328,9 @@ Resources:
     Condition: DeployAggregator
     Properties:
       RoleName: !If
-        - HasCustomRoleName
-        - !Ref RoleName
-        - !Sub ${AWS::StackName}-aggregator-role
+        - HasCustomAggregatorRoleName
+        - !Ref AggregatorRoleName
+        - !Sub ${AWS::StackName}-aggr
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !If
@@ -399,9 +423,9 @@ Resources:
             - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       RoleName: !If
-        - HasCustomRoleName
-        - !Sub ${RoleName}-app
-        - !Sub ${AWS::StackName}-app-role
+        - HasCustomAppRoleName
+        - !Ref AppRoleName
+        - !Sub ${AWS::StackName}-app
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !If
@@ -447,9 +471,9 @@ Resources:
             - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
     Properties:
       RoleName: !If
-        - HasCustomRoleName
-        - !Sub ${RoleName}-admin
-        - !Sub ${AWS::StackName}-admin-role
+        - HasCustomAdminRoleName
+        - !Ref AdminRoleName
+        - !Sub ${AWS::StackName}-admin
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !If
@@ -494,9 +518,9 @@ Resources:
     Condition: DeployIAMRoles
     Properties:
       RoleName: !If
-        - HasCustomRoleName
-        - !Sub ${RoleName}-readonly
-        - !Sub ${AWS::StackName}-readonly-role
+        - HasCustomReadOnlyRoleName
+        - !Ref ReadOnlyRoleName
+        - !Sub ${AWS::StackName}-read
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !If

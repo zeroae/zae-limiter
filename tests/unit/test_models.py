@@ -333,34 +333,55 @@ class TestStackOptions:
         with pytest.raises(ValueError, match="exactly one"):
             StackOptions(role_name_format="app-{}-{}-role")
 
-    def test_role_name_format_too_long(self):
-        """Test role_name_format that would exceed IAM 64 char limit."""
+    def test_role_name_format_max_length_55(self):
+        """Test role_name_format template up to 55 chars is valid."""
+        # 55 chars total: 52 'a's + "-{}" (3 chars) = 55
+        template = "a" * 52 + "-{}"  # 55 total
+        opts = StackOptions(role_name_format=template)
+        assert opts.role_name_format == template
+
+    def test_role_name_format_56_chars_rejected(self):
+        """Test role_name_format over 55 chars is rejected."""
+        # 56 chars total: 53 'a's + "-{}" (3 chars) = 56
+        template = "a" * 53 + "-{}"  # 56 total
         with pytest.raises(ValueError, match="too long"):
-            StackOptions(role_name_format="a" * 50 + "-{}")
+            StackOptions(role_name_format=template)
 
     def test_get_role_name_returns_none_when_format_not_set(self):
         """Test get_role_name returns None when role_name_format is None."""
         opts = StackOptions()
         assert opts.get_role_name("mytable", "aggr") is None
 
-    def test_role_name_in_params_with_stack_name(self):
-        """Test role_name is in params when stack_name is provided."""
+    def test_to_parameters_generates_four_role_names(self):
+        """Test to_parameters generates separate role name params for each component."""
         opts = StackOptions(role_name_format="app-{}")
-        params = opts.to_parameters(stack_name="ZAEL-mytable")
-        # Temporary: to_parameters generates role_name with "admin" component until Task 4
-        assert params["role_name"] == "app-ZAEL-mytable-admin"
+        params = opts.to_parameters(stack_name="mystack")
 
-    def test_role_name_not_in_params_without_stack_name(self):
-        """Test role_name is not in params when stack_name is not provided."""
+        assert params["aggregator_role_name"] == "app-mystack-aggr"
+        assert params["app_role_name"] == "app-mystack-app"
+        assert params["admin_role_name"] == "app-mystack-admin"
+        assert params["readonly_role_name"] == "app-mystack-read"
+        # Old single role_name param should not be present
+        assert "role_name" not in params
+
+    def test_to_parameters_no_role_names_when_format_none(self):
+        """Test to_parameters omits role names when format is None."""
+        opts = StackOptions()
+        params = opts.to_parameters(stack_name="mystack")
+
+        assert "aggregator_role_name" not in params
+        assert "app_role_name" not in params
+        assert "admin_role_name" not in params
+        assert "readonly_role_name" not in params
+
+    def test_role_names_not_in_params_without_stack_name(self):
+        """Test role names are not in params when stack_name is not provided."""
         opts = StackOptions(role_name_format="app-{}")
         params = opts.to_parameters()
-        assert "role_name" not in params
-
-    def test_role_name_not_in_params_when_format_none(self):
-        """Test role_name is not in params when role_name_format is None."""
-        opts = StackOptions()
-        params = opts.to_parameters(stack_name="ZAEL-mytable")
-        assert "role_name" not in params
+        assert "aggregator_role_name" not in params
+        assert "app_role_name" not in params
+        assert "admin_role_name" not in params
+        assert "readonly_role_name" not in params
 
     # -------------------------------------------------------------------------
     # IAM Roles Tests (Issue #132)

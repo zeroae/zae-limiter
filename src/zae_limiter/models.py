@@ -673,9 +673,10 @@ class StackOptions:
                     f"found {placeholder_count}"
                 )
             # Validate resulting name won't exceed IAM limits (64 chars)
-            # We can't fully validate without stack_name, but we can check the format length
-            format_len = len(self.role_name_format) - 2  # subtract {}
-            if format_len > 40:  # leave room for stack_name-aggregator-role
+            # Formula: 64 - max_component(8) - dash(1) = 55 max format length
+            # See ADR-116 for role naming convention
+            format_len = len(self.role_name_format)
+            if format_len > 55:
                 raise ValueError(
                     "role_name_format template is too long, resulting role name "
                     "may exceed IAM 64 character limit"
@@ -759,12 +760,22 @@ class StackOptions:
             params["alarm_sns_topic_arn"] = self.alarm_sns_topic
         if self.permission_boundary:
             params["permission_boundary"] = self.permission_boundary
+        # Generate 4 separate role name parameters (ADR-116)
+        # get_role_name returns str when role_name_format is set (which we check above)
         if self.role_name_format and stack_name:
-            # TODO(Task 4): Generate all 4 role name parameters
-            # For now, just validate with the longest component ("admin")
-            role_name = self.get_role_name(stack_name, "admin")
-            if role_name:
-                params["role_name"] = role_name
+            aggregator_role = self.get_role_name(stack_name, "aggr")
+            app_role = self.get_role_name(stack_name, "app")
+            admin_role = self.get_role_name(stack_name, "admin")
+            readonly_role = self.get_role_name(stack_name, "read")
+            # These assertions are guaranteed by the if condition above
+            assert aggregator_role is not None
+            assert app_role is not None
+            assert admin_role is not None
+            assert readonly_role is not None
+            params["aggregator_role_name"] = aggregator_role
+            params["app_role_name"] = app_role
+            params["admin_role_name"] = admin_role
+            params["readonly_role_name"] = readonly_role
         # Audit archival parameters
         params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
         params["audit_archive_glacier_days"] = str(self.audit_archive_glacier_days)
