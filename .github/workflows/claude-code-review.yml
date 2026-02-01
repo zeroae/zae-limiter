@@ -2,7 +2,7 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    types: [ready_for_review]
     branches:
       - main
       - master
@@ -15,8 +15,8 @@ on:
 
 jobs:
   claude-review:
-    # Skip bot-initiated PRs and draft PRs
-    if: github.event.pull_request.user.type != 'Bot' && github.event.pull_request.draft == false
+    # Skip bot-initiated PRs
+    if: github.event.pull_request.user.type != 'Bot'
 
     runs-on: ubuntu-latest
     permissions:

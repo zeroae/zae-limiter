@@ -37,7 +37,31 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra docs
+        run: uv sync --extra docs --extra dev --extra plot
+
+      - name: Lint documentation examples
+        run: uv run pytest tests/doctest/test_docs_lint.py -v -p no:xdist -o "addopts="
+
+      - name: Test documentation examples (moto)
+        run: uv run pytest tests/doctest/test_docs_run.py -v -p no:xdist -o "addopts=" --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: doctest
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload test results to Codecov
+        if: "!cancelled()"
+        uses: codecov/codecov-action@v5
+        with:
+          files: junit.xml
+          flags: doctest
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          fail_ci_if_error: false
 
       - name: Build docs (PR check)
         if: github.event_name == 'pull_request'

@@ -1,4 +1,4 @@
-name: CI
+name: Tests
 
 on:
   push:
@@ -6,6 +6,10 @@ on:
       - main
       - 'release/v*'
       - 'release/[0-9]*'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
@@ -14,6 +18,10 @@ on:
       - 'release/[0-9]*'
       - 'milestone/v*'
       - 'milestone/[0-9]*'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
   workflow_dispatch:
 
 permissions:
@@ -26,15 +34,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - uses: pre-commit/action@v3.0.1
-
   unit:
     runs-on: ubuntu-latest
     strategy:
@@ -47,10 +46,6 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --extra dev --extra plot
-      - name: Lint documentation examples
-        run: uv run pytest tests/doctest/test_docs_lint.py -v -p no:xdist -o "addopts="
-      - name: Test documentation examples (moto)
-        run: uv run pytest tests/doctest/test_docs_run.py -v -p no:xdist -o "addopts="
       - name: Run unit tests
         run: uv run pytest tests/unit/ --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
       - name: Upload coverage
