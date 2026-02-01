@@ -3496,6 +3496,11 @@
 <td><code>true</code></td>
 </tr>
 <tr>
+<td><code>--enable-deletion-protection/--no-deletion-protection</code></td>
+<td>Enable DynamoDB table deletion protection</td>
+<td><code>false</code></td>
+</tr>
+<tr>
 <td><code>--tag</code>, <code>-t</code></td>
 <td>User-defined tag in KEY=VALUE format (repeatable)</td>
 <td>None</td>
@@ -3552,6 +3557,12 @@
 </span><span id="__span-3-37"><a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a><span class="w">    </span>--name<span class="w"> </span>limiter<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-38"><a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a><span class="w">    </span>--region<span class="w"> </span>us-east-1<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-39"><a id="__codelineno-3-39" name="__codelineno-3-39" href="#__codelineno-3-39"></a><span class="w">    </span>--enable-tracing
+</span><span id="__span-3-40"><a id="__codelineno-3-40" name="__codelineno-3-40" href="#__codelineno-3-40"></a>
+</span><span id="__span-3-41"><a id="__codelineno-3-41" name="__codelineno-3-41" href="#__codelineno-3-41"></a><span class="c1"># With deletion protection (recommended for production)</span>
+</span><span id="__span-3-42"><a id="__codelineno-3-42" name="__codelineno-3-42" href="#__codelineno-3-42"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-43"><a id="__codelineno-3-43" name="__codelineno-3-43" href="#__codelineno-3-43"></a><span class="w">    </span>--name<span class="w"> </span>limiter<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-44"><a id="__codelineno-3-44" name="__codelineno-3-44" href="#__codelineno-3-44"></a><span class="w">    </span>--region<span class="w"> </span>us-east-1<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-45"><a id="__codelineno-3-45" name="__codelineno-3-45" href="#__codelineno-3-45"></a><span class="w">    </span>--enable-deletion-protection
 </span></code></pre></div>
 <hr />
 <h3 id="list">list<a class="headerlink" href="#list" title="Permanent link">&para;</a></h3>
