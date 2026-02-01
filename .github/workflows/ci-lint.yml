@@ -16,6 +16,9 @@ on:
       - 'milestone/[0-9]*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
