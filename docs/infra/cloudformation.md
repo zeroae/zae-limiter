@@ -92,6 +92,7 @@ The DynamoDB table name is automatically derived from the CloudFormation stack n
 | `AuditArchiveGlacierDays` | Number | `90` | Days before Glacier IR transition (1-3650) |
 | `EnableTracing` | String | `false` | Enable AWS X-Ray tracing for Lambda |
 | `EnableIAMRoles` | String | `true` | Create App/Admin/ReadOnly IAM roles |
+| `EnableDeletionProtection` | String | `false` | Enable DynamoDB table deletion protection |
 
 ## DynamoDB Table
 

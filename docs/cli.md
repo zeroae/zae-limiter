@@ -50,6 +50,7 @@ zae-limiter deploy [OPTIONS]
 | `--audit-archive-glacier-days` | Days before Glacier IR transition (1-3650) | `90` |
 | `--enable-tracing/--no-tracing` | Enable AWS X-Ray tracing | `false` |
 | `--enable-iam-roles/--no-iam-roles` | Create App/Admin/ReadOnly IAM roles | `true` |
+| `--enable-deletion-protection/--no-deletion-protection` | Enable DynamoDB table deletion protection | `false` |
 | `--tag`, `-t` | User-defined tag in KEY=VALUE format (repeatable) | None |
 | `--lambda-duration-threshold-pct` | Lambda duration alarm threshold (1-100%) | `80` |
 | `--wait/--no-wait` | Wait for stack creation | `true` |
@@ -96,6 +97,12 @@ zae-limiter deploy \
     --name limiter \
     --region us-east-1 \
     --enable-tracing
+
+# With deletion protection (recommended for production)
+zae-limiter deploy \
+    --name limiter \
+    --region us-east-1 \
+    --enable-deletion-protection
 ```
 
 ---

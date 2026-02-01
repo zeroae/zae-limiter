@@ -105,6 +105,14 @@ class TestStackManager:
         assert "SchemaVersion" in param_dict
         assert param_dict["LogRetentionDays"] == "90"
 
+    def test_format_parameters_with_deletion_protection(self) -> None:
+        """Test parameter formatting with deletion protection enabled."""
+        manager = StackManager(stack_name="rate-limits", region="us-east-1")
+        params = manager._format_parameters({"enable_deletion_protection": "true"})
+
+        param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in params}
+        assert param_dict["EnableDeletionProtection"] == "true"
+
     def test_load_template(self) -> None:
         """Test loading CloudFormation template."""
         manager = StackManager(stack_name="test", region="us-east-1")
