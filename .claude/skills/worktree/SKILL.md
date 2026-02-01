@@ -23,31 +23,27 @@ Given a repository at `/path/to/repo`, worktrees are stored at:
 | Mode | Triggers | Description |
 |------|----------|-------------|
 | **Add** | `/worktree add <branch>`, `/worktree <branch>`, `/worktree #<issue>` | Create worktree |
-| **List** | `/worktree`, `/worktree list` | List and select worktrees |
 | **Status** | `/worktree status` | Show PR/CI status table |
+| **List** | `/worktree`, `/worktree list` | List and select worktrees |
 | **Remove** | `/worktree remove <branch>`, `/worktree rm <branch>` | Remove worktree |
 | **Prune** | `/worktree prune` | Clean stale references |
 
 ## Mode Detection
 
-Parse `$ARGUMENTS` to determine the mode:
+When this skill is invoked, arguments follow the skill name (e.g., `/worktree status` passes "status" as arguments).
 
-1. **No arguments** or `list` → **List mode** (see `list.md`)
-2. **`status`** → **Status mode** (see `status.md`)
-3. **`#<number>`** or purely numeric → **Add mode** from GitHub issue (see `add.md`)
-4. **`add <branch>`** or just `<branch>`** → **Add mode** for branch (see `add.md`)
-5. **`remove <branch>`** or `rm <branch>` → **Remove mode** (see `remove.md`)
-6. **`prune`** → **Prune mode** (see `prune.md`)
+**IMPORTANT:** Before doing anything else, identify the mode from the invocation arguments:
 
-## Reference Files
+| Arguments | Mode | Instructions |
+|-----------|------|--------------|
+| (none) or `list` | List | Read `list.md` |
+| `status` | Status | Read `status.md` |
+| `#<number>` or just a number | Add (from issue) | Read `add.md` |
+| `add <branch>` or just `<branch>` | Add (branch) | Read `add.md` |
+| `remove <branch>` or `rm <branch>` | Remove | Read `remove.md` |
+| `prune` | Prune | Read `prune.md` |
 
-After determining the mode, read the corresponding file for detailed instructions:
-
-- `add.md` - Creating worktrees (branch or issue)
-- `list.md` - Listing and selecting worktrees
-- `status.md` - PR/CI status display
-- `remove.md` - Removing worktrees
-- `prune.md` - Pruning stale references
+**First action:** Read the appropriate `.md` file for your detected mode, then follow those instructions exactly.
 
 ## Important Notes
 

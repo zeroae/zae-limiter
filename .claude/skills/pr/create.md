@@ -38,10 +38,7 @@ git ls-remote --heads origin "release/${version}" "release/v${version}"
 
 **Step 3: Determine base branch:**
 - If release branch exists → use `release/<version>` as base
-- If release branch does NOT exist → ask user:
-  - "Create release branch from main?" → create `release/<version>` from main
-  - "Target main directly?" → use `main` as base
-  - "Cancel?" → abort PR creation
+- If release branch does NOT exist → use `main` as base (do not ask)
 
 **Step 4: Update comparison commands:**
 ```bash

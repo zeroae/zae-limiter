@@ -1,5 +1,7 @@
 ---
-description: Prepare a milestone for release by verifying success criteria, checking backwards compatibility, ensuring ticket tagging, and reviewing documentation.
+name: release-prep
+description: Use when user says "/release-prep", "prepare release", "release readiness", or needs to verify a milestone is ready for release.
+user-invocable: true
 argument-hint: <version> [--deploy-aws] [--skip-docs]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task, WebFetch, Skill
 context: full

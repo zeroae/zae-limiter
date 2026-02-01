@@ -1,5 +1,7 @@
 ---
-description: When users mention a milestone version (e.g., "0.4.0", "v0.4.0") or ask about release status, invoke this skill to analyze GitHub milestone progress, issues, and suggest next steps.
+name: milestone
+description: Use when user says "/milestone", mentions a milestone version (e.g., "0.4.0", "v0.4.0"), or asks about release status or milestone progress.
+user-invocable: true
 argument-hint: [version] | list
 allowed-tools: Bash(gh api:*), Bash(gh issue list:*), Bash(gh issue view:*)
 context: fork
@@ -19,9 +21,15 @@ Analyze and summarize GitHub milestone status.
 
 ## Mode Detection
 
-1. **If version number provided** (e.g., `1.0.0`, `v0.7.0`, `0.5`) → **Status mode**
-2. **If `list` keyword** → **List mode**
-3. **If no arguments** → **List mode**
+When this skill is invoked, arguments follow the skill name (e.g., `/milestone v0.5.0` passes "v0.5.0" as arguments).
+
+**IMPORTANT:** Before doing anything else, identify the mode from the invocation arguments:
+
+| Arguments | Mode | Action |
+|-----------|------|--------|
+| version number (e.g., `1.0.0`, `v0.7.0`) | Status | Follow Status Mode below |
+| `list` | List | Follow List Mode below |
+| (none) | List | Follow List Mode below |
 
 ## Status Mode
 
