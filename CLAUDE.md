@@ -75,7 +75,9 @@ zae-limiter deploy --name my-app \
   --role-name-format "pb-{}-PowerUser"
 
 # Other deploy flags: --lambda-timeout, --lambda-memory, --log-retention-days,
-# --alarm-sns-topic, --no-alarms, --no-audit-archival, --enable-tracing, --no-iam-roles
+# --alarm-sns-topic, --no-alarms, --no-audit-archival, --enable-tracing,
+# --create-iam-roles, --role-name-format, --policy-name-format,
+# --iam/--no-iam, --aggregator-role-arn
 
 # Stack management
 zae-limiter status --name my-app --region us-east-1
@@ -119,7 +121,14 @@ limiter = RateLimiter(
 )
 ```
 
-Other `StackOptions` fields: `lambda_memory`, `retention_days`, `enable_alarms`, `alarm_sns_topic`, `enable_audit_archival`, `audit_archive_glacier_days`, `enable_tracing`, `create_iam_roles`, `enable_deletion_protection`.
+Other `StackOptions` fields: `lambda_memory`, `retention_days`, `enable_alarms`, `alarm_sns_topic`, `enable_audit_archival`, `audit_archive_glacier_days`, `enable_tracing`, `create_iam_roles` (default: False), `role_name_format`, `policy_name_format`, `enable_deletion_protection`, `create_iam` (default: True), `aggregator_role_arn`.
+
+**IAM Resource Defaults (ADR-117):**
+- **Managed policies** are **created by default** (`AppPolicy`, `AdminPolicy`, `ReadOnlyPolicy`)
+- **IAM roles** are **opt-in** (set `create_iam_roles=True` to create them)
+- Users can attach managed policies to their own roles, users, or federated identities
+- **Skip all IAM** with `create_iam=False` or `--no-iam` for restricted IAM environments
+- **External Lambda role** with `aggregator_role_arn` or `--aggregator-role-arn` to use pre-existing role
 
 **When to use `StackOptions` vs CLI:**
 - **StackOptions**: Self-contained apps, serverless deployments, minimal onboarding friction
@@ -241,6 +250,14 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
 - Components: `aggr` (Lambda), `app`, `admin`, `read`
 - All components ≤ 8 characters (invariant for upgrade safety)
 - Default names: `{stack}-aggr`, `{stack}-app`, `{stack}-admin`, `{stack}-read`
+- Roles are **opt-in** (set `create_iam_roles=True`)
+
+**IAM Managed Policy Naming (ADR-117):**
+- Pattern: `{policy_name_format}.replace("{}", f"{stack_name}-{component}")`
+- Components: `app`, `admin`, `read`
+- Default names: `{stack}-app`, `{stack}-admin`, `{stack}-read`
+- Maximum policy name length: 128 characters (IAM limit)
+- Policies are **always created** regardless of `create_iam_roles` setting
 
 **Invalid names (rejected by validation):**
 - `rate_limits` (underscores not allowed)

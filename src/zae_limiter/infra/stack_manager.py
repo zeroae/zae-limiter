@@ -137,10 +137,15 @@ class StackManager:
             "app_role_name": "AppRoleName",
             "admin_role_name": "AdminRoleName",
             "readonly_role_name": "ReadOnlyRoleName",
+            "app_policy_name": "AppPolicyName",
+            "admin_policy_name": "AdminPolicyName",
+            "readonly_policy_name": "ReadOnlyPolicyName",
             "enable_audit_archival": "EnableAuditArchival",
             "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
             "enable_tracing": "EnableTracing",
             "enable_iam_roles": "EnableIAMRoles",
+            "enable_iam": "EnableIAM",
+            "aggregator_role_arn": "AggregatorRoleArn",
             "enable_deletion_protection": "EnableDeletionProtection",
         }
 

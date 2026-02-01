@@ -134,6 +134,27 @@ Parameters:
       (Optional) Custom name for the read-only IAM role.
       If empty, uses default: {stack_name}-read.
 
+  AppPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the application IAM managed policy.
+      If empty, uses default: {stack_name}-app.
+
+  AdminPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the admin IAM managed policy.
+      If empty, uses default: {stack_name}-admin.
+
+  ReadOnlyPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the read-only IAM managed policy.
+      If empty, uses default: {stack_name}-read.
+
   EnableAuditArchival:
     Type: String
     Default: 'true'
@@ -165,6 +186,25 @@ Parameters:
       - 'false'
     Description: Whether to create App/Admin/ReadOnly IAM roles for application access
 
+  EnableIAM:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >
+      Create IAM resources (managed policies, roles). Set to false for restricted
+      IAM environments (e.g., PowerUserAccess). When false, aggregator is disabled
+      unless AggregatorRoleArn is provided.
+
+  AggregatorRoleArn:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) ARN of an existing IAM role for the Lambda aggregator.
+      Use this to deploy with a pre-created role when you lack iam:CreateRole
+      permissions.
+
   EnableDeletionProtection:
     Type: String
     Default: 'false'
@@ -174,28 +214,58 @@ Parameters:
     Description: Enable DynamoDB table deletion protection
 
 Conditions:
+  # Basic toggles from parameters
   DeployAggregator: !Equals [!Ref EnableAggregator, 'true']
-  UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
   DeployAlarms: !Equals [!Ref EnableAlarms, 'true']
-  DeployAggregatorAlarms: !And
-    - !Condition DeployAggregator
-    - !Condition DeployAlarms
+  DeployIAMRoles: !Equals [!Ref EnableIAMRoles, 'true']
+  DeployIAM: !Equals [!Ref EnableIAM, 'true']
+  UsePITRRecoveryPeriod: !Not [!Equals [!Ref PITRRecoveryPeriodDays, '']]
+  UseExternalAggregatorRole: !Not [!Equals [!Ref AggregatorRoleArn, '']]
+
+  # Optional resource name checks
   HasSNSTopic: !Not [!Equals [!Ref AlarmSNSTopicArn, '']]
   HasPermissionBoundary: !Not [!Equals [!Ref PermissionBoundary, '']]
   HasCustomAggregatorRoleName: !Not [!Equals [!Ref AggregatorRoleName, '']]
   HasCustomAppRoleName: !Not [!Equals [!Ref AppRoleName, '']]
   HasCustomAdminRoleName: !Not [!Equals [!Ref AdminRoleName, '']]
   HasCustomReadOnlyRoleName: !Not [!Equals [!Ref ReadOnlyRoleName, '']]
+  HasCustomAppPolicyName: !Not [!Equals [!Ref AppPolicyName, '']]
+  HasCustomAdminPolicyName: !Not [!Equals [!Ref AdminPolicyName, '']]
+  HasCustomReadOnlyPolicyName: !Not [!Equals [!Ref ReadOnlyPolicyName, '']]
   PermissionBoundaryIsArn: !Equals
     - !Select [0, !Split [':', !Ref PermissionBoundary]]
     - 'arn'
+
+  # Create aggregator role only if: IAM enabled AND no external role provided AND aggregator enabled
+  CreateAggregatorRole: !And
+    - !Condition DeployAggregator
+    - !Condition DeployIAM
+    - !Not [!Condition UseExternalAggregatorRole]
+
+  # Deploy aggregator Lambda if: aggregator enabled AND (IAM enabled OR external role)
+  DeployAggregatorLambda: !And
+    - !Condition DeployAggregator
+    - !Or
+      - !Condition DeployIAM
+      - !Condition UseExternalAggregatorRole
+
+  # Deploy app/admin/read roles only if IAM enabled AND role creation enabled
+  DeployIAMRolesWithIAM: !And
+    - !Condition DeployIAMRoles
+    - !Condition DeployIAM
+
+  # Aggregator alarms depend on Lambda being deployed
+  DeployAggregatorAlarms: !And
+    - !Condition DeployAggregatorLambda
+    - !Condition DeployAlarms
+
   DeployAuditArchive: !And
-    - !Condition DeployAggregator
+    - !Condition DeployAggregatorLambda
     - !Equals [!Ref EnableAuditArchival, 'true']
+
   TracingEnabled: !And
-    - !Condition DeployAggregator
+    - !Condition DeployAggregatorLambda
     - !Equals [!Ref EnableTracing, 'true']
-  DeployIAMRoles: !Equals [!Ref EnableIAMRoles, 'true']
   EnableTableDeletionProtection: !Equals [!Ref EnableDeletionProtection, 'true']
 
 Resources:
@@ -298,6 +368,93 @@ Resources:
           Value: zae-limiter
 
   # -------------------------------------------------------------------------
+  # IAM Managed Policies (Created when EnableIAM=true)
+  # -------------------------------------------------------------------------
+
+  # AppPolicy: For applications running acquire() - read + transact write
+  AppPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: DeployIAM
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomAppPolicyName
+        - !Ref AppPolicyName
+        - !Sub ${AWS::StackName}-app
+      Description: Rate limiter application access (read + transact write)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+              - dynamodb:TransactWriteItems
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+
+  # AdminPolicy: For ops team managing config - full CRUD
+  AdminPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: DeployIAM
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomAdminPolicyName
+        - !Ref AdminPolicyName
+        - !Sub ${AWS::StackName}-admin
+      Description: Rate limiter admin access (full CRUD)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+              - dynamodb:TransactWriteItems
+              - dynamodb:PutItem
+              - dynamodb:DeleteItem
+              - dynamodb:UpdateItem
+              - dynamodb:BatchWriteItem
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+
+  # ReadOnlyPolicy: For observability/monitoring - read only
+  ReadOnlyPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: DeployIAM
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomReadOnlyPolicyName
+        - !Ref ReadOnlyPolicyName
+        - !Sub ${AWS::StackName}-read
+      Description: Rate limiter read-only access (monitoring)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:DescribeTable
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+
+  # -------------------------------------------------------------------------
   # Lambda Aggregator
   # -------------------------------------------------------------------------
   AggregatorDLQ:
@@ -338,7 +495,7 @@ Resources:
 
   AggregatorRole:
     Type: AWS::IAM::Role
-    Condition: DeployAggregator
+    Condition: CreateAggregatorRole
     Properties:
       RoleName: !If
         - HasCustomAggregatorRoleName
@@ -428,12 +585,7 @@ Resources:
   # AppRole: For applications running acquire() - read + transact write
   AppRole:
     Type: AWS::IAM::Role
-    Condition: DeployIAMRoles
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
+    Condition: DeployIAMRolesWithIAM
     Properties:
       RoleName: !If
         - HasCustomAppRoleName
@@ -453,20 +605,8 @@ Resources:
             Principal:
               AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: RateLimiterApp
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:Query
-                  - dynamodb:TransactWriteItems
-                Resource:
-                  - !GetAtt RateLimitsTable.Arn
-                  - !Sub ${RateLimitsTable.Arn}/index/*
+      ManagedPolicyArns:
+        - !Ref AppPolicy
       Tags:
         - Key: Application
           Value: zae-limiter
@@ -476,12 +616,7 @@ Resources:
   # AdminRole: For ops team managing config - full CRUD
   AdminRole:
     Type: AWS::IAM::Role
-    Condition: DeployIAMRoles
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - W3037  # TransactWriteItems is valid but missing from cfn-lint's action database
+    Condition: DeployIAMRolesWithIAM
     Properties:
       RoleName: !If
         - HasCustomAdminRoleName
@@ -501,24 +636,8 @@ Resources:
             Principal:
               AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: RateLimiterAdmin
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:Query
-                  - dynamodb:TransactWriteItems
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:BatchWriteItem
-                Resource:
-                  - !GetAtt RateLimitsTable.Arn
-                  - !Sub ${RateLimitsTable.Arn}/index/*
+      ManagedPolicyArns:
+        - !Ref AdminPolicy
       Tags:
         - Key: Application
           Value: zae-limiter
@@ -528,7 +647,7 @@ Resources:
   # ReadOnlyRole: For observability/monitoring - read only
   ReadOnlyRole:
     Type: AWS::IAM::Role
-    Condition: DeployIAMRoles
+    Condition: DeployIAMRolesWithIAM
     Properties:
       RoleName: !If
         - HasCustomReadOnlyRoleName
@@ -548,20 +667,8 @@ Resources:
             Principal:
               AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: RateLimiterReadOnly
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:DescribeTable
-                Resource:
-                  - !GetAtt RateLimitsTable.Arn
-                  - !Sub ${RateLimitsTable.Arn}/index/*
+      ManagedPolicyArns:
+        - !Ref ReadOnlyPolicy
       Tags:
         - Key: Application
           Value: zae-limiter
@@ -570,7 +677,7 @@ Resources:
 
   AggregatorFunction:
     Type: AWS::Lambda::Function
-    Condition: DeployAggregator
+    Condition: DeployAggregatorLambda
     DependsOn: AggregatorLogGroup
     Properties:
       FunctionName: !Sub ${AWS::StackName}-aggregator
@@ -579,7 +686,10 @@ Resources:
       Handler: zae_limiter_aggregator.handler.handler
       MemorySize: !Ref LambdaMemorySize
       Timeout: !Ref LambdaTimeout
-      Role: !GetAtt AggregatorRole.Arn
+      Role: !If
+        - UseExternalAggregatorRole
+        - !Ref AggregatorRoleArn
+        - !GetAtt AggregatorRole.Arn
 
       TracingConfig:
         Mode: !If [TracingEnabled, Active, PassThrough]
@@ -611,7 +721,7 @@ Resources:
 
   AggregatorEventSourceMapping:
     Type: AWS::Lambda::EventSourceMapping
-    Condition: DeployAggregator
+    Condition: DeployAggregatorLambda
     Properties:
       EventSourceArn: !GetAtt RateLimitsTable.StreamArn
       FunctionName: !Ref AggregatorFunction
@@ -790,14 +900,14 @@ Outputs:
       Name: !Sub ${AWS::StackName}-StreamArn
 
   AggregatorFunctionArn:
-    Condition: DeployAggregator
+    Condition: DeployAggregatorLambda
     Description: Aggregator Lambda function ARN
     Value: !GetAtt AggregatorFunction.Arn
     Export:
       Name: !Sub ${AWS::StackName}-AggregatorArn
 
   AggregatorFunctionName:
-    Condition: DeployAggregator
+    Condition: DeployAggregatorLambda
     Description: Aggregator Lambda function name
     Value: !Ref AggregatorFunction
     Export:
@@ -874,46 +984,71 @@ Outputs:
       Name: !Sub ${AWS::StackName}-AuditArchiveBucketArn
 
   # -------------------------------------------------------------------------
+  # IAM Managed Policy Outputs (Created when EnableIAM=true)
+  # -------------------------------------------------------------------------
+
+  AppPolicyArn:
+    Condition: DeployIAM
+    Description: IAM managed policy ARN for applications (acquire/release operations)
+    Value: !Ref AppPolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-AppPolicyArn
+
+  AdminPolicyArn:
+    Condition: DeployIAM
+    Description: IAM managed policy ARN for administrators (config management)
+    Value: !Ref AdminPolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-AdminPolicyArn
+
+  ReadOnlyPolicyArn:
+    Condition: DeployIAM
+    Description: IAM managed policy ARN for read-only access (monitoring)
+    Value: !Ref ReadOnlyPolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-ReadOnlyPolicyArn
+
+  # -------------------------------------------------------------------------
   # Application IAM Role Outputs
   # -------------------------------------------------------------------------
 
   AppRoleArn:
-    Condition: DeployIAMRoles
+    Condition: DeployIAMRolesWithIAM
     Description: IAM role ARN for applications (acquire/release operations)
     Value: !GetAtt AppRole.Arn
     Export:
       Name: !Sub ${AWS::StackName}-AppRoleArn
 
   AppRoleName:
-    Condition: DeployIAMRoles
+    Condition: DeployIAMRolesWithIAM
     Description: IAM role name for applications
     Value: !Ref AppRole
     Export:
       Name: !Sub ${AWS::StackName}-AppRoleName
 
   AdminRoleArn:
-    Condition: DeployIAMRoles
+    Condition: DeployIAMRolesWithIAM
     Description: IAM role ARN for administrators (config management)
     Value: !GetAtt AdminRole.Arn
     Export:
       Name: !Sub ${AWS::StackName}-AdminRoleArn
 
   AdminRoleName:
-    Condition: DeployIAMRoles
+    Condition: DeployIAMRolesWithIAM
     Description: IAM role name for administrators
     Value: !Ref AdminRole
     Export:
       Name: !Sub ${AWS::StackName}-AdminRoleName
 
   ReadOnlyRoleArn:
-    Condition: DeployIAMRoles
+    Condition: DeployIAMRolesWithIAM
     Description: IAM role ARN for read-only access (monitoring)
     Value: !GetAtt ReadOnlyRole.Arn
     Export:
       Name: !Sub ${AWS::StackName}-ReadOnlyRoleArn
 
   ReadOnlyRoleName:
-    Condition: DeployIAMRoles
+    Condition: DeployIAMRolesWithIAM
     Description: IAM role name for read-only access
     Value: !Ref ReadOnlyRole
     Export:

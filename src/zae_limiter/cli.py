@@ -163,9 +163,19 @@ Examples:
     type=str,
     default=None,
     help=(
-        "Format template for Lambda role name. "
+        "Format template for role name. "
         "Use {} as placeholder for default name. "
-        "Example: 'app-{}' produces 'app-mytable-aggregator-role'."
+        "Example: 'pb-{}' produces 'pb-mystack-aggr'."
+    ),
+)
+@click.option(
+    "--policy-name-format",
+    type=str,
+    default=None,
+    help=(
+        "Format template for managed policy name. "
+        "Use {} as placeholder for default name. "
+        "Example: 'pb-{}' produces 'pb-mystack-app'."
     ),
 )
 @click.option(
@@ -185,9 +195,22 @@ Examples:
     help="Enable AWS X-Ray tracing for Lambda aggregator (default: disabled)",
 )
 @click.option(
-    "--enable-iam-roles/--no-iam-roles",
+    "--create-iam-roles/--no-create-iam-roles",
+    "create_iam_roles",
+    default=False,
+    help="Create App/Admin/ReadOnly IAM roles (default: disabled). Policies always created.",
+)
+@click.option(
+    "--iam/--no-iam",
+    "create_iam",
     default=True,
-    help="Create App/Admin/ReadOnly IAM roles for application access (default: enabled)",
+    help="Create IAM resources (policies, roles). --no-iam skips all IAM.",
+)
+@click.option(
+    "--aggregator-role-arn",
+    type=str,
+    default=None,
+    help="Use existing IAM role ARN for Lambda aggregator (enables aggregator with --no-iam).",
 )
 @click.option(
     "--enable-deletion-protection/--no-deletion-protection",
@@ -218,10 +241,13 @@ def deploy(
     wait: bool,
     permission_boundary: str | None,
     role_name_format: str | None,
+    policy_name_format: str | None,
     enable_audit_archival: bool,
     audit_archive_glacier_days: int,
     enable_tracing: bool,
-    enable_iam_roles: bool,
+    create_iam_roles: bool,
+    create_iam: bool,
+    aggregator_role_arn: str | None,
     enable_deletion_protection: bool,
     tags: tuple[str, ...],
 ) -> None:
@@ -257,6 +283,20 @@ def deploy(
     """
     from .exceptions import ValidationError
 
+    # Validate conflicting flags
+    if not create_iam and create_iam_roles:
+        click.echo("Error: --create-iam-roles cannot be used with --no-iam", err=True)
+        sys.exit(1)
+
+    # Auto-disable aggregator with --no-iam unless external role provided
+    effective_enable_aggregator = enable_aggregator
+    if not create_iam and enable_aggregator and not aggregator_role_arn:
+        click.echo(
+            "Note: --no-iam disables aggregator (no IAM role). "
+            "Use --aggregator-role-arn to provide an external role."
+        )
+        effective_enable_aggregator = False
+
     try:
         manager = StackManager(name, region, endpoint_url)
     except ValidationError as e:
@@ -283,7 +323,7 @@ def deploy(
             stack_options = StackOptions(
                 snapshot_windows=snapshot_windows,
                 retention_days=retention_days,
-                enable_aggregator=enable_aggregator,
+                enable_aggregator=effective_enable_aggregator,
                 pitr_recovery_days=pitr_recovery_days,
                 log_retention_days=int(log_retention_days),
                 lambda_timeout=lambda_timeout,
@@ -293,10 +333,13 @@ def deploy(
                 lambda_duration_threshold_pct=lambda_duration_threshold_pct,
                 permission_boundary=permission_boundary,
                 role_name_format=role_name_format,
+                policy_name_format=policy_name_format,
                 enable_audit_archival=enable_audit_archival,
                 audit_archive_glacier_days=audit_archive_glacier_days,
                 enable_tracing=enable_tracing,
-                create_iam_roles=enable_iam_roles,
+                create_iam_roles=create_iam_roles,
+                create_iam=create_iam,
+                aggregator_role_arn=aggregator_role_arn,
                 enable_deletion_protection=enable_deletion_protection,
                 tags=user_tags,
             )
@@ -318,9 +361,13 @@ def deploy(
             click.echo(f"  Alarms: {'enabled' if stack_options.enable_alarms else 'disabled'}")
             if stack_options.enable_alarms and stack_options.alarm_sns_topic:
                 click.echo(f"  Alarm SNS topic: {stack_options.alarm_sns_topic}")
-            click.echo(
-                f"  IAM roles: {'enabled' if stack_options.create_iam_roles else 'disabled'}"
-            )
+            click.echo(f"  IAM resources: {'enabled' if stack_options.create_iam else 'disabled'}")
+            if stack_options.create_iam:
+                click.echo(
+                    f"  IAM roles: {'enabled' if stack_options.create_iam_roles else 'disabled'}"
+                )
+            if stack_options.aggregator_role_arn:
+                click.echo(f"  External role: {stack_options.aggregator_role_arn}")
             deletion_protection_status = (
                 "enabled" if stack_options.enable_deletion_protection else "disabled"
             )

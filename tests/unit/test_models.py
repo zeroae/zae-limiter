@@ -163,7 +163,7 @@ class TestStackOptions:
         assert opts.lambda_duration_threshold_pct == 80
         assert opts.permission_boundary is None
         assert opts.role_name_format is None
-        assert opts.create_iam_roles is True
+        assert opts.create_iam_roles is False  # Policies by default, roles opt-in
 
     def test_custom_values(self):
         """Test custom values are preserved."""
@@ -387,15 +387,15 @@ class TestStackOptions:
     # IAM Roles Tests (Issue #132)
     # -------------------------------------------------------------------------
 
-    def test_create_iam_roles_default_true(self):
-        """Test create_iam_roles defaults to True."""
+    def test_create_iam_roles_default_false(self):
+        """Test create_iam_roles defaults to False (policies always created)."""
         opts = StackOptions()
-        assert opts.create_iam_roles is True
-
-    def test_create_iam_roles_can_be_disabled(self):
-        """Test create_iam_roles can be set to False."""
-        opts = StackOptions(create_iam_roles=False)
         assert opts.create_iam_roles is False
+
+    def test_create_iam_roles_can_be_enabled(self):
+        """Test create_iam_roles can be set to True."""
+        opts = StackOptions(create_iam_roles=True)
+        assert opts.create_iam_roles is True
 
     def test_create_iam_roles_in_to_parameters_enabled(self):
         """Test enable_iam_roles is in params when create_iam_roles is True."""
@@ -455,6 +455,163 @@ class TestStackOptions:
         """Test get_role_name returns None when role_name_format is None."""
         opts = StackOptions()
         assert opts.get_role_name("mytable", "aggr") is None
+
+    # -------------------------------------------------------------------------
+    # Policy Name Format Tests
+    # -------------------------------------------------------------------------
+
+    def test_policy_name_format_valid_prefix(self):
+        """Test valid policy_name_format with prefix."""
+        opts = StackOptions(policy_name_format="pb-{}")
+        assert opts.policy_name_format == "pb-{}"
+
+    def test_policy_name_format_no_placeholder(self):
+        """Test policy_name_format with no placeholder fails."""
+        with pytest.raises(ValueError, match="exactly one"):
+            StackOptions(policy_name_format="no-placeholder")
+
+    def test_policy_name_format_multiple_placeholders(self):
+        """Test policy_name_format with multiple placeholders fails."""
+        with pytest.raises(ValueError, match="exactly one"):
+            StackOptions(policy_name_format="{}-{}")
+
+    def test_policy_name_format_too_long(self):
+        """Test policy_name_format exceeding 122 chars fails."""
+        long_format = "x" * 121 + "{}"  # 123 chars total
+        with pytest.raises(ValueError, match="too long"):
+            StackOptions(policy_name_format=long_format)
+
+    def test_policy_name_format_max_length_122(self):
+        """Test policy_name_format at exactly 122 chars succeeds."""
+        max_format = "x" * 120 + "{}"  # exactly 122 chars
+        opts = StackOptions(policy_name_format=max_format)
+        assert opts.policy_name_format == max_format
+
+    def test_get_policy_name_returns_none_when_format_not_set(self):
+        """Test get_policy_name returns None when policy_name_format is None."""
+        opts = StackOptions()
+        assert opts.get_policy_name("mystack", "app") is None
+
+    def test_get_policy_name_with_format(self):
+        """Test get_policy_name returns formatted name."""
+        opts = StackOptions(policy_name_format="pb-{}")
+        result = opts.get_policy_name("mystack", "app")
+        assert result == "pb-mystack-app"
+
+    def test_get_policy_name_validates_length(self):
+        """Test get_policy_name raises ValidationError for names > 128 chars."""
+        opts = StackOptions(policy_name_format="prefix-{}-suffix")
+        long_stack = "x" * 120  # Will exceed 128 chars
+        with pytest.raises(ValidationError) as exc_info:
+            opts.get_policy_name(long_stack, "admin")
+        assert "exceeds IAM 128-character limit" in str(exc_info.value)
+
+    def test_to_parameters_generates_policy_names(self):
+        """Test to_parameters generates policy name params when format is set."""
+        opts = StackOptions(policy_name_format="pb-{}")
+        params = opts.to_parameters(stack_name="mystack")
+        assert params["app_policy_name"] == "pb-mystack-app"
+        assert params["admin_policy_name"] == "pb-mystack-admin"
+        assert params["readonly_policy_name"] == "pb-mystack-read"
+
+    def test_to_parameters_no_policy_names_when_format_none(self):
+        """Test to_parameters excludes policy names when format is None."""
+        opts = StackOptions()
+        params = opts.to_parameters(stack_name="mystack")
+        assert "app_policy_name" not in params
+        assert "admin_policy_name" not in params
+        assert "readonly_policy_name" not in params
+
+    # -------------------------------------------------------------------------
+    # create_iam and aggregator_role_arn Tests
+    # -------------------------------------------------------------------------
+
+    def test_create_iam_default_true(self):
+        """Test create_iam defaults to True."""
+        opts = StackOptions()
+        assert opts.create_iam is True
+
+    def test_create_iam_false_valid(self):
+        """Test create_iam can be set to False."""
+        opts = StackOptions(create_iam=False)
+        assert opts.create_iam is False
+
+    def test_create_iam_false_with_create_iam_roles_raises(self):
+        """Test create_iam=False with create_iam_roles=True raises ValueError."""
+        with pytest.raises(
+            ValueError, match="create_iam_roles=True cannot be used with create_iam=False"
+        ):
+            StackOptions(create_iam=False, create_iam_roles=True)
+
+    def test_aggregator_role_arn_default_none(self):
+        """Test aggregator_role_arn defaults to None."""
+        opts = StackOptions()
+        assert opts.aggregator_role_arn is None
+
+    def test_aggregator_role_arn_valid(self):
+        """Test valid aggregator_role_arn is accepted."""
+        valid_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(aggregator_role_arn=valid_arn)
+        assert opts.aggregator_role_arn == valid_arn
+
+    def test_aggregator_role_arn_valid_govcloud(self):
+        """Test valid GovCloud aggregator_role_arn is accepted."""
+        valid_arn = "arn:aws-us-gov:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(aggregator_role_arn=valid_arn)
+        assert opts.aggregator_role_arn == valid_arn
+
+    def test_aggregator_role_arn_valid_china(self):
+        """Test valid China region aggregator_role_arn is accepted."""
+        valid_arn = "arn:aws-cn:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(aggregator_role_arn=valid_arn)
+        assert opts.aggregator_role_arn == valid_arn
+
+    def test_aggregator_role_arn_invalid_raises(self):
+        """Test invalid aggregator_role_arn raises ValueError."""
+        invalid_arns = [
+            "not-an-arn",
+            "arn:aws:iam::12345:role/TooShort",  # Account ID too short
+            "arn:aws:iam::1234567890123:role/TooLong",  # Account ID too long
+            "arn:aws:s3:::bucket",  # Wrong service
+            "arn:aws:iam::123456789012:user/NotARole",  # User not role
+        ]
+        for invalid_arn in invalid_arns:
+            with pytest.raises(
+                ValueError, match="aggregator_role_arn must be a valid IAM role ARN"
+            ):
+                StackOptions(aggregator_role_arn=invalid_arn)
+
+    def test_to_parameters_includes_enable_iam_true(self):
+        """Test to_parameters includes enable_iam when True."""
+        opts = StackOptions(create_iam=True)
+        params = opts.to_parameters()
+        assert params["enable_iam"] == "true"
+
+    def test_to_parameters_includes_enable_iam_false(self):
+        """Test to_parameters includes enable_iam when False."""
+        opts = StackOptions(create_iam=False)
+        params = opts.to_parameters()
+        assert params["enable_iam"] == "false"
+
+    def test_to_parameters_includes_aggregator_role_arn(self):
+        """Test to_parameters includes aggregator_role_arn when set."""
+        valid_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(aggregator_role_arn=valid_arn)
+        params = opts.to_parameters()
+        assert params["aggregator_role_arn"] == valid_arn
+
+    def test_to_parameters_excludes_aggregator_role_arn_when_none(self):
+        """Test to_parameters excludes aggregator_role_arn when None."""
+        opts = StackOptions()
+        params = opts.to_parameters()
+        assert "aggregator_role_arn" not in params
+
+    def test_create_iam_false_with_aggregator_role_arn_valid(self):
+        """Test create_iam=False with aggregator_role_arn is valid."""
+        valid_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(create_iam=False, aggregator_role_arn=valid_arn)
+        assert opts.create_iam is False
+        assert opts.aggregator_role_arn == valid_arn
 
 
 class TestInputValidation:
