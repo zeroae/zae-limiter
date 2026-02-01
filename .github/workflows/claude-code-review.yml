@@ -15,8 +15,8 @@ on:
 
 jobs:
   claude-review:
-    # Skip bot-initiated PRs (e.g., dependabot, renovate)
-    if: github.event.pull_request.user.type != 'Bot'
+    # Skip bot-initiated PRs and draft PRs
+    if: github.event.pull_request.user.type != 'Bot' && github.event.pull_request.draft == false
 
     runs-on: ubuntu-latest
     permissions:
