@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769920783642,
+  "lastUpdate": 1769928824851,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -5265,6 +5265,135 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.027753975208001675",
             "extra": "mean: 1.1244278681999504 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5c144323f000406cb88a02fa60038a5c61ef0134",
+          "message": "📝 docs(cli): auto-generate CLI docs with mkdocs-click (#280)\n\n## Summary\n- Integrate `mkdocs-click` plugin to auto-generate CLI documentation\nfrom Click command groups\n- Replace ~1200 lines of manually-maintained CLI docs with\nauto-generated content\n- Add detailed help strings to all CLI commands and options for better\ndiscoverability\n- Improve help text formatting for mkdocs-click rendering (multi-line\ndescriptions, examples)\n\n## Changes\n- **`pyproject.toml`**: Add `mkdocs-click` as docs dependency\n- **`mkdocs.yml`**: Configure `mkdocs-click` plugin\n- **`docs/cli.md`**: Replace manual documentation with auto-generated\ncommand reference\n- **`src/zae_limiter/cli.py`**: Add comprehensive help strings to all\ncommands and options\n- **`src/zae_limiter/local.py`**: Add help strings to local subcommands\n- **`tests/unit/test_cli.py`**: Update test assertions to match new help\ntext format\n\n## Benefits\n- Documentation stays automatically in sync with CLI implementation\n- Help text is available both in terminal (`--help`) and documentation\nsite\n- Reduces maintenance burden - no more manual updates when commands\nchange\n\n## Test plan\n- [x] All unit tests pass (1060 passed)\n- [x] Pre-commit hooks pass (ruff, mypy, patch coverage 100%)\n- [ ] Verify docs build: `uv run mkdocs serve --livereload --dirty`\n- [ ] Review generated CLI docs at http://localhost:8000/cli/\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-02-01T01:38:57-05:00",
+          "tree_id": "2ed965b33692315a6b10c91219f1a052b6bd519a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/5c144323f000406cb88a02fa60038a5c61ef0134"
+        },
+        "date": 1769928823678,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 18.592961465243715,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01599684429114562",
+            "extra": "mean: 53.78379349999326 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.945185130965996,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005745284887751637",
+            "extra": "mean: 47.74366966666577 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 29.217856486497013,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004831875698898802",
+            "extra": "mean: 34.225645555557726 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 34.807246937704775,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004139790111268758",
+            "extra": "mean: 28.729649368412275 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 28.272932542251034,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003672849609906274",
+            "extra": "mean: 35.36951812499822 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 227.6186657981082,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007203876966311225",
+            "extra": "mean: 4.393312808919519 msec\nrounds: 157"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 29.5031907553327,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0038720405359016783",
+            "extra": "mean: 33.89463899999529 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 30.595103386405793,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0027895995559697726",
+            "extra": "mean: 32.68496881250371 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 31.615951515436603,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003085858911847784",
+            "extra": "mean: 31.6296031612949 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 13.048058129273954,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008075474952955181",
+            "extra": "mean: 76.63975666666072 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 31.32204974476831,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004238958777111564",
+            "extra": "mean: 31.926390774187087 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9207985516220398,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009858990306645511",
+            "extra": "mean: 520.6168023999908 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.8898086409061519,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012860066936761453",
+            "extra": "mean: 529.1541050000205 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9316031866507362,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006049814237167767",
+            "extra": "mean: 1.0734183977999918 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9023412397740772,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01601156751616052",
+            "extra": "mean: 1.1082281912000098 sec\nrounds: 5"
           }
         ]
       }
