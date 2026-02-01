@@ -959,6 +959,9 @@ class Repository:
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
             "config_version": {"N": "1"},
+            # GSI3 attributes for sparse indexing (entity config queries)
+            "GSI3PK": {"S": schema.gsi3_pk_entity_config(resource)},
+            "GSI3SK": {"S": schema.gsi3_sk_entity(entity_id)},
         }
 
         # Add l_* attributes for each limit
@@ -1038,6 +1041,62 @@ class Repository:
             principal=principal,
             resource=resource,
         )
+
+    async def list_entities_with_custom_limits(
+        self,
+        resource: str,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        """
+        List all entities that have custom limit configurations for a resource.
+
+        Uses GSI3 sparse index for efficient queries. Only entity-level configs
+        have GSI3 attributes, so this query returns only entities with custom
+        limits (not system or resource defaults).
+
+        Args:
+            resource: Resource to filter by (required).
+            limit: Maximum number of entities to return. None for all.
+            cursor: Pagination cursor from previous call. None for first page.
+
+        Returns:
+            Tuple of (entity_ids, next_cursor). next_cursor is None if no more results.
+        """
+        import base64
+        import json
+
+        client = await self._get_client()
+
+        query_params: dict[str, Any] = {
+            "TableName": self.table_name,
+            "IndexName": schema.GSI3_NAME,
+            "KeyConditionExpression": "GSI3PK = :pk",
+            "ExpressionAttributeValues": {":pk": {"S": schema.gsi3_pk_entity_config(resource)}},
+        }
+
+        if limit is not None:
+            query_params["Limit"] = limit
+        if cursor is not None:
+            # Decode cursor (base64 encoded LastEvaluatedKey)
+            query_params["ExclusiveStartKey"] = json.loads(base64.b64decode(cursor))
+
+        response = await client.query(**query_params)
+
+        entity_ids: list[str] = []
+        for item in response.get("Items", []):
+            entity_id = item.get("GSI3SK", {}).get("S")
+            if entity_id:
+                entity_ids.append(entity_id)
+
+        # Encode next cursor if more results
+        next_cursor: str | None = None
+        if "LastEvaluatedKey" in response:
+            next_cursor = base64.b64encode(
+                json.dumps(response["LastEvaluatedKey"]).encode()
+            ).decode()
+
+        return entity_ids, next_cursor
 
     # -------------------------------------------------------------------------
     # Resource-level limit config operations (composite format, ADR-114)

@@ -3197,6 +3197,105 @@ def entity_delete_limits(
     asyncio.run(_delete())
 
 
+@entity.command(
+    "list",
+    epilog="""\b
+Examples:
+    \b
+    # List entities with custom limits for gpt-4
+    zae-limiter entity list --with-custom-limits gpt-4
+    \b
+    # List with a maximum of 10 results
+    zae-limiter entity list --with-custom-limits claude-3 --limit 10
+""",
+)
+@click.option(
+    "--with-custom-limits",
+    "resource",
+    required=True,
+    help="List entities with custom limits for this resource",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=None,
+    help="Maximum number of entities to return",
+)
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def entity_list(
+    resource: str,
+    limit: int | None,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """List entities with custom limit configurations.
+
+    Uses GSI3 sparse index for efficient queries.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # List entities with custom limits for gpt-4
+        zae-limiter entity list --with-custom-limits gpt-4
+
+        # List with a maximum of 10 results
+        zae-limiter entity list --with-custom-limits claude-3 --limit 10
+        ```
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _list() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            cursor: str | None = None
+            total_count = 0
+            while True:
+                entities, cursor = await repo.list_entities_with_custom_limits(
+                    resource=resource, limit=limit, cursor=cursor
+                )
+                for entity_id in entities:
+                    click.echo(entity_id)
+                    total_count += 1
+
+                # Stop if no more results or if limit was specified
+                if cursor is None or limit is not None:
+                    break
+
+            if total_count == 0:
+                click.echo(f"No entities with custom limits for resource '{resource}'")
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to list entities: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_list())
+
+
 # ---------------------------------------------------------------------------
 # Local development commands
 # ---------------------------------------------------------------------------

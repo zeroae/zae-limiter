@@ -1179,6 +1179,42 @@ class RateLimiter:
         await self._ensure_initialized()
         await self._repository.delete_limits(entity_id, resource, principal=principal)
 
+    async def list_entities_with_custom_limits(
+        self,
+        resource: str,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        """
+        List all entities that have custom limit configurations.
+
+        Uses GSI3 sparse index for efficient queries. Only entities with
+        custom limits for the specified resource are returned.
+
+        Args:
+            resource: Resource to filter by.
+            limit: Maximum number of entities to return. None for all.
+            cursor: Pagination cursor from previous call.
+
+        Returns:
+            Tuple of (entity_ids, next_cursor). next_cursor is None if no more results.
+
+        Example:
+            # Get all entities with custom limits for gpt-4
+            entities, cursor = await limiter.list_entities_with_custom_limits("gpt-4")
+            for entity_id in entities:
+                print(entity_id)
+
+            # Paginate through results
+            while cursor:
+                more, cursor = await limiter.list_entities_with_custom_limits(
+                    "gpt-4", cursor=cursor
+                )
+                entities.extend(more)
+        """
+        await self._ensure_initialized()
+        return await self._repository.list_entities_with_custom_limits(resource, limit, cursor)
+
     # -------------------------------------------------------------------------
     # Resource-level defaults management
     # -------------------------------------------------------------------------
@@ -1950,6 +1986,15 @@ class SyncRateLimiter:
     ) -> None:
         """Delete stored limit configs for an entity."""
         self._run(self._limiter.delete_limits(entity_id, resource, principal=principal))
+
+    def list_entities_with_custom_limits(
+        self,
+        resource: str,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        """List all entities that have custom limit configurations."""
+        return self._run(self._limiter.list_entities_with_custom_limits(resource, limit, cursor))
 
     # -------------------------------------------------------------------------
     # Resource-level defaults management

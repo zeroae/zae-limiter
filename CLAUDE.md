@@ -312,6 +312,7 @@ Primary mitigation: cascade defaults to `False`.
 - All entities, buckets, limits, usage in one table
 - GSI1: Parent -> Children lookups
 - GSI2: Resource aggregation (capacity tracking)
+- GSI3: Entity config queries (sparse - only entity configs indexed)
 - Uses TransactWriteItems for atomicity
 
 ### Exception Design
@@ -418,6 +419,7 @@ docs/
 | Get system config (limits + on_unavailable) | `PK=SYSTEM#, SK=#CONFIG` |
 | Get resource config (limits) | `PK=RESOURCE#{resource}, SK=#CONFIG` |
 | Get entity config (limits) | `PK=ENTITY#{id}, SK=#CONFIG#{resource}` |
+| List entities with custom limits | GSI3: `GSI3PK=ENTITY_CONFIG#{resource}` |
 
 **Optimized read patterns (issue #133):**
 - `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
@@ -446,7 +448,7 @@ Limit configs use a three-level hierarchy with precedence: **Entity > Resource >
 |-------|-----|-----|--------|------|
 | System | `set_system_defaults(limits, on_unavailable)` | `get_system_defaults()` | `delete_system_defaults()` | - |
 | Resource | `set_resource_defaults(resource, limits)` | `get_resource_defaults(resource)` | `delete_resource_defaults(resource)` | `list_resources_with_defaults()` |
-| Entity | `set_limits(entity_id, limits, resource)` | `get_limits(entity_id, resource)` | `delete_limits(entity_id, resource)` | - |
+| Entity | `set_limits(entity_id, limits, resource)` | `get_limits(entity_id, resource)` | `delete_limits(entity_id, resource)` | `list_entities_with_custom_limits(resource)` |
 
 **CLI commands for managing stored limits:**
 
@@ -461,7 +463,7 @@ zae-limiter resource set-defaults gpt-4 -l tpm:50000 -l rpm:500
 zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
 ```
 
-Each level also has `get-*` and `delete-*` subcommands. Use `zae-limiter resource list` to list resources with defaults.
+Each level also has `get-*` and `delete-*` subcommands. Use `zae-limiter resource list` to list resources with defaults. Use `zae-limiter entity list --with-custom-limits <resource>` to list entities with custom limits for a specific resource.
 
 Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for a config level are stored in a single item:
 

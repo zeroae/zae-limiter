@@ -808,3 +808,41 @@ class TestSyncRateLimiterConfigCache:
         sync_limiter.invalidate_config_cache()
 
         assert sync_limiter.get_cache_stats().size == 0
+
+
+class TestSyncListEntitiesWithCustomLimits:
+    """Tests for sync list_entities_with_custom_limits."""
+
+    def test_list_entities_with_custom_limits(self, sync_limiter):
+        """Test listing entities with custom limits."""
+        # Set entity-level limits
+        sync_limiter.set_limits("entity-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        sync_limiter.set_limits("entity-2", [Limit.per_minute("rpm", 200)], resource="gpt-4")
+        sync_limiter.set_limits("entity-3", [Limit.per_minute("rpm", 50)], resource="claude-3")
+
+        # Query for gpt-4 resource
+        entities, cursor = sync_limiter.list_entities_with_custom_limits("gpt-4")
+
+        assert "entity-1" in entities
+        assert "entity-2" in entities
+        assert "entity-3" not in entities  # Different resource
+        assert cursor is None  # No more results
+
+    def test_list_entities_with_custom_limits_empty(self, sync_limiter):
+        """Test listing entities when no custom limits exist."""
+        entities, cursor = sync_limiter.list_entities_with_custom_limits("nonexistent-resource")
+
+        assert entities == []
+        assert cursor is None
+
+    def test_list_entities_with_custom_limits_pagination(self, sync_limiter):
+        """Test pagination for listing entities."""
+        # Set entity-level limits
+        sync_limiter.set_limits("entity-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        sync_limiter.set_limits("entity-2", [Limit.per_minute("rpm", 200)], resource="gpt-4")
+
+        # Query with limit=1
+        entities, cursor = sync_limiter.list_entities_with_custom_limits("gpt-4", limit=1)
+
+        assert len(entities) == 1
+        # cursor may or may not be None depending on moto behavior

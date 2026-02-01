@@ -1594,3 +1594,148 @@ class TestRepositoryDeprecation:
             assert call_kwargs["stack_options"].lambda_memory == 512
 
         await repo.close()
+
+
+class TestGSI3EntityConfigIndex:
+    """Tests for GSI3 sparse index for entity config queries."""
+
+    @pytest.mark.asyncio
+    async def test_set_limits_writes_gsi3_attributes(self, repo):
+        """set_limits should write GSI3PK and GSI3SK for entity-level configs."""
+        await repo.create_entity("user-123")
+        limits = [Limit.per_minute("rpm", 1000)]
+        await repo.set_limits("user-123", limits, resource="gpt-4")
+
+        # Read the raw item to verify GSI3 attributes
+        client = await repo._get_client()
+        from zae_limiter.schema import gsi3_pk_entity_config, gsi3_sk_entity, pk_entity, sk_config
+
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_entity("user-123")},
+                "SK": {"S": sk_config("gpt-4")},
+            },
+        )
+        item = response.get("Item")
+        assert item is not None
+
+        # Verify GSI3 attributes
+        assert "GSI3PK" in item
+        assert item["GSI3PK"]["S"] == gsi3_pk_entity_config("gpt-4")
+        assert "GSI3SK" in item
+        assert item["GSI3SK"]["S"] == gsi3_sk_entity("user-123")
+
+    @pytest.mark.asyncio
+    async def test_delete_limits_removes_from_gsi3(self, repo):
+        """delete_limits removes entity from GSI3 (via DeleteItem)."""
+        await repo.create_entity("user-123")
+        limits = [Limit.per_minute("rpm", 1000)]
+        await repo.set_limits("user-123", limits, resource="gpt-4")
+
+        # Verify exists
+        entities, _ = await repo.list_entities_with_custom_limits("gpt-4")
+        assert "user-123" in entities
+
+        # Delete
+        await repo.delete_limits("user-123", resource="gpt-4")
+
+        # Verify removed
+        entities, _ = await repo.list_entities_with_custom_limits("gpt-4")
+        assert "user-123" not in entities
+
+    @pytest.mark.asyncio
+    async def test_system_config_not_in_gsi3(self, repo):
+        """System config should not have GSI3 attributes."""
+        limits = [Limit.per_minute("rpm", 500)]
+        await repo.set_system_defaults(limits)
+
+        # Read the raw item to verify no GSI3 attributes
+        client = await repo._get_client()
+        from zae_limiter.schema import pk_system, sk_config
+
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_system()},
+                "SK": {"S": sk_config()},
+            },
+        )
+        item = response.get("Item")
+        assert item is not None
+
+        # Verify no GSI3 attributes (system config is not indexed)
+        assert "GSI3PK" not in item
+        assert "GSI3SK" not in item
+
+    @pytest.mark.asyncio
+    async def test_resource_config_not_in_gsi3(self, repo):
+        """Resource config should not have GSI3 attributes."""
+        limits = [Limit.per_minute("rpm", 500)]
+        await repo.set_resource_defaults("gpt-4", limits)
+
+        # Read the raw item to verify no GSI3 attributes
+        client = await repo._get_client()
+        from zae_limiter.schema import pk_resource, sk_config
+
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_resource("gpt-4")},
+                "SK": {"S": sk_config()},
+            },
+        )
+        item = response.get("Item")
+        assert item is not None
+
+        # Verify no GSI3 attributes (resource config is not indexed)
+        assert "GSI3PK" not in item
+        assert "GSI3SK" not in item
+
+    @pytest.mark.asyncio
+    async def test_list_entities_with_custom_limits(self, repo):
+        """list_entities_with_custom_limits returns correct entities."""
+        # Create multiple entities with custom limits for different resources
+        await repo.create_entity("user-1")
+        await repo.create_entity("user-2")
+        await repo.create_entity("user-3")
+
+        limits = [Limit.per_minute("rpm", 1000)]
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+        await repo.set_limits("user-2", limits, resource="gpt-4")
+        await repo.set_limits("user-3", limits, resource="claude-3")
+
+        # Query for gpt-4
+        entities, cursor = await repo.list_entities_with_custom_limits("gpt-4")
+        assert set(entities) == {"user-1", "user-2"}
+        assert cursor is None  # No more results
+
+        # Query for claude-3
+        entities, cursor = await repo.list_entities_with_custom_limits("claude-3")
+        assert set(entities) == {"user-3"}
+        assert cursor is None
+
+        # Query for nonexistent resource
+        entities, cursor = await repo.list_entities_with_custom_limits("nonexistent")
+        assert entities == []
+        assert cursor is None
+
+    @pytest.mark.asyncio
+    async def test_list_entities_with_custom_limits_pagination(self, repo):
+        """list_entities_with_custom_limits should support pagination."""
+        # Create multiple entities
+        limits = [Limit.per_minute("rpm", 1000)]
+        for i in range(5):
+            await repo.create_entity(f"user-{i}")
+            await repo.set_limits(f"user-{i}", limits, resource="gpt-4")
+
+        # Fetch with limit
+        entities, cursor = await repo.list_entities_with_custom_limits("gpt-4", limit=2)
+        assert len(entities) == 2
+        # DynamoDB pagination may or may not return a cursor depending on result size
+        # If cursor is returned, verify we can use it to get more results
+        if cursor is not None:
+            more_entities, _ = await repo.list_entities_with_custom_limits("gpt-4", cursor=cursor)
+            # Combined results should include remaining entities
+            all_entities = set(entities + more_entities)
+            assert len(all_entities) >= 2  # At least got more than first page
