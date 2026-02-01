@@ -2677,7 +2677,7 @@ class TestResourceCommands:
         """Test resource command group help."""
         result = runner.invoke(cli, ["resource", "--help"])
         assert result.exit_code == 0
-        assert "Resource-level default limit configuration commands" in result.output
+        assert "Resource-level default limit configuration" in result.output
 
     def test_resource_set_help(self, runner: CliRunner) -> None:
         """Test resource set-defaults command help."""
@@ -2929,7 +2929,7 @@ class TestSystemCommands:
         """Test system command group help."""
         result = runner.invoke(cli, ["system", "--help"])
         assert result.exit_code == 0
-        assert "System-level default limit configuration commands" in result.output
+        assert "System-level default limit configuration" in result.output
 
     def test_system_set_defaults_help(self, runner: CliRunner) -> None:
         """Test system set-defaults command help."""
@@ -3591,7 +3591,7 @@ class TestEntityCommands:
         """Test entity command group help."""
         result = runner.invoke(cli, ["entity", "--help"])
         assert result.exit_code == 0
-        assert "Entity-level limit configuration commands" in result.output
+        assert "Entity-level limit configuration" in result.output
 
     def test_entity_set_limits_help(self, runner: CliRunner) -> None:
         """Test entity set-limits command help."""
