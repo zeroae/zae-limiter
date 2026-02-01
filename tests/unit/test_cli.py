@@ -4469,3 +4469,38 @@ class TestEntityListCommand:
         result = runner.invoke(cli, ["entity", "list"])
         assert result.exit_code != 0
         assert "with-custom-limits" in result.output.lower()
+
+    def test_entity_list_repo_init_validation_error(self, runner: CliRunner) -> None:
+        """Test entity list handles ValidationError during Repository init."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid", reason="Invalid name format"
+            )
+
+            result = runner.invoke(cli, ["entity", "list", "--with-custom-limits", "gpt-4"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_list_query_validation_error(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity list handles ValidationError during query."""
+        from zae_limiter.exceptions import ValidationError
+
+        mock_repo = Mock()
+        mock_repo.list_entities_with_custom_limits = AsyncMock(
+            side_effect=ValidationError(
+                field="resource", value="bad#name", reason="Invalid resource name"
+            )
+        )
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "list", "--with-custom-limits", "bad#name"])
+
+        assert result.exit_code == 1
+        assert "Invalid resource name" in result.output
