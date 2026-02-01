@@ -522,6 +522,97 @@ class TestStackOptions:
         assert "admin_policy_name" not in params
         assert "readonly_policy_name" not in params
 
+    # -------------------------------------------------------------------------
+    # create_iam and aggregator_role_arn Tests
+    # -------------------------------------------------------------------------
+
+    def test_create_iam_default_true(self):
+        """Test create_iam defaults to True."""
+        opts = StackOptions()
+        assert opts.create_iam is True
+
+    def test_create_iam_false_valid(self):
+        """Test create_iam can be set to False."""
+        opts = StackOptions(create_iam=False)
+        assert opts.create_iam is False
+
+    def test_create_iam_false_with_create_iam_roles_raises(self):
+        """Test create_iam=False with create_iam_roles=True raises ValueError."""
+        with pytest.raises(
+            ValueError, match="create_iam_roles=True cannot be used with create_iam=False"
+        ):
+            StackOptions(create_iam=False, create_iam_roles=True)
+
+    def test_aggregator_role_arn_default_none(self):
+        """Test aggregator_role_arn defaults to None."""
+        opts = StackOptions()
+        assert opts.aggregator_role_arn is None
+
+    def test_aggregator_role_arn_valid(self):
+        """Test valid aggregator_role_arn is accepted."""
+        valid_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(aggregator_role_arn=valid_arn)
+        assert opts.aggregator_role_arn == valid_arn
+
+    def test_aggregator_role_arn_valid_govcloud(self):
+        """Test valid GovCloud aggregator_role_arn is accepted."""
+        valid_arn = "arn:aws-us-gov:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(aggregator_role_arn=valid_arn)
+        assert opts.aggregator_role_arn == valid_arn
+
+    def test_aggregator_role_arn_valid_china(self):
+        """Test valid China region aggregator_role_arn is accepted."""
+        valid_arn = "arn:aws-cn:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(aggregator_role_arn=valid_arn)
+        assert opts.aggregator_role_arn == valid_arn
+
+    def test_aggregator_role_arn_invalid_raises(self):
+        """Test invalid aggregator_role_arn raises ValueError."""
+        invalid_arns = [
+            "not-an-arn",
+            "arn:aws:iam::12345:role/TooShort",  # Account ID too short
+            "arn:aws:iam::1234567890123:role/TooLong",  # Account ID too long
+            "arn:aws:s3:::bucket",  # Wrong service
+            "arn:aws:iam::123456789012:user/NotARole",  # User not role
+        ]
+        for invalid_arn in invalid_arns:
+            with pytest.raises(
+                ValueError, match="aggregator_role_arn must be a valid IAM role ARN"
+            ):
+                StackOptions(aggregator_role_arn=invalid_arn)
+
+    def test_to_parameters_includes_enable_iam_true(self):
+        """Test to_parameters includes enable_iam when True."""
+        opts = StackOptions(create_iam=True)
+        params = opts.to_parameters()
+        assert params["enable_iam"] == "true"
+
+    def test_to_parameters_includes_enable_iam_false(self):
+        """Test to_parameters includes enable_iam when False."""
+        opts = StackOptions(create_iam=False)
+        params = opts.to_parameters()
+        assert params["enable_iam"] == "false"
+
+    def test_to_parameters_includes_aggregator_role_arn(self):
+        """Test to_parameters includes aggregator_role_arn when set."""
+        valid_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(aggregator_role_arn=valid_arn)
+        params = opts.to_parameters()
+        assert params["aggregator_role_arn"] == valid_arn
+
+    def test_to_parameters_excludes_aggregator_role_arn_when_none(self):
+        """Test to_parameters excludes aggregator_role_arn when None."""
+        opts = StackOptions()
+        params = opts.to_parameters()
+        assert "aggregator_role_arn" not in params
+
+    def test_create_iam_false_with_aggregator_role_arn_valid(self):
+        """Test create_iam=False with aggregator_role_arn is valid."""
+        valid_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
+        opts = StackOptions(create_iam=False, aggregator_role_arn=valid_arn)
+        assert opts.create_iam is False
+        assert opts.aggregator_role_arn == valid_arn
+
 
 class TestInputValidation:
     """Tests for input validation security (issue #48)."""

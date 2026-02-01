@@ -16,7 +16,9 @@ Before deploying to production:
 | Glacier Transition | `--audit-archive-glacier-days N` | 90 | Adjust based on access patterns |
 | Permission Boundary | `--permission-boundary ARN` | None | Use in restricted IAM environments |
 | X-Ray Tracing | `--enable-tracing` | Disabled | Enable for debugging/performance analysis |
-| IAM Roles | `--enable-iam-roles` | Enabled | Use for least-privilege app access |
+| IAM Roles | `--create-iam-roles` | Disabled | Create App/Admin/ReadOnly roles |
+| Skip IAM | `--no-iam` | Disabled | Skip all IAM resources for restricted environments |
+| External Role | `--aggregator-role-arn ARN` | None | Use existing IAM role for Lambda |
 
 ### Example Production Deployment
 
@@ -77,6 +79,30 @@ zae-limiter deploy \
     --name prod-limiter \
     --permission-boundary arn:aws:iam::123456789012:policy/ServiceBoundary \
     --role-name-format "svc-{}"
+```
+
+#### IAM Behavior Matrix
+
+The following table shows what IAM resources are created based on flag combinations:
+
+| Flag Combination | Policies | App Roles | Aggr Role | Lambda |
+|------------------|----------|-----------|-----------|--------|
+| (default) | Created | No | Created | Enabled |
+| `--no-iam` | No | No | No | Disabled |
+| `--no-iam --aggregator-role-arn` | No | No | External | Enabled |
+| `--aggregator-role-arn` | Created | No | External | Enabled |
+| `--create-iam-roles` | Created | Created | Created | Enabled |
+| `--no-iam --create-iam-roles` | Error | - | - | - |
+
+**For PowerUserAccess or similar restricted IAM environments:**
+
+```bash
+# Deploy without any IAM resources (aggregator disabled)
+zae-limiter deploy --name myapp --no-iam
+
+# Deploy with external Lambda role (aggregator enabled)
+zae-limiter deploy --name myapp --no-iam \
+    --aggregator-role-arn arn:aws:iam::123456789012:role/MyLambdaRole
 ```
 
 ### Network

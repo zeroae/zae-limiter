@@ -144,6 +144,8 @@ class StackManager:
             "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
             "enable_tracing": "EnableTracing",
             "enable_iam_roles": "EnableIAMRoles",
+            "enable_iam": "EnableIAM",
+            "aggregator_role_arn": "AggregatorRoleArn",
             "enable_deletion_protection": "EnableDeletionProtection",
         }
 

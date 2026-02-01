@@ -35,3 +35,21 @@ Rejected because: Policies are universally useful (attach to any principal), whi
 
 ### Output policy documents in stack outputs instead of managed policies
 Rejected because: JSON in outputs is hard to consume; managed policies integrate with IAM natively.
+
+## Restricted IAM Environments
+
+For environments without IAM permissions (e.g., PowerUserAccess):
+
+- `--no-iam`: Skips all IAM resources (managed policies, roles)
+- `--aggregator-role-arn <arn>`: Use pre-existing role for Lambda aggregator
+
+Combined: `--no-iam --aggregator-role-arn <arn>` enables full deployment without any `iam:*` permissions.
+
+| Flag Combination | Policies | App Roles | Aggr Role | Lambda |
+|------------------|----------|-----------|-----------|--------|
+| (default) | Created | No | Created | Enabled |
+| `--no-iam` | No | No | No | Disabled |
+| `--no-iam --aggregator-role-arn` | No | No | External | Enabled |
+| `--aggregator-role-arn` | Created | No | External | Enabled |
+| `--create-iam-roles` | Created | Created | Created | Enabled |
+| `--no-iam --create-iam-roles` | Error | - | - | - |

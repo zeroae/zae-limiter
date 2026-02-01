@@ -39,6 +39,10 @@ class TestCLI:
         assert "--no-alarms" in result.output
         assert "--alarm-sns-topic" in result.output
         assert "--lambda-duration-threshold-pct" in result.output
+        # IAM options
+        assert "--iam" in result.output
+        assert "--no-iam" in result.output
+        assert "--aggregator-role-arn" in result.output
 
     def test_delete_help(self, runner: CliRunner) -> None:
         """Test delete command help."""
@@ -709,6 +713,174 @@ class TestCLI:
         result = runner.invoke(cli, ["deploy", "--tag", "invalid-tag"])
 
         assert result.exit_code != 0
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_no_iam_flag(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command with --no-iam flag."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "test-stack"
+        mock_instance.table_name = "test-stack"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(
+            cli,
+            ["deploy", "--name", "test-stack", "--no-iam", "--no-aggregator"],
+        )
+
+        assert result.exit_code == 0
+        # Verify create_iam is False in StackOptions
+        call_args = mock_instance.create_stack.call_args
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.create_iam is False
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_aggregator_role_arn(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command with --aggregator-role-arn flag."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "test-stack"
+        mock_instance.table_name = "test-stack"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:test",
+                "code_sha256": "abc123def456ghi789",
+                "size_bytes": 30000,
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
+
+        role_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
+        result = runner.invoke(
+            cli,
+            ["deploy", "--name", "test-stack", "--aggregator-role-arn", role_arn],
+        )
+
+        assert result.exit_code == 0
+        call_args = mock_instance.create_stack.call_args
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.aggregator_role_arn == role_arn
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_no_iam_and_aggregator_role_arn(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy with --no-iam and --aggregator-role-arn enables aggregator."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "test-stack"
+        mock_instance.table_name = "test-stack"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:test",
+                "code_sha256": "abc123def456ghi789",
+                "size_bytes": 30000,
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repository.return_value = mock_repo_instance
+
+        role_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                "test-stack",
+                "--no-iam",
+                "--aggregator-role-arn",
+                role_arn,
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_args = mock_instance.create_stack.call_args
+        stack_options = call_args[1]["stack_options"]
+        assert stack_options.create_iam is False
+        assert stack_options.aggregator_role_arn == role_arn
+        # Aggregator should be enabled since external role is provided
+        assert stack_options.enable_aggregator is True
+
+    def test_deploy_no_iam_with_create_iam_roles_errors(self, runner: CliRunner) -> None:
+        """Test deploy command errors with --no-iam and --create-iam-roles."""
+        result = runner.invoke(
+            cli,
+            ["deploy", "--name", "test-stack", "--no-iam", "--create-iam-roles"],
+        )
+
+        assert result.exit_code != 0
+        assert "--create-iam-roles cannot be used with --no-iam" in result.output
+
+    def test_deploy_no_iam_disables_aggregator(self, runner: CliRunner) -> None:
+        """Test --no-iam without external role shows note and disables aggregator."""
+        # Run without mocking to see the early validation message
+        result = runner.invoke(
+            cli,
+            ["deploy", "--name", "test-stack", "--no-iam"],
+            catch_exceptions=False,
+        )
+
+        # Should show note about disabling aggregator
+        assert "--no-iam disables aggregator" in result.output
+
+    def test_deploy_aggregator_role_arn_invalid_format(self, runner: CliRunner) -> None:
+        """Test deploy rejects invalid IAM role ARN format."""
+        result = runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                "test-stack",
+                "--aggregator-role-arn",
+                "invalid-arn",
+            ],
+        )
+
+        assert result.exit_code != 0
+        # Validation error raised from StackOptions model
+        assert result.exception is not None
+        assert "must be a valid IAM role ARN" in str(result.exception)
 
     @patch("zae_limiter.cli.StackManager")
     def test_delete_with_confirmation(self, mock_stack_manager: Mock, runner: CliRunner) -> None:

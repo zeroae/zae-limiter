@@ -637,6 +637,10 @@ VALID_LOG_RETENTION_DAYS = frozenset(
 )
 
 
+# IAM Role ARN pattern for validation
+IAM_ROLE_ARN_PATTERN = re.compile(r"^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role/.+$")
+
+
 @dataclass(frozen=True)
 class StackOptions:
     """
@@ -663,7 +667,12 @@ class StackOptions:
         audit_archive_glacier_days: Days before transitioning archives to Glacier IR (1-3650)
         enable_tracing: Enable AWS X-Ray tracing for Lambda aggregator
         create_iam_roles: Create App/Admin/ReadOnly IAM roles (default: False).
-            Managed policies are always created.
+            Managed policies are always created unless create_iam=False.
+        create_iam: Create IAM resources (policies and roles). Set to False for
+            restricted IAM environments (e.g., PowerUserAccess). When False,
+            aggregator is disabled unless aggregator_role_arn is provided.
+        aggregator_role_arn: ARN of an existing IAM role for the Lambda aggregator.
+            Use this when deploying without iam:CreateRole permissions.
         enable_deletion_protection: Enable DynamoDB table deletion protection
         tags: User-defined tags to apply to the CloudFormation stack. Dict of key-value
             pairs. AWS tag constraints apply (max 50 total including managed tags,
@@ -687,6 +696,8 @@ class StackOptions:
     audit_archive_glacier_days: int = 90
     enable_tracing: bool = False
     create_iam_roles: bool = False
+    create_iam: bool = True
+    aggregator_role_arn: str | None = None
     enable_deletion_protection: bool = False
     tags: dict[str, str] | None = None
 
@@ -743,6 +754,19 @@ class StackOptions:
         # Validate audit archival options
         if not (1 <= self.audit_archive_glacier_days <= 3650):
             raise ValueError("audit_archive_glacier_days must be between 1 and 3650")
+        # Validate conflicting IAM flags
+        if not self.create_iam and self.create_iam_roles:
+            raise ValueError(
+                "create_iam_roles=True cannot be used with create_iam=False. "
+                "Roles require IAM permissions to create."
+            )
+        # Validate aggregator_role_arn format if provided
+        if self.aggregator_role_arn is not None:
+            if not IAM_ROLE_ARN_PATTERN.match(self.aggregator_role_arn):
+                raise ValueError(
+                    f"aggregator_role_arn must be a valid IAM role ARN, "
+                    f"got: {self.aggregator_role_arn}"
+                )
         # Validate user-defined tags
         if self.tags is not None:
             if len(self.tags) > 45:
@@ -879,6 +903,10 @@ class StackOptions:
         # Audit archival parameters
         params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
         params["audit_archive_glacier_days"] = str(self.audit_archive_glacier_days)
+        # IAM resource creation controls
+        params["enable_iam"] = "true" if self.create_iam else "false"
+        if self.aggregator_role_arn:
+            params["aggregator_role_arn"] = self.aggregator_role_arn
         # Deletion protection parameter
         params["enable_deletion_protection"] = (
             "true" if self.enable_deletion_protection else "false"
