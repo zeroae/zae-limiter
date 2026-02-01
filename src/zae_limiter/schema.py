@@ -1,6 +1,9 @@
 """DynamoDB schema definitions and key builders."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .models import Limit
 
 # Table and index names
 DEFAULT_TABLE_NAME = "rate_limits"
@@ -300,3 +303,30 @@ def get_table_definition(table_name: str) -> dict[str, Any]:
 def calculate_ttl(now_ms: int, ttl_seconds: int = 86400) -> int:
     """Calculate TTL timestamp (epoch seconds)."""
     return (now_ms // 1000) + ttl_seconds
+
+
+def calculate_bucket_ttl(
+    now_ms: int,
+    limits: "list[Limit]",
+    multiplier: int,
+) -> int | None:
+    """
+    Calculate bucket TTL based on refill periods (Issue #271).
+
+    For buckets using default limits (system/resource), a TTL allows
+    DynamoDB to auto-expire unused buckets. The TTL is calculated as:
+    now + (max_refill_period_seconds × multiplier)
+
+    Args:
+        now_ms: Current time in milliseconds
+        limits: List of Limit objects to consider
+        multiplier: Multiplier applied to max refill period (default: 7)
+
+    Returns:
+        TTL timestamp in epoch seconds, or None if multiplier <= 0 (disabled)
+    """
+    if multiplier <= 0:
+        return None
+
+    max_refill = max(limit.refill_period_seconds for limit in limits)
+    return (now_ms // 1000) + (max_refill * multiplier)

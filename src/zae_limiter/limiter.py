@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -99,6 +99,7 @@ class RateLimiter:
         strict_version: bool = True,
         skip_version_check: bool = False,
         config_cache_ttl: int = 60,
+        bucket_ttl_refill_multiplier: int = 7,
     ) -> None:
         """
         Initialize the rate limiter.
@@ -119,6 +120,9 @@ class RateLimiter:
             strict_version: Fail if version mismatch (when auto_update is False)
             skip_version_check: Skip all version checks (dangerous)
             config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable)
+            bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
+                TTL = max_refill_period_seconds × multiplier. Default: 7.
+                Set to 0 to disable TTL for buckets using default limits.
 
         Raises:
             ValueError: If both repository and name/region/endpoint_url/stack_options
@@ -174,6 +178,9 @@ class RateLimiter:
 
         # Config cache (60s TTL by default, 0 disables)
         self._config_cache = ConfigCache(ttl_seconds=config_cache_ttl)
+
+        # Bucket TTL multiplier for default limit buckets (issue #271)
+        self._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
 
     @property
     def name(self) -> str:
@@ -752,7 +759,9 @@ class RateLimiter:
 
         # Phase 1: Resolve child limits, then fetch child META + child buckets
         # in a single BatchGetItem call (no separate get_entity round trip).
-        child_limits = await self._resolve_limits(entity_id, resource, limits_override)
+        child_limits, child_config_source = await self._resolve_limits(
+            entity_id, resource, limits_override
+        )
 
         entity, child_buckets = await self._fetch_entity_and_buckets(entity_id, resource)
 
@@ -760,14 +769,19 @@ class RateLimiter:
         entity_ids = [entity_id]
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
         entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}
+        # Track config source per entity (for TTL calculation, issue #271)
+        entity_config_sources: dict[str, str] = {entity_id: child_config_source}
 
         if entity and entity.cascade and entity.parent_id:
             parent_id = entity.parent_id
             entity_ids.append(parent_id)
 
             # Phase 2: Resolve parent limits + fetch parent buckets
-            parent_limits = await self._resolve_limits(parent_id, resource, limits_override)
+            parent_limits, parent_config_source = await self._resolve_limits(
+                parent_id, resource, limits_override
+            )
             entity_limits[parent_id] = parent_limits
+            entity_config_sources[parent_id] = parent_config_source
             parent_buckets = await self._fetch_buckets([parent_id], resource)
             existing_buckets.update(parent_buckets)
 
@@ -820,6 +834,9 @@ class RateLimiter:
                     if state.total_consumed_milli is not None and amount > 0:
                         state.total_consumed_milli += amount * 1000
 
+                # Determine if entity has custom config for TTL (Issue #271)
+                has_custom_config = entity_config_sources.get(eid) == "entity"
+
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
@@ -830,6 +847,7 @@ class RateLimiter:
                         _original_tokens_milli=original_tk,
                         _original_rf_ms=original_rf,
                         _is_new=is_new and not any_existing,
+                        _has_custom_config=has_custom_config,
                     )
                 )
 
@@ -838,7 +856,11 @@ class RateLimiter:
         if violations:
             raise RateLimitExceeded(statuses)
 
-        return Lease(repository=self._repository, entries=entries)
+        return Lease(
+            repository=self._repository,
+            entries=entries,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
+        )
 
     async def _fetch_entity_and_buckets(
         self,
@@ -915,7 +937,7 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         limits_override: list[Limit] | None,
-    ) -> list[Limit]:
+    ) -> tuple[list[Limit], Literal["entity", "resource", "system", "override"]]:
         """
         Resolve limits using three-tier hierarchy: Entity > Resource > System > Override.
 
@@ -934,7 +956,11 @@ class RateLimiter:
             limits_override: Optional override limits (from limits parameter)
 
         Returns:
-            Resolved list of Limit objects
+            Tuple of (limits, config_source) where config_source is one of:
+            - "entity": Entity-level config
+            - "resource": Resource-level defaults
+            - "system": System-level defaults
+            - "override": Override parameter provided
 
         Raises:
             ValidationError: If no limits found at any level and no override provided
@@ -946,7 +972,7 @@ class RateLimiter:
             self._repository.get_limits,
         )
         if entity_limits:
-            return entity_limits
+            return entity_limits, "entity"
 
         # Try Resource level (with caching)
         resource_limits = await self._config_cache.get_resource_defaults(
@@ -954,18 +980,18 @@ class RateLimiter:
             self._repository.get_resource_defaults,
         )
         if resource_limits:
-            return resource_limits
+            return resource_limits, "resource"
 
         # Try System level (with caching)
         system_limits, _ = await self._config_cache.get_system_defaults(
             self._repository.get_system_defaults,
         )
         if system_limits:
-            return system_limits
+            return system_limits, "system"
 
         # Try override parameter
         if limits_override is not None:
-            return limits_override
+            return limits_override, "override"
 
         # No limits found anywhere
         raise ValidationError(
@@ -1050,7 +1076,7 @@ class RateLimiter:
             )
 
         # Resolve limits using three-tier hierarchy
-        resolved_limits = await self._resolve_limits(entity_id, resource, limits)
+        resolved_limits, _ = await self._resolve_limits(entity_id, resource, limits)
 
         result: dict[str, int] = {}
         for limit in resolved_limits:
@@ -1104,7 +1130,7 @@ class RateLimiter:
             )
 
         # Resolve limits using three-tier hierarchy
-        resolved_limits = await self._resolve_limits(entity_id, resource, limits)
+        resolved_limits, _ = await self._resolve_limits(entity_id, resource, limits)
 
         max_wait = 0.0
         for limit in resolved_limits:
@@ -1646,6 +1672,7 @@ class SyncRateLimiter:
         strict_version: bool = True,
         skip_version_check: bool = False,
         config_cache_ttl: int = 60,
+        bucket_ttl_refill_multiplier: int = 7,
     ) -> None:
         # Delegate to RateLimiter with same parameters
         # RateLimiter handles deprecation warning and validation
@@ -1660,6 +1687,7 @@ class SyncRateLimiter:
             strict_version=strict_version,
             skip_version_check=skip_version_check,
             config_cache_ttl=config_cache_ttl,
+            bucket_ttl_refill_multiplier=bucket_ttl_refill_multiplier,
         )
         self._loop: asyncio.AbstractEventLoop | None = None
 

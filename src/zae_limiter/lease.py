@@ -29,6 +29,8 @@ class LeaseEntry:
     _original_tokens_milli: int = 0  # stored tk before try_consume
     _original_rf_ms: int = 0  # shared rf from composite item read
     _is_new: bool = False  # True if item needs Create path (no existing item)
+    # Config source tracking for TTL calculation (Issue #271)
+    _has_custom_config: bool = False  # True if entity has custom limits (no TTL)
 
 
 @dataclass
@@ -44,6 +46,8 @@ class Lease:
     entries: list[LeaseEntry] = field(default_factory=list)
     _committed: bool = False
     _rolled_back: bool = False
+    # TTL configuration (Issue #271)
+    bucket_ttl_refill_multiplier: int = 7
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -194,6 +198,24 @@ class Lease:
         for (entity_id, resource), group_entries in groups.items():
             is_new = group_entries[0]._is_new
 
+            # Calculate TTL based on config source (Issue #271)
+            # Entity-level config: remove TTL (ttl_seconds=0)
+            # Default config (system/resource/override): set TTL
+            has_custom_config = group_entries[0]._has_custom_config
+            limits = [e.limit for e in group_entries]
+
+            if has_custom_config:
+                # Entity has custom limits - no TTL (persist indefinitely)
+                ttl_seconds: int | None = 0  # 0 means REMOVE ttl
+            elif self.bucket_ttl_refill_multiplier <= 0:
+                # TTL disabled via multiplier
+                ttl_seconds = None
+            else:
+                # Using defaults - calculate relative TTL from refill period
+                # TTL = max_refill_period_seconds × multiplier
+                max_refill = max(lim.refill_period_seconds for lim in limits)
+                ttl_seconds = max_refill * self.bucket_ttl_refill_multiplier
+
             if is_new:
                 # Create path: PutItem with attribute_not_exists
                 items.append(
@@ -202,6 +224,7 @@ class Lease:
                         resource=resource,
                         states=[e.state for e in group_entries],
                         now_ms=now_ms,
+                        ttl_seconds=ttl_seconds if ttl_seconds != 0 else None,
                     )
                 )
             else:
@@ -229,6 +252,7 @@ class Lease:
                         refill_amounts=refill_amounts,
                         now_ms=now_ms,
                         expected_rf=expected_rf,
+                        ttl_seconds=ttl_seconds,
                     )
                 )
 

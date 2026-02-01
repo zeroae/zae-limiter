@@ -103,6 +103,33 @@ class Repository:
             self._client = None
             self._session = None
 
+    async def _get_item(self, pk: str, sk: str) -> dict[str, Any] | None:
+        """Get a raw DynamoDB item by primary key (testing helper).
+
+        Args:
+            pk: Partition key value (already formatted, e.g., "ENTITY#user-1")
+            sk: Sort key value (already formatted, e.g., "#BUCKET#api")
+
+        Returns:
+            Deserialized item dict or None if not found.
+        """
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": sk}},
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        # Deserialize DynamoDB types to Python types (S and N only for buckets)
+        result: dict[str, Any] = {}
+        for key, value in item.items():
+            if "S" in value:
+                result[key] = value["S"]
+            elif "N" in value:
+                result[key] = int(value["N"])
+        return result
+
     async def _get_caller_identity_arn(self) -> str | None:
         """
         Get the ARN of the AWS caller identity (lazy cached).
@@ -712,12 +739,19 @@ class Repository:
         resource: str,
         states: list[BucketState],
         now_ms: int,
-        ttl_seconds: int = 86400,
+        ttl_seconds: int | None = 86400,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
         Used on first acquire for an entity+resource. Condition ensures no
         concurrent creation race (attribute_not_exists).
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            states: BucketState objects for each limit
+            now_ms: Current timestamp in milliseconds
+            ttl_seconds: TTL in seconds from now, or None to omit TTL
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(entity_id)},
@@ -727,8 +761,10 @@ class Repository:
             schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
             "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
-            "ttl": {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))},
         }
+        # Only add TTL if specified (None means no TTL for entity-level config)
+        if ttl_seconds is not None:
+            item["ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
         for state in states:
             name = state.limit_name
             item[schema.bucket_attr(name, schema.BUCKET_FIELD_TK)] = {
@@ -767,18 +803,44 @@ class Repository:
         refill_amounts: dict[str, int],
         now_ms: int,
         expected_rf: int,
+        ttl_seconds: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
         ADD tk:(refill - consumed), tc:consumed for each limit.
         SET rf:now. CONDITION rf = :expected.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consumed: Amount consumed per limit (millitokens)
+            refill_amounts: Refill amount per limit (millitokens)
+            now_ms: Current timestamp in milliseconds
+            expected_rf: Expected refill timestamp for optimistic lock
+            ttl_seconds: TTL behavior:
+                - None: Don't change TTL
+                - 0: REMOVE ttl (entity has custom limits)
+                - >0: SET ttl to (now + ttl_seconds)
         """
         add_parts: list[str] = []
+        set_parts: list[str] = ["#rf = :now"]
+        remove_parts: list[str] = []
         attr_names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF}
         attr_values: dict[str, Any] = {
             ":now": {"N": str(now_ms)},
             ":expected_rf": {"N": str(expected_rf)},
         }
+
+        # Handle TTL
+        if ttl_seconds is not None:
+            attr_names["#ttl"] = "ttl"
+            if ttl_seconds > 0:
+                # SET ttl to new value
+                set_parts.append("#ttl = :ttl_val")
+                attr_values[":ttl_val"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
+            else:
+                # REMOVE ttl (entity has custom limits, should persist)
+                remove_parts.append("#ttl")
 
         for name in consumed:
             c = consumed[name]
@@ -798,7 +860,10 @@ class Repository:
             add_parts.append(f"{tk_alias} {tk_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
 
-        update_expr = f"SET #rf = :now ADD {', '.join(add_parts)}"
+        # Build update expression
+        update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
+        if remove_parts:
+            update_expr += f" REMOVE {', '.join(remove_parts)}"
 
         return {
             "Update": {

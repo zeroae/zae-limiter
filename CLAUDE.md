@@ -490,6 +490,38 @@ All records use flat schema (v0.6.0+, top-level attributes, no nested `data.M`).
 
 See [ADR-100](docs/adr/100-centralized-config.md) for full config design details.
 
+### Bucket TTL for Default Limits (Issue #271)
+
+Buckets using system/resource default limits have TTL for auto-expiration:
+
+| Config Source | TTL Behavior |
+|---------------|--------------|
+| Entity custom limits | No TTL (persist indefinitely) |
+| Resource defaults | TTL = now + max_refill_period × multiplier |
+| System defaults | TTL = now + max_refill_period × multiplier |
+| Override parameter | TTL = now + max_refill_period × multiplier |
+
+Configure via `bucket_ttl_refill_multiplier` parameter (default: 7). Set to 0 to disable.
+
+**Example:**
+```python
+# Custom multiplier (14 days for 24h refill period)
+limiter = RateLimiter(
+    name="my-app",
+    bucket_ttl_refill_multiplier=14,
+)
+
+# Disable TTL (all buckets persist indefinitely)
+limiter = RateLimiter(
+    name="my-app",
+    bucket_ttl_refill_multiplier=0,
+)
+```
+
+**TTL behavior on upgrade/downgrade:**
+- Entity with custom limits → TTL removed on next acquire
+- Entity downgrades to defaults → TTL set on next acquire
+
 ## Dependencies
 
 **Required:**

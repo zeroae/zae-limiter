@@ -9,6 +9,7 @@ from zae_limiter import (
     OnUnavailable,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    SyncRateLimiter,
 )
 
 
@@ -846,3 +847,34 @@ class TestSyncListEntitiesWithCustomLimits:
 
         assert len(entities) == 1
         # cursor may or may not be None depending on moto behavior
+
+
+class TestSyncRateLimiterBucketTTL:
+    """Tests for sync bucket TTL configuration (Issue #271)."""
+
+    def test_bucket_ttl_multiplier_default_is_seven(self, mock_dynamodb):
+        """Default bucket_ttl_refill_multiplier is 7 for SyncRateLimiter."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test")
+            assert limiter._limiter._bucket_ttl_refill_multiplier == 7
+            limiter.close()
+
+    def test_bucket_ttl_multiplier_custom_value(self, mock_dynamodb):
+        """Custom bucket_ttl_refill_multiplier is passed through."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test", bucket_ttl_refill_multiplier=14)
+            assert limiter._limiter._bucket_ttl_refill_multiplier == 14
+            limiter.close()
+
+    def test_bucket_ttl_multiplier_zero_disables(self, mock_dynamodb):
+        """Setting bucket_ttl_refill_multiplier=0 disables TTL."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test", bucket_ttl_refill_multiplier=0)
+            assert limiter._limiter._bucket_ttl_refill_multiplier == 0
+            limiter.close()
