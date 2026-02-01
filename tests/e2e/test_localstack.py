@@ -129,7 +129,7 @@ class TestE2ELocalStackCLIWorkflow:
             assert "Client:" in result.output
             assert "Schema:" in result.output
             # Schema should be initialized by deploy (not N/A)
-            assert "Schema:        0.7.0" in result.output
+            assert "Schema:        0.8.0" in result.output
             assert "Lambda:" in result.output
             # Lambda version should match client version (fix #274)
             assert f"Lambda:        {__version__}" in result.output

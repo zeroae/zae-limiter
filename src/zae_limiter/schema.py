@@ -41,6 +41,13 @@ BUCKET_FIELD_RP = "rp"  # refill period (ms)
 BUCKET_FIELD_TC = "tc"  # total consumed counter (millitokens)
 BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 
+# Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
+LIMIT_ATTR_PREFIX = "l_"
+LIMIT_FIELD_CP = "cp"  # capacity
+LIMIT_FIELD_BX = "bx"  # burst
+LIMIT_FIELD_RA = "ra"  # refill_amount
+LIMIT_FIELD_RP = "rp"  # refill_period_seconds
+
 
 def bucket_attr(limit_name: str, field: str) -> str:
     """Build composite bucket attribute name: b_{limit_name}_{field}."""
@@ -55,6 +62,26 @@ def parse_bucket_attr(attr_name: str) -> tuple[str, str] | None:
     if not attr_name.startswith(BUCKET_ATTR_PREFIX):
         return None
     rest = attr_name[len(BUCKET_ATTR_PREFIX) :]
+    # Find the last underscore to split name from field
+    idx = rest.rfind("_")
+    if idx <= 0:
+        return None
+    return rest[:idx], rest[idx + 1 :]
+
+
+def limit_attr(limit_name: str, field: str) -> str:
+    """Build composite limit config attribute name: l_{limit_name}_{field}."""
+    return f"{LIMIT_ATTR_PREFIX}{limit_name}_{field}"
+
+
+def parse_limit_attr(attr_name: str) -> tuple[str, str] | None:
+    """Parse limit_name and field from a composite limit config attribute.
+
+    Returns (limit_name, field) or None if not a limit attribute.
+    """
+    if not attr_name.startswith(LIMIT_ATTR_PREFIX):
+        return None
+    rest = attr_name[len(LIMIT_ATTR_PREFIX) :]
     # Find the last underscore to split name from field
     idx = rest.rfind("_")
     if idx <= 0:
@@ -127,8 +154,17 @@ def sk_resources() -> str:
     return SK_RESOURCES
 
 
-def sk_config() -> str:
-    """Build sort key for system config record (on_unavailable, etc.)."""
+def sk_config(resource: str | None = None) -> str:
+    """Build sort key for config record.
+
+    Args:
+        resource: Resource name for entity-level configs. None for system/resource level.
+
+    Returns:
+        SK for config record: '#CONFIG' or '#CONFIG#{resource}'
+    """
+    if resource is not None:
+        return f"{SK_CONFIG}#{resource}"
     return SK_CONFIG
 
 

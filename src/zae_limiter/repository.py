@@ -938,7 +938,11 @@ class Repository:
         principal: str | None = None,
     ) -> None:
         """
-        Store limit configs for an entity.
+        Store limit configs for an entity (composite format, ADR-114).
+
+        All limits for an entity+resource are stored in a single composite item
+        with SK '#CONFIG#{resource}'. This reduces cache-miss cost from N GetItem
+        calls to 1 GetItem call.
 
         Args:
             entity_id: ID of the entity
@@ -948,23 +952,20 @@ class Repository:
         """
         client = await self._get_client()
 
-        # Delete existing limits for this resource first
-        await self._delete_limits_for_resource(entity_id, resource)
+        # Build composite config item with all limits
+        item: dict[str, Any] = {
+            "PK": {"S": schema.pk_entity(entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+            "entity_id": {"S": entity_id},
+            "resource": {"S": resource},
+            "config_version": {"N": "1"},
+        }
 
-        # Write new limits (flat schema)
-        for limit in limits:
-            item = {
-                "PK": {"S": schema.pk_entity(entity_id)},
-                "SK": {"S": schema.sk_limit(resource, limit.name)},
-                "entity_id": {"S": entity_id},
-                "resource": {"S": resource},
-                "limit_name": {"S": limit.name},
-                "capacity": {"N": str(limit.capacity)},
-                "burst": {"N": str(limit.burst)},
-                "refill_amount": {"N": str(limit.refill_amount)},
-                "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
-            }
-            await client.put_item(TableName=self.table_name, Item=item)
+        # Add l_* attributes for each limit
+        self._serialize_composite_limits(limits, item)
+
+        # Single PutItem replaces any existing config for this entity+resource
+        await client.put_item(TableName=self.table_name, Item=item)
 
         # Log audit event
         await self._log_audit_event(
@@ -980,33 +981,28 @@ class Repository:
         entity_id: str,
         resource: str = schema.DEFAULT_RESOURCE,
     ) -> list[Limit]:
-        """Get stored limit configs for an entity."""
+        """Get stored limit configs for an entity (composite format, ADR-114).
+
+        Reads a single composite item with SK '#CONFIG#{resource}' containing
+        all limits for the entity+resource pair.
+        """
         client = await self._get_client()
 
         # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
-        response = await client.query(
+        response = await client.get_item(
             TableName=self.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_entity(entity_id)},
-                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
+            Key={
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
             },
             ConsistentRead=False,
         )
 
-        limits = []
-        for item in response.get("Items", []):
-            limits.append(
-                Limit(
-                    name=item.get("limit_name", {}).get("S", ""),
-                    capacity=int(item["capacity"]["N"]),
-                    burst=int(item.get("burst", {}).get("N", "0")),
-                    refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
-                    refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
-                )
-            )
+        item = response.get("Item")
+        if not item:
+            return []
 
-        return limits
+        return self._deserialize_composite_limits(item)
 
     async def delete_limits(
         self,
@@ -1015,14 +1011,25 @@ class Repository:
         principal: str | None = None,
     ) -> None:
         """
-        Delete stored limit configs for an entity.
+        Delete stored limit configs for an entity (composite format, ADR-114).
+
+        Deletes the single composite config item for this entity+resource.
 
         Args:
             entity_id: ID of the entity
             resource: Resource name (defaults to "_default_")
             principal: Caller identity for audit logging
         """
-        await self._delete_limits_for_resource(entity_id, resource)
+        client = await self._get_client()
+
+        # Single DeleteItem removes the composite config
+        await client.delete_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+        )
 
         # Log audit event
         await self._log_audit_event(
@@ -1032,34 +1039,8 @@ class Repository:
             resource=resource,
         )
 
-    async def _delete_limits_for_resource(self, entity_id: str, resource: str) -> None:
-        """Delete all limits for a specific resource."""
-        client = await self._get_client()
-
-        response = await client.query(
-            TableName=self.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_entity(entity_id)},
-                ":sk_prefix": {"S": schema.sk_limit_prefix(resource)},
-            },
-            ProjectionExpression="PK, SK",
-        )
-
-        items = response.get("Items", [])
-        if not items:
-            return
-
-        delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in items
-        ]
-
-        for i in range(0, len(delete_requests), 25):
-            chunk = delete_requests[i : i + 25]
-            await client.batch_write_item(RequestItems={self.table_name: chunk})
-
     # -------------------------------------------------------------------------
-    # Resource-level limit config operations (flat schema)
+    # Resource-level limit config operations (composite format, ADR-114)
     # -------------------------------------------------------------------------
 
     async def set_resource_defaults(
@@ -1069,7 +1050,10 @@ class Repository:
         principal: str | None = None,
     ) -> None:
         """
-        Store default limit configs for a resource (flat schema).
+        Store default limit configs for a resource (composite format, ADR-114).
+
+        All limits for a resource are stored in a single composite item
+        with SK '#CONFIG'. This reduces cache-miss cost.
 
         Args:
             resource: Resource name
@@ -1079,24 +1063,19 @@ class Repository:
         validate_resource(resource)
         client = await self._get_client()
 
-        # Delete existing limits for this resource
-        await self._delete_resource_defaults_internal(resource)
+        # Build composite config item with all limits
+        item: dict[str, Any] = {
+            "PK": {"S": schema.pk_resource(resource)},
+            "SK": {"S": schema.sk_config()},
+            "resource": {"S": resource},
+            "config_version": {"N": "1"},
+        }
 
-        # Write new limits with FLAT schema (no nested data.M)
-        # SK uses sk_resource_limit (no resource in SK since PK has it)
-        for limit in limits:
-            item = {
-                "PK": {"S": schema.pk_resource(resource)},
-                "SK": {"S": schema.sk_resource_limit(limit.name)},
-                "resource": {"S": resource},
-                "limit_name": {"S": limit.name},
-                "capacity": {"N": str(limit.capacity)},
-                "burst": {"N": str(limit.burst)},
-                "refill_amount": {"N": str(limit.refill_amount)},
-                "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
-                "config_version": {"N": "1"},  # Initial version for future caching
-            }
-            await client.put_item(TableName=self.table_name, Item=item)
+        # Add l_* attributes for each limit
+        self._serialize_composite_limits(limits, item)
+
+        # Single PutItem replaces any existing config for this resource
+        await client.put_item(TableName=self.table_name, Item=item)
 
         # Add resource to the registry using atomic ADD operation
         await client.update_item(
@@ -1124,35 +1103,29 @@ class Repository:
         self,
         resource: str,
     ) -> list[Limit]:
-        """Get stored default limit configs for a resource."""
+        """Get stored default limit configs for a resource (composite format, ADR-114).
+
+        Reads a single composite item with SK '#CONFIG' containing all limits
+        for the resource.
+        """
         validate_resource(resource)
         client = await self._get_client()
 
         # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
-        response = await client.query(
+        response = await client.get_item(
             TableName=self.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_resource(resource)},
-                ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
+            Key={
+                "PK": {"S": schema.pk_resource(resource)},
+                "SK": {"S": schema.sk_config()},
             },
             ConsistentRead=False,
         )
 
-        limits = []
-        for item in response.get("Items", []):
-            # Flat schema - fields are top-level
-            limits.append(
-                Limit(
-                    name=item.get("limit_name", {}).get("S", ""),
-                    capacity=int(item.get("capacity", {}).get("N", "0")),
-                    burst=int(item.get("burst", {}).get("N", "0")),
-                    refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
-                    refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
-                )
-            )
+        item = response.get("Item")
+        if not item:
+            return []
 
-        return limits
+        return self._deserialize_composite_limits(item)
 
     async def delete_resource_defaults(
         self,
@@ -1160,61 +1133,25 @@ class Repository:
         principal: str | None = None,
     ) -> None:
         """
-        Delete stored default limit configs for a resource.
+        Delete stored default limit configs for a resource (composite format, ADR-114).
+
+        Deletes the single composite config item for this resource.
 
         Args:
             resource: Resource name
             principal: Caller identity for audit logging
         """
         validate_resource(resource)
-        await self._delete_resource_defaults_internal(resource)
-
-        # Log audit event
-        await self._log_audit_event(
-            action=AuditAction.LIMITS_DELETED,
-            entity_id=f"$RESOURCE:{resource}",
-            principal=principal,
-            resource=resource,
-        )
-
-    async def _delete_resource_defaults_internal(self, resource: str) -> None:
-        """Delete all default limits for a resource (internal, no audit)."""
         client = await self._get_client()
 
-        # Query with pagination to handle large result sets
-        all_items: list[dict[str, Any]] = []
-        next_key: dict[str, Any] | None = None
-
-        while True:
-            params: dict[str, Any] = {
-                "TableName": self.table_name,
-                "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk_prefix)",
-                "ExpressionAttributeValues": {
-                    ":pk": {"S": schema.pk_resource(resource)},
-                    ":sk_prefix": {"S": schema.sk_resource_limit_prefix()},
-                },
-                "ProjectionExpression": "PK, SK",
-            }
-            if next_key:
-                params["ExclusiveStartKey"] = next_key
-
-            response = await client.query(**params)
-            all_items.extend(response.get("Items", []))
-
-            next_key = response.get("LastEvaluatedKey")
-            if next_key is None:
-                break
-
-        if not all_items:
-            return
-
-        delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in all_items
-        ]
-
-        for i in range(0, len(delete_requests), 25):
-            chunk = delete_requests[i : i + 25]
-            await client.batch_write_item(RequestItems={self.table_name: chunk})
+        # Single DeleteItem removes the composite config
+        await client.delete_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_resource(resource)},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
 
         # Remove resource from the registry using atomic DELETE operation
         await client.update_item(
@@ -1227,6 +1164,14 @@ class Repository:
             ExpressionAttributeValues={
                 ":resource": {"SS": [resource]},
             },
+        )
+
+        # Log audit event
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_DELETED,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
         )
 
     async def list_resources_with_defaults(self) -> list[str]:
@@ -1249,7 +1194,7 @@ class Repository:
         return sorted(resources_set)
 
     # -------------------------------------------------------------------------
-    # System-level default config operations (flat schema)
+    # System-level default config operations (composite format, ADR-114)
     # -------------------------------------------------------------------------
 
     async def set_system_defaults(
@@ -1259,10 +1204,10 @@ class Repository:
         principal: str | None = None,
     ) -> None:
         """
-        Store system-wide default limits and config (flat schema).
+        Store system-wide default limits and config (composite format, ADR-114).
 
-        System defaults apply to ALL resources unless overridden at resource
-        or entity level.
+        All system limits and config (on_unavailable) are stored in a single
+        composite item with SK '#CONFIG'. This reduces cache-miss cost.
 
         Args:
             limits: List of Limit configurations (apply to all resources)
@@ -1271,173 +1216,44 @@ class Repository:
         """
         client = await self._get_client()
 
-        # Delete existing system limits
-        await self._delete_system_limits_internal()
-
-        # Write new limits with FLAT schema (no resource in SK)
-        for limit in limits:
-            item = {
-                "PK": {"S": schema.pk_system()},
-                "SK": {"S": schema.sk_system_limit(limit.name)},
-                "limit_name": {"S": limit.name},
-                "capacity": {"N": str(limit.capacity)},
-                "burst": {"N": str(limit.burst)},
-                "refill_amount": {"N": str(limit.refill_amount)},
-                "refill_period_seconds": {"N": str(limit.refill_period_seconds)},
-                "config_version": {"N": "1"},  # Initial version for future caching
-            }
-            await client.put_item(TableName=self.table_name, Item=item)
-
-            # Log audit event per limit (ADR-106: use $SYSTEM for all system-level events)
-            await self._log_audit_event(
-                action=AuditAction.LIMITS_SET,
-                entity_id="$SYSTEM",
-                principal=principal,
-                details={"limit": limit.to_dict()},
-            )
-
-        # Store system config (on_unavailable, etc.) if provided
-        if on_unavailable is not None:
-            await self._set_system_config(on_unavailable=on_unavailable, principal=principal)
-
-    async def get_system_defaults(self) -> tuple[list[Limit], str | None]:
-        """
-        Get system-wide default limits and config.
-
-        Returns:
-            Tuple of (limits, on_unavailable). on_unavailable may be None if not set.
-        """
-        client = await self._get_client()
-
-        # Get all system limits
-        # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
-        response = await client.query(
-            TableName=self.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_system()},
-                ":sk_prefix": {"S": schema.sk_system_limit_prefix()},
-            },
-            ConsistentRead=False,
-        )
-
-        limits = []
-        for item in response.get("Items", []):
-            # Skip the config record (SK=#CONFIG)
-            sk = item.get("SK", {}).get("S", "")
-            if sk == schema.sk_config():
-                continue
-            # Skip version record
-            if sk == schema.sk_version():
-                continue
-
-            # Flat schema - fields are top-level
-            limit_name = item.get("limit_name", {}).get("S", "")
-            if limit_name:  # Only add if it's a valid limit record
-                limits.append(
-                    Limit(
-                        name=limit_name,
-                        capacity=int(item.get("capacity", {}).get("N", "0")),
-                        burst=int(item.get("burst", {}).get("N", "0")),
-                        refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
-                        refill_period_seconds=int(
-                            item.get("refill_period_seconds", {}).get("N", "0")
-                        ),
-                    )
-                )
-
-        # Get system config
-        on_unavailable = await self._get_system_config_value("on_unavailable")
-
-        return limits, on_unavailable
-
-    async def delete_system_defaults(
-        self,
-        principal: str | None = None,
-    ) -> None:
-        """
-        Delete all system-wide default limits and config.
-
-        Args:
-            principal: Caller identity for audit logging
-        """
-        # Get existing limits for audit logging
-        limits, _ = await self.get_system_defaults()
-
-        await self._delete_system_limits_internal()
-        await self._delete_system_config()
-
-        # Log audit event (ADR-106: use $SYSTEM for all system-level events)
-        for limit in limits:
-            await self._log_audit_event(
-                action=AuditAction.LIMITS_DELETED,
-                entity_id="$SYSTEM",
-                principal=principal,
-                details={"limit": limit.name},
-            )
-
-    async def _delete_system_limits_internal(self) -> None:
-        """Delete all system-level limits (internal, no audit)."""
-        client = await self._get_client()
-
-        response = await client.query(
-            TableName=self.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_system()},
-                ":sk_prefix": {"S": schema.sk_system_limit_prefix()},
-            },
-            ProjectionExpression="PK, SK",
-        )
-
-        items = response.get("Items", [])
-        # Filter out config and version records
-        limit_items = [
-            item
-            for item in items
-            if item.get("SK", {}).get("S", "") not in (schema.sk_config(), schema.sk_version())
-        ]
-
-        if not limit_items:
-            return
-
-        delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in limit_items
-        ]
-
-        for i in range(0, len(delete_requests), 25):
-            chunk = delete_requests[i : i + 25]
-            await client.batch_write_item(RequestItems={self.table_name: chunk})
-
-    async def _set_system_config(
-        self,
-        on_unavailable: str | None = None,
-        principal: str | None = None,
-    ) -> None:
-        """Store system behavior config (on_unavailable, etc.)."""
-        client = await self._get_client()
-
+        # Build composite config item with all limits + on_unavailable
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_system()},
             "SK": {"S": schema.sk_config()},
             "config_version": {"N": "1"},
         }
 
+        # Add on_unavailable if provided
         if on_unavailable is not None:
             item["on_unavailable"] = {"S": on_unavailable}
 
+        # Add l_* attributes for each limit
+        self._serialize_composite_limits(limits, item)
+
+        # Single PutItem replaces any existing system config
         await client.put_item(TableName=self.table_name, Item=item)
 
         # Log audit event (ADR-106: use $SYSTEM for all system-level events)
         await self._log_audit_event(
-            action=AuditAction.LIMITS_SET,  # Using LIMITS_SET for config changes too
+            action=AuditAction.LIMITS_SET,
             entity_id="$SYSTEM",
             principal=principal,
-            details={"on_unavailable": on_unavailable},
+            details={
+                "limits": [limit.to_dict() for limit in limits],
+                "on_unavailable": on_unavailable,
+            },
         )
 
-    async def _get_system_config_value(self, field: str) -> str | None:
-        """Get a specific system config value."""
+    async def get_system_defaults(self) -> tuple[list[Limit], str | None]:
+        """
+        Get system-wide default limits and config (composite format, ADR-114).
+
+        Reads a single composite item with SK '#CONFIG' containing all limits
+        and on_unavailable setting.
+
+        Returns:
+            Tuple of (limits, on_unavailable). on_unavailable may be None if not set.
+        """
         client = await self._get_client()
 
         # ADR-105: Use eventually consistent reads for config (0.5 RCU vs 1 RCU)
@@ -1452,21 +1268,51 @@ class Repository:
 
         item = response.get("Item")
         if not item:
-            return None
+            return [], None
 
-        field_value = item.get(field, {})
-        result: str | None = field_value.get("S") if field_value else None
-        return result
+        # Extract limits from composite attributes
+        limits = self._deserialize_composite_limits(item)
 
-    async def _delete_system_config(self) -> None:
-        """Delete system config record."""
+        # Extract on_unavailable
+        on_unavailable_attr = item.get("on_unavailable", {})
+        on_unavailable: str | None = on_unavailable_attr.get("S") if on_unavailable_attr else None
+
+        return limits, on_unavailable
+
+    async def delete_system_defaults(
+        self,
+        principal: str | None = None,
+    ) -> None:
+        """
+        Delete all system-wide default limits and config (composite format, ADR-114).
+
+        Deletes the single composite config item for system defaults.
+
+        Args:
+            principal: Caller identity for audit logging
+        """
         client = await self._get_client()
 
+        # Get existing limits for audit logging before deleting
+        limits, on_unavailable = await self.get_system_defaults()
+
+        # Single DeleteItem removes the composite config
         await client.delete_item(
             TableName=self.table_name,
             Key={
                 "PK": {"S": schema.pk_system()},
                 "SK": {"S": schema.sk_config()},
+            },
+        )
+
+        # Log audit event (ADR-106: use $SYSTEM for all system-level events)
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_DELETED,
+            entity_id="$SYSTEM",
+            principal=principal,
+            details={
+                "limits": [limit.name for limit in limits],
+                "on_unavailable": on_unavailable,
             },
         )
 
@@ -2181,6 +2027,75 @@ class Repository:
             )
 
         return buckets
+
+    # -------------------------------------------------------------------------
+    # Composite limit config serialization (ADR-114 for configs)
+    # -------------------------------------------------------------------------
+
+    def _serialize_composite_limits(
+        self,
+        limits: list[Limit],
+        base_item: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add l_* attributes to a DynamoDB item for composite limit storage.
+
+        Args:
+            limits: List of Limit objects to serialize
+            base_item: Base DynamoDB item to add attributes to (mutated in place)
+
+        Returns:
+            The modified base_item with l_{name}_{field} attributes added
+        """
+        for limit in limits:
+            name = limit.name
+            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_CP)] = {"N": str(limit.capacity)}
+            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_BX)] = {"N": str(limit.burst)}
+            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RA)] = {
+                "N": str(limit.refill_amount)
+            }
+            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RP)] = {
+                "N": str(limit.refill_period_seconds)
+            }
+        return base_item
+
+    def _deserialize_composite_limits(self, item: dict[str, Any]) -> list[Limit]:
+        """Deserialize l_* attributes from a DynamoDB item to Limit objects.
+
+        Discovers limit names by scanning for l_{name}_cp attributes.
+
+        Args:
+            item: DynamoDB item with l_{name}_{field} attributes
+
+        Returns:
+            List of Limit objects reconstructed from composite attributes
+        """
+        # Discover limit names by scanning for l_{name}_cp attributes
+        limit_names: list[str] = []
+        suffix = f"_{schema.LIMIT_FIELD_CP}"
+        for attr_name in item:
+            if attr_name.startswith(schema.LIMIT_ATTR_PREFIX) and attr_name.endswith(suffix):
+                name = attr_name[len(schema.LIMIT_ATTR_PREFIX) : -len(suffix)]
+                if name:
+                    limit_names.append(name)
+
+        limits: list[Limit] = []
+        for name in limit_names:
+
+            def _get(field: str) -> int:
+                attr = schema.limit_attr(name, field)
+                return int(item.get(attr, {}).get("N", "0"))
+
+            limits.append(
+                Limit(
+                    name=name,
+                    capacity=_get(schema.LIMIT_FIELD_CP),
+                    burst=_get(schema.LIMIT_FIELD_BX),
+                    refill_amount=_get(schema.LIMIT_FIELD_RA),
+                    refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
+                )
+            )
+
+        return limits
 
 
 # Type assertion: Repository implements RepositoryProtocol

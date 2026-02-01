@@ -8,7 +8,13 @@ from zae_limiter import AuditAction, Limit
 from zae_limiter.exceptions import InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
-from zae_limiter.schema import parse_bucket_attr, parse_bucket_sk
+from zae_limiter.schema import (
+    limit_attr,
+    parse_bucket_attr,
+    parse_bucket_sk,
+    parse_limit_attr,
+    sk_config,
+)
 
 
 @pytest.fixture
@@ -82,6 +88,43 @@ class TestSchemaCompositeKeys:
         """parse_bucket_sk raises ValueError for empty resource."""
         with pytest.raises(ValueError, match="Invalid bucket SK format"):
             parse_bucket_sk("#BUCKET#")
+
+
+class TestSchemaCompositeLimitKeys:
+    """Tests for composite limit config schema key builders."""
+
+    def test_limit_attr_builds_correct_format(self):
+        """limit_attr builds l_{name}_{field} format."""
+        assert limit_attr("rpm", "cp") == "l_rpm_cp"
+        assert limit_attr("tpm", "bx") == "l_tpm_bx"
+        assert limit_attr("my_limit", "ra") == "l_my_limit_ra"
+
+    def test_parse_limit_attr_valid(self):
+        """parse_limit_attr returns (limit_name, field) for valid attributes."""
+        assert parse_limit_attr("l_rpm_cp") == ("rpm", "cp")
+        assert parse_limit_attr("l_tpm_bx") == ("tpm", "bx")
+        assert parse_limit_attr("l_my_limit_ra") == ("my_limit", "ra")
+
+    def test_parse_limit_attr_not_limit(self):
+        """parse_limit_attr returns None for non-limit attributes."""
+        assert parse_limit_attr("entity_id") is None
+        assert parse_limit_attr("PK") is None
+        assert parse_limit_attr("b_rpm_tk") is None  # bucket, not limit
+
+    def test_parse_limit_attr_no_field_separator(self):
+        """parse_limit_attr returns None when no underscore after prefix."""
+        assert parse_limit_attr("l_") is None
+        assert parse_limit_attr("l_x") is None
+
+    def test_sk_config_without_resource(self):
+        """sk_config() returns #CONFIG when no resource provided."""
+        assert sk_config() == "#CONFIG"
+        assert sk_config(None) == "#CONFIG"
+
+    def test_sk_config_with_resource(self):
+        """sk_config(resource) returns #CONFIG#{resource}."""
+        assert sk_config("gpt-4") == "#CONFIG#gpt-4"
+        assert sk_config("_default_") == "#CONFIG#_default_"
 
 
 class TestRepositoryBucketOperations:
@@ -419,6 +462,198 @@ class TestCompositeWritePaths:
         await repo.create_entity("entity-1")
         result = await repo.get_buckets("entity-1", resource="nonexistent")
         assert result == []
+
+
+class TestCompositeLimitConfig:
+    """Tests for composite limit config serialization and CRUD (ADR-114 for configs)."""
+
+    @pytest.mark.asyncio
+    async def test_serialize_composite_limits(self, repo):
+        """_serialize_composite_limits adds l_* attributes to item."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10000),
+        ]
+        item: dict = {}
+        repo._serialize_composite_limits(limits, item)
+
+        # Check rpm attributes
+        assert item["l_rpm_cp"]["N"] == "100"
+        assert item["l_rpm_bx"]["N"] == "100"
+        assert item["l_rpm_ra"]["N"] == "100"
+        assert item["l_rpm_rp"]["N"] == "60"
+
+        # Check tpm attributes
+        assert item["l_tpm_cp"]["N"] == "10000"
+        assert item["l_tpm_bx"]["N"] == "10000"
+        assert item["l_tpm_ra"]["N"] == "10000"
+        assert item["l_tpm_rp"]["N"] == "60"
+
+    @pytest.mark.asyncio
+    async def test_deserialize_composite_limits(self, repo):
+        """_deserialize_composite_limits reconstructs Limit objects from l_* attrs."""
+        item = {
+            "l_rpm_cp": {"N": "100"},
+            "l_rpm_bx": {"N": "150"},
+            "l_rpm_ra": {"N": "100"},
+            "l_rpm_rp": {"N": "60"},
+            "l_tpm_cp": {"N": "10000"},
+            "l_tpm_bx": {"N": "10000"},
+            "l_tpm_ra": {"N": "10000"},
+            "l_tpm_rp": {"N": "60"},
+            "entity_id": {"S": "test"},  # non-limit attr should be ignored
+        }
+        limits = repo._deserialize_composite_limits(item)
+
+        assert len(limits) == 2
+        limit_map = {limit.name: limit for limit in limits}
+
+        assert limit_map["rpm"].capacity == 100
+        assert limit_map["rpm"].burst == 150
+        assert limit_map["rpm"].refill_amount == 100
+        assert limit_map["rpm"].refill_period_seconds == 60
+
+        assert limit_map["tpm"].capacity == 10000
+        assert limit_map["tpm"].burst == 10000
+
+    @pytest.mark.asyncio
+    async def test_deserialize_composite_limits_empty_item(self, repo):
+        """_deserialize_composite_limits returns empty list for item without l_* attrs."""
+        item = {
+            "entity_id": {"S": "test"},
+            "resource": {"S": "gpt-4"},
+        }
+        limits = repo._deserialize_composite_limits(item)
+        assert limits == []
+
+    @pytest.mark.asyncio
+    async def test_set_get_limits_roundtrip(self, repo):
+        """set_limits and get_limits should round-trip correctly."""
+        await repo.create_entity("limit-test")
+
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10000),
+        ]
+        await repo.set_limits("limit-test", limits, resource="gpt-4")
+
+        retrieved = await repo.get_limits("limit-test", resource="gpt-4")
+        assert len(retrieved) == 2
+
+        limit_map = {lim.name: lim for lim in retrieved}
+        assert limit_map["rpm"].capacity == 100
+        assert limit_map["tpm"].capacity == 10000
+
+    @pytest.mark.asyncio
+    async def test_delete_limits(self, repo):
+        """delete_limits should remove the composite config item."""
+        await repo.create_entity("delete-limit-test")
+
+        limits = [Limit.per_minute("rpm", 100)]
+        await repo.set_limits("delete-limit-test", limits, resource="api")
+
+        # Verify limits exist
+        retrieved = await repo.get_limits("delete-limit-test", resource="api")
+        assert len(retrieved) == 1
+
+        # Delete
+        await repo.delete_limits("delete-limit-test", resource="api")
+
+        # Verify limits are gone
+        retrieved = await repo.get_limits("delete-limit-test", resource="api")
+        assert retrieved == []
+
+    @pytest.mark.asyncio
+    async def test_set_resource_defaults_roundtrip(self, repo):
+        """set_resource_defaults and get_resource_defaults should round-trip correctly."""
+        limits = [
+            Limit.per_minute("rpm", 500),
+            Limit.per_minute("tpm", 50000),
+        ]
+        await repo.set_resource_defaults("gpt-4", limits)
+
+        retrieved = await repo.get_resource_defaults("gpt-4")
+        assert len(retrieved) == 2
+
+        limit_map = {lim.name: lim for lim in retrieved}
+        assert limit_map["rpm"].capacity == 500
+        assert limit_map["tpm"].capacity == 50000
+
+    @pytest.mark.asyncio
+    async def test_delete_resource_defaults(self, repo):
+        """delete_resource_defaults should remove the composite config item."""
+        limits = [Limit.per_minute("rpm", 100)]
+        await repo.set_resource_defaults("test-resource", limits)
+
+        # Verify exists
+        retrieved = await repo.get_resource_defaults("test-resource")
+        assert len(retrieved) == 1
+
+        # Delete
+        await repo.delete_resource_defaults("test-resource")
+
+        # Verify gone
+        retrieved = await repo.get_resource_defaults("test-resource")
+        assert retrieved == []
+
+    @pytest.mark.asyncio
+    async def test_set_system_defaults_roundtrip(self, repo):
+        """set_system_defaults and get_system_defaults should round-trip correctly."""
+        limits = [
+            Limit.per_minute("rpm", 1000),
+            Limit.per_minute("tpm", 100000),
+        ]
+        await repo.set_system_defaults(limits, on_unavailable="allow")
+
+        retrieved_limits, on_unavailable = await repo.get_system_defaults()
+        assert len(retrieved_limits) == 2
+        assert on_unavailable == "allow"
+
+        limit_map = {lim.name: lim for lim in retrieved_limits}
+        assert limit_map["rpm"].capacity == 1000
+        assert limit_map["tpm"].capacity == 100000
+
+    @pytest.mark.asyncio
+    async def test_set_system_defaults_without_on_unavailable(self, repo):
+        """set_system_defaults should work without on_unavailable."""
+        limits = [Limit.per_minute("rpm", 500)]
+        await repo.set_system_defaults(limits)
+
+        retrieved_limits, on_unavailable = await repo.get_system_defaults()
+        assert len(retrieved_limits) == 1
+        assert on_unavailable is None
+
+    @pytest.mark.asyncio
+    async def test_delete_system_defaults(self, repo):
+        """delete_system_defaults should remove the composite config item."""
+        limits = [Limit.per_minute("rpm", 100)]
+        await repo.set_system_defaults(limits, on_unavailable="block")
+
+        # Verify exists
+        retrieved_limits, on_unavailable = await repo.get_system_defaults()
+        assert len(retrieved_limits) == 1
+        assert on_unavailable == "block"
+
+        # Delete
+        await repo.delete_system_defaults()
+
+        # Verify gone
+        retrieved_limits, on_unavailable = await repo.get_system_defaults()
+        assert retrieved_limits == []
+        assert on_unavailable is None
+
+    @pytest.mark.asyncio
+    async def test_get_limits_returns_empty_for_nonexistent(self, repo):
+        """get_limits returns empty list for entity without config."""
+        await repo.create_entity("no-limits")
+        limits = await repo.get_limits("no-limits", resource="gpt-4")
+        assert limits == []
+
+    @pytest.mark.asyncio
+    async def test_get_resource_defaults_returns_empty_for_nonexistent(self, repo):
+        """get_resource_defaults returns empty list for unconfigured resource."""
+        limits = await repo.get_resource_defaults("nonexistent-resource")
+        assert limits == []
 
 
 class TestRepositorySerialization:

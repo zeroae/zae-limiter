@@ -108,3 +108,7 @@ async def apply_migrations(
             ) from e
 
     return applied
+
+
+# Import migrations to register them
+from . import m_0_8_0_composite_limits as _  # noqa: F401, E402

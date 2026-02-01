@@ -138,7 +138,7 @@ class TestCLI:
         # Verify version record was created
         mock_repo_instance.set_version_record.assert_called_once()
         version_call_args = mock_repo_instance.set_version_record.call_args
-        assert version_call_args[1]["schema_version"] == "0.7.0"
+        assert version_call_args[1]["schema_version"] == "0.8.0"
         assert version_call_args[1]["client_min_version"] == "0.0.0"
 
     @patch("zae_limiter.repository.Repository")
