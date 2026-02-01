@@ -1,4 +1,4 @@
-name: CI
+name: Tests
 
 on:
   push:
@@ -6,6 +6,10 @@ on:
       - main
       - 'release/v*'
       - 'release/[0-9]*'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
@@ -14,6 +18,10 @@ on:
       - 'release/[0-9]*'
       - 'milestone/v*'
       - 'milestone/[0-9]*'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
   workflow_dispatch:
 
 permissions:
@@ -26,33 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      code: ${{ steps.filter.outputs.code }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            code:
-              - 'src/**'
-              - 'tests/**'
-              - 'pyproject.toml'
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - uses: pre-commit/action@v3.0.1
-
   unit:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -89,8 +71,6 @@ jobs:
           fail_ci_if_error: false
 
   integration:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -152,8 +132,6 @@ jobs:
           fail_ci_if_error: false
 
   e2e:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -208,8 +186,6 @@ jobs:
           fail_ci_if_error: false
 
   benchmark-moto:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -235,8 +211,7 @@ jobs:
           fail-on-alert: false
 
   benchmark-localstack:
-    needs: changes
-    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     services:
       localstack:
@@ -286,8 +261,7 @@ jobs:
   # TODO: Blocked on #189 (AWS OIDC authentication)
   # Uncomment AWS credential steps once #189 lands
   benchmark-aws:
-    needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
