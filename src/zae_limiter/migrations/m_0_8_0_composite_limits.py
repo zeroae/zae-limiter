@@ -165,15 +165,12 @@ async def _migrate_resource_limits(
         if not items:
             continue
 
-        # Parse limits from old items (filter out config record if exists)
+        # Parse limits from old items
+        # Note: Query filters for SK begins_with #LIMIT#, so #CONFIG items won't be returned
         limits: list[Limit] = []
         limit_items: list[dict[str, Any]] = []
 
         for item in items:
-            sk = item.get("SK", {}).get("S", "")
-            if sk == schema.sk_config():
-                continue  # Skip existing config record
-
             limit_name = item.get("limit_name", {}).get("S", "")
             if limit_name:
                 limits.append(

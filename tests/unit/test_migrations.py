@@ -1,5 +1,7 @@
 """Tests for migrations module."""
 
+from unittest.mock import patch
+
 import pytest
 
 from zae_limiter import schema
@@ -574,4 +576,242 @@ class TestMigration080CompositeLimits:
             TableName=table,
             Key={"PK": {"S": schema.pk_entity("test-user")}, "SK": {"S": schema.sk_config("api")}},
         )
+        assert result["Item"].get("l_rpm_cp", {}).get("N") == "100"
+
+    @pytest.mark.asyncio
+    async def test_migrate_system_limits_items_without_limit_name(self, limiter):
+        """Test system migration skips items without limit_name attribute (line 93)."""
+        repository = limiter._repository
+        client = await repository._get_client()
+        table = repository.table_name
+
+        # Create old-format system limit item WITHOUT limit_name
+        old_item = {
+            "PK": {"S": schema.pk_system()},
+            "SK": {"S": f"{schema.SK_LIMIT}rpm"},
+            # Missing limit_name attribute
+            "capacity": {"N": "1000"},
+            "burst": {"N": "1200"},
+            "refill_amount": {"N": "1000"},
+            "refill_period_seconds": {"N": "60"},
+        }
+        await client.put_item(TableName=table, Item=old_item)
+
+        # Run migration - should return early since no valid limits found
+        await _migrate_system_limits(client, table, repository)
+
+        # Verify no composite item was created
+        result = await client.get_item(
+            TableName=table,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+        # No composite item should be created when no valid limits
+        assert "Item" not in result or "l_rpm_cp" not in result.get("Item", {})
+
+    @pytest.mark.asyncio
+    async def test_migrate_resource_limits_resource_without_items(self, limiter):
+        """Test resource migration handles resources with no limit items (line 166)."""
+        repository = limiter._repository
+        client = await repository._get_client()
+        table = repository.table_name
+
+        # Create resource registry with a resource that has no limit items
+        registry_item = {
+            "PK": {"S": schema.pk_system()},
+            "SK": {"S": schema.sk_resources()},
+            "resources": {"SS": ["empty-resource"]},
+        }
+        await client.put_item(TableName=table, Item=registry_item)
+
+        # Run migration - should continue past the empty resource
+        await _migrate_resource_limits(client, table, repository)
+
+        # Verify no composite item was created for empty resource
+        result = await client.get_item(
+            TableName=table,
+            Key={
+                "PK": {"S": schema.pk_resource("empty-resource")},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+        assert "Item" not in result
+
+    @pytest.mark.asyncio
+    async def test_migrate_resource_limits_skips_existing_config(self, limiter):
+        """Test resource migration skips existing config record (line 175)."""
+        repository = limiter._repository
+        client = await repository._get_client()
+        table = repository.table_name
+
+        # Create resource registry
+        registry_item = {
+            "PK": {"S": schema.pk_system()},
+            "SK": {"S": schema.sk_resources()},
+            "resources": {"SS": ["test-resource"]},
+        }
+        await client.put_item(TableName=table, Item=registry_item)
+
+        # Create existing config record (should be skipped, not parsed as limit)
+        existing_config = {
+            "PK": {"S": schema.pk_resource("test-resource")},
+            "SK": {"S": schema.sk_config()},
+            "config_version": {"N": "1"},
+        }
+        await client.put_item(TableName=table, Item=existing_config)
+
+        # Create old-format limit item
+        old_item = {
+            "PK": {"S": schema.pk_resource("test-resource")},
+            "SK": {"S": f"{schema.SK_LIMIT}rpm"},
+            "limit_name": {"S": "rpm"},
+            "capacity": {"N": "500"},
+            "burst": {"N": "600"},
+            "refill_amount": {"N": "500"},
+            "refill_period_seconds": {"N": "60"},
+        }
+        await client.put_item(TableName=table, Item=old_item)
+
+        # Run migration
+        await _migrate_resource_limits(client, table, repository)
+
+        # Verify composite item was created with limit data
+        result = await client.get_item(
+            TableName=table,
+            Key={
+                "PK": {"S": schema.pk_resource("test-resource")},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+        assert "Item" in result
+        assert result["Item"].get("l_rpm_cp", {}).get("N") == "500"
+
+    @pytest.mark.asyncio
+    async def test_migrate_resource_limits_items_without_limit_name(self, limiter):
+        """Test resource migration skips items without limit_name (line 193)."""
+        repository = limiter._repository
+        client = await repository._get_client()
+        table = repository.table_name
+
+        # Create resource registry
+        registry_item = {
+            "PK": {"S": schema.pk_system()},
+            "SK": {"S": schema.sk_resources()},
+            "resources": {"SS": ["no-name-resource"]},
+        }
+        await client.put_item(TableName=table, Item=registry_item)
+
+        # Create old-format limit item WITHOUT limit_name
+        old_item = {
+            "PK": {"S": schema.pk_resource("no-name-resource")},
+            "SK": {"S": f"{schema.SK_LIMIT}rpm"},
+            # Missing limit_name attribute
+            "capacity": {"N": "500"},
+            "burst": {"N": "600"},
+            "refill_amount": {"N": "500"},
+            "refill_period_seconds": {"N": "60"},
+        }
+        await client.put_item(TableName=table, Item=old_item)
+
+        # Run migration - should continue since no valid limits
+        await _migrate_resource_limits(client, table, repository)
+
+        # Verify no composite item was created
+        result = await client.get_item(
+            TableName=table,
+            Key={
+                "PK": {"S": schema.pk_resource("no-name-resource")},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+        assert "Item" not in result
+
+    @pytest.mark.asyncio
+    async def test_migrate_entity_limits_items_without_limit_name(self, limiter):
+        """Test entity migration skips items without limit_name (line 287)."""
+        repository = limiter._repository
+        client = await repository._get_client()
+        table = repository.table_name
+
+        # Create old-format entity limit item WITHOUT limit_name
+        old_item = {
+            "PK": {"S": schema.pk_entity("user-no-name")},
+            "SK": {"S": f"{schema.SK_LIMIT}gpt-4#rpm"},
+            "entity_id": {"S": "user-no-name"},
+            "resource": {"S": "gpt-4"},
+            # Missing limit_name attribute
+            "capacity": {"N": "100"},
+            "burst": {"N": "120"},
+            "refill_amount": {"N": "100"},
+            "refill_period_seconds": {"N": "60"},
+        }
+        await client.put_item(TableName=table, Item=old_item)
+
+        # Run migration - should continue since no valid limits
+        await _migrate_entity_limits(client, table, repository)
+
+        # Verify no composite item was created
+        result = await client.get_item(
+            TableName=table,
+            Key={
+                "PK": {"S": schema.pk_entity("user-no-name")},
+                "SK": {"S": schema.sk_config("gpt-4")},
+            },
+        )
+        assert "Item" not in result
+
+    @pytest.mark.asyncio
+    async def test_migrate_entity_limits_pagination(self, limiter):
+        """Test entity migration handles paginated scan results (line 244)."""
+        repository = limiter._repository
+        real_client = await repository._get_client()
+        table = repository.table_name
+
+        # Create entity limit items that will be returned in paginated responses
+        item1 = {
+            "PK": {"S": schema.pk_entity("paginated-user")},
+            "SK": {"S": f"{schema.SK_LIMIT}api#rpm"},
+            "entity_id": {"S": "paginated-user"},
+            "resource": {"S": "api"},
+            "limit_name": {"S": "rpm"},
+            "capacity": {"N": "100"},
+            "burst": {"N": "120"},
+            "refill_amount": {"N": "100"},
+            "refill_period_seconds": {"N": "60"},
+        }
+        await real_client.put_item(TableName=table, Item=item1)
+
+        # Mock the scan to simulate pagination
+        call_count = 0
+
+        async def mock_scan(**_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: return item with pagination key
+                return {
+                    "Items": [item1],
+                    "LastEvaluatedKey": {"PK": {"S": "dummy"}, "SK": {"S": "dummy"}},
+                }
+            else:
+                # Second call: return empty, no more pages
+                return {"Items": []}
+
+        with patch.object(real_client, "scan", side_effect=mock_scan):
+            await _migrate_entity_limits(real_client, table, repository)
+
+        # Verify pagination was exercised (scan called twice)
+        assert call_count == 2
+
+        # Verify composite item was created
+        result = await real_client.get_item(
+            TableName=table,
+            Key={
+                "PK": {"S": schema.pk_entity("paginated-user")},
+                "SK": {"S": schema.sk_config("api")},
+            },
+        )
+        assert "Item" in result
         assert result["Item"].get("l_rpm_cp", {}).get("N") == "100"
