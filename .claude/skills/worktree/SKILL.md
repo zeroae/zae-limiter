@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: Manage git worktrees in a `.worktrees` subdirectory. Triggers on "/worktree", "create worktree", "switch worktree", "list worktrees", "worktree status", or working on a GitHub issue in isolation.
+description: Use when user says "/worktree", asks to create a worktree, switch worktrees, list worktrees, check worktree status, or work on a GitHub issue in isolation.
 allowed-tools: Bash(git:*), Bash(ls:*), Bash(mkdir:*), Bash(rm:*), Bash(gh:*), Bash(code:*), Bash(.claude/scripts/worktree-status.sh), Glob, Read, AskUserQuestion
 user-invocable: true
 argument-hint: <add|list|status|remove|prune|#issue> [branch-name]
