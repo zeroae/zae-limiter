@@ -5640,7 +5640,10 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Store limit configs for an entity.</p>
+        <p>Store limit configs for an entity (composite format, ADR-114).</p>
+<p>All limits for an entity+resource are stored in a single composite item
+with SK '#CONFIG#{resource}'. This reduces cache-miss cost from N GetItem
+calls to 1 GetItem call.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5748,7 +5751,9 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Get stored limit configs for an entity.</p>
+        <p>Get stored limit configs for an entity (composite format, ADR-114).</p>
+<p>Reads a single composite item with SK '#CONFIG#{resource}' containing
+all limits for the entity+resource pair.</p>
 
 
     </div>
@@ -5772,7 +5777,8 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Delete stored limit configs for an entity.</p>
+        <p>Delete stored limit configs for an entity (composite format, ADR-114).</p>
+<p>Deletes the single composite config item for this entity+resource.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5859,7 +5865,9 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Store default limit configs for a resource (flat schema).</p>
+        <p>Store default limit configs for a resource (composite format, ADR-114).</p>
+<p>All limits for a resource are stored in a single composite item
+with SK '#CONFIG'. This reduces cache-miss cost.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5951,7 +5959,9 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Get stored default limit configs for a resource.</p>
+        <p>Get stored default limit configs for a resource (composite format, ADR-114).</p>
+<p>Reads a single composite item with SK '#CONFIG' containing all limits
+for the resource.</p>
 
 
     </div>
@@ -5975,7 +5985,8 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Delete stored default limit configs for a resource.</p>
+        <p>Delete stored default limit configs for a resource (composite format, ADR-114).</p>
+<p>Deletes the single composite config item for this resource.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6070,9 +6081,9 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Store system-wide default limits and config (flat schema).</p>
-<p>System defaults apply to ALL resources unless overridden at resource
-or entity level.</p>
+        <p>Store system-wide default limits and config (composite format, ADR-114).</p>
+<p>All system limits and config (on_unavailable) are stored in a single
+composite item with SK '#CONFIG'. This reduces cache-miss cost.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6164,7 +6175,9 @@ or entity level.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Get system-wide default limits and config.</p>
+        <p>Get system-wide default limits and config (composite format, ADR-114).</p>
+<p>Reads a single composite item with SK '#CONFIG' containing all limits
+and on_unavailable setting.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -6216,7 +6229,8 @@ or entity level.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Delete all system-wide default limits and config.</p>
+        <p>Delete all system-wide default limits and config (composite format, ADR-114).</p>
+<p>Deletes the single composite config item for system defaults.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
