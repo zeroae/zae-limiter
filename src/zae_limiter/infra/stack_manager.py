@@ -141,6 +141,7 @@ class StackManager:
             "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
             "enable_tracing": "EnableTracing",
             "enable_iam_roles": "EnableIAMRoles",
+            "enable_deletion_protection": "EnableDeletionProtection",
         }
 
         for key, value in parameters.items():

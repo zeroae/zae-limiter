@@ -201,6 +201,15 @@ def s3_client(localstack_endpoint):
     return boto3.client("s3", **kwargs)
 
 
+@pytest.fixture
+def dynamodb_client(localstack_endpoint):
+    """DynamoDB client for table inspection."""
+    kwargs = {"region_name": "us-east-1"}
+    if localstack_endpoint:
+        kwargs["endpoint_url"] = localstack_endpoint
+    return boto3.client("dynamodb", **kwargs)
+
+
 # Polling helpers for E2E tests
 
 

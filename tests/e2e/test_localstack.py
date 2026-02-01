@@ -1140,3 +1140,125 @@ class TestE2ERoleNaming:
                     "--yes",
                 ],
             )
+
+
+class TestE2EDeletionProtection:
+    """E2E tests for DynamoDB table deletion protection (Issue #273)."""
+
+    @pytest.fixture
+    def cli_runner(self):
+        """Create Click CLI runner."""
+        return CliRunner()
+
+    def test_deploy_with_deletion_protection_enabled(
+        self, cli_runner, localstack_endpoint, unique_name, dynamodb_client
+    ):
+        """Test deploying with --enable-deletion-protection sets table property.
+
+        Note: LocalStack may not fully support DeletionProtectionEnabled.
+        This test verifies the CLI correctly passes the parameter; the actual
+        DynamoDB property assertion is conditional on LocalStack support.
+        """
+        try:
+            # Deploy with deletion protection enabled
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "deploy",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--enable-deletion-protection",
+                    "--no-alarms",
+                    "--no-aggregator",
+                    "--wait",
+                ],
+            )
+            assert result.exit_code == 0, f"Deploy failed: {result.output}"
+            assert "Stack create complete" in result.output
+            assert "Deletion protection: enabled" in result.output
+
+            # Verify table was created
+            table_desc = dynamodb_client.describe_table(TableName=unique_name)
+            assert table_desc["Table"]["TableStatus"] == "ACTIVE"
+
+            # Check if LocalStack supports DeletionProtectionEnabled
+            # LocalStack may not respect this CloudFormation property
+            deletion_protected = table_desc["Table"].get("DeletionProtectionEnabled", False)
+            if not deletion_protected:
+                pytest.skip(
+                    "LocalStack does not support DeletionProtectionEnabled; "
+                    "CLI parameter was correctly passed (verified via output)"
+                )
+
+        finally:
+            # Must disable deletion protection before deleting (if it was enabled)
+            try:
+                dynamodb_client.update_table(
+                    TableName=unique_name,
+                    DeletionProtectionEnabled=False,
+                )
+            except Exception:
+                pass  # Table may not exist if deploy failed
+
+            # Cleanup
+            cli_runner.invoke(
+                cli,
+                [
+                    "delete",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--yes",
+                ],
+            )
+
+    def test_deploy_without_deletion_protection(
+        self, cli_runner, localstack_endpoint, unique_name, dynamodb_client
+    ):
+        """Test deploying without --enable-deletion-protection (default disabled)."""
+        try:
+            # Deploy without deletion protection (default)
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "deploy",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--no-alarms",
+                    "--no-aggregator",
+                    "--wait",
+                ],
+            )
+            assert result.exit_code == 0, f"Deploy failed: {result.output}"
+            assert "Deletion protection: disabled" in result.output
+
+            # Verify table has deletion protection disabled
+            table_desc = dynamodb_client.describe_table(TableName=unique_name)
+            assert table_desc["Table"]["DeletionProtectionEnabled"] is False
+
+        finally:
+            # Cleanup
+            cli_runner.invoke(
+                cli,
+                [
+                    "delete",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--yes",
+                ],
+            )

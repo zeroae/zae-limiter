@@ -662,6 +662,7 @@ class StackOptions:
         audit_archive_glacier_days: Days before transitioning archives to Glacier IR (1-3650)
         enable_tracing: Enable AWS X-Ray tracing for Lambda aggregator
         create_iam_roles: Create App/Admin/ReadOnly IAM roles for application access
+        enable_deletion_protection: Enable DynamoDB table deletion protection
         tags: User-defined tags to apply to the CloudFormation stack. Dict of key-value
             pairs. AWS tag constraints apply (max 50 total including managed tags,
             key 1-128 chars, value 0-256 chars). The ``aws:`` prefix is reserved.
@@ -683,6 +684,7 @@ class StackOptions:
     audit_archive_glacier_days: int = 90
     enable_tracing: bool = False
     create_iam_roles: bool = True
+    enable_deletion_protection: bool = False
     tags: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
@@ -816,6 +818,10 @@ class StackOptions:
         # Audit archival parameters
         params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
         params["audit_archive_glacier_days"] = str(self.audit_archive_glacier_days)
+        # Deletion protection parameter
+        params["enable_deletion_protection"] = (
+            "true" if self.enable_deletion_protection else "false"
+        )
         return params
 
 

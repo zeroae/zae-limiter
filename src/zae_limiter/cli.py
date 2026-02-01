@@ -167,6 +167,11 @@ def cli() -> None:
     help="Create App/Admin/ReadOnly IAM roles for application access (default: enabled)",
 )
 @click.option(
+    "--enable-deletion-protection/--no-deletion-protection",
+    default=False,
+    help="Enable DynamoDB table deletion protection (default: disabled)",
+)
+@click.option(
     "--tag",
     "-t",
     "tags",
@@ -194,6 +199,7 @@ def deploy(
     audit_archive_glacier_days: int,
     enable_tracing: bool,
     enable_iam_roles: bool,
+    enable_deletion_protection: bool,
     tags: tuple[str, ...],
 ) -> None:
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
@@ -239,6 +245,7 @@ def deploy(
                 audit_archive_glacier_days=audit_archive_glacier_days,
                 enable_tracing=enable_tracing,
                 create_iam_roles=enable_iam_roles,
+                enable_deletion_protection=enable_deletion_protection,
                 tags=user_tags,
             )
 
@@ -262,6 +269,10 @@ def deploy(
             click.echo(
                 f"  IAM roles: {'enabled' if stack_options.create_iam_roles else 'disabled'}"
             )
+            deletion_protection_status = (
+                "enabled" if stack_options.enable_deletion_protection else "disabled"
+            )
+            click.echo(f"  Deletion protection: {deletion_protection_status}")
             if stack_options.enable_aggregator:
                 archival_status = "enabled" if stack_options.enable_audit_archival else "disabled"
                 click.echo(f"  Audit archival: {archival_status}")
