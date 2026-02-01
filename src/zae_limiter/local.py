@@ -266,10 +266,11 @@ def env(fmt: str, port: int) -> None:
     Does not require Docker or a running container.
 
     \b
-    Examples:
-      eval "$(zae-limiter local env)"                 # bash/zsh
-      zae-limiter local env --format direnv > .envrc  # direnv
-      zae-limiter local env --format powershell       # PowerShell
+    **Examples:**
+
+        eval "$(zae-limiter local env)"                 # bash/zsh
+        zae-limiter local env --format direnv > .envrc  # direnv
+        zae-limiter local env --format powershell       # PowerShell
     """
     click.echo(_format_env_vars(port=port, fmt=fmt))
 
@@ -306,7 +307,20 @@ def up(
     stack_name: str | None,
     port: int,
 ) -> None:
-    """Start LocalStack for local development."""
+    """Start LocalStack for local development.
+
+    \b
+    **Examples:**
+
+        # Start LocalStack
+        zae-limiter local up
+
+        # Start with deploy instructions
+        zae-limiter local up --name my-app
+
+        # Use a different port
+        zae-limiter local up --port 4567
+    """
     client = _get_docker_client(docker_host)
 
     # Check if already running
@@ -380,7 +394,13 @@ def up(
     help="Docker daemon URL (e.g., unix:///path/to/docker.sock)",
 )
 def down(docker_host: str | None) -> None:
-    """Stop LocalStack."""
+    """Stop LocalStack.
+
+    \b
+    **Examples:**
+
+        zae-limiter local down
+    """
     client = _get_docker_client(docker_host)
     container = _find_container(client)
 
@@ -407,7 +427,27 @@ def down(docker_host: str | None) -> None:
     help="Docker daemon URL (e.g., unix:///path/to/docker.sock)",
 )
 def status(docker_host: str | None) -> None:
-    """Show LocalStack container status."""
+    """Show LocalStack container status.
+
+    \b
+    **Examples:**
+
+        zae-limiter local status
+
+    \b
+    **Sample Output:**
+
+        LocalStack: running
+        Endpoint:   http://localhost:4566
+        Health:     healthy
+        Image:      localstack/localstack:4
+        Services:   dynamodb,dynamodbstreams,lambda,cloudformation,...
+
+        To configure your shell:
+          eval "$(zae-limiter local env)"                 # bash/zsh
+          zae-limiter local env --format direnv > .envrc  # direnv
+          zae-limiter local env --format powershell       # PowerShell
+    """
     client = _get_docker_client(docker_host)
     container = _find_container(client)
 
@@ -461,7 +501,20 @@ def status(docker_host: str | None) -> None:
     help="Number of lines to show from end of logs",
 )
 def logs(docker_host: str | None, follow: bool, tail: int) -> None:
-    """Show LocalStack container logs."""
+    """Show LocalStack container logs.
+
+    \b
+    **Examples:**
+
+        # Show recent logs
+        zae-limiter local logs
+
+        # Follow logs
+        zae-limiter local logs --follow
+
+        # Show last 50 lines
+        zae-limiter local logs --tail 50
+    """
     client = _get_docker_client(docker_host)
     container = _find_container(client)
 

@@ -25,7 +25,30 @@ def cli() -> None:
     pass
 
 
-@cli.command()
+@cli.command(
+    epilog="""\b
+Examples:
+    \b
+    # Basic deployment
+    zae-limiter deploy --name my-app --region us-east-1
+    \b
+    # Production with deletion protection and tracing
+    zae-limiter deploy --name prod --region us-east-1 \\
+        --enable-deletion-protection --enable-tracing
+    \b
+    # Without Lambda aggregator (table only)
+    zae-limiter deploy --name simple --no-aggregator
+    \b
+    # LocalStack development
+    zae-limiter deploy --name dev \\
+        --endpoint-url http://localhost:4566
+    \b
+    # Enterprise with permission boundary
+    zae-limiter deploy --name prod \\
+        --permission-boundary arn:aws:iam::aws:policy/PowerUserAccess \\
+        --role-name-format "pb-{}-PowerUser"
+"""
+)
 @click.option(
     "--name",
     "-n",
@@ -202,7 +225,36 @@ def deploy(
     enable_deletion_protection: bool,
     tags: tuple[str, ...],
 ) -> None:
-    """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
+    """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator.
+
+    Creates or updates infrastructure including DynamoDB table, Lambda aggregator
+    for usage snapshots, CloudWatch alarms, and IAM roles. The stack is idempotent -
+    running deploy again updates existing resources.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Basic deployment
+        zae-limiter deploy --name my-app --region us-east-1
+
+        # Production with deletion protection and tracing
+        zae-limiter deploy --name prod --region us-east-1 \\
+            --enable-deletion-protection --enable-tracing
+
+        # Without Lambda aggregator (table only)
+        zae-limiter deploy --name simple --no-aggregator
+
+        # LocalStack development
+        zae-limiter deploy --name dev \\
+            --endpoint-url http://localhost:4566
+
+        # Enterprise with permission boundary
+        zae-limiter deploy --name prod \\
+            --permission-boundary arn:aws:iam::aws:policy/PowerUserAccess \\
+            --role-name-format "pb-{}-PowerUser"
+        ```
+    """
     from .exceptions import ValidationError
 
     try:
@@ -357,7 +409,20 @@ def deploy(
     asyncio.run(_deploy())
 
 
-@cli.command()
+@cli.command(
+    epilog="""\b
+Examples:
+    \b
+    # Delete with confirmation prompt
+    zae-limiter delete --name my-app --region us-east-1
+    \b
+    # Skip confirmation (for scripts)
+    zae-limiter delete --name my-app --yes
+    \b
+    # Delete without waiting
+    zae-limiter delete --name my-app --no-wait
+"""
+)
 @click.option(
     "--name",
     "-n",
@@ -393,7 +458,29 @@ def delete(
     wait: bool,
     yes: bool,
 ) -> None:
-    """Delete CloudFormation stack."""
+    """Delete CloudFormation stack and all resources.
+
+    Removes the DynamoDB table, Lambda function, IAM roles, and all associated
+    resources. This action cannot be undone - all data will be permanently lost.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Delete with confirmation prompt
+        zae-limiter delete --name my-app --region us-east-1
+
+        # Skip confirmation (for scripts)
+        zae-limiter delete --name my-app --yes
+
+        # Delete without waiting
+        zae-limiter delete --name my-app --no-wait
+        ```
+
+    !!! warning "Data Loss"
+        Deleting a stack removes the DynamoDB table and all its data.
+        This action cannot be undone.
+    """
     from .exceptions import ValidationError
     from .naming import normalize_name
 
@@ -428,7 +515,20 @@ def delete(
     asyncio.run(_delete())
 
 
-@cli.command()
+@cli.command(
+    epilog="""\b
+Examples:
+    \b
+    # Export to file
+    zae-limiter cfn-template --output template.yaml
+    \b
+    # Pipe to stdout
+    zae-limiter cfn-template > template.yaml
+    \b
+    # View in pager
+    zae-limiter cfn-template | less
+"""
+)
 @click.option(
     "--output",
     "-o",
@@ -436,7 +536,25 @@ def delete(
     help="Output file (default: stdout)",
 )
 def cfn_template(output: str | None) -> None:
-    """Export CloudFormation template for custom deployment."""
+    """Export CloudFormation template for custom deployment.
+
+    Outputs the raw CloudFormation YAML template for manual deployment,
+    integration with CDK/Terraform, or customization.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Export to file
+        zae-limiter cfn-template --output template.yaml
+
+        # Pipe to stdout
+        zae-limiter cfn-template > template.yaml
+
+        # View in pager
+        zae-limiter cfn-template | less
+        ```
+    """
     try:
         template_path = Path(__file__).parent / "infra" / "cfn_template.yaml"
 
@@ -458,7 +576,21 @@ def cfn_template(output: str | None) -> None:
         sys.exit(1)
 
 
-@cli.command("lambda-export")
+@cli.command(
+    "lambda-export",
+    epilog="""\b
+Examples:
+    \b
+    # Export Lambda package
+    zae-limiter lambda-export --output lambda.zip
+    \b
+    # Show package info without building
+    zae-limiter lambda-export --info
+    \b
+    # Overwrite existing file
+    zae-limiter lambda-export --force
+""",
+)
 @click.option(
     "--output",
     "-o",
@@ -478,7 +610,38 @@ def cfn_template(output: str | None) -> None:
     help="Overwrite existing file without prompting",
 )
 def lambda_export(output: str, info: bool, force: bool) -> None:
-    """Export Lambda deployment package for custom deployment."""
+    """Export Lambda deployment package for custom deployment.
+
+    Creates a ZIP file containing the Lambda aggregator code for manual
+    deployment or inspection. Useful for custom deployment pipelines.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Export Lambda package
+        zae-limiter lambda-export --output lambda.zip
+
+        # Show package info without building
+        zae-limiter lambda-export --info
+
+        # Overwrite existing file
+        zae-limiter lambda-export --force
+        ```
+
+    **Sample Output (--info):**
+        ```
+        Lambda Package Information
+        ==========================
+
+        Package path:      /path/to/zae_limiter_aggregator
+        Python files:      4
+        Uncompressed size: 24.5 KB
+        Handler:           zae_limiter_aggregator.handler.handler
+        Dependencies:      1
+          - aws-lambda-powertools
+        ```
+    """
     try:
         if info:
             # Show package info without building
@@ -547,7 +710,15 @@ def _format_count(count: int | None) -> str:
         return f"~{count / 1000000:.1f}M"
 
 
-@cli.command()
+@cli.command(
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter status --name my-app --region us-east-1
+    \b
+    zae-limiter status --name dev --endpoint-url http://localhost:4566
+"""
+)
 @click.option(
     "--name",
     "-n",
@@ -566,7 +737,46 @@ def _format_count(count: int | None) -> str:
     ),
 )
 def status(name: str, region: str | None, endpoint_url: str | None) -> None:
-    """Get comprehensive status of rate limiter infrastructure (read-only)."""
+    """Get comprehensive status of rate limiter infrastructure.
+
+    Shows connectivity, stack status, version compatibility, table metrics,
+    and IAM role ARNs. Read-only operation - does not modify any resources.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter status --name my-app --region us-east-1
+        zae-limiter status --name dev --endpoint-url http://localhost:4566
+        ```
+
+    **Sample Output:**
+        ```
+        Status: my-app
+        ==================================================
+
+        Connectivity
+          Available:     ✓ Yes
+          Latency:       42ms
+          Region:        us-east-1
+
+        Infrastructure
+          Stack:         CREATE_COMPLETE
+          Table:         ACTIVE
+          Aggregator:    Enabled
+
+        Versions
+          Client:        0.6.0
+          Schema:        0.6.0
+          Lambda:        0.6.0
+
+        Table Metrics
+          Items:         1,234
+          Size:          256 KB
+
+        ✓ Infrastructure is ready
+        ```
+    """
     import time
 
     from . import __version__
@@ -721,7 +931,16 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
     asyncio.run(_status())
 
 
-@cli.command("list")
+@cli.command(
+    "list",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter list --region us-east-1
+    \b
+    zae-limiter list --endpoint-url http://localhost:4566
+""",
+)
 @click.option(
     "--region",
     help="AWS region (default: use boto3 defaults)",
@@ -734,7 +953,29 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
     ),
 )
 def list_limiters(region: str | None, endpoint_url: str | None) -> None:
-    """List all deployed rate limiter instances in the region."""
+    """List all deployed rate limiter instances in the region.
+
+    Discovers stacks by CloudFormation tags. Shows name, status, version, and
+    creation date for each instance.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter list --region us-east-1
+        zae-limiter list --endpoint-url http://localhost:4566
+        ```
+
+    **Sample Output:**
+        ```
+        Rate Limiter Instances (us-east-1)
+
+        Name        Status             Version   Created
+        ──────────  ─────────────────  ────────  ──────────
+        my-app      CREATE_COMPLETE    0.6.0     2026-01-15
+        prod-api    UPDATE_COMPLETE    0.6.0     2026-01-10
+        ```
+    """
     from datetime import datetime
 
     from .infra.discovery import InfrastructureDiscovery
@@ -805,7 +1046,16 @@ def list_limiters(region: str | None, endpoint_url: str | None) -> None:
     asyncio.run(_list())
 
 
-@cli.command("version")
+@cli.command(
+    "version",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter version --name my-app --region us-east-1
+    \b
+    zae-limiter version --endpoint-url http://localhost:4566
+""",
+)
 @click.option(
     "--name",
     "-n",
@@ -828,7 +1078,34 @@ def version_cmd(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """Show infrastructure version information."""
+    """Show infrastructure version information.
+
+    Displays client version, schema version, and deployed infrastructure
+    versions. Checks compatibility between client and infrastructure.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter version --name my-app --region us-east-1
+        zae-limiter version --endpoint-url http://localhost:4566
+        ```
+
+    **Sample Output:**
+        ```
+        zae-limiter Infrastructure Version
+        ====================================
+
+        Client Version:     0.6.0
+        Schema Version:     0.6.0
+
+        Infra Schema:       0.6.0
+        Lambda Version:     0.6.0
+        Min Client Version: 0.5.0
+
+        Status: COMPATIBLE
+        ```
+    """
     from . import __version__
     from .exceptions import ValidationError
     from .version import (
@@ -903,7 +1180,17 @@ def version_cmd(
     asyncio.run(_version())
 
 
-@cli.command()
+@cli.command(
+    epilog="""\b
+Examples:
+    \b
+    # Standard upgrade
+    zae-limiter upgrade --name my-app --region us-east-1
+    \b
+    # Force Lambda update
+    zae-limiter upgrade --name my-app --force
+"""
+)
 @click.option(
     "--name",
     "-n",
@@ -938,7 +1225,22 @@ def upgrade(
     lambda_only: bool,
     force: bool,
 ) -> None:
-    """Upgrade infrastructure to match client version."""
+    """Upgrade infrastructure to match client version.
+
+    Updates Lambda code and version records to match the current client.
+    Use --force to update even when versions already match.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Standard upgrade
+        zae-limiter upgrade --name my-app --region us-east-1
+
+        # Force Lambda update
+        zae-limiter upgrade --name my-app --force
+        ```
+    """
     from . import __version__
     from .version import (
         InfrastructureVersion,
@@ -1037,7 +1339,15 @@ def upgrade(
     asyncio.run(_upgrade())
 
 
-@cli.command()
+@cli.command(
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter check --name my-app --region us-east-1
+    \b
+    zae-limiter check --endpoint-url http://localhost:4566
+"""
+)
 @click.option(
     "--name",
     "-n",
@@ -1060,7 +1370,33 @@ def check(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """Check infrastructure compatibility without modifying."""
+    """Check infrastructure compatibility without modifying.
+
+    Verifies that the client version is compatible with the deployed
+    infrastructure. Read-only operation - does not change anything.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter check --name my-app --region us-east-1
+        zae-limiter check --endpoint-url http://localhost:4566
+        ```
+
+    **Sample Output:**
+        ```
+        Compatibility Check
+        ====================
+
+        Client:      0.6.0
+        Schema:      0.6.0
+        Lambda:      0.6.0
+
+        Result: COMPATIBLE
+
+        Client and infrastructure are fully compatible.
+        ```
+    """
     from . import __version__
     from .exceptions import ValidationError
     from .version import (
@@ -1137,11 +1473,24 @@ def check(
 
 @cli.group()
 def audit() -> None:
-    """Audit log commands."""
+    """Audit log commands.
+
+    Query audit events for entities. Events track configuration changes
+    like limits_set, entity_created, and entity_deleted.
+    """
     pass
 
 
-@audit.command("list")
+@audit.command(
+    "list",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter audit list --entity-id user-123
+    \b
+    zae-limiter audit list --entity-id user-123 --limit 10
+""",
+)
 @click.option(
     "--name",
     "-n",
@@ -1184,7 +1533,31 @@ def audit_list(
     limit: int,
     start_event_id: str | None,
 ) -> None:
-    """List audit events for an entity."""
+    """List audit events for an entity.
+
+    Shows configuration changes like limits_set, entity_created, entity_deleted.
+    Results are ordered by timestamp (newest first).
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter audit list --entity-id user-123
+        zae-limiter audit list --entity-id user-123 --limit 10
+        ```
+
+    **Sample Output:**
+        ```
+        Audit Events for: user-123
+
+        Timestamp                Action         Principal   Resource
+        ───────────────────────  ─────────────  ──────────  ────────
+        2026-01-15T10:30:00Z     limits_set     admin       gpt-4
+        2026-01-15T10:25:00Z     entity_created admin       -
+
+        Total: 2 events
+        ```
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1250,11 +1623,26 @@ def audit_list(
 
 @cli.group()
 def usage() -> None:
-    """Usage snapshot commands."""
+    """Usage snapshot commands.
+
+    Query historical usage data aggregated by the Lambda aggregator.
+    Snapshots track token consumption per entity/resource in hourly and daily windows.
+    """
     pass
 
 
-@usage.command("list")
+@usage.command(
+    "list",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter usage list --entity-id user-123
+    \b
+    zae-limiter usage list --resource gpt-4 --window hourly
+    \b
+    zae-limiter usage list --entity-id user-123 --plot
+""",
+)
 @click.option(
     "--name",
     "-n",
@@ -1321,7 +1709,39 @@ def usage_list(
     limit: int,
     plot: bool,
 ) -> None:
-    """List usage snapshots."""
+    """List usage snapshots.
+
+    Query historical token consumption data. Requires either --entity-id or
+    --resource. Use --plot for ASCII chart visualization.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter usage list --entity-id user-123
+        zae-limiter usage list --resource gpt-4 --window hourly
+        zae-limiter usage list --entity-id user-123 --plot
+        ```
+
+    !!! note
+        Either `--entity-id` or `--resource` must be provided.
+
+    !!! tip "ASCII Charts"
+        The `--plot` flag requires the optional `plot` extra:
+        `pip install 'zae-limiter[plot]'`
+
+    **Sample Output:**
+        ```
+        Usage Snapshots
+
+        Window Start          Type    Resource  Entity    Events  Counters
+        ────────────────────  ──────  ────────  ────────  ──────  ────────────────
+        2026-01-15T10:00:00Z  hourly  gpt-4     user-123  42      tpm=15,000
+        2026-01-15T09:00:00Z  hourly  gpt-4     user-123  38      tpm=12,500
+
+        Total: 2 snapshots
+        ```
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1409,7 +1829,16 @@ def usage_list(
     asyncio.run(_list())
 
 
-@usage.command("summary")
+@usage.command(
+    "summary",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter usage summary --entity-id user-123
+    \b
+    zae-limiter usage summary --resource gpt-4 --window daily
+""",
+)
 @click.option(
     "--name",
     "-n",
@@ -1461,7 +1890,37 @@ def usage_summary(
     start: str | None,
     end: str | None,
 ) -> None:
-    """Show aggregated usage summary."""
+    """Show aggregated usage summary.
+
+    Computes total and average consumption across matching snapshots.
+    Useful for billing, reporting, and capacity planning.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter usage summary --entity-id user-123
+        zae-limiter usage summary --resource gpt-4 --window daily
+        ```
+
+    !!! note
+        Either `--entity-id` or `--resource` must be provided.
+
+    **Sample Output:**
+        ```
+        Usage Summary
+
+        Entity:     user-123
+        Resource:   gpt-4
+        Snapshots:  24
+        Time Range: 2026-01-14T00:00:00Z to 2026-01-15T23:00:00Z
+
+        Limit  Total     Average
+        ─────  ────────  ─────────
+        rpm        950      39.58
+        tpm    450,000  18,750.00
+        ```
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1569,11 +2028,26 @@ def _format_limit(limit: Limit) -> str:
 
 @cli.group()
 def resource() -> None:
-    """Resource-level default limit configuration commands."""
+    """Resource-level default limit configuration.
+
+    Configure default limits for specific resources (e.g., gpt-4, claude-3).
+    Resource defaults override system defaults but are overridden by entity limits.
+    """
     pass
 
 
-@resource.command("set-defaults")
+@resource.command(
+    "set-defaults",
+    epilog="""\b
+Examples:
+    \b
+    # Set TPM and RPM defaults for gpt-4
+    zae-limiter resource set-defaults gpt-4 -l tpm:100000 -l rpm:1000
+    \b
+    # Set limits with burst capacity
+    zae-limiter resource set-defaults claude-3 -l tpm:50000:75000
+""",
+)
 @click.argument("resource_name")
 @click.option(
     "--name",
@@ -1608,6 +2082,17 @@ def resource_set_defaults(
 
     RESOURCE_NAME is the resource to configure (e.g., 'gpt-4', 'claude-3').
     Resource defaults override system defaults for this specific resource.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Set TPM and RPM defaults for gpt-4
+        zae-limiter resource set-defaults gpt-4 -l tpm:100000 -l rpm:1000
+
+        # Set limits with burst capacity
+        zae-limiter resource set-defaults claude-3 -l tpm:50000:75000
+        ```
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
@@ -1646,7 +2131,16 @@ def resource_set_defaults(
     asyncio.run(_set())
 
 
-@resource.command("get-defaults")
+@resource.command(
+    "get-defaults",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter resource get-defaults gpt-4
+    \b
+    zae-limiter resource get-defaults claude-3 --name prod
+""",
+)
 @click.argument("resource_name")
 @click.option(
     "--name",
@@ -1671,6 +2165,21 @@ def resource_get_defaults(
     """Get default limits for a resource.
 
     RESOURCE_NAME is the resource to query (e.g., 'gpt-4', 'claude-3').
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter resource get-defaults gpt-4
+        zae-limiter resource get-defaults claude-3 --name prod
+        ```
+
+    **Sample Output:**
+        ```
+        Defaults for resource 'gpt-4':
+          rpm: 500/min (burst: 500)
+          tpm: 50000/min (burst: 50000)
+        ```
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -1703,7 +2212,18 @@ def resource_get_defaults(
     asyncio.run(_get())
 
 
-@resource.command("delete-defaults")
+@resource.command(
+    "delete-defaults",
+    epilog="""\b
+Examples:
+    \b
+    # Delete with confirmation prompt
+    zae-limiter resource delete-defaults gpt-4
+    \b
+    # Skip confirmation
+    zae-limiter resource delete-defaults gpt-4 --yes
+""",
+)
 @click.argument("resource_name")
 @click.option(
     "--name",
@@ -1735,6 +2255,17 @@ def resource_delete_defaults(
     """Delete default limits for a resource.
 
     RESOURCE_NAME is the resource to delete defaults from (e.g., 'gpt-4', 'claude-3').
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Delete with confirmation prompt
+        zae-limiter resource delete-defaults gpt-4
+
+        # Skip confirmation
+        zae-limiter resource delete-defaults gpt-4 --yes
+        ```
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -1766,7 +2297,16 @@ def resource_delete_defaults(
     asyncio.run(_delete())
 
 
-@resource.command("list")
+@resource.command(
+    "list",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter resource list
+    \b
+    zae-limiter resource list --name prod
+""",
+)
 @click.option(
     "--name",
     "-n",
@@ -1786,7 +2326,24 @@ def resource_list(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """List all resources with configured defaults."""
+    """List all resources with configured defaults.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter resource list
+        zae-limiter resource list --name prod
+        ```
+
+    **Sample Output:**
+        ```
+        Resources with configured defaults:
+          gpt-4
+          gpt-3.5-turbo
+          claude-3
+        ```
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1822,11 +2379,26 @@ def resource_list(
 
 @cli.group()
 def system() -> None:
-    """System-level default limit configuration commands."""
+    """System-level default limit configuration.
+
+    Configure global defaults that apply to ALL resources unless overridden.
+    System defaults are the lowest priority in the hierarchy.
+    """
     pass
 
 
-@system.command("set-defaults")
+@system.command(
+    "set-defaults",
+    epilog="""\b
+Examples:
+    \b
+    # Set global defaults
+    zae-limiter system set-defaults -l tpm:10000 -l rpm:100
+    \b
+    # Set defaults with unavailability behavior
+    zae-limiter system set-defaults -l tpm:10000 --on-unavailable allow
+""",
+)
 @click.option(
     "--name",
     "-n",
@@ -1864,6 +2436,17 @@ def system_set_defaults(
     """Set system-wide default limits.
 
     System defaults apply to ALL resources unless overridden at resource or entity level.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Set global defaults
+        zae-limiter system set-defaults -l tpm:10000 -l rpm:100
+
+        # Set defaults with unavailability behavior
+        zae-limiter system set-defaults -l tpm:10000 --on-unavailable allow
+        ```
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
@@ -1905,7 +2488,16 @@ def system_set_defaults(
     asyncio.run(_set())
 
 
-@system.command("get-defaults")
+@system.command(
+    "get-defaults",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter system get-defaults
+    \b
+    zae-limiter system get-defaults --name prod
+""",
+)
 @click.option(
     "--name",
     "-n",
@@ -1925,7 +2517,25 @@ def system_get_defaults(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """Get system-wide default limits and config."""
+    """Get system-wide default limits and config.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter system get-defaults
+        zae-limiter system get-defaults --name prod
+        ```
+
+    **Sample Output:**
+        ```
+        System-wide defaults:
+          Limits:
+            rpm: 1000/min (burst: 1000)
+            tpm: 100000/min (burst: 100000)
+          on_unavailable: allow
+        ```
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1961,7 +2571,18 @@ def system_get_defaults(
     asyncio.run(_get())
 
 
-@system.command("delete-defaults")
+@system.command(
+    "delete-defaults",
+    epilog="""\b
+Examples:
+    \b
+    # Delete with confirmation prompt
+    zae-limiter system delete-defaults
+    \b
+    # Skip confirmation
+    zae-limiter system delete-defaults --yes
+""",
+)
 @click.option(
     "--name",
     "-n",
@@ -1988,7 +2609,19 @@ def system_delete_defaults(
     endpoint_url: str | None,
     yes: bool,
 ) -> None:
-    """Delete all system-wide default limits and config."""
+    """Delete all system-wide default limits and config.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Delete with confirmation prompt
+        zae-limiter system delete-defaults
+
+        # Skip confirmation
+        zae-limiter system delete-defaults --yes
+        ```
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -2026,11 +2659,29 @@ def system_delete_defaults(
 
 @cli.group()
 def entity() -> None:
-    """Entity-level limit configuration commands."""
+    """Entity-level limit configuration.
+
+    Manage entities (users, API keys, projects) and their custom limits.
+    Entity limits have highest priority, overriding resource and system defaults.
+    """
     pass
 
 
-@entity.command("create")
+@entity.command(
+    "create",
+    epilog="""\b
+Examples:
+    \b
+    # Create a standalone entity
+    zae-limiter entity create user-123
+    \b
+    # Create with display name
+    zae-limiter entity create api-key-abc --display-name "Production API"
+    \b
+    # Create with parent and cascade
+    zae-limiter entity create user-123 --parent org-456 --cascade
+""",
+)
 @click.argument("entity_id")
 @click.option(
     "--display-name",
@@ -2073,6 +2724,20 @@ def entity_create(
     """Create a new entity.
 
     ENTITY_ID is the unique identifier for the entity (e.g., 'user-123', 'api-key-abc').
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Create a standalone entity
+        zae-limiter entity create user-123
+
+        # Create with display name
+        zae-limiter entity create api-key-abc --display-name "Production API"
+
+        # Create with parent and cascade
+        zae-limiter entity create user-123 --parent org-456 --cascade
+        ```
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -2106,7 +2771,16 @@ def entity_create(
     asyncio.run(_create())
 
 
-@entity.command("show")
+@entity.command(
+    "show",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter entity show user-123
+    \b
+    zae-limiter entity show api-key-abc --name prod
+""",
+)
 @click.argument("entity_id")
 @click.option(
     "--name",
@@ -2131,6 +2805,24 @@ def entity_show(
     """Show details for an entity.
 
     ENTITY_ID is the entity to query (e.g., 'user-123', 'api-key-abc').
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity show user-123
+        zae-limiter entity show api-key-abc --name prod
+        ```
+
+    **Sample Output:**
+        ```
+        Entity: user-123
+          Name:       Alice Smith
+          Parent:     org-456
+          Cascade:    True
+          Created:    2026-01-15T10:30:00Z
+          Metadata:   {'tier': 'premium'}
+        ```
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -2166,7 +2858,18 @@ def entity_show(
     asyncio.run(_show())
 
 
-@entity.command("set-limits")
+@entity.command(
+    "set-limits",
+    epilog="""\b
+Examples:
+    \b
+    # Set premium user limits for gpt-4
+    zae-limiter entity set-limits user-premium -r gpt-4 -l tpm:100000 -l rpm:1000
+    \b
+    # Set limits with burst
+    zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000:75000
+""",
+)
 @click.argument("entity_id")
 @click.option(
     "--resource",
@@ -2209,6 +2912,17 @@ def entity_set_limits(
 
     ENTITY_ID is the entity to configure (e.g., 'user-123', 'api-key-abc').
     Entity limits override resource and system defaults.
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Set premium user limits for gpt-4
+        zae-limiter entity set-limits user-premium -r gpt-4 -l tpm:100000 -l rpm:1000
+
+        # Set limits with burst
+        zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000:75000
+        ```
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
@@ -2250,7 +2964,16 @@ def entity_set_limits(
     asyncio.run(_set())
 
 
-@entity.command("get-limits")
+@entity.command(
+    "get-limits",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter entity get-limits user-premium --resource gpt-4
+    \b
+    zae-limiter entity get-limits api-key-123 -r claude-3
+""",
+)
 @click.argument("entity_id")
 @click.option(
     "--resource",
@@ -2283,6 +3006,21 @@ def entity_get_limits(
     """Get limits for a specific entity and resource.
 
     ENTITY_ID is the entity to query (e.g., 'user-123', 'api-key-abc').
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity get-limits user-premium --resource gpt-4
+        zae-limiter entity get-limits api-key-123 -r claude-3
+        ```
+
+    **Sample Output:**
+        ```
+        Limits for entity 'user-premium' on resource 'gpt-4':
+          rpm: 1000/min (burst: 1000)
+          tpm: 100000/min (burst: 100000)
+        ```
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -2317,7 +3055,18 @@ def entity_get_limits(
     asyncio.run(_get())
 
 
-@entity.command("delete-limits")
+@entity.command(
+    "delete-limits",
+    epilog="""\b
+Examples:
+    \b
+    # Delete with confirmation
+    zae-limiter entity delete-limits user-premium --resource gpt-4
+    \b
+    # Skip confirmation
+    zae-limiter entity delete-limits user-premium -r gpt-4 --yes
+""",
+)
 @click.argument("entity_id")
 @click.option(
     "--resource",
@@ -2357,6 +3106,17 @@ def entity_delete_limits(
     """Delete limits for a specific entity and resource.
 
     ENTITY_ID is the entity to delete limits from (e.g., 'user-123', 'api-key-abc').
+
+    \f
+
+    **Examples:**
+        ```bash
+        # Delete with confirmation
+        zae-limiter entity delete-limits user-premium --resource gpt-4
+
+        # Skip confirmation
+        zae-limiter entity delete-limits user-premium -r gpt-4 --yes
+        ```
     """
     from .exceptions import ValidationError
     from .repository import Repository
