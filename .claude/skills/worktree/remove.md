@@ -24,7 +24,7 @@ Strip `remove ` or `rm ` prefix from arguments to get the branch name.
 ### Step 3: Attempt Normal Removal
 
 ```bash
-git worktree remove "${REPO_ROOT}/.worktrees/$BRANCH_NAME"
+git worktree remove "${REPO_ROOT}.worktrees/$BRANCH_NAME"
 ```
 
 ### Step 4: Handle Failures
@@ -44,7 +44,7 @@ options:
 
 If user confirms:
 ```bash
-git worktree remove --force "${REPO_ROOT}/.worktrees/$BRANCH_NAME"
+git worktree remove --force "${REPO_ROOT}.worktrees/$BRANCH_NAME"
 ```
 
 ### Step 5: Offer Branch Deletion

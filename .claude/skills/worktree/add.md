@@ -17,12 +17,12 @@ Create a new worktree for a branch or GitHub issue.
 git rev-parse --show-toplevel
 ```
 
-Save this as `REPO_ROOT`. The worktree base is `${REPO_ROOT}/.worktrees`.
+Save this as `REPO_ROOT`. The worktree base is `${REPO_ROOT}.worktrees`.
 
 ### Step 2: Create Worktree Directory
 
 ```bash
-mkdir -p "${REPO_ROOT}/.worktrees"
+mkdir -p "${REPO_ROOT}.worktrees"
 ```
 
 ### Step 3: Determine Branch Name
@@ -68,30 +68,38 @@ git ls-remote --heads origin "$BRANCH_NAME"
 
 **If branch exists remotely:**
 ```bash
-git worktree add "${REPO_ROOT}/.worktrees/$BRANCH_NAME" "$BRANCH_NAME"
+git worktree add "${REPO_ROOT}.worktrees/$BRANCH_NAME" "$BRANCH_NAME"
 ```
 
 **If branch is new:**
 ```bash
-git worktree add -b "$BRANCH_NAME" "${REPO_ROOT}/.worktrees/$BRANCH_NAME"
+git worktree add -b "$BRANCH_NAME" "${REPO_ROOT}.worktrees/$BRANCH_NAME"
 ```
 
-### Step 5: Open in VS Code
+### Step 5: Assign Issue (if created from issue)
+
+If the worktree was created from an issue number, assign the issue to yourself:
 
 ```bash
-code "${REPO_ROOT}/.worktrees/$BRANCH_NAME"
+gh issue edit <issue-number> --add-assignee @me
 ```
 
-### Step 6: Show Instructions
+### Step 6: Open in VS Code
+
+```bash
+code "${REPO_ROOT}.worktrees/$BRANCH_NAME"
+```
+
+### Step 7: Show Instructions
 
 Display to the user:
 
 ```
-Worktree created at: ${REPO_ROOT}/.worktrees/$BRANCH_NAME
+Worktree created at: ${REPO_ROOT}.worktrees/$BRANCH_NAME
 VS Code opened in worktree.
 
 To continue with Claude Code in this worktree:
-  cd ${REPO_ROOT}/.worktrees/$BRANCH_NAME && claude
+  cd ${REPO_ROOT}.worktrees/$BRANCH_NAME && claude
 ```
 
 If created from an issue, also show:

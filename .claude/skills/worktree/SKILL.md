@@ -9,13 +9,13 @@ context: fork
 
 # Git Worktree Manager
 
-Manage git worktrees with all worktrees stored in a `.worktrees` subdirectory.
+Manage git worktrees with all worktrees stored in a sibling directory.
 
 ## Directory Convention
 
 Given a repository at `/path/to/repo`, worktrees are stored at:
 ```
-/path/to/repo/.worktrees/<branch-name>/
+/path/to/repo.worktrees/<branch-name>/
 ```
 
 ## Modes
@@ -47,7 +47,6 @@ When this skill is invoked, arguments follow the skill name (e.g., `/worktree st
 
 ## Important Notes
 
-1. Always use the `.worktrees` subdirectory convention
+1. Always use the sibling directory convention (`repo.worktrees/`)
 2. Branch names can contain slashes (e.g., `feat/new-feature`)
 3. **Run commands separately** - Don't use compound commands with `&&` or variable assignment
-4. Suggest adding `.worktrees` to `.gitignore` if not already present

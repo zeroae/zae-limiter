@@ -17,9 +17,9 @@ git worktree list
 
 Example output:
 ```
-/Users/sodre/ghq/github.com/zeroae/zae-limiter                          abc1234 [main]
-/Users/sodre/ghq/github.com/zeroae/zae-limiter/.worktrees/feat/42-foo   def5678 [feat/42-foo]
-/Users/sodre/ghq/github.com/zeroae/zae-limiter/.worktrees/fix/99-bug    ghi9012 [fix/99-bug]
+/Users/sodre/ghq/github.com/zeroae/zae-limiter                        abc1234 [main]
+/Users/sodre/ghq/github.com/zeroae/zae-limiter.worktrees/feat/42-foo   def5678 [feat/42-foo]
+/Users/sodre/ghq/github.com/zeroae/zae-limiter.worktrees/fix/99-bug    ghi9012 [fix/99-bug]
 ```
 
 ### Step 2: Parse and Present Choices
@@ -32,7 +32,7 @@ Present choices using `AskUserQuestion`:
 - Use branch name as the **label**
 - Use relative path as the **description**:
   - Main worktree: `(main repo)`
-  - Others: `.worktrees/<branch-name>`
+  - Others: `repo.worktrees/<branch-name>`
 
 **Note:** AskUserQuestion has a 4-option limit. If more than 4 worktrees exist:
 - Show the first 4 as options
@@ -46,14 +46,14 @@ options:
   - label: "main"
     description: "(main repo)"
   - label: "feat/42-foo"
-    description: ".worktrees/feat/42-foo"
+    description: "repo.worktrees/feat/42-foo"
   - label: "fix/99-bug"
-    description: ".worktrees/fix/99-bug"
+    description: "repo.worktrees/fix/99-bug"
 ```
 
 ### Step 3: Check .worktrees Directory
 
-After getting the worktree list, also check if the `.worktrees` directory exists and has content:
+After getting the worktree list, also check if the worktrees sibling directory exists and has content:
 
 ```bash
 git rev-parse --show-toplevel
@@ -61,7 +61,7 @@ git rev-parse --show-toplevel
 
 Then:
 ```bash
-ls -la ${REPO_ROOT}/.worktrees
+ls -la ${REPO_ROOT}.worktrees
 ```
 
 ### Step 4: Open Selected Worktree
