@@ -146,13 +146,14 @@ class TestCapacityConsumption:
     def test_acquire_with_stored_limits_capacity(self, sync_limiter, capacity_counter):
         """Verify: acquire(use_stored_limits=True) uses BatchGetItem for bucket reads.
 
-        Expected calls (with META folded into BatchGetItem - issue #116):
+        Expected calls (with META folded into BatchGetItem - issue #116, composite limits ADR-114):
         - GetItem for version lookup
-        - Query for limit resolution (entity, resource, system)
+        - GetItem for limit resolution (entity #CONFIG, resource #CONFIG, system #CONFIG)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
         - 1 TransactWriteItems with 1 item = 1 WCU
 
-        Note: Query operations will be reduced by config caching (issue #130).
+        Note: With composite limits (ADR-114), limit resolution uses GetItem on
+        #CONFIG records instead of Query operations.
         """
         # Setup stored limits
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -177,8 +178,8 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[0] == 2, (
             "BatchGetItem should fetch 1 bucket + 1 META"
         )
-        # Query calls for limit resolution
-        assert capacity_counter.query >= 2, "Should have Query calls for stored limits"
+        # GetItem calls for limit resolution (composite limits use GetItem, not Query)
+        assert capacity_counter.get_item >= 3, "Should have GetItem calls for config resolution"
 
     def test_available_check_capacity(self, sync_limiter, capacity_counter):
         """Verify: available() reads bucket state without writes.
@@ -255,13 +256,14 @@ class TestCapacityConsumption:
         assert capacity_counter.total_wcus == 0, "available() should have no writes"
 
     def test_set_limits_capacity(self, sync_limiter, capacity_counter):
-        """Verify: set_limits() = 1 RCU (query) + N WCUs.
+        """Verify: set_limits() = 1 WCU (composite) + 1 WCU (audit).
 
-        Expected calls:
-        - 1 Query to find existing limits = 1 RCU
-        - N PutItem calls (one per limit) = N WCUs
+        Expected calls with composite limits (ADR-114):
+        - 1 PutItem for composite config item (all limits in one item)
+        - 1 PutItem for audit event
 
-        Note: Also includes audit logging which adds 1 PutItem.
+        Note: With composite limits, all limits are stored in a single #CONFIG
+        item, reducing write cost from N WCUs to 1 WCU regardless of limit count.
         """
         limits = [
             Limit.per_minute("rpm", 1000),
@@ -276,11 +278,9 @@ class TestCapacityConsumption:
         with capacity_counter.counting():
             sync_limiter.set_limits("cap-set-limits", limits)
 
-        # Verify capacity consumption
-        # Query to delete existing limits + check
-        assert capacity_counter.query >= 1, "Should have at least 1 Query for existing limits"
-        # PutItem: 2 limits + 1 audit event = 3
-        assert capacity_counter.put_item == 3, "Should put 2 limits + 1 audit event"
+        # Verify capacity consumption with composite limits
+        # PutItem: 1 composite config + 1 audit event = 2
+        assert capacity_counter.put_item == 2, "Should put 1 composite config + 1 audit event"
 
     def test_delete_entity_capacity(self, sync_limiter, capacity_counter):
         """Verify: delete_entity() batches in 25-item chunks.

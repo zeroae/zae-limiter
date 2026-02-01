@@ -415,9 +415,9 @@ docs/
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
 | Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
-| Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#` |
-| Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#` |
-| Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+| Get system config (limits + on_unavailable) | `PK=SYSTEM#, SK=#CONFIG` |
+| Get resource config (limits) | `PK=RESOURCE#{resource}, SK=#CONFIG` |
+| Get entity config (limits) | `PK=ENTITY#{id}, SK=#CONFIG#{resource}` |
 
 **Optimized read patterns (issue #133):**
 - `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
@@ -429,9 +429,8 @@ docs/
 - `pk_system()` - Returns `SYSTEM#`
 - `pk_resource(resource)` - Returns `RESOURCE#{resource}`
 - `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
-- `sk_system_limit(limit_name)` - Returns `#LIMIT#{limit_name}` (no resource)
-- `sk_resource_limit(limit_name)` - Returns `#LIMIT#{limit_name}` (no resource in SK since PK has it)
-- `sk_limit(resource, limit_name)` - Returns `#LIMIT#{resource}#{limit_name}`
+- `sk_config()` - Returns `#CONFIG` (for system/resource level)
+- `sk_config(resource)` - Returns `#CONFIG#{resource}` (for entity level)
 
 **Audit entity IDs for config levels** (ADR-106):
 - System config: Audit events use `$SYSTEM` as entity_id
@@ -464,23 +463,24 @@ zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
 
 Each level also has `get-*` and `delete-*` subcommands. Use `zae-limiter resource list` to list resources with defaults.
 
-Config fields are stored alongside limits in existing `#LIMIT#` records:
+Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for a config level are stored in a single item:
 
-| Level | PK | SK | Purpose |
-|-------|----|----|---------|
-| System | `SYSTEM#` | `#LIMIT#{limit_name}` | Global defaults (all resources) |
-| Resource | `RESOURCE#{resource}` | `#LIMIT#{resource}#{limit_name}` | Resource-specific |
-| Entity | `ENTITY#{id}` | `#LIMIT#{resource}#{limit_name}` | Entity-specific (existing) |
+| Level | PK | SK | Attributes |
+|-------|----|----|------------|
+| System | `SYSTEM#` | `#CONFIG` | `on_unavailable`, `l_rpm_cp`, `l_rpm_bx`, `l_rpm_ra`, `l_rpm_rp`, ... |
+| Resource | `RESOURCE#{res}` | `#CONFIG` | `resource`, `l_rpm_cp`, ... |
+| Entity | `ENTITY#{id}` | `#CONFIG#{resource}` | `entity_id`, `resource`, `l_rpm_cp`, ... |
+
+**Limit attribute format:** `l_{limit_name}_{field}` where field is one of:
+- `cp` (capacity), `bx` (burst), `ra` (refill_amount), `rp` (refill_period_seconds)
 
 **Config fields:**
 - `config_version` (int): Atomic counter for cache invalidation
-- `on_unavailable` (string): "allow" or "block"
-- `auto_update` (bool): Auto-update Lambda on version mismatch
-- `strict_version` (bool): Fail on version mismatch
+- `on_unavailable` (string): "allow" or "block" (system level only)
 
 **Caching:** 60s TTL in-memory cache per RateLimiter instance (configurable via `config_cache_ttl` parameter, 0 to disable). Use `invalidate_config_cache()` for immediate refresh. Use `get_cache_stats()` for monitoring. Negative caching for entities without custom config.
 
-**Cost impact:** 3 RCU per cache miss (one per level). With caching, `acquire()` costs 1-2 RCU per request regardless of limit count (O(1) via composite bucket items, ADR-114/115).
+**Cost impact:** 1.5 RCU per cache miss (one GetItem per level, reduced from 2 RCU with per-limit items). With caching, `acquire()` costs 1-2 RCU per request regardless of limit count (O(1) via composite items, ADR-114/115).
 
 ### Schema Design Notes
 

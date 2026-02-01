@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(docker compose:*)",
+      "Bash(export AWS_ACCESS_KEY_ID=test)",
+      "Bash(export AWS_DEFAULT_REGION=us-east-1)",
       "Bash(export AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1:*)",
+      "Bash(export AWS_ENDPOINT_URL=http://localhost:4566)",
+      "Bash(export AWS_SECRET_ACCESS_KEY=test)",
       "Bash(gh api:*)",
       "Bash(gh issue create:*)",
       "Bash(gh issue edit:*)",
@@ -13,6 +17,7 @@
       "Bash(gh pr checks:*)",
       "Bash(gh pr checkout:*)",
       "Bash(gh pr create:*)",
+      "Bash(gh pr diff:*)",
       "Bash(gh pr edit:*)",
       "Bash(gh pr list:*)",
       "Bash(gh pr view:*)",
@@ -23,13 +28,15 @@
       "Bash(git log:*)",
       "Bash(git push)",
       "Bash(uv run cfn-lint:*)",
+      "Bash(uv run mkdocs:*)",
       "Bash(uv run mypy:*)",
+      "Bash(uv run pre-commit run:*)",
       "Bash(uv run pytest:*)",
       "Bash(uv run python:*)",
       "Bash(uv run ruff:*)",
-      "Bash(uv run mkdocs:*)",
       "Bash(uv run zae-limiter:*)",
-      "Bash(gh pr diff:*)",
+      "Bash(zae-limiter local status:*)",
+      "Bash(zae-limiter local up:*)",
       "Skill(milestone)"
     ],
     "ask": [
