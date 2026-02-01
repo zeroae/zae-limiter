@@ -363,7 +363,7 @@ def test_acquire_with_new_optimization(self, benchmark, sync_limiter):
 Example GitHub Actions workflow for integration tests:
 
 ```yaml
-# .github/workflows/ci.yml
+# .github/workflows/ci-tests.yml
 jobs:
   integration:
     runs-on: ubuntu-latest
