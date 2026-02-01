@@ -76,13 +76,21 @@ git worktree add "${REPO_ROOT}.worktrees/$BRANCH_NAME" "$BRANCH_NAME"
 git worktree add -b "$BRANCH_NAME" "${REPO_ROOT}.worktrees/$BRANCH_NAME"
 ```
 
-### Step 5: Open in VS Code
+### Step 5: Assign Issue (if created from issue)
+
+If the worktree was created from an issue number, assign the issue to yourself:
+
+```bash
+gh issue edit <issue-number> --add-assignee @me
+```
+
+### Step 6: Open in VS Code
 
 ```bash
 code "${REPO_ROOT}.worktrees/$BRANCH_NAME"
 ```
 
-### Step 6: Show Instructions
+### Step 7: Show Instructions
 
 Display to the user:
 
