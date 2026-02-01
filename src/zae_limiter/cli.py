@@ -3278,8 +3278,7 @@ def entity_list(
                     click.echo(entity_id)
                     total_count += 1
 
-                # Stop if no more results or if limit was specified
-                if cursor is None or limit is not None:
+                if cursor is None:
                     break
 
             if total_count == 0:
