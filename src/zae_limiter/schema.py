@@ -6,6 +6,7 @@ from typing import Any
 DEFAULT_TABLE_NAME = "rate_limits"
 GSI1_NAME = "GSI1"  # For parent -> children lookups
 GSI2_NAME = "GSI2"  # For resource aggregation
+GSI3_NAME = "GSI3"  # For entity config queries (sparse)
 
 # Key prefixes
 ENTITY_PREFIX = "ENTITY#"
@@ -13,6 +14,7 @@ PARENT_PREFIX = "PARENT#"
 CHILD_PREFIX = "CHILD#"
 RESOURCE_PREFIX = "RESOURCE#"
 SYSTEM_PREFIX = "SYSTEM#"
+ENTITY_CONFIG_PREFIX = "ENTITY_CONFIG#"  # For GSI3 sparse index
 
 # Sort key prefixes
 SK_META = "#META"
@@ -208,6 +210,16 @@ def gsi2_sk_usage(window_key: str, entity_id: str) -> str:
     return f"USAGE#{window_key}#{entity_id}"
 
 
+def gsi3_pk_entity_config(resource: str) -> str:
+    """Build GSI3 partition key for entity config lookup by resource."""
+    return f"{ENTITY_CONFIG_PREFIX}{resource}"
+
+
+def gsi3_sk_entity(entity_id: str) -> str:
+    """Build GSI3 sort key for entity config (just entity_id)."""
+    return entity_id
+
+
 def pk_audit(entity_id: str) -> str:
     """Build partition key for audit log records."""
     return f"{AUDIT_PREFIX}{entity_id}"
@@ -245,6 +257,8 @@ def get_table_definition(table_name: str) -> dict[str, Any]:
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI3PK", "AttributeType": "S"},
+            {"AttributeName": "GSI3SK", "AttributeType": "S"},
         ],
         "KeySchema": [
             {"AttributeName": "PK", "KeyType": "HASH"},
@@ -266,6 +280,14 @@ def get_table_definition(table_name: str) -> dict[str, Any]:
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": GSI3_NAME,
+                "KeySchema": [
+                    {"AttributeName": "GSI3PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI3SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "KEYS_ONLY"},
             },
         ],
         "StreamSpecification": {

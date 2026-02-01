@@ -2898,3 +2898,41 @@ class TestRateLimiterConfigCache:
 
             assert limiter.get_cache_stats().size == 0
             await limiter.close()
+
+
+class TestListEntitiesWithCustomLimits:
+    """Tests for list_entities_with_custom_limits method."""
+
+    @pytest.mark.asyncio
+    async def test_list_entities_with_custom_limits(self, limiter):
+        """list_entities_with_custom_limits returns entities with custom configs."""
+        # Set up limits for test entities
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await limiter.set_limits("user-2", [Limit.per_minute("rpm", 200)], resource="gpt-4")
+
+        # Query
+        entities, cursor = await limiter.list_entities_with_custom_limits("gpt-4")
+
+        assert set(entities) == {"user-1", "user-2"}
+        assert cursor is None  # No more results
+
+    @pytest.mark.asyncio
+    async def test_list_entities_with_custom_limits_filters_by_resource(self, limiter):
+        """list_entities_with_custom_limits only returns entities for specified resource."""
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await limiter.set_limits("user-2", [Limit.per_minute("rpm", 200)], resource="claude-3")
+
+        # Query gpt-4
+        entities, _ = await limiter.list_entities_with_custom_limits("gpt-4")
+        assert set(entities) == {"user-1"}
+
+        # Query claude-3
+        entities, _ = await limiter.list_entities_with_custom_limits("claude-3")
+        assert set(entities) == {"user-2"}
+
+    @pytest.mark.asyncio
+    async def test_list_entities_with_custom_limits_empty_result(self, limiter):
+        """Returns empty list when no entities have custom limits for resource."""
+        entities, cursor = await limiter.list_entities_with_custom_limits("nonexistent")
+        assert entities == []
+        assert cursor is None

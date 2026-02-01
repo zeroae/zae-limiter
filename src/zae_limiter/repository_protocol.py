@@ -374,6 +374,27 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def list_entities_with_custom_limits(
+        self,
+        resource: str,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> tuple[list[str], str | None]:
+        """
+        List all entities that have custom limit configurations for a resource.
+
+        Uses GSI3 sparse index for efficient queries.
+
+        Args:
+            resource: Resource to filter by (required).
+            limit: Maximum number of entities to return. None for all.
+            cursor: Pagination cursor from previous call. None for first page.
+
+        Returns:
+            Tuple of (entity_ids, next_cursor). next_cursor is None if no more results.
+        """
+        ...
+
     # -------------------------------------------------------------------------
     # Resource-level defaults
     # -------------------------------------------------------------------------
