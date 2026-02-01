@@ -304,7 +304,7 @@ class RateLimiter:
         from . import __version__
         from .version import get_schema_version
 
-        lambda_version = __version__ if not self._repository.endpoint_url else None
+        lambda_version = __version__
 
         await self._repository.set_version_record(
             schema_version=get_schema_version(),

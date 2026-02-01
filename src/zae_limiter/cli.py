@@ -324,7 +324,7 @@ def deploy(
                     repo = Repository(manager.table_name, region, endpoint_url)
                     await repo.set_version_record(
                         schema_version=get_schema_version(),
-                        lambda_version=__version__ if not endpoint_url else None,
+                        lambda_version=__version__,
                         client_min_version="0.0.0",
                         updated_by=f"cli:{__version__}",
                     )
