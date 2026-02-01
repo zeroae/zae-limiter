@@ -1,6 +1,6 @@
 ---
 name: issue
-description: Create and update GitHub issues. Triggers on "create issue", "file issue", "open issue", "new issue", "report bug", "request feature", "track this", "create epic", "create theme", "update issue", "check off", "mark complete", "close issue", "verify issue", "verify #", "ralph-loop", "scan issues", "scan criteria", "view issue", "view #". Infers type, labels, and milestone from conversation context.
+description: Use when user says "/issue", "create issue", "file issue", "report bug", "request feature", "update issue", "check off", "verify issue", "view issue", or needs to manage GitHub issues.
 allowed-tools: Bash(gh:*), AskUserQuestion, Grep, Read, Edit, Write, TodoWrite
 user-invocable: true
 argument-hint: view <number> [--comments] | verify <number> [--all] [--dry-run] | ralph-loop <number> [--max-iterations <n>] | scan [--milestone <name>] [--fix]
@@ -25,13 +25,21 @@ Create, update, and manage GitHub issues following ZeroAE conventions. Infer as 
 
 ## Mode Detection
 
-1. **If `view` keyword** (`/issue view 135`, `view #135`) → **View mode**
-2. **If `ralph-loop` keyword** (`/issue ralph-loop 133`) → **Ralph Loop mode**
-3. **If `scan` keyword** (`/issue scan`, `/issue scan --milestone v0.5.0`) → **Scan mode**
-4. **If `verify` keyword** (`/issue verify 150`) → **Verify mode**
-5. **If update phrases** ("update issue", "add to #123") → **Update mode**
-6. **If progress phrases** ("check off", "mark complete") → **Progress mode**
-7. **Otherwise** → **Create mode**
+When this skill is invoked, arguments follow the skill name (e.g., `/issue view 135` passes "view 135" as arguments).
+
+**IMPORTANT:** Before doing anything else, identify the mode from the invocation arguments:
+
+| Arguments | Mode | Instructions |
+|-----------|------|--------------|
+| `view <number>` | View | Read `view.md` |
+| `ralph-loop <number>` | Ralph Loop | Read `ralph-loop.md` |
+| `scan [--milestone <name>]` | Scan | Read `scan.md` |
+| `verify <number>` | Verify | Read `verify.md` |
+| update phrases ("update issue", "add to #123") | Update | Read `update.md` |
+| progress phrases ("check off", "mark complete") | Progress | Read `progress.md` |
+| (none) or create phrases | Create | Read `create.md` |
+
+**First action:** Read the appropriate `.md` file for your detected mode, then follow those instructions exactly.
 
 ## Supported Issue Types
 
