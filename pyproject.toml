@@ -82,6 +82,9 @@ zae-limiter = "zae_limiter.cli:cli"
 [tool.hatch.version]
 source = "vcs"
 
+[tool.hatch.build.hooks.vcs]
+version-file = "src/zae_limiter/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/zae_limiter", "src/zae_limiter_aggregator"]
 
