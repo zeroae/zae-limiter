@@ -44,7 +44,7 @@ Non-release PRs target the release branch matching their milestone:
 1. Get milestone from issue (e.g., `v0.5.0`)
 2. Check if `release/0.5.0` branch exists
 3. If exists → PR targets `release/0.5.0` instead of `main`
-4. If not exists → ask user: create branch, target main, or cancel
+4. If not exists → PR targets `main` (do not ask)
 
 This ensures feature work flows into release branches, which then merge to main via release prep PRs.
 
