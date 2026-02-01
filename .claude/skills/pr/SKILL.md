@@ -1,9 +1,10 @@
 ---
 name: pr
-description: Create, view, and edit pull requests following project conventions. Invoke with "open pr", "create pr", "update pr", or use `/pr view [pr-number]` to view, `/pr <issue-number>` to create, `/pr edit [pr-number]` to update, `/pr release <version>` for release prep.
+description: Use when user says "/pr", "open pr", "create pr", "update pr", asks to create or edit a pull request, or needs to prepare a release.
 allowed-tools: Bash(gh:*), Bash(git:*), Read, Grep, Glob, AskUserQuestion, Task(Explore)
 user-invocable: true
 context: fork
+argument-hint: [view|edit|release|issue-number] [pr-number|version]
 ---
 
 # Pull Request Skill
@@ -19,14 +20,22 @@ Create, view, and edit PRs following project conventions. Supports four modes:
 
 ## Mode Detection
 
-1. **If `view` keyword** (`/pr view`, `/pr view 218`) → **View mode**
-2. **If issue number provided** (`/pr 123`) → **Create mode** (always, regardless of branch)
-3. **If `edit` keyword** (`/pr edit`) → **Edit mode**
-4. **If `release` keyword** (`/pr release 0.5.0`) → **Release mode**
-5. **If on release branch AND no arguments** (`/pr` on `release/0.5.0`) → **Release mode**
-6. **Otherwise** → **Create mode**
+When this skill is invoked, arguments follow the skill name (e.g., `/pr view 218` passes "view 218" as arguments).
+
+**IMPORTANT:** Before doing anything else, identify the mode from the invocation arguments:
+
+| Arguments | Mode | Instructions |
+|-----------|------|--------------|
+| `view [pr-number]` | View | Read `view.md` |
+| `edit [pr-number]` | Edit | Read `edit.md` |
+| `release <version>` | Release | Read `release.md` |
+| `#<number>` or just a number | Create (from issue) | Read `create.md` |
+| (none) on release branch | Release | Read `release.md` |
+| (none) or other | Create | Read `create.md` |
 
 Pattern for release branches: `^release/v?[0-9]+\.[0-9]+\.[0-9]+$`
+
+**First action:** Read the appropriate `.md` file for your detected mode, then follow those instructions exactly.
 
 ## Release Branch Workflow
 
