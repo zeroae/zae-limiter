@@ -26,6 +26,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +51,8 @@ jobs:
       - uses: pre-commit/action@v3.0.1
 
   unit:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -72,6 +89,8 @@ jobs:
           fail_ci_if_error: false
 
   integration:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -133,6 +152,8 @@ jobs:
           fail_ci_if_error: false
 
   e2e:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -187,6 +208,8 @@ jobs:
           fail_ci_if_error: false
 
   benchmark-moto:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -212,7 +235,8 @@ jobs:
           fail-on-alert: false
 
   benchmark-localstack:
-    if: ${{ !github.event.pull_request.draft }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     services:
       localstack:
@@ -262,7 +286,8 @@ jobs:
   # TODO: Blocked on #189 (AWS OIDC authentication)
   # Uncomment AWS credential steps once #189 lands
   benchmark-aws:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
