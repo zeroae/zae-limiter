@@ -202,7 +202,34 @@ def deploy(
     enable_deletion_protection: bool,
     tags: tuple[str, ...],
 ) -> None:
-    """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator."""
+    """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator.
+
+    Creates or updates infrastructure including DynamoDB table, Lambda aggregator
+    for usage snapshots, CloudWatch alarms, and IAM roles. The stack is idempotent -
+    running deploy again updates existing resources.
+
+    \b
+    **Examples:**
+
+        # Basic deployment
+        zae-limiter deploy --name my-app --region us-east-1
+
+        # Production with deletion protection and tracing
+        zae-limiter deploy --name prod --region us-east-1 \\
+            --enable-deletion-protection --enable-tracing
+
+        # Without Lambda aggregator (table only)
+        zae-limiter deploy --name simple --no-aggregator
+
+        # LocalStack development
+        zae-limiter deploy --name dev \\
+            --endpoint-url http://localhost:4566
+
+        # Enterprise with permission boundary
+        zae-limiter deploy --name prod \\
+            --permission-boundary arn:aws:iam::aws:policy/PowerUserAccess \\
+            --role-name-format "pb-{}-PowerUser"
+    """
     from .exceptions import ValidationError
 
     try:
@@ -393,7 +420,27 @@ def delete(
     wait: bool,
     yes: bool,
 ) -> None:
-    """Delete CloudFormation stack."""
+    """Delete CloudFormation stack and all resources.
+
+    Removes the DynamoDB table, Lambda function, IAM roles, and all associated
+    resources. This action cannot be undone - all data will be permanently lost.
+
+    \b
+    **Examples:**
+
+        # Delete with confirmation prompt
+        zae-limiter delete --name my-app --region us-east-1
+
+        # Skip confirmation (for scripts)
+        zae-limiter delete --name my-app --yes
+
+        # Delete without waiting
+        zae-limiter delete --name my-app --no-wait
+
+    !!! warning "Data Loss"
+        Deleting a stack removes the DynamoDB table and all its data.
+        This action cannot be undone.
+    """
     from .exceptions import ValidationError
     from .naming import normalize_name
 
@@ -436,7 +483,23 @@ def delete(
     help="Output file (default: stdout)",
 )
 def cfn_template(output: str | None) -> None:
-    """Export CloudFormation template for custom deployment."""
+    """Export CloudFormation template for custom deployment.
+
+    Outputs the raw CloudFormation YAML template for manual deployment,
+    integration with CDK/Terraform, or customization.
+
+    \b
+    **Examples:**
+
+        # Export to file
+        zae-limiter cfn-template --output template.yaml
+
+        # Pipe to stdout
+        zae-limiter cfn-template > template.yaml
+
+        # View in pager
+        zae-limiter cfn-template | less
+    """
     try:
         template_path = Path(__file__).parent / "infra" / "cfn_template.yaml"
 
@@ -478,7 +541,36 @@ def cfn_template(output: str | None) -> None:
     help="Overwrite existing file without prompting",
 )
 def lambda_export(output: str, info: bool, force: bool) -> None:
-    """Export Lambda deployment package for custom deployment."""
+    """Export Lambda deployment package for custom deployment.
+
+    Creates a ZIP file containing the Lambda aggregator code for manual
+    deployment or inspection. Useful for custom deployment pipelines.
+
+    \b
+    **Examples:**
+
+        # Export Lambda package
+        zae-limiter lambda-export --output lambda.zip
+
+        # Show package info without building
+        zae-limiter lambda-export --info
+
+        # Overwrite existing file
+        zae-limiter lambda-export --force
+
+    \b
+    **Sample Output (--info):**
+
+        Lambda Package Information
+        ==========================
+
+        Package path:      /path/to/zae_limiter_aggregator
+        Python files:      4
+        Uncompressed size: 24.5 KB
+        Handler:           zae_limiter_aggregator.handler.handler
+        Dependencies:      1
+          - aws-lambda-powertools
+    """
     try:
         if info:
             # Show package info without building
@@ -566,7 +658,44 @@ def _format_count(count: int | None) -> str:
     ),
 )
 def status(name: str, region: str | None, endpoint_url: str | None) -> None:
-    """Get comprehensive status of rate limiter infrastructure (read-only)."""
+    """Get comprehensive status of rate limiter infrastructure.
+
+    Shows connectivity, stack status, version compatibility, table metrics,
+    and IAM role ARNs. Read-only operation - does not modify any resources.
+
+    \b
+    **Examples:**
+
+        zae-limiter status --name my-app --region us-east-1
+        zae-limiter status --name dev --endpoint-url http://localhost:4566
+
+    \b
+    **Sample Output:**
+
+        Status: my-app
+        ==================================================
+
+        Connectivity
+          Available:     ✓ Yes
+          Latency:       42ms
+          Region:        us-east-1
+
+        Infrastructure
+          Stack:         CREATE_COMPLETE
+          Table:         ACTIVE
+          Aggregator:    Enabled
+
+        Versions
+          Client:        0.6.0
+          Schema:        0.6.0
+          Lambda:        0.6.0
+
+        Table Metrics
+          Items:         1,234
+          Size:          256 KB
+
+        ✓ Infrastructure is ready
+    """
     import time
 
     from . import __version__
@@ -734,7 +863,27 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
     ),
 )
 def list_limiters(region: str | None, endpoint_url: str | None) -> None:
-    """List all deployed rate limiter instances in the region."""
+    """List all deployed rate limiter instances in the region.
+
+    Discovers stacks by CloudFormation tags. Shows name, status, version, and
+    creation date for each instance.
+
+    \b
+    **Examples:**
+
+        zae-limiter list --region us-east-1
+        zae-limiter list --endpoint-url http://localhost:4566
+
+    \b
+    **Sample Output:**
+
+        Rate Limiter Instances (us-east-1)
+
+        Name        Status             Version   Created
+        ──────────  ─────────────────  ────────  ──────────
+        my-app      CREATE_COMPLETE    0.6.0     2026-01-15
+        prod-api    UPDATE_COMPLETE    0.6.0     2026-01-10
+    """
     from datetime import datetime
 
     from .infra.discovery import InfrastructureDiscovery
@@ -828,7 +977,32 @@ def version_cmd(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """Show infrastructure version information."""
+    """Show infrastructure version information.
+
+    Displays client version, schema version, and deployed infrastructure
+    versions. Checks compatibility between client and infrastructure.
+
+    \b
+    **Examples:**
+
+        zae-limiter version --name my-app --region us-east-1
+        zae-limiter version --endpoint-url http://localhost:4566
+
+    \b
+    **Sample Output:**
+
+        zae-limiter Infrastructure Version
+        ====================================
+
+        Client Version:     0.6.0
+        Schema Version:     0.6.0
+
+        Infra Schema:       0.6.0
+        Lambda Version:     0.6.0
+        Min Client Version: 0.5.0
+
+        Status: COMPATIBLE
+    """
     from . import __version__
     from .exceptions import ValidationError
     from .version import (
@@ -938,7 +1112,20 @@ def upgrade(
     lambda_only: bool,
     force: bool,
 ) -> None:
-    """Upgrade infrastructure to match client version."""
+    """Upgrade infrastructure to match client version.
+
+    Updates Lambda code and version records to match the current client.
+    Use --force to update even when versions already match.
+
+    \b
+    **Examples:**
+
+        # Standard upgrade
+        zae-limiter upgrade --name my-app --region us-east-1
+
+        # Force Lambda update
+        zae-limiter upgrade --name my-app --force
+    """
     from . import __version__
     from .version import (
         InfrastructureVersion,
@@ -1060,7 +1247,31 @@ def check(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """Check infrastructure compatibility without modifying."""
+    """Check infrastructure compatibility without modifying.
+
+    Verifies that the client version is compatible with the deployed
+    infrastructure. Read-only operation - does not change anything.
+
+    \b
+    **Examples:**
+
+        zae-limiter check --name my-app --region us-east-1
+        zae-limiter check --endpoint-url http://localhost:4566
+
+    \b
+    **Sample Output:**
+
+        Compatibility Check
+        ====================
+
+        Client:      0.6.0
+        Schema:      0.6.0
+        Lambda:      0.6.0
+
+        Result: COMPATIBLE
+
+        Client and infrastructure are fully compatible.
+    """
     from . import __version__
     from .exceptions import ValidationError
     from .version import (
@@ -1137,7 +1348,11 @@ def check(
 
 @cli.group()
 def audit() -> None:
-    """Audit log commands."""
+    """Audit log commands.
+
+    Query audit events for entities. Events track configuration changes
+    like limits_set, entity_created, and entity_deleted.
+    """
     pass
 
 
@@ -1184,7 +1399,29 @@ def audit_list(
     limit: int,
     start_event_id: str | None,
 ) -> None:
-    """List audit events for an entity."""
+    """List audit events for an entity.
+
+    Shows configuration changes like limits_set, entity_created, entity_deleted.
+    Results are ordered by timestamp (newest first).
+
+    \b
+    **Examples:**
+
+        zae-limiter audit list --entity-id user-123
+        zae-limiter audit list --entity-id user-123 --limit 10
+
+    \b
+    **Sample Output:**
+
+        Audit Events for: user-123
+
+        Timestamp                Action         Principal   Resource
+        ───────────────────────  ─────────────  ──────────  ────────
+        2026-01-15T10:30:00Z     limits_set     admin       gpt-4
+        2026-01-15T10:25:00Z     entity_created admin       -
+
+        Total: 2 events
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1250,7 +1487,11 @@ def audit_list(
 
 @cli.group()
 def usage() -> None:
-    """Usage snapshot commands."""
+    """Usage snapshot commands.
+
+    Query historical usage data aggregated by the Lambda aggregator.
+    Snapshots track token consumption per entity/resource in hourly and daily windows.
+    """
     pass
 
 
@@ -1321,7 +1562,37 @@ def usage_list(
     limit: int,
     plot: bool,
 ) -> None:
-    """List usage snapshots."""
+    """List usage snapshots.
+
+    Query historical token consumption data. Requires either --entity-id or
+    --resource. Use --plot for ASCII chart visualization.
+
+    \b
+    **Examples:**
+
+        zae-limiter usage list --entity-id user-123
+        zae-limiter usage list --resource gpt-4 --window hourly
+        zae-limiter usage list --entity-id user-123 --plot
+
+    !!! note
+        Either `--entity-id` or `--resource` must be provided.
+
+    !!! tip "ASCII Charts"
+        The `--plot` flag requires the optional `plot` extra:
+        `pip install 'zae-limiter[plot]'`
+
+    \b
+    **Sample Output:**
+
+        Usage Snapshots
+
+        Window Start          Type    Resource  Entity    Events  Counters
+        ────────────────────  ──────  ────────  ────────  ──────  ────────────────
+        2026-01-15T10:00:00Z  hourly  gpt-4     user-123  42      tpm=15,000
+        2026-01-15T09:00:00Z  hourly  gpt-4     user-123  38      tpm=12,500
+
+        Total: 2 snapshots
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1461,7 +1732,35 @@ def usage_summary(
     start: str | None,
     end: str | None,
 ) -> None:
-    """Show aggregated usage summary."""
+    """Show aggregated usage summary.
+
+    Computes total and average consumption across matching snapshots.
+    Useful for billing, reporting, and capacity planning.
+
+    \b
+    **Examples:**
+
+        zae-limiter usage summary --entity-id user-123
+        zae-limiter usage summary --resource gpt-4 --window daily
+
+    !!! note
+        Either `--entity-id` or `--resource` must be provided.
+
+    \b
+    **Sample Output:**
+
+        Usage Summary
+
+        Entity:     user-123
+        Resource:   gpt-4
+        Snapshots:  24
+        Time Range: 2026-01-14T00:00:00Z to 2026-01-15T23:00:00Z
+
+        Limit  Total     Average
+        ─────  ────────  ─────────
+        rpm        950      39.58
+        tpm    450,000  18,750.00
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1569,7 +1868,11 @@ def _format_limit(limit: Limit) -> str:
 
 @cli.group()
 def resource() -> None:
-    """Resource-level default limit configuration commands."""
+    """Resource-level default limit configuration.
+
+    Configure default limits for specific resources (e.g., gpt-4, claude-3).
+    Resource defaults override system defaults but are overridden by entity limits.
+    """
     pass
 
 
@@ -1608,6 +1911,15 @@ def resource_set_defaults(
 
     RESOURCE_NAME is the resource to configure (e.g., 'gpt-4', 'claude-3').
     Resource defaults override system defaults for this specific resource.
+
+    \b
+    **Examples:**
+
+        # Set TPM and RPM defaults for gpt-4
+        zae-limiter resource set-defaults gpt-4 -l tpm:100000 -l rpm:1000
+
+        # Set limits with burst capacity
+        zae-limiter resource set-defaults claude-3 -l tpm:50000:75000
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
@@ -1671,6 +1983,19 @@ def resource_get_defaults(
     """Get default limits for a resource.
 
     RESOURCE_NAME is the resource to query (e.g., 'gpt-4', 'claude-3').
+
+    \b
+    **Examples:**
+
+        zae-limiter resource get-defaults gpt-4
+        zae-limiter resource get-defaults claude-3 --name prod
+
+    \b
+    **Sample Output:**
+
+        Defaults for resource 'gpt-4':
+          rpm: 500/min (burst: 500)
+          tpm: 50000/min (burst: 50000)
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -1735,6 +2060,15 @@ def resource_delete_defaults(
     """Delete default limits for a resource.
 
     RESOURCE_NAME is the resource to delete defaults from (e.g., 'gpt-4', 'claude-3').
+
+    \b
+    **Examples:**
+
+        # Delete with confirmation prompt
+        zae-limiter resource delete-defaults gpt-4
+
+        # Skip confirmation
+        zae-limiter resource delete-defaults gpt-4 --yes
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -1786,7 +2120,22 @@ def resource_list(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """List all resources with configured defaults."""
+    """List all resources with configured defaults.
+
+    \b
+    **Examples:**
+
+        zae-limiter resource list
+        zae-limiter resource list --name prod
+
+    \b
+    **Sample Output:**
+
+        Resources with configured defaults:
+          gpt-4
+          gpt-3.5-turbo
+          claude-3
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1822,7 +2171,11 @@ def resource_list(
 
 @cli.group()
 def system() -> None:
-    """System-level default limit configuration commands."""
+    """System-level default limit configuration.
+
+    Configure global defaults that apply to ALL resources unless overridden.
+    System defaults are the lowest priority in the hierarchy.
+    """
     pass
 
 
@@ -1864,6 +2217,15 @@ def system_set_defaults(
     """Set system-wide default limits.
 
     System defaults apply to ALL resources unless overridden at resource or entity level.
+
+    \b
+    **Examples:**
+
+        # Set global defaults
+        zae-limiter system set-defaults -l tpm:10000 -l rpm:100
+
+        # Set defaults with unavailability behavior
+        zae-limiter system set-defaults -l tpm:10000 --on-unavailable allow
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
@@ -1925,7 +2287,23 @@ def system_get_defaults(
     region: str | None,
     endpoint_url: str | None,
 ) -> None:
-    """Get system-wide default limits and config."""
+    """Get system-wide default limits and config.
+
+    \b
+    **Examples:**
+
+        zae-limiter system get-defaults
+        zae-limiter system get-defaults --name prod
+
+    \b
+    **Sample Output:**
+
+        System-wide defaults:
+          Limits:
+            rpm: 1000/min (burst: 1000)
+            tpm: 100000/min (burst: 100000)
+          on_unavailable: allow
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -1988,7 +2366,17 @@ def system_delete_defaults(
     endpoint_url: str | None,
     yes: bool,
 ) -> None:
-    """Delete all system-wide default limits and config."""
+    """Delete all system-wide default limits and config.
+
+    \b
+    **Examples:**
+
+        # Delete with confirmation prompt
+        zae-limiter system delete-defaults
+
+        # Skip confirmation
+        zae-limiter system delete-defaults --yes
+    """
     from .exceptions import ValidationError
     from .repository import Repository
 
@@ -2026,7 +2414,11 @@ def system_delete_defaults(
 
 @cli.group()
 def entity() -> None:
-    """Entity-level limit configuration commands."""
+    """Entity-level limit configuration.
+
+    Manage entities (users, API keys, projects) and their custom limits.
+    Entity limits have highest priority, overriding resource and system defaults.
+    """
     pass
 
 
@@ -2073,6 +2465,18 @@ def entity_create(
     """Create a new entity.
 
     ENTITY_ID is the unique identifier for the entity (e.g., 'user-123', 'api-key-abc').
+
+    \b
+    **Examples:**
+
+        # Create a standalone entity
+        zae-limiter entity create user-123
+
+        # Create with display name
+        zae-limiter entity create api-key-abc --display-name "Production API"
+
+        # Create with parent and cascade
+        zae-limiter entity create user-123 --parent org-456 --cascade
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -2131,6 +2535,22 @@ def entity_show(
     """Show details for an entity.
 
     ENTITY_ID is the entity to query (e.g., 'user-123', 'api-key-abc').
+
+    \b
+    **Examples:**
+
+        zae-limiter entity show user-123
+        zae-limiter entity show api-key-abc --name prod
+
+    \b
+    **Sample Output:**
+
+        Entity: user-123
+          Name:       Alice Smith
+          Parent:     org-456
+          Cascade:    True
+          Created:    2026-01-15T10:30:00Z
+          Metadata:   {'tier': 'premium'}
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -2209,6 +2629,15 @@ def entity_set_limits(
 
     ENTITY_ID is the entity to configure (e.g., 'user-123', 'api-key-abc').
     Entity limits override resource and system defaults.
+
+    \b
+    **Examples:**
+
+        # Set premium user limits for gpt-4
+        zae-limiter entity set-limits user-premium -r gpt-4 -l tpm:100000 -l rpm:1000
+
+        # Set limits with burst
+        zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000:75000
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
@@ -2283,6 +2712,19 @@ def entity_get_limits(
     """Get limits for a specific entity and resource.
 
     ENTITY_ID is the entity to query (e.g., 'user-123', 'api-key-abc').
+
+    \b
+    **Examples:**
+
+        zae-limiter entity get-limits user-premium --resource gpt-4
+        zae-limiter entity get-limits api-key-123 -r claude-3
+
+    \b
+    **Sample Output:**
+
+        Limits for entity 'user-premium' on resource 'gpt-4':
+          rpm: 1000/min (burst: 1000)
+          tpm: 100000/min (burst: 100000)
     """
     from .exceptions import ValidationError
     from .repository import Repository
@@ -2357,6 +2799,15 @@ def entity_delete_limits(
     """Delete limits for a specific entity and resource.
 
     ENTITY_ID is the entity to delete limits from (e.g., 'user-123', 'api-key-abc').
+
+    \b
+    **Examples:**
+
+        # Delete with confirmation
+        zae-limiter entity delete-limits user-premium --resource gpt-4
+
+        # Skip confirmation
+        zae-limiter entity delete-limits user-premium -r gpt-4 --yes
     """
     from .exceptions import ValidationError
     from .repository import Repository
