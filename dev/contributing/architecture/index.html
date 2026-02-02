@@ -3200,7 +3200,7 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    <span class="s2">&quot;refill_period_seconds&quot;</span><span class="p">:</span> <span class="mi">60</span>        <span class="c1"># Top-level</span>
 </span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>Limit configs use three-level precedence: <strong>Entity &gt; Resource &gt; System &gt; Constructor defaults</strong>.</p>
+<p>Limit configs use four-level precedence: <strong>Entity (resource-specific) &gt; Entity (<em>default</em>) &gt; Resource &gt; System &gt; Constructor defaults</strong>.</p>
 <p><strong>Key builders:</strong></p>
 <ul>
 <li><code>pk_system()</code> - Returns <code>SYSTEM#</code></li>

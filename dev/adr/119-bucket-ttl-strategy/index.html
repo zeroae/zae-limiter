@@ -12,13 +12,9 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/102-config-hierarchy/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/119-bucket-ttl-strategy/">
       
       
-        <link rel="prev" href="../101-flat-schema-config/">
-      
-      
-        <link rel="next" href="../103-config-caching/">
       
       
         
@@ -29,7 +25,7 @@
     
     
       
-        <title>ADR-102 Config Hierarchy - zae-limiter</title>
+        <title>ADR-119: Bucket TTL Strategy - zae-limiter</title>
       
     
     
@@ -84,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-102-three-level-configuration-hierarchy" class="md-skip">
+        <a href="#adr-119-bucket-ttl-strategy" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +119,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-102 Config Hierarchy
+              ADR-119: Bucket TTL Strategy
             
           </span>
         </div>
@@ -1349,20 +1345,18 @@
       
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
@@ -1383,7 +1377,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1845,20 +1839,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
         
           
           <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
@@ -1879,7 +1871,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1950,37 +1942,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-102 Config Hierarchy
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../102-config-hierarchy/" class="md-nav__link">
         
   
   
@@ -1996,109 +1961,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Alternatives Considered">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#single-level-system-only" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-level (System only)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#two-level-system-entity" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Two-level (System + Entity)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#system-config-keyed-by-resource-original-design" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        System config keyed by resource (original design)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -2609,10 +2471,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#single-level-system-only" class="md-nav__link">
+  <a href="#flat-24-hour-ttl-for-all-default-limit-buckets" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Single-level (System only)
+        Flat 24-hour TTL for all default-limit buckets
       
     </span>
   </a>
@@ -2620,10 +2482,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#two-level-system-entity" class="md-nav__link">
+  <a href="#ttl-for-all-buckets-including-custom-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Two-level (System + Entity)
+        TTL for all buckets including custom limits
       
     </span>
   </a>
@@ -2631,10 +2493,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#system-config-keyed-by-resource-original-design" class="md-nav__link">
+  <a href="#3-or-14-multiplier" class="md-nav__link">
     <span class="md-ellipsis">
       
-        System config keyed by resource (original design)
+        3× or 14× multiplier
       
     </span>
   </a>
@@ -2665,7 +2527,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/102-config-hierarchy.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/119-bucket-ttl-strategy.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2673,108 +2535,32 @@
   
 
 
-<h1 id="adr-102-three-level-configuration-hierarchy">ADR-102: Three-Level Configuration Hierarchy<a class="headerlink" href="#adr-102-three-level-configuration-hierarchy" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Superseded by ADR-118
-<strong>Date:</strong> 2026-01-18
-<strong>Issues:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/129">#129</a>, <a href="https://github.com/zeroae/zae-limiter/issues/130">#130</a>, <a href="https://github.com/zeroae/zae-limiter/issues/131">#131</a></p>
+<h1 id="adr-119-bucket-ttl-strategy">ADR-119: Bucket TTL Strategy<a class="headerlink" href="#adr-119-bucket-ttl-strategy" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Accepted
+<strong>Date:</strong> 2026-02-02
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/271">#271</a>, <a href="https://github.com/zeroae/zae-limiter/issues/296">#296</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>zae-limiter clients need consistent configuration across distributed instances. Currently:</p>
-<ol>
-<li><strong>No global defaults</strong> - Cannot set system-wide default limits that apply to all resources</li>
-<li><strong>No resource defaults</strong> - Cannot set per-resource limits without per-entity configuration</li>
-<li><strong>Scattered config</strong> - Behavior settings (<code>on_unavailable</code>) are constructor-only</li>
-<li><strong>Risk of inconsistency</strong> - Different clients may have different fail-open/fail-closed behavior</li>
-</ol>
-<p>Operators need to set global defaults while allowing per-resource and per-entity overrides.</p>
+<p>Buckets using system or resource default limits should auto-expire to reduce DynamoDB storage costs for ephemeral entities (anonymous users, one-time callers). The original implementation used a flat 24-hour TTL, but this caused slow-refill buckets to expire before fully refilling—a bucket with 1000 capacity and 10 tokens/minute refill takes ~100 minutes to fill, but with infrequent access patterns could expire mid-refill.</p>
+<p>Separately, entities with explicitly configured custom limits represent important accounts (premium users, key customers) whose state should persist indefinitely. Losing their bucket state grants an unintended rate limit reset.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Implement a <strong>three-level configuration hierarchy</strong> with precedence: Entity &gt; Resource &gt; System &gt; Constructor defaults.</p>
-<table>
-<thead>
-<tr>
-<th>Level</th>
-<th>PK</th>
-<th>SK</th>
-<th>Purpose</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>System</td>
-<td><code>SYSTEM#</code></td>
-<td><code>#LIMIT#{limit_name}</code></td>
-<td>Global defaults for ALL resources</td>
-</tr>
-<tr>
-<td>System</td>
-<td><code>SYSTEM#</code></td>
-<td><code>#CONFIG</code></td>
-<td>Behavior config (<code>on_unavailable</code>, etc.)</td>
-</tr>
-<tr>
-<td>Resource</td>
-<td><code>RESOURCE#{resource}</code></td>
-<td><code>#LIMIT#{limit_name}</code></td>
-<td>Per-resource overrides</td>
-</tr>
-<tr>
-<td>Entity</td>
-<td><code>ENTITY#{id}</code></td>
-<td><code>#LIMIT#{resource}#{limit_name}</code></td>
-<td>Per-entity+resource overrides</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Key distinction:</strong>
-- <strong>System limits</strong> apply universally (no resource association)
-- <strong>Resource limits</strong> override system defaults for a specific resource
-- <strong>Entity limits</strong> override resource/system defaults for a specific entity+resource pair</p>
-<p><strong>Config field scope:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>System</th>
-<th>Resource</th>
-<th>Entity</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Limit fields (<code>capacity</code>, etc.)</td>
-<td>✅</td>
-<td>✅</td>
-<td>✅</td>
-</tr>
-<tr>
-<td><code>on_unavailable</code></td>
-<td>✅</td>
-<td>❌</td>
-<td>❌</td>
-</tr>
-<tr>
-<td><code>auto_update</code>, <code>strict_version</code></td>
-<td>✅</td>
-<td>❌</td>
-<td>❌</td>
-</tr>
-</tbody>
-</table>
+<ol>
+<li><strong>Time-to-fill based TTL</strong>: Bucket TTL is calculated as <code>max_time_to_fill × multiplier</code> where <code>time_to_fill = (capacity / refill_amount) × refill_period_seconds</code>. Default multiplier is 7.</li>
+<li><strong>TTL by config source</strong>: Buckets using entity custom limits have no TTL (persist indefinitely). Buckets using entity <code>_default_</code>, resource, or system defaults have TTL applied.</li>
+</ol>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Consistent behavior across distributed clients
-- Enables per-resource overrides (expensive model → lower limits)
-- Premium users can have different limits via entity config
-- Clean separation: system = global, resource = per-model, entity = per-user</p>
+- Slow-refill buckets have sufficient time to fully refill before expiring
+- Important entities (custom limits) never lose rate limit state
+- Ephemeral entities auto-cleanup, reducing storage costs</p>
 <p><strong>Negative:</strong>
-- 3 levels to check per cache miss (mitigated by caching, see ADR-103)
-- More complex resolution logic</p>
+- TTL removal/addition on upgrade/downgrade adds complexity to write path</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="single-level-system-only">Single-level (System only)<a class="headerlink" href="#single-level-system-only" title="Permanent link">&para;</a></h3>
-<p>Rejected: No per-resource or per-entity customization; insufficient for real-world use cases.</p>
-<h3 id="two-level-system-entity">Two-level (System + Entity)<a class="headerlink" href="#two-level-system-entity" title="Permanent link">&para;</a></h3>
-<p>Rejected: Resource-level is common (different limits per model); would force entity-level duplication.</p>
-<h3 id="system-config-keyed-by-resource-original-design">System config keyed by resource (original design)<a class="headerlink" href="#system-config-keyed-by-resource-original-design" title="Permanent link">&para;</a></h3>
-<p>Rejected: Redundant with resource-level config; system should be truly global defaults.</p>
+<h3 id="flat-24-hour-ttl-for-all-default-limit-buckets">Flat 24-hour TTL for all default-limit buckets<a class="headerlink" href="#flat-24-hour-ttl-for-all-default-limit-buckets" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Slow-refill limits (capacity &gt;&gt; refill_amount) expire before fully refilling, causing unexpected rate limit resets.</p>
+<h3 id="ttl-for-all-buckets-including-custom-limits">TTL for all buckets including custom limits<a class="headerlink" href="#ttl-for-all-buckets-including-custom-limits" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Custom limits signal explicit intent—losing state for premium users is unacceptable.</p>
+<h3 id="3-or-14-multiplier">3× or 14× multiplier<a class="headerlink" href="#3-or-14-multiplier" title="Permanent link">&para;</a></h3>
+<p>Rejected because: 7× balances storage cost (not too long) with refill safety (multiple full cycles). Configurable via <code>bucket_ttl_refill_multiplier</code> for edge cases.</p>
 
 
 
@@ -2806,44 +2592,6 @@
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../101-flat-schema-config/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-101 Flat Schema">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                ADR-101 Flat Schema
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../103-config-caching/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-103 Config Caching">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-103 Config Caching
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">

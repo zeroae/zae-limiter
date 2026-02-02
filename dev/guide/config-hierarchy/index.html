@@ -546,10 +546,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#entity-limits" class="md-nav__link">
+  <a href="#entity-default-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Entity Limits
+        Entity Default Limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#entity-limits-resource-specific" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Entity Limits (Resource-Specific)
       
     </span>
   </a>
@@ -596,10 +607,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#entity-limits_1" class="md-nav__link">
+  <a href="#entity-default-limits_1" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Entity Limits
+        Entity Default Limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#entity-limits-resource-specific_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Entity Limits (Resource-Specific)
       
     </span>
   </a>
@@ -2701,10 +2723,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#entity-limits" class="md-nav__link">
+  <a href="#entity-default-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Entity Limits
+        Entity Default Limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#entity-limits-resource-specific" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Entity Limits (Resource-Specific)
       
     </span>
   </a>
@@ -2751,10 +2784,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#entity-limits_1" class="md-nav__link">
+  <a href="#entity-default-limits_1" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Entity Limits
+        Entity Default Limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#entity-limits-resource-specific_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Entity Limits (Resource-Specific)
       
     </span>
   </a>
@@ -2838,19 +2882,22 @@
 
 
 <h1 id="configuration-hierarchy">Configuration Hierarchy<a class="headerlink" href="#configuration-hierarchy" title="Permanent link">&para;</a></h1>
-<p>zae-limiter supports a three-level configuration hierarchy for rate limits, allowing you to set defaults at the system level and override them at the resource or entity level.</p>
+<p>zae-limiter supports a four-level configuration hierarchy for rate limits, allowing you to set defaults at the system level and override them at the resource, entity default, or entity-resource level.</p>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
 <div class="mermaid">flowchart TD
-    A[Acquire Request] --&gt; B{Entity config?}
+    A[Acquire Request] --&gt; B{Entity config&lt;br/&gt;for resource?}
     B --&gt;|Yes| C[Use Entity Limits]
-    B --&gt;|No| D{Resource config?}
-    D --&gt;|Yes| E[Use Resource Limits]
-    D --&gt;|No| F{System config?}
-    F --&gt;|Yes| G[Use System Limits]
-    F --&gt;|No| H[Use Constructor Defaults]</div>
+    B --&gt;|No| D{Entity _default_&lt;br/&gt;config?}
+    D --&gt;|Yes| E[Use Entity Default Limits]
+    D --&gt;|No| F{Resource config?}
+    F --&gt;|Yes| G[Use Resource Limits]
+    F --&gt;|No| H{System config?}
+    H --&gt;|Yes| I[Use System Limits]
+    H --&gt;|No| J[Use Constructor Defaults]</div>
 <p><strong>Precedence order (highest to lowest):</strong></p>
 <ol>
-<li><strong>Entity limits</strong> - Per-entity + resource overrides (e.g., premium user on gpt-4)</li>
+<li><strong>Entity limits (resource-specific)</strong> - Per-entity + specific resource overrides (e.g., premium user on gpt-4)</li>
+<li><strong>Entity default limits</strong> - Per-entity <code>_default_</code> config (applies to all resources for that entity)</li>
 <li><strong>Resource defaults</strong> - Per-resource limits (e.g., all users on gpt-4)</li>
 <li><strong>System defaults</strong> - Global limits for all resources</li>
 <li><strong>Constructor defaults</strong> - Fallback from code</li>
@@ -2876,9 +2923,14 @@
 <td>gpt-4 gets 50 RPM, claude-3 gets 200 RPM</td>
 </tr>
 <tr>
-<td><strong>Entity</strong></td>
-<td>Premium tiers, custom contracts</td>
-<td>Enterprise customer gets 10x limits</td>
+<td><strong>Entity Default</strong></td>
+<td>Per-user/tenant defaults for ALL resources</td>
+<td>Premium user gets 500 RPM on any model</td>
+</tr>
+<tr>
+<td><strong>Entity (resource-specific)</strong></td>
+<td>Per-user + specific model overrides</td>
+<td>Enterprise customer gets 10x only on gpt-4</td>
 </tr>
 </tbody>
 </table>
@@ -2928,102 +2980,140 @@
 </span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="c1"># Delete resource defaults</span>
 </span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">delete_resource_defaults</span><span class="p">(</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<h3 id="entity-limits">Entity Limits<a class="headerlink" href="#entity-limits" title="Permanent link">&para;</a></h3>
-<p>Entity limits override both system and resource defaults for a specific entity+resource pair:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Set entity-specific limits (highest precedence)</span>
+<h3 id="entity-default-limits">Entity Default Limits<a class="headerlink" href="#entity-default-limits" title="Permanent link">&para;</a></h3>
+<p>Entity default limits apply to <strong>all resources</strong> for a specific entity unless overridden by a resource-specific entity config:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Set entity-level defaults (applies to ALL resources for this entity)</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-premium&quot;</span><span class="p">,</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="c1"># resource defaults to &quot;_default_&quot; when omitted</span>
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">500</span><span class="p">),</span>       <span class="c1"># 10x normal</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">1_000_000</span><span class="p">),</span> <span class="c1"># 10x normal</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">500</span><span class="p">),</span>       <span class="c1"># 10x normal on any model</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>
 </span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="p">],</span>
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
 </span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="c1"># Get entity limits</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="n">limits</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_limits</span><span class="p">(</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-premium&quot;</span><span class="p">,</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="p">)</span>
-</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>
-</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="c1"># Delete entity limits</span>
-</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">delete_limits</span><span class="p">(</span>
-</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-premium&quot;</span><span class="p">,</span>
-</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="p">)</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="c1"># Get entity default limits</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="n">limits</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-premium&quot;</span><span class="p">)</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="c1"># Delete entity default limits</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">delete_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-premium&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="entity-limits-resource-specific">Entity Limits (Resource-Specific)<a class="headerlink" href="#entity-limits-resource-specific" title="Permanent link">&para;</a></h3>
+<p>Entity limits override entity defaults, resource defaults, and system defaults for a specific entity+resource pair:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Set entity-specific limits for a particular resource (highest precedence)</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-premium&quot;</span><span class="p">,</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>  <span class="c1"># Only applies to gpt-4</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1000</span><span class="p">),</span>      <span class="c1"># Even higher for this specific model</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">1_000_000</span><span class="p">),</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="p">],</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="p">)</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="c1"># Get entity limits for specific resource</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">limits</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_limits</span><span class="p">(</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-premium&quot;</span><span class="p">,</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="p">)</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="c1"># Delete entity limits for specific resource</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">delete_limits</span><span class="p">(</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-premium&quot;</span><span class="p">,</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="cli-commands">CLI Commands<a class="headerlink" href="#cli-commands" title="Permanent link">&para;</a></h2>
 <h3 id="system-defaults_1">System Defaults<a class="headerlink" href="#system-defaults_1" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Set system-wide defaults (applies to ALL resources)</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>-l<span class="w"> </span>rpm:100<span class="w"> </span>-l<span class="w"> </span>tpm:10000<span class="w"> </span>--on-unavailable<span class="w"> </span>allow
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Get system defaults</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>get-defaults
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># Delete system defaults</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>delete-defaults<span class="w"> </span>--yes
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Set system-wide defaults (applies to ALL resources)</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>-l<span class="w"> </span>rpm:100<span class="w"> </span>-l<span class="w"> </span>tpm:10000<span class="w"> </span>--on-unavailable<span class="w"> </span>allow
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Get system defaults</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>get-defaults
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># Delete system defaults</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>delete-defaults<span class="w"> </span>--yes
 </span></code></pre></div>
 <h3 id="resource-defaults_1">Resource Defaults<a class="headerlink" href="#resource-defaults_1" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Set resource-specific defaults</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-defaults<span class="w"> </span>gpt-4<span class="w"> </span>-l<span class="w"> </span>rpm:50<span class="w"> </span>-l<span class="w"> </span>tpm:100000
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Get resource defaults</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>get-defaults<span class="w"> </span>gpt-4
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># List resources with defaults</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>list
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># Delete resource defaults</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>delete-defaults<span class="w"> </span>gpt-4<span class="w"> </span>--yes
-</span></code></pre></div>
-<h3 id="entity-limits_1">Entity Limits<a class="headerlink" href="#entity-limits_1" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Set entity-specific limits</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>user-premium<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>-l<span class="w"> </span>rpm:500<span class="w"> </span>-l<span class="w"> </span>tpm:1000000
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Set resource-specific defaults</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-defaults<span class="w"> </span>gpt-4<span class="w"> </span>-l<span class="w"> </span>rpm:50<span class="w"> </span>-l<span class="w"> </span>tpm:100000
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Get entity limits</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>get-limits<span class="w"> </span>user-premium<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Get resource defaults</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>get-defaults<span class="w"> </span>gpt-4
 </span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># Delete entity limits</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>delete-limits<span class="w"> </span>user-premium<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--yes
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># List resources with defaults</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>list
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="c1"># Delete resource defaults</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>delete-defaults<span class="w"> </span>gpt-4<span class="w"> </span>--yes
+</span></code></pre></div>
+<h3 id="entity-default-limits_1">Entity Default Limits<a class="headerlink" href="#entity-default-limits_1" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Set entity default limits (applies to ALL resources)</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>user-premium<span class="w"> </span>-l<span class="w"> </span>rpm:500<span class="w"> </span>-l<span class="w"> </span>tpm:100000
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Get entity default limits</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>get-limits<span class="w"> </span>user-premium
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># Delete entity default limits</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>delete-limits<span class="w"> </span>user-premium<span class="w"> </span>--yes
+</span></code></pre></div>
+<h3 id="entity-limits-resource-specific_1">Entity Limits (Resource-Specific)<a class="headerlink" href="#entity-limits-resource-specific_1" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Set entity-specific limits for a particular resource</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>user-premium<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>-l<span class="w"> </span>rpm:1000<span class="w"> </span>-l<span class="w"> </span>tpm:1000000
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Get entity limits for specific resource</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>get-limits<span class="w"> </span>user-premium<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Delete entity limits for specific resource</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>delete-limits<span class="w"> </span>user-premium<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--yes
 </span></code></pre></div>
 <h2 id="example-multi-tier-pricing">Example: Multi-Tier Pricing<a class="headerlink" href="#example-multi-tier-pricing" title="Permanent link">&para;</a></h2>
 <p>Here's how to implement a typical SaaS pricing model:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">setup_rate_limits</span><span class="p">(</span><span class="n">limiter</span><span class="p">:</span> <span class="n">RateLimiter</span><span class="p">):</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="c1"># 1. System defaults: Free tier baseline (all resources)</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">(</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">10</span><span class="p">),</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">1_000</span><span class="p">),</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>        <span class="p">],</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>        <span class="n">on_unavailable</span><span class="o">=</span><span class="n">OnUnavailable</span><span class="o">.</span><span class="n">BLOCK</span><span class="p">,</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    <span class="p">)</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    <span class="c1"># 2. Resource defaults: Different limits per model</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_resource_defaults</span><span class="p">(</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">5</span><span class="p">),</span>    <span class="c1"># Expensive model: lower limits</span>
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">500</span><span class="p">),</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>        <span class="p">],</span>
-</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>    <span class="p">)</span>
-</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>
-</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_resource_defaults</span><span class="p">(</span>
-</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-3.5-turbo&quot;</span><span class="p">,</span>
-</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">20</span><span class="p">),</span>   <span class="c1"># Cheap model: higher limits</span>
-</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">5_000</span><span class="p">),</span>
-</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a>        <span class="p">],</span>
-</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>    <span class="p">)</span>
-</span><span id="__span-6-27"><a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a>
-</span><span id="__span-6-28"><a id="__codelineno-6-28" name="__codelineno-6-28" href="#__codelineno-6-28"></a>    <span class="c1"># 3. Entity limits: Premium customers</span>
-</span><span id="__span-6-29"><a id="__codelineno-6-29" name="__codelineno-6-29" href="#__codelineno-6-29"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-6-30"><a id="__codelineno-6-30" name="__codelineno-6-30" href="#__codelineno-6-30"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;enterprise-customer&quot;</span><span class="p">,</span>
-</span><span id="__span-6-31"><a id="__codelineno-6-31" name="__codelineno-6-31" href="#__codelineno-6-31"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-6-32"><a id="__codelineno-6-32" name="__codelineno-6-32" href="#__codelineno-6-32"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-6-33"><a id="__codelineno-6-33" name="__codelineno-6-33" href="#__codelineno-6-33"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>  <span class="c1"># 20x free tier</span>
-</span><span id="__span-6-34"><a id="__codelineno-6-34" name="__codelineno-6-34" href="#__codelineno-6-34"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>
-</span><span id="__span-6-35"><a id="__codelineno-6-35" name="__codelineno-6-35" href="#__codelineno-6-35"></a>        <span class="p">],</span>
-</span><span id="__span-6-36"><a id="__codelineno-6-36" name="__codelineno-6-36" href="#__codelineno-6-36"></a>    <span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">setup_rate_limits</span><span class="p">(</span><span class="n">limiter</span><span class="p">:</span> <span class="n">RateLimiter</span><span class="p">):</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="c1"># 1. System defaults: Free tier baseline (all resources)</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">(</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">10</span><span class="p">),</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">1_000</span><span class="p">),</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>        <span class="p">],</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>        <span class="n">on_unavailable</span><span class="o">=</span><span class="n">OnUnavailable</span><span class="o">.</span><span class="n">BLOCK</span><span class="p">,</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="p">)</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="c1"># 2. Resource defaults: Different limits per model</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_resource_defaults</span><span class="p">(</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">5</span><span class="p">),</span>    <span class="c1"># Expensive model: lower limits</span>
+</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">500</span><span class="p">),</span>
+</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>        <span class="p">],</span>
+</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>    <span class="p">)</span>
+</span><span id="__span-8-19"><a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>
+</span><span id="__span-8-20"><a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_resource_defaults</span><span class="p">(</span>
+</span><span id="__span-8-21"><a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-3.5-turbo&quot;</span><span class="p">,</span>
+</span><span id="__span-8-22"><a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-8-23"><a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">20</span><span class="p">),</span>   <span class="c1"># Cheap model: higher limits</span>
+</span><span id="__span-8-24"><a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">5_000</span><span class="p">),</span>
+</span><span id="__span-8-25"><a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>        <span class="p">],</span>
+</span><span id="__span-8-26"><a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a>    <span class="p">)</span>
+</span><span id="__span-8-27"><a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a>
+</span><span id="__span-8-28"><a id="__codelineno-8-28" name="__codelineno-8-28" href="#__codelineno-8-28"></a>    <span class="c1"># 3. Entity default limits: Premium tier (applies to ALL models)</span>
+</span><span id="__span-8-29"><a id="__codelineno-8-29" name="__codelineno-8-29" href="#__codelineno-8-29"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-8-30"><a id="__codelineno-8-30" name="__codelineno-8-30" href="#__codelineno-8-30"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;premium-user&quot;</span><span class="p">,</span>
+</span><span id="__span-8-31"><a id="__codelineno-8-31" name="__codelineno-8-31" href="#__codelineno-8-31"></a>        <span class="c1"># resource defaults to &quot;_default_&quot; - applies to all resources</span>
+</span><span id="__span-8-32"><a id="__codelineno-8-32" name="__codelineno-8-32" href="#__codelineno-8-32"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-8-33"><a id="__codelineno-8-33" name="__codelineno-8-33" href="#__codelineno-8-33"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>  <span class="c1"># 10x free tier on any model</span>
+</span><span id="__span-8-34"><a id="__codelineno-8-34" name="__codelineno-8-34" href="#__codelineno-8-34"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">),</span>
+</span><span id="__span-8-35"><a id="__codelineno-8-35" name="__codelineno-8-35" href="#__codelineno-8-35"></a>        <span class="p">],</span>
+</span><span id="__span-8-36"><a id="__codelineno-8-36" name="__codelineno-8-36" href="#__codelineno-8-36"></a>    <span class="p">)</span>
+</span><span id="__span-8-37"><a id="__codelineno-8-37" name="__codelineno-8-37" href="#__codelineno-8-37"></a>
+</span><span id="__span-8-38"><a id="__codelineno-8-38" name="__codelineno-8-38" href="#__codelineno-8-38"></a>    <span class="c1"># 4. Entity resource-specific limits: Enterprise customer on specific model</span>
+</span><span id="__span-8-39"><a id="__codelineno-8-39" name="__codelineno-8-39" href="#__codelineno-8-39"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-8-40"><a id="__codelineno-8-40" name="__codelineno-8-40" href="#__codelineno-8-40"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;enterprise-customer&quot;</span><span class="p">,</span>
+</span><span id="__span-8-41"><a id="__codelineno-8-41" name="__codelineno-8-41" href="#__codelineno-8-41"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>  <span class="c1"># Only gpt-4</span>
+</span><span id="__span-8-42"><a id="__codelineno-8-42" name="__codelineno-8-42" href="#__codelineno-8-42"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-8-43"><a id="__codelineno-8-43" name="__codelineno-8-43" href="#__codelineno-8-43"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">500</span><span class="p">),</span>  <span class="c1"># 50x free tier</span>
+</span><span id="__span-8-44"><a id="__codelineno-8-44" name="__codelineno-8-44" href="#__codelineno-8-44"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>
+</span><span id="__span-8-45"><a id="__codelineno-8-45" name="__codelineno-8-45" href="#__codelineno-8-45"></a>        <span class="p">],</span>
+</span><span id="__span-8-46"><a id="__codelineno-8-46" name="__codelineno-8-46" href="#__codelineno-8-46"></a>    <span class="p">)</span>
 </span></code></pre></div>
 <p>With this setup:</p>
 <table>
@@ -3033,6 +3123,7 @@
 <th>Resource</th>
 <th>RPM</th>
 <th>TPM</th>
+<th>Source</th>
 </tr>
 </thead>
 <tbody>
@@ -3041,30 +3132,56 @@
 <td>gpt-4</td>
 <td>5</td>
 <td>500</td>
+<td>Resource default</td>
 </tr>
 <tr>
 <td>Free user</td>
 <td>gpt-3.5-turbo</td>
 <td>20</td>
 <td>5,000</td>
+<td>Resource default</td>
 </tr>
 <tr>
 <td>Free user</td>
 <td>any other</td>
 <td>10</td>
 <td>1,000</td>
+<td>System default</td>
+</tr>
+<tr>
+<td>Premium user</td>
+<td>gpt-4</td>
+<td>100</td>
+<td>10,000</td>
+<td>Entity default</td>
+</tr>
+<tr>
+<td>Premium user</td>
+<td>gpt-3.5-turbo</td>
+<td>100</td>
+<td>10,000</td>
+<td>Entity default</td>
+</tr>
+<tr>
+<td>Premium user</td>
+<td>any other</td>
+<td>100</td>
+<td>10,000</td>
+<td>Entity default</td>
 </tr>
 <tr>
 <td>Enterprise</td>
 <td>gpt-4</td>
-<td>100</td>
+<td>500</td>
 <td>100,000</td>
+<td>Entity resource-specific</td>
 </tr>
 <tr>
 <td>Enterprise</td>
 <td>gpt-3.5-turbo</td>
 <td>20</td>
-<td>5,000 (resource default)</td>
+<td>5,000</td>
+<td>Resource default</td>
 </tr>
 </tbody>
 </table>
@@ -3091,14 +3208,14 @@
 </tr>
 </tbody>
 </table>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Set at system level</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">(</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span> <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">on_unavailable</span><span class="o">=</span><span class="n">OnUnavailable</span><span class="o">.</span><span class="n">ALLOW</span><span class="p">,</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Set at system level</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">(</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span> <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="n">on_unavailable</span><span class="o">=</span><span class="n">OnUnavailable</span><span class="o">.</span><span class="n">ALLOW</span><span class="p">,</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="p">)</span>
 </span></code></pre></div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Or via CLI</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>-l<span class="w"> </span>rpm:100<span class="w"> </span>--on-unavailable<span class="w"> </span>allow
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Or via CLI</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>-l<span class="w"> </span>rpm:100<span class="w"> </span>--on-unavailable<span class="w"> </span>allow
 </span></code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -3106,27 +3223,27 @@
 </div>
 <h2 id="replacement-semantics">Replacement Semantics<a class="headerlink" href="#replacement-semantics" title="Permanent link">&para;</a></h2>
 <p>When you set limits at any level, the new limits <strong>completely replace</strong> the previous ones:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Initial: rpm=100, tpm=10000</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">([</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">),</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="p">])</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># After this: rpm is GONE, only tpm=20000 exists</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">([</span>
-</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">20_000</span><span class="p">),</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="p">])</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># Initial: rpm=100, tpm=10000</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">([</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">),</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="p">])</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="c1"># After this: rpm is GONE, only tpm=20000 exists</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">([</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">20_000</span><span class="p">),</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="p">])</span>
 </span></code></pre></div>
 <p>To add or update a single limit while preserving others, read first:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Read existing</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">current</span><span class="p">,</span> <span class="n">on_unavail</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_system_defaults</span><span class="p">()</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># Modify</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="n">current_dict</span> <span class="o">=</span> <span class="p">{</span><span class="n">l</span><span class="o">.</span><span class="n">name</span><span class="p">:</span> <span class="n">l</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">current</span><span class="p">}</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="n">current_dict</span><span class="p">[</span><span class="s2">&quot;rpm&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">200</span><span class="p">)</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="c1"># Write back</span>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">current_dict</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Read existing</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="n">current</span><span class="p">,</span> <span class="n">on_unavail</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">get_system_defaults</span><span class="p">()</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># Modify</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="n">current_dict</span> <span class="o">=</span> <span class="p">{</span><span class="n">l</span><span class="o">.</span><span class="n">name</span><span class="p">:</span> <span class="n">l</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">current</span><span class="p">}</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="n">current_dict</span><span class="p">[</span><span class="s2">&quot;rpm&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">200</span><span class="p">)</span>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="c1"># Write back</span>
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">current_dict</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span>
 </span></code></pre></div>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>

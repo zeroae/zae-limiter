@@ -3071,10 +3071,11 @@ See <a href="../token-bucket/#negative-buckets-debt">Token Bucket Algorithm - Ne
 </span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Need to wait </span><span class="si">{</span><span class="n">wait_seconds</span><span class="si">}</span><span class="s2">s for capacity&quot;</span><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="automatic-limit-resolution">Automatic Limit Resolution<a class="headerlink" href="#automatic-limit-resolution" title="Permanent link">&para;</a></h2>
-<p>zae-limiter automatically resolves limits from stored configurations using a three-level hierarchy. See <a href="../config-hierarchy/">Configuration Hierarchy</a> for full details.</p>
+<p>zae-limiter automatically resolves limits from stored configurations using a four-level hierarchy. See <a href="../config-hierarchy/">Configuration Hierarchy</a> for full details.</p>
 <p><strong>Resolution order (highest to lowest precedence):</strong></p>
 <ol>
-<li><strong>Entity level</strong> - Specific limits for an entity+resource pair</li>
+<li><strong>Entity level (resource-specific)</strong> - Specific limits for an entity+resource pair</li>
+<li><strong>Entity level (<em>default</em>)</strong> - Default limits for an entity (all resources)</li>
 <li><strong>Resource level</strong> - Default limits for a resource (all entities)</li>
 <li><strong>System level</strong> - Global defaults (all resources)</li>
 <li><strong>Override parameter</strong> - Fallback if no stored config exists</li>
