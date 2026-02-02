@@ -112,19 +112,19 @@ def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any
 
     # Generate unique worker ID per invocation (Lambda reuses containers)
     # Use request ID if available, otherwise generate UUID
+    # Set BEFORE creating runner - Locust uses this during registration
     if context and hasattr(context, "aws_request_id"):
         worker_id = f"lambda_{context.aws_request_id[:8]}"
     else:
         worker_id = f"lambda_{uuid.uuid4().hex[:8]}"
 
+    # Set environment variable that Locust uses for worker identification
+    os.environ["LOCUST_UNIQUE_ID"] = worker_id
+
     print(f"Starting worker {worker_id} connecting to {master_host}:{master_port}", flush=True)
 
     env = Environment(user_classes=[RateLimiterUser])
     env.create_worker_runner(master_host, master_port)
-
-    # Set the worker ID after runner creation (Locust uses this for identification)
-    if hasattr(env.runner, "client_id"):
-        env.runner.client_id = worker_id
 
     # Worker runs until master signals stop or Lambda times out
     env.runner.greenlet.join()
