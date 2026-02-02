@@ -63,6 +63,7 @@ local = [
 stress = [
     "locust>=2.20",
     "gevent>=23.0",
+    "questionary>=2.0",
 ]
 cdk = [
     "aws-cdk-lib>=2.0.0",
