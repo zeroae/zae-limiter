@@ -9,6 +9,89 @@ import boto3
 import click
 
 
+def _select_target(region: str | None) -> str:
+    """Interactively select a zae-limiter target stack."""
+    import questionary
+
+    cfn = boto3.client("cloudformation", region_name=region)
+    paginator = cfn.get_paginator("list_stacks")
+
+    # Find stacks that export AdminPolicyArn (zae-limiter stacks)
+    targets = []
+    for page in paginator.paginate(StackStatusFilter=["CREATE_COMPLETE", "UPDATE_COMPLETE"]):
+        for stack in page.get("StackSummaries", []):
+            stack_name = stack["StackName"]
+            # Skip stress stacks
+            if stack_name.endswith("-stress"):
+                continue
+            try:
+                desc = cfn.describe_stacks(StackName=stack_name)
+                outputs = {
+                    o["OutputKey"]: o["OutputValue"] for o in desc["Stacks"][0].get("Outputs", [])
+                }
+                if "AdminPolicyArn" in outputs:
+                    targets.append(stack_name)
+            except Exception:
+                pass
+
+    if not targets:
+        click.echo("Error: No zae-limiter stacks found", err=True)
+        sys.exit(1)
+
+    result: str = questionary.select("Select target stack:", choices=targets).ask()
+    return result
+
+
+def _select_vpc(region: str | None) -> str:
+    """Interactively select a VPC."""
+    import questionary
+
+    ec2 = boto3.client("ec2", region_name=region)
+    vpcs = ec2.describe_vpcs()["Vpcs"]
+
+    if not vpcs:
+        click.echo("Error: No VPCs found", err=True)
+        sys.exit(1)
+
+    choices = []
+    for vpc in vpcs:
+        vid = vpc["VpcId"]
+        name = next((t["Value"] for t in vpc.get("Tags", []) if t["Key"] == "Name"), "")
+        label = f"{vid} ({name})" if name else vid
+        choices.append(questionary.Choice(title=label, value=vid))
+
+    result: str = questionary.select("Select VPC:", choices=choices).ask()
+    return result
+
+
+def _select_subnets(region: str | None, vpc_id: str) -> str:
+    """Interactively select subnets (multi-select)."""
+    import questionary
+
+    ec2 = boto3.client("ec2", region_name=region)
+    subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])["Subnets"]
+
+    if not subnets:
+        click.echo(f"Error: No subnets found in VPC {vpc_id}", err=True)
+        sys.exit(1)
+
+    choices = []
+    for subnet in subnets:
+        subnet_id = subnet["SubnetId"]
+        az = subnet["AvailabilityZone"]
+        name = next((t["Value"] for t in subnet.get("Tags", []) if t["Key"] == "Name"), "")
+        label = f"{subnet_id} ({az}, {name})" if name else f"{subnet_id} ({az})"
+        choices.append(questionary.Choice(title=label, value=subnet_id))
+
+    selected = questionary.checkbox("Select subnets (at least 2):", choices=choices).ask()
+
+    if not selected or len(selected) < 2:
+        click.echo("Error: Select at least 2 subnets", err=True)
+        sys.exit(1)
+
+    return ",".join(selected)
+
+
 @click.group()
 def stress() -> None:
     """Stress testing commands for zae-limiter."""
@@ -16,10 +99,10 @@ def stress() -> None:
 
 
 @stress.command()
-@click.option("--target", "-t", required=True, help="Target zae-limiter stack name")
+@click.option("--target", "-t", default=None, help="Target zae-limiter stack name")
 @click.option("--region", default=None, help="AWS region")
-@click.option("--vpc-id", required=True, help="VPC ID for stress test resources")
-@click.option("--subnet-ids", required=True, help="Comma-separated private subnet IDs")
+@click.option("--vpc-id", default=None, help="VPC ID for stress test resources")
+@click.option("--subnet-ids", default=None, help="Comma-separated private subnet IDs")
 @click.option("--max-workers", default=100, type=int, help="Maximum Lambda worker concurrency")
 @click.option(
     "--lambda-timeout",
@@ -33,10 +116,10 @@ def stress() -> None:
     help="Create VPC endpoints for SSM (not needed if VPC has NAT gateway)",
 )
 def deploy(
-    target: str,
+    target: str | None,
     region: str | None,
-    vpc_id: str,
-    subnet_ids: str,
+    vpc_id: str | None,
+    subnet_ids: str | None,
     max_workers: int,
     lambda_timeout: int,
     create_vpc_endpoints: bool,
@@ -44,6 +127,14 @@ def deploy(
     """Deploy stress test infrastructure."""
     from .builder import build_and_push_locust_image, get_zae_limiter_source
     from .lambda_builder import build_stress_lambda_package
+
+    # Interactive prompts for missing options
+    if not target:
+        target = _select_target(region)
+    if not vpc_id:
+        vpc_id = _select_vpc(region)
+    if not subnet_ids:
+        subnet_ids = _select_subnets(region, vpc_id)
 
     name = f"{target}-stress"
     click.echo(f"Deploying stress test stack: {name}")
