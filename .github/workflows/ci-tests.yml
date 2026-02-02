@@ -103,7 +103,8 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:4566
       - name: Run integration tests
-        run: uv run pytest -m integration -v --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        # -n 0 disables xdist to maximize module-scoped fixture sharing (ADR-121)
+        run: uv run pytest -m integration -v -n 0 --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
