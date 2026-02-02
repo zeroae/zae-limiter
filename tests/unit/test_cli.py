@@ -4516,3 +4516,72 @@ class TestEntityListCommand:
 
         assert result.exit_code == 1
         assert "Invalid resource name" in result.output
+
+
+class TestEntityListResourcesCommand:
+    """Test entity list-resources command."""
+
+    def test_entity_list_resources_help(self, runner: CliRunner) -> None:
+        """Test entity list-resources command help."""
+        result = runner.invoke(cli, ["entity", "list-resources", "--help"])
+        assert result.exit_code == 0
+        assert "List resources with entity-level custom limit configurations" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_list_resources_returns_results(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity list-resources returns resource names."""
+        mock_repo = Mock()
+        mock_repo.list_resources_with_entity_configs = AsyncMock(return_value=["claude-3", "gpt-4"])
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "list-resources", "--name", "test-limiter"])
+
+        assert result.exit_code == 0
+        assert "gpt-4" in result.output
+        assert "claude-3" in result.output
+        mock_repo.list_resources_with_entity_configs.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_list_resources_empty(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity list-resources with no results."""
+        mock_repo = Mock()
+        mock_repo.list_resources_with_entity_configs = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "list-resources", "--name", "test-limiter"])
+
+        assert result.exit_code == 0
+        assert "No resources with entity-level custom limits" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_list_resources_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity list-resources handles exceptions gracefully."""
+        mock_repo = Mock()
+        mock_repo.list_resources_with_entity_configs = AsyncMock(
+            side_effect=Exception("Connection failed")
+        )
+        mock_repo.close = AsyncMock()
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "list-resources", "--name", "test-limiter"])
+
+        assert result.exit_code == 1
+        assert "Connection failed" in result.output
+
+    def test_entity_list_resources_validation_error(self, runner: CliRunner) -> None:
+        """Test entity list-resources handles ValidationError during Repository init."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+
+            result = runner.invoke(cli, ["entity", "list-resources", "--name", "bad_name"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output

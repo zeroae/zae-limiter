@@ -1036,8 +1036,43 @@ class Repository:
         # Add l_* attributes for each limit
         self._serialize_composite_limits(limits, item)
 
-        # Single PutItem replaces any existing config for this entity+resource
-        await client.put_item(TableName=self.table_name, Item=item)
+        # Use transaction to atomically create config + increment registry (issue #288)
+        # This prevents race conditions where concurrent creates both increment
+        try:
+            await client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Put": {
+                            "TableName": self.table_name,
+                            "Item": item,
+                            "ConditionExpression": "attribute_not_exists(PK)",
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": self.table_name,
+                            "Key": {
+                                "PK": {"S": schema.pk_system()},
+                                "SK": {"S": schema.sk_entity_config_resources()},
+                            },
+                            "UpdateExpression": "ADD #resource :one",
+                            "ExpressionAttributeNames": {"#resource": resource},
+                            "ExpressionAttributeValues": {":one": {"N": "1"}},
+                        }
+                    },
+                ]
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "TransactionCanceledException":
+                # Check if cancellation was due to condition failure (UPDATE case)
+                reasons = e.response.get("CancellationReasons", [])
+                if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
+                    # Config already exists - UPDATE case, just overwrite
+                    await client.put_item(TableName=self.table_name, Item=item)
+                else:
+                    raise
+            else:
+                raise
 
         # Sync bucket static params if bucket exists (issue #294)
         await self._sync_bucket_params(entity_id, resource, limits)
@@ -1124,6 +1159,31 @@ class Repository:
                 return
             raise
 
+    async def _cleanup_entity_config_registry(self, resource: str) -> None:
+        """Remove resource from entity config registry if count <= 0.
+
+        Called after decrementing to clean up zero/negative counts.
+        Uses conditional REMOVE to avoid race conditions.
+        """
+        client = await self._get_client()
+
+        try:
+            await client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_system()},
+                    "SK": {"S": schema.sk_entity_config_resources()},
+                },
+                UpdateExpression="REMOVE #resource",
+                ConditionExpression="#resource <= :zero",
+                ExpressionAttributeNames={"#resource": resource},
+                ExpressionAttributeValues={":zero": {"N": "0"}},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            # Count > 0, which is expected - nothing to clean up
+
     async def get_limits(
         self,
         entity_id: str,
@@ -1170,14 +1230,49 @@ class Repository:
         """
         client = await self._get_client()
 
-        # Single DeleteItem removes the composite config
-        await client.delete_item(
-            TableName=self.table_name,
-            Key={
-                "PK": {"S": schema.pk_entity(entity_id)},
-                "SK": {"S": schema.sk_config(resource)},
-            },
-        )
+        # Use transaction to atomically delete config + decrement registry (issue #288)
+        # This prevents double-decrement if delete_limits is called twice
+        try:
+            await client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Delete": {
+                            "TableName": self.table_name,
+                            "Key": {
+                                "PK": {"S": schema.pk_entity(entity_id)},
+                                "SK": {"S": schema.sk_config(resource)},
+                            },
+                            "ConditionExpression": "attribute_exists(PK)",
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": self.table_name,
+                            "Key": {
+                                "PK": {"S": schema.pk_system()},
+                                "SK": {"S": schema.sk_entity_config_resources()},
+                            },
+                            "UpdateExpression": "ADD #resource :minus_one",
+                            "ExpressionAttributeNames": {"#resource": resource},
+                            "ExpressionAttributeValues": {":minus_one": {"N": "-1"}},
+                        }
+                    },
+                ]
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "TransactionCanceledException":
+                # Check if cancellation was due to condition failure (item doesn't exist)
+                reasons = e.response.get("CancellationReasons", [])
+                if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
+                    # Config doesn't exist - nothing to delete, skip audit
+                    return
+                else:
+                    raise
+            else:
+                raise
+
+        # Cleanup: remove registry attribute if count <= 0
+        await self._cleanup_entity_config_registry(resource)
 
         # Log audit event
         await self._log_audit_event(
@@ -1242,6 +1337,42 @@ class Repository:
             ).decode()
 
         return entity_ids, next_cursor
+
+    async def list_resources_with_entity_configs(self) -> list[str]:
+        """
+        List all resources that have entity-level custom limit configs.
+
+        Uses the entity config resources registry (wide column with ref counts)
+        for efficient O(1) lookup. Returns resources with count > 0.
+
+        Returns:
+            Sorted list of resource names with at least one entity having custom limits
+        """
+        client = await self._get_client()
+
+        # Read from entity config resources registry (single GetItem: 1 RCU)
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_entity_config_resources()},
+            },
+            ConsistentRead=False,
+        )
+
+        # Extract resource names from numeric attributes (wide column pattern)
+        item = response.get("Item", {})
+        resources = []
+        for attr_name, attr_value in item.items():
+            # Skip key attributes
+            if attr_name in ("PK", "SK"):
+                continue
+            # Include resources with count > 0
+            count_str = attr_value.get("N")
+            if count_str is not None and int(count_str) > 0:
+                resources.append(attr_name)
+
+        return sorted(resources)
 
     # -------------------------------------------------------------------------
     # Resource-level limit config operations (composite format, ADR-114)

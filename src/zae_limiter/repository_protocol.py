@@ -395,6 +395,17 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def list_resources_with_entity_configs(self) -> list[str]:
+        """
+        List all resources that have entity-level custom limit configurations.
+
+        Uses the entity config resources registry for efficient O(1) lookup.
+
+        Returns:
+            Sorted list of resource names with at least one entity having custom limits
+        """
+        ...
+
     # -------------------------------------------------------------------------
     # Resource-level defaults
     # -------------------------------------------------------------------------

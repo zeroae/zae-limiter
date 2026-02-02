@@ -505,3 +505,114 @@ class TestBucketTTLDowngrade:
         item = await limiter._repository._get_item(pk_entity("user-downgrade"), sk_bucket("api"))
         assert item is not None, "Bucket should still exist"
         assert "ttl" in item, "Default config entity should have TTL after downgrade"
+
+
+class TestEntityConfigRegistry:
+    """Integration tests for entity config registry (issue #288).
+
+    Tests verify real transaction atomicity and race condition handling
+    in LocalStack DynamoDB.
+    """
+
+    @pytest.mark.asyncio
+    async def test_set_limits_transaction_atomicity(self, localstack_repo):
+        """Verify set_limits atomically creates config AND increments registry."""
+        repo = localstack_repo
+
+        await repo.create_entity("user-1")
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        # Set limits - should atomically create config + increment registry
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+
+        # Verify both operations succeeded
+        stored_limits = await repo.get_limits("user-1", resource="gpt-4")
+        assert len(stored_limits) == 1
+        assert stored_limits[0].name == "rpm"
+
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" in resources
+
+    @pytest.mark.asyncio
+    async def test_delete_limits_transaction_atomicity(self, localstack_repo):
+        """Verify delete_limits atomically removes config AND decrements registry."""
+        repo = localstack_repo
+
+        await repo.create_entity("user-1")
+        limits = [Limit.per_minute("rpm", 1000)]
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+
+        # Delete limits - should atomically delete config + decrement registry
+        await repo.delete_limits("user-1", resource="gpt-4")
+
+        # Verify both operations succeeded
+        stored_limits = await repo.get_limits("user-1", resource="gpt-4")
+        assert stored_limits == []
+
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" not in resources
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_config_no_side_effects(self, localstack_repo):
+        """Deleting non-existent config should not affect registry or create audit."""
+        repo = localstack_repo
+
+        await repo.create_entity("user-1")
+
+        # Delete limits that don't exist
+        await repo.delete_limits("user-1", resource="gpt-4")
+
+        # Registry should be empty (no decrement to negative)
+        resources = await repo.list_resources_with_entity_configs()
+        assert resources == []
+
+    @pytest.mark.asyncio
+    async def test_registry_cleanup_at_zero(self, localstack_repo):
+        """Verify registry attribute is removed when count reaches zero."""
+        repo = localstack_repo
+
+        await repo.create_entity("user-1")
+        await repo.create_entity("user-2")
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        # Create two configs for same resource
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+        await repo.set_limits("user-2", limits, resource="gpt-4")
+
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" in resources
+
+        # Delete both - count should reach 0 and attribute removed
+        await repo.delete_limits("user-1", resource="gpt-4")
+        await repo.delete_limits("user-2", resource="gpt-4")
+
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" not in resources
+
+    @pytest.mark.asyncio
+    async def test_update_existing_config_no_double_count(self, localstack_repo):
+        """Updating existing config should not increment registry twice."""
+        from zae_limiter import schema
+
+        repo = localstack_repo
+
+        await repo.create_entity("user-1")
+        limits1 = [Limit.per_minute("rpm", 1000)]
+        limits2 = [Limit.per_minute("rpm", 2000)]
+
+        # Set limits twice (second is UPDATE, not NEW)
+        await repo.set_limits("user-1", limits1, resource="gpt-4")
+        await repo.set_limits("user-1", limits2, resource="gpt-4")
+
+        # Verify registry count is exactly 1
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_entity_config_resources()},
+            },
+        )
+        item = response.get("Item", {})
+        count = int(item.get("gpt-4", {}).get("N", "0"))
+        assert count == 1, "Registry should have count=1, not 2"

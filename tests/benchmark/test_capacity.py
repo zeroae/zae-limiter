@@ -279,8 +279,12 @@ class TestCapacityConsumption:
             sync_limiter.set_limits("cap-set-limits", limits)
 
         # Verify capacity consumption with composite limits
-        # PutItem: 1 composite config + 1 audit event = 2
-        assert capacity_counter.put_item == 2, "Should put 1 composite config + 1 audit event"
+        # TransactWriteItems: 1 composite config + 1 registry increment (issue #288)
+        # PutItem: 1 audit event
+        assert capacity_counter.transact_write_items == [2], (
+            "Should transact 1 config + 1 registry increment"
+        )
+        assert capacity_counter.put_item == 1, "Should put 1 audit event"
 
     def test_delete_entity_capacity(self, sync_limiter, capacity_counter):
         """Verify: delete_entity() batches in 25-item chunks.

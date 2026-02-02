@@ -3304,6 +3304,85 @@ def entity_list(
     asyncio.run(_list())
 
 
+@entity.command(
+    "list-resources",
+    epilog="""\b
+Examples:
+    \b
+    # List resources with entity-level custom limits
+    zae-limiter entity list-resources
+    \b
+    # List for a specific stack
+    zae-limiter entity list-resources --name prod-limiter
+""",
+)
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def entity_list_resources(
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """List resources with entity-level custom limit configurations.
+
+    Shows which resources have at least one entity with custom limits.
+    Uses the entity config resources registry for fast O(1) lookup.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity list-resources
+        zae-limiter entity list-resources --name prod
+        ```
+
+    **Sample Output:**
+        ```
+        Resources with entity-level custom limits:
+          gpt-4
+          claude-3
+        ```
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _list() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            resources = await repo.list_resources_with_entity_configs()
+            if not resources:
+                click.echo("No resources with entity-level custom limits")
+                return
+
+            click.echo("Resources with entity-level custom limits:")
+            for res in resources:
+                click.echo(f"  {res}")
+        except Exception as e:
+            click.echo(f"Error: Failed to list resources: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_list())
+
+
 # ---------------------------------------------------------------------------
 # Local development commands
 # ---------------------------------------------------------------------------

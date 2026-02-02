@@ -849,6 +849,37 @@ class TestSyncListEntitiesWithCustomLimits:
         # cursor may or may not be None depending on moto behavior
 
 
+class TestSyncRateLimiterListResourcesWithEntityConfigs:
+    """Tests for SyncRateLimiter.list_resources_with_entity_configs (issue #288)."""
+
+    def test_list_resources_with_entity_configs_empty(self, sync_limiter):
+        """Returns empty list when no entity configs exist."""
+        resources = sync_limiter.list_resources_with_entity_configs()
+        assert resources == []
+
+    def test_list_resources_with_entity_configs_returns_resources(self, sync_limiter):
+        """Returns resources that have entity-level configs."""
+        # Set entity-level limits for multiple resources
+        sync_limiter.set_limits("entity-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        sync_limiter.set_limits("entity-2", [Limit.per_minute("rpm", 200)], resource="claude-3")
+
+        resources = sync_limiter.list_resources_with_entity_configs()
+        assert set(resources) == {"gpt-4", "claude-3"}
+
+    def test_list_resources_with_entity_configs_after_delete(self, sync_limiter):
+        """Resource removed from list after all entity configs deleted."""
+        sync_limiter.set_limits("entity-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+
+        # Verify resource is listed
+        assert "gpt-4" in sync_limiter.list_resources_with_entity_configs()
+
+        # Delete the config
+        sync_limiter.delete_limits("entity-1", resource="gpt-4")
+
+        # Verify resource is no longer listed
+        assert "gpt-4" not in sync_limiter.list_resources_with_entity_configs()
+
+
 class TestSyncRateLimiterBucketTTL:
     """Tests for sync bucket TTL configuration (Issue #271)."""
 

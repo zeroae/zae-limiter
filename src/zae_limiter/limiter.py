@@ -1255,6 +1255,24 @@ class RateLimiter:
         await self._ensure_initialized()
         return await self._repository.list_entities_with_custom_limits(resource, limit, cursor)
 
+    async def list_resources_with_entity_configs(self) -> list[str]:
+        """
+        List all resources that have entity-level custom limit configurations.
+
+        Uses the entity config resources registry for efficient O(1) lookup.
+
+        Returns:
+            Sorted list of resource names with at least one entity having custom limits
+
+        Example:
+            resources = await limiter.list_resources_with_entity_configs()
+            for resource in resources:
+                entities, _ = await limiter.list_entities_with_custom_limits(resource)
+                print(f"{resource}: {len(entities)} entities with custom limits")
+        """
+        await self._ensure_initialized()
+        return await self._repository.list_resources_with_entity_configs()
+
     # -------------------------------------------------------------------------
     # Resource-level defaults management
     # -------------------------------------------------------------------------
@@ -2037,6 +2055,10 @@ class SyncRateLimiter:
     ) -> tuple[list[str], str | None]:
         """List all entities that have custom limit configurations."""
         return self._run(self._limiter.list_entities_with_custom_limits(resource, limit, cursor))
+
+    def list_resources_with_entity_configs(self) -> list[str]:
+        """List all resources that have entity-level custom limit configurations."""
+        return self._run(self._limiter.list_resources_with_entity_configs())
 
     # -------------------------------------------------------------------------
     # Resource-level defaults management

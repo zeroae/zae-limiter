@@ -29,6 +29,7 @@ SK_VERSION = "#VERSION"
 SK_AUDIT = "#AUDIT#"
 SK_CONFIG = "#CONFIG"
 SK_RESOURCES = "#RESOURCES"
+SK_ENTITY_CONFIG_RESOURCES = "#ENTITY_CONFIG_RESOURCES"
 
 # Partition key prefix for audit logs
 AUDIT_PREFIX = "AUDIT#"
@@ -157,6 +158,11 @@ def sk_resource_limit_prefix() -> str:
 def sk_resources() -> str:
     """Build sort key for resource registry record (tracks all resources with defaults)."""
     return SK_RESOURCES
+
+
+def sk_entity_config_resources() -> str:
+    """Build sort key for entity config resources registry (wide column with ref counts)."""
+    return SK_ENTITY_CONFIG_RESOURCES
 
 
 def sk_config(resource: str | None = None) -> str:
