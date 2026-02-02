@@ -805,8 +805,8 @@ class TestRateLimiterSystemDefaults:
         assert retrieved[0].name == "tpm"
 
 
-class TestRateLimiterThreeTierResolution:
-    """Tests for three-tier limit resolution: Entity > Resource > System > Override."""
+class TestRateLimiterFourTierResolution:
+    """Tests for four-tier limit resolution: Entity > Entity Default > Resource > System."""
 
     async def test_resolution_entity_level(self, limiter):
         """Test that entity-level limits take precedence."""
@@ -824,18 +824,16 @@ class TestRateLimiterThreeTierResolution:
         ):
             pass  # Should succeed
 
-    @pytest.mark.xfail(reason="Issue #297: Entity _default_ not used as fallback")
     async def test_resolution_entity_default_fallback(self, limiter):
-        """Entity _default_ config should be used when no resource-specific entity config exists.
+        """Entity _default_ config is used when no resource-specific entity config exists.
 
-        Expected resolution for acquire(entity_id="user-1", resource="gpt-4"):
+        Resolution for acquire(entity_id="user-1", resource="gpt-4"):
         1. Entity config for "gpt-4"? -> No
-        2. Entity config for "_default_"? -> Yes (100 rpm) <- SHOULD USE THIS
+        2. Entity config for "_default_"? -> Yes (100 rpm) <- USED
         3. Resource defaults for "gpt-4"? -> Yes (50 rpm)
         4. System defaults? -> Yes (10 rpm)
 
-        Current bug: Step 2 is skipped, so resource defaults (50 rpm) are used instead
-        of entity's _default_ config (100 rpm).
+        Entity's _default_ config (100 rpm) takes precedence over resource defaults (50 rpm).
         """
         # Set system and resource defaults
         await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])

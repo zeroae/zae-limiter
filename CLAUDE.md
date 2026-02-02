@@ -440,7 +440,7 @@ docs/
 
 ### Centralized Configuration (v0.5.0+)
 
-Limit configs use a three-level hierarchy with precedence: **Entity > Resource > System > Constructor defaults**.
+Limit configs use a four-level hierarchy with precedence: **Entity (resource-specific) > Entity (_default_) > Resource > System > Constructor defaults**.
 
 **API methods for managing stored limits:**
 

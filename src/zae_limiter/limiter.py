@@ -672,8 +672,8 @@ class RateLimiter:
         """
         Acquire rate limit capacity.
 
-        Limits are resolved automatically from stored config using three-tier
-        hierarchy: Entity > Resource > System. Pass ``limits`` to override.
+        Limits are resolved automatically from stored config using four-tier
+        hierarchy: Entity > Entity Default > Resource > System. Pass ``limits`` to override.
 
         Cascade behavior is controlled by the entity's ``cascade`` flag, set at
         entity creation time via ``create_entity(cascade=True)``. When enabled,
@@ -937,16 +937,19 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         limits_override: list[Limit] | None,
-    ) -> tuple[list[Limit], Literal["entity", "resource", "system", "override"]]:
+    ) -> tuple[list[Limit], Literal["entity", "entity_default", "resource", "system", "override"]]:
         """
-        Resolve limits using three-tier hierarchy: Entity > Resource > System > Override.
+        Resolve limits using four-tier hierarchy.
+
+        Hierarchy: Entity > Entity Default > Resource > System > Override.
 
         Resolution order:
-        1. Entity-level config for this resource
-        2. Resource-level defaults (if entity config is empty)
-        3. System-level defaults (if resource config is empty)
-        4. Override parameter (if all configs are empty)
-        5. ValidationError (if no limits found anywhere)
+        1. Entity-level config for this specific resource
+        2. Entity-level _default_ config (fallback for all resources)
+        3. Resource-level defaults (if entity configs are empty)
+        4. System-level defaults (if resource config is empty)
+        5. Override parameter (if all configs are empty)
+        6. ValidationError (if no limits found anywhere)
 
         Uses config cache to reduce DynamoDB reads.
 
@@ -957,7 +960,8 @@ class RateLimiter:
 
         Returns:
             Tuple of (limits, config_source) where config_source is one of:
-            - "entity": Entity-level config
+            - "entity": Entity-level config for specific resource
+            - "entity_default": Entity-level _default_ config
             - "resource": Resource-level defaults
             - "system": System-level defaults
             - "override": Override parameter provided
@@ -965,7 +969,7 @@ class RateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        # Try Entity level (with caching and negative caching)
+        # Try Entity level for specific resource (with caching and negative caching)
         entity_limits = await self._config_cache.get_entity_limits(
             entity_id,
             resource,
@@ -973,6 +977,16 @@ class RateLimiter:
         )
         if entity_limits:
             return entity_limits, "entity"
+
+        # Try Entity level _default_ (fallback for entities with no resource-specific config)
+        if resource != DEFAULT_RESOURCE:
+            entity_default_limits = await self._config_cache.get_entity_limits(
+                entity_id,
+                DEFAULT_RESOURCE,
+                self._repository.get_limits,
+            )
+            if entity_default_limits:
+                return entity_default_limits, "entity_default"
 
         # Try Resource level (with caching)
         resource_limits = await self._config_cache.get_resource_defaults(
@@ -999,8 +1013,8 @@ class RateLimiter:
             value=f"entity={entity_id}, resource={resource}",
             reason=(
                 f"No limits configured for entity '{entity_id}' and resource '{resource}'. "
-                "Configure limits at entity, resource, or system level, "
-                "or provide limits parameter."
+                "Configure limits at entity (resource-specific or _default_), resource, "
+                "or system level, or provide limits parameter."
             ),
         )
 
@@ -1043,7 +1057,7 @@ class RateLimiter:
         """
         Check available capacity without consuming.
 
-        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        Limits are resolved using four-tier hierarchy: Entity > Entity Default > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
 
         Returns minimum available across entity (and parent if cascade).
@@ -1075,7 +1089,7 @@ class RateLimiter:
                 stacklevel=2,
             )
 
-        # Resolve limits using three-tier hierarchy
+        # Resolve limits using four-tier hierarchy
         resolved_limits, _ = await self._resolve_limits(entity_id, resource, limits)
 
         result: dict[str, int] = {}
@@ -1099,7 +1113,7 @@ class RateLimiter:
         """
         Calculate seconds until requested capacity is available.
 
-        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        Limits are resolved using four-tier hierarchy: Entity > Entity Default > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
 
         Args:
@@ -1129,7 +1143,7 @@ class RateLimiter:
                 stacklevel=2,
             )
 
-        # Resolve limits using three-tier hierarchy
+        # Resolve limits using four-tier hierarchy
         resolved_limits, _ = await self._resolve_limits(entity_id, resource, limits)
 
         max_wait = 0.0
@@ -1902,8 +1916,8 @@ class SyncRateLimiter:
         """
         Acquire rate limit capacity (synchronous).
 
-        Limits are resolved automatically from stored config using three-tier
-        hierarchy: Entity > Resource > System. Pass ``limits`` to override.
+        Limits are resolved automatically from stored config using four-tier
+        hierarchy: Entity > Entity Default > Resource > System. Pass ``limits`` to override.
 
         Cascade behavior is controlled by the entity's ``cascade`` flag, set at
         entity creation time via ``create_entity(cascade=True)``.
@@ -1948,7 +1962,7 @@ class SyncRateLimiter:
         """
         Check available capacity without consuming.
 
-        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        Limits are resolved using four-tier hierarchy: Entity > Entity Default > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
         """
         return self._run(
@@ -1971,7 +1985,7 @@ class SyncRateLimiter:
         """
         Calculate seconds until requested capacity is available.
 
-        Limits are resolved using three-tier hierarchy: Entity > Resource > System.
+        Limits are resolved using four-tier hierarchy: Entity > Entity Default > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
         """
         return self._run(

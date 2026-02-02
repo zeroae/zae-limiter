@@ -148,7 +148,7 @@ See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
 }
 ```
 
-Limit configs use three-level precedence: **Entity > Resource > System > Constructor defaults**.
+Limit configs use four-level precedence: **Entity (resource-specific) > Entity (_default_) > Resource > System > Constructor defaults**.
 
 **Key builders:**
 

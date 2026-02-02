@@ -2922,8 +2922,8 @@ Examples:
     "--resource",
     "-r",
     "resource_name",
-    required=True,
-    help="Resource name (e.g., 'gpt-4', 'claude-3')",
+    default="_default_",
+    help="Resource name (e.g., 'gpt-4', '_default_' for all resources). Default: _default_",
 )
 @click.option(
     "--name",
@@ -3026,8 +3026,8 @@ Examples:
     "--resource",
     "-r",
     "resource_name",
-    required=True,
-    help="Resource name (e.g., 'gpt-4', 'claude-3')",
+    default="_default_",
+    help="Resource name (e.g., 'gpt-4', '_default_' for all resources). Default: _default_",
 )
 @click.option(
     "--name",
@@ -3119,8 +3119,8 @@ Examples:
     "--resource",
     "-r",
     "resource_name",
-    required=True,
-    help="Resource name (e.g., 'gpt-4', 'claude-3')",
+    default="_default_",
+    help="Resource name (e.g., 'gpt-4', '_default_' for all resources). Default: _default_",
 )
 @click.option(
     "--name",
