@@ -6,6 +6,7 @@ Usage:
 
 Uses greenlet-local SyncRateLimiter instances to avoid asyncio event loop
 conflicts. Each gevent greenlet gets its own limiter with its own event loop.
+nest_asyncio allows nested event loops (needed for gevent + asyncio).
 """
 
 from __future__ import annotations
@@ -13,12 +14,16 @@ from __future__ import annotations
 import random
 import time
 
-from gevent.local import local as greenlet_local
-from locust import User, between, task
+import nest_asyncio
 
-from zae_limiter import RateLimitExceeded, SyncRateLimiter
-from zae_limiter.stress.config import StressConfig
-from zae_limiter.stress.distribution import TrafficDistributor
+nest_asyncio.apply()
+
+from gevent.local import local as greenlet_local  # noqa: E402
+from locust import User, between, task  # noqa: E402
+
+from zae_limiter import RateLimitExceeded, SyncRateLimiter  # noqa: E402
+from zae_limiter.stress.config import StressConfig  # noqa: E402
+from zae_limiter.stress.distribution import TrafficDistributor  # noqa: E402
 
 # Greenlet-local storage for limiters (avoids event loop conflicts)
 _greenlet_state = greenlet_local()
