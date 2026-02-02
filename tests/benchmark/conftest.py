@@ -205,20 +205,25 @@ def capacity_counter(sync_limiter: Any) -> Generator[CapacityCounter, None, None
     yield counter
 
 
-@pytest.fixture
+@pytest.fixture(scope="class")
 def sync_localstack_limiter_with_aggregator(
-    localstack_endpoint, aggregator_stack_options, unique_name
+    localstack_endpoint, aggregator_stack_options, unique_name_class
 ):
     """SyncRateLimiter with Lambda aggregator for benchmark tests.
 
     Creates a LocalStack-based limiter with aggregator Lambda enabled
     for benchmarking cold start and warm start latency.
 
-    This fixture is primarily used for Lambda cold/warm start benchmarks
-    that require the aggregator function to be deployed.
+    This fixture is class-scoped to share a single stack across all tests
+    within TestLambdaColdStartBenchmarks. This is intentional:
+    - First test in class = cold start (fresh Lambda)
+    - Subsequent tests = warm start (reused container)
+
+    Tests MUST use unique_entity_prefix for entity ID isolation.
+    See issue #253 for details.
     """
     limiter = SyncRateLimiter(
-        name=unique_name,
+        name=unique_name_class,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=aggregator_stack_options,

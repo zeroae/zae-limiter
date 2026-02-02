@@ -26,14 +26,12 @@ LocalStack to spawn Lambda functions as Docker containers.
 import asyncio
 
 import pytest
-import pytest_asyncio
 from click.testing import CliRunner
 
 from zae_limiter import (
     Limit,
     RateLimiter,
     RateLimitExceeded,
-    StackOptions,
     SyncRateLimiter,
     __version__,
 )
@@ -503,33 +501,15 @@ class TestE2ELocalStackCLIWorkflow:
 
 
 class TestE2ELocalStackFullWorkflow:
-    """E2E tests for full rate limiting workflow."""
+    """E2E tests for full rate limiting workflow.
 
-    @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter(self, localstack_endpoint, unique_name_class, e2e_stack_options):
-        """
-        Create and manage the RateLimiter with CloudFormation stack for all tests in this class.
+    Uses module-scoped fixture with unique_entity_prefix for data isolation.
+    """
 
-        This fixture creates the stack once when the first test runs and
-        deletes it after all tests in the class complete.
-        """
-        limiter = RateLimiter(
-            name=unique_name_class,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=e2e_stack_options,
-        )
-
-        async with limiter:
-            yield limiter
-
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
-
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_hierarchical_rate_limiting_workflow(self, e2e_limiter):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_hierarchical_rate_limiting_workflow(
+        self, e2e_limiter_module, unique_entity_prefix
+    ):
         """
         Test hierarchical rate limiting with parent-child entities.
 
@@ -539,23 +519,26 @@ class TestE2ELocalStackFullWorkflow:
         3. Consume from child with cascade
         4. Verify both are affected
         """
+        parent_id = f"{unique_entity_prefix}-org-acme"
+        child_id = f"{unique_entity_prefix}-api-key-123"
+
         # Create parent organization
-        parent = await e2e_limiter.create_entity("org-acme", name="ACME Organization")
-        assert parent.id == "org-acme"
+        parent = await e2e_limiter_module.create_entity(parent_id, name="ACME Organization")
+        assert parent.id == parent_id
 
         # Create child API key
-        child = await e2e_limiter.create_entity(
-            "api-key-123",
+        child = await e2e_limiter_module.create_entity(
+            child_id,
             name="Production API Key",
-            parent_id="org-acme",
+            parent_id=parent_id,
             cascade=True,
         )
-        assert child.parent_id == "org-acme"
+        assert child.parent_id == parent_id
 
         # Verify parent-child relationship
-        children = await e2e_limiter.get_children("org-acme")
+        children = await e2e_limiter_module.get_children(parent_id)
         assert len(children) == 1
-        assert children[0].id == "api-key-123"
+        assert children[0].id == child_id
 
         # Use per_hour limits to prevent refill during test execution
         # per_minute refills ~1.67 tokens/second, per_hour refills ~0.028 tokens/second
@@ -565,8 +548,8 @@ class TestE2ELocalStackFullWorkflow:
         ]
 
         # Consume from child with cascade
-        async with e2e_limiter.acquire(
-            entity_id="api-key-123",
+        async with e2e_limiter_module.acquire(
+            entity_id=child_id,
             resource="gpt-4",
             limits=limits,
             consume={"rph": 1, "tph": 500},
@@ -576,13 +559,13 @@ class TestE2ELocalStackFullWorkflow:
             assert lease.consumed["tph"] == 1000  # 500 from each
 
         # Verify both entities have reduced capacity
-        child_available = await e2e_limiter.available(
-            entity_id="api-key-123",
+        child_available = await e2e_limiter_module.available(
+            entity_id=child_id,
             resource="gpt-4",
             limits=limits,
         )
-        parent_available = await e2e_limiter.available(
-            entity_id="org-acme",
+        parent_available = await e2e_limiter_module.available(
+            entity_id=parent_id,
             resource="gpt-4",
             limits=limits,
         )
@@ -591,8 +574,8 @@ class TestE2ELocalStackFullWorkflow:
         assert child_available["rph"] == 99, f"child rph={child_available['rph']}"
         assert parent_available["rph"] == 99, f"parent rph={parent_available['rph']}"
 
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_rate_limit_exceeded_workflow(self, e2e_limiter):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_rate_limit_exceeded_workflow(self, e2e_limiter_module, unique_entity_prefix):
         """
         Test rate limit exceeded scenario.
 
@@ -601,15 +584,16 @@ class TestE2ELocalStackFullWorkflow:
         2. Exhaust the limits
         3. Verify RateLimitExceeded with retry_after
         """
-        await e2e_limiter.create_entity("limited-user")
+        entity_id = f"{unique_entity_prefix}-limited-user"
+        await e2e_limiter_module.create_entity(entity_id)
 
         # Very low limit
         limits = [Limit.per_minute("rpm", 2)]
 
         # Exhaust the limit
         for _ in range(2):
-            async with e2e_limiter.acquire(
-                entity_id="limited-user",
+            async with e2e_limiter_module.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -618,8 +602,8 @@ class TestE2ELocalStackFullWorkflow:
 
         # Third request should fail
         with pytest.raises(RateLimitExceeded) as exc_info:
-            async with e2e_limiter.acquire(
-                entity_id="limited-user",
+            async with e2e_limiter_module.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -637,8 +621,8 @@ class TestE2ELocalStackFullWorkflow:
         assert "limits" in error_dict
         assert "retry_after_seconds" in error_dict
 
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_stored_limits_workflow(self, e2e_limiter):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_stored_limits_workflow(self, e2e_limiter_module, unique_entity_prefix):
         """
         Test stored limits with three-tier hierarchy (premium vs default tiers).
 
@@ -649,30 +633,34 @@ class TestE2ELocalStackFullWorkflow:
         4. Verify premium user has higher limits via entity config
         5. Verify free user falls back to resource config
         """
+        premium_id = f"{unique_entity_prefix}-premium-user"
+        free_id = f"{unique_entity_prefix}-free-user"
+        resource = f"{unique_entity_prefix}-api"
+
         # Invalidate cache to ensure fresh config resolution
-        await e2e_limiter.invalidate_config_cache()
+        await e2e_limiter_module.invalidate_config_cache()
 
-        await e2e_limiter.create_entity("premium-user")
-        await e2e_limiter.create_entity("free-user")
+        await e2e_limiter_module.create_entity(premium_id)
+        await e2e_limiter_module.create_entity(free_id)
 
-        # Set premium limits at entity level for "api" resource
+        # Set premium limits at entity level for resource
         premium_limits = [
             Limit.per_minute("rpm", 1000),
             Limit.per_minute("tpm", 100000),
         ]
-        await e2e_limiter.set_limits("premium-user", premium_limits, resource="api")
+        await e2e_limiter_module.set_limits(premium_id, premium_limits, resource=resource)
 
         # Set resource-level defaults as fallback (for free users)
         default_limits = [
             Limit.per_minute("rpm", 10),
             Limit.per_minute("tpm", 1000),
         ]
-        await e2e_limiter.set_resource_defaults("api", default_limits)
+        await e2e_limiter_module.set_resource_defaults(resource, default_limits)
 
         # Premium user uses entity-level limits (auto-resolved, no use_stored_limits needed)
-        async with e2e_limiter.acquire(
-            entity_id="premium-user",
-            resource="api",
+        async with e2e_limiter_module.acquire(
+            entity_id=premium_id,
+            resource=resource,
             limits=None,  # Let hierarchy resolve limits
             consume={"rpm": 1},
         ) as lease:
@@ -680,21 +668,21 @@ class TestE2ELocalStackFullWorkflow:
             assert lease.consumed["rpm"] == 1
 
         # Verify premium capacity uses entity-level limits
-        premium_available = await e2e_limiter.available(
-            entity_id="premium-user",
-            resource="api",
+        premium_available = await e2e_limiter_module.available(
+            entity_id=premium_id,
+            resource=resource,
         )
         assert premium_available["rpm"] > 900  # High limit (1000 - 1 = 999)
 
         # Free user falls back to resource-level defaults
-        free_available = await e2e_limiter.available(
-            entity_id="free-user",
-            resource="api",
+        free_available = await e2e_limiter_module.available(
+            entity_id=free_id,
+            resource=resource,
         )
         assert free_available["rpm"] == 10  # Default limit
 
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_lease_adjustment_workflow(self, e2e_limiter):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_lease_adjustment_workflow(self, e2e_limiter_module, unique_entity_prefix):
         """
         Test lease adjustment for post-hoc token counting (LLM tokens).
 
@@ -704,7 +692,8 @@ class TestE2ELocalStackFullWorkflow:
         3. Adjust lease with actual tokens
         4. Verify final token count
         """
-        await e2e_limiter.create_entity("llm-user")
+        entity_id = f"{unique_entity_prefix}-llm-user"
+        await e2e_limiter_module.create_entity(entity_id)
 
         limits = [
             Limit.per_minute("rpm", 100),
@@ -712,8 +701,8 @@ class TestE2ELocalStackFullWorkflow:
         ]
 
         # Acquire with estimated tokens (pre-call)
-        async with e2e_limiter.acquire(
-            entity_id="llm-user",
+        async with e2e_limiter_module.acquire(
+            entity_id=entity_id,
             resource="gpt-4",
             limits=limits,
             consume={"rpm": 1, "tpm": 100},  # Estimated
@@ -725,8 +714,8 @@ class TestE2ELocalStackFullWorkflow:
             await lease.adjust(tpm=actual_tokens - 100)  # Delta: +150
 
         # Verify correct tokens consumed
-        available = await e2e_limiter.available(
-            entity_id="llm-user",
+        available = await e2e_limiter_module.available(
+            entity_id=entity_id,
             resource="gpt-4",
             limits=limits,
         )
@@ -734,8 +723,8 @@ class TestE2ELocalStackFullWorkflow:
         assert available["tpm"] < 10000 - 150  # Consumed at least ~150 tokens
         assert available["tpm"] > 10000 - 350  # But not more than ~350
 
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_get_status_returns_comprehensive_info(self, e2e_limiter):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_get_status_returns_comprehensive_info(self, e2e_limiter_module):
         """
         Test get_status() returns comprehensive infrastructure information.
 
@@ -748,7 +737,7 @@ class TestE2ELocalStackFullWorkflow:
         """
         from zae_limiter import Status
 
-        status = await e2e_limiter.get_status()
+        status = await e2e_limiter_module.get_status()
 
         # Verify Status type
         assert isinstance(status, Status)
@@ -777,36 +766,13 @@ class TestE2ELocalStackFullWorkflow:
 
 
 class TestE2ELocalStackAggregatorWorkflow:
-    """E2E tests for Lambda aggregator and usage snapshots."""
+    """E2E tests for Lambda aggregator and usage snapshots.
 
-    @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter_with_aggregator(self, localstack_endpoint, unique_name_class):
-        """Create RateLimiter with aggregator enabled. Class-scoped to share stack."""
-        stack_options = StackOptions(
-            enable_aggregator=True,
-            enable_alarms=False,  # Faster deployment
-            snapshot_windows="hourly",
-            usage_retention_days=7,
-        )
+    Uses module-scoped fixture with unique_entity_prefix for data isolation.
+    """
 
-        limiter = RateLimiter(
-            name=unique_name_class,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=stack_options,
-        )
-
-        async with limiter:
-            yield limiter
-
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            # LocalStack may have issues with stack deletion, log but don't fail
-            print(f"Warning: Stack cleanup failed: {e}")
-
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_usage_snapshot_generation(self, e2e_limiter_with_aggregator):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_usage_snapshot_generation(self, e2e_limiter_module, unique_entity_prefix):
         """
         Test that aggregator creates usage snapshots.
 
@@ -814,14 +780,15 @@ class TestE2ELocalStackAggregatorWorkflow:
         require explicit triggering. This test verifies the workflow
         but may need adjustments based on LocalStack behavior.
         """
-        await e2e_limiter_with_aggregator.create_entity("snapshot-user")
+        entity_id = f"{unique_entity_prefix}-snapshot-user"
+        await e2e_limiter_module.create_entity(entity_id)
 
         limits = [Limit.per_minute("rpm", 100)]
 
         # Generate some token consumption
         for _ in range(5):
-            async with e2e_limiter_with_aggregator.acquire(
-                entity_id="snapshot-user",
+            async with e2e_limiter_module.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -834,7 +801,7 @@ class TestE2ELocalStackAggregatorWorkflow:
         # Query usage snapshots directly from DynamoDB
         # Note: In LocalStack, Lambda processing may not be reliable
         # This test verifies the infrastructure is set up correctly
-        repo = e2e_limiter_with_aggregator._repository
+        repo = e2e_limiter_module._repository
         client = await repo._get_client()
 
         # Query for BUCKET records to verify data exists
@@ -842,7 +809,7 @@ class TestE2ELocalStackAggregatorWorkflow:
             TableName=repo.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
-                ":pk": {"S": "ENTITY#snapshot-user"},
+                ":pk": {"S": f"ENTITY#{entity_id}"},
                 ":sk_prefix": {"S": "#BUCKET#"},
             },
         )
@@ -853,50 +820,28 @@ class TestE2ELocalStackAggregatorWorkflow:
 
 
 class TestE2ELocalStackErrorHandling:
-    """E2E tests for error handling scenarios."""
+    """E2E tests for error handling scenarios.
 
-    @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter_minimal(self, localstack_endpoint, unique_name_class):
-        """
-        Create and manage the minimal RateLimiter for all tests in this class.
+    Uses module-scoped fixture with unique_entity_prefix for data isolation.
+    """
 
-        This fixture creates the stack once when the first test runs and
-        deletes it after all tests in the class complete.
-        """
-        stack_options = StackOptions(
-            enable_aggregator=False,
-            enable_alarms=False,
-        )
-
-        limiter = RateLimiter(
-            name=unique_name_class,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=stack_options,
-        )
-
-        async with limiter:
-            yield limiter
-
-        try:
-            await limiter.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
-
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_concurrent_lease_acquisition(self, e2e_limiter_minimal):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_concurrent_lease_acquisition(
+        self, e2e_limiter_minimal_module, unique_entity_prefix
+    ):
         """
         Test concurrent lease acquisitions don't cause conflicts.
 
         Uses optimistic locking to handle concurrent updates.
         """
-        await e2e_limiter_minimal.create_entity("concurrent-user")
+        entity_id = f"{unique_entity_prefix}-concurrent-user"
+        await e2e_limiter_minimal_module.create_entity(entity_id)
 
         # Use per_hour to minimize refill during test (1000/hour = ~0.28/second)
         limits = [Limit.per_hour("rph", 1000)]
 
         async def acquire_lease(user_id: str):
-            async with e2e_limiter_minimal.acquire(
+            async with e2e_limiter_minimal_module.acquire(
                 entity_id=user_id,
                 resource="api",
                 limits=limits,
@@ -906,15 +851,15 @@ class TestE2ELocalStackErrorHandling:
             return True
 
         # Run multiple concurrent acquisitions
-        tasks = [acquire_lease("concurrent-user") for _ in range(10)]
+        tasks = [acquire_lease(entity_id) for _ in range(10)]
         results = await asyncio.gather(*tasks)
 
         # All should succeed
         assert all(results)
 
         # Verify tokens were consumed (concurrent operations may batch)
-        available = await e2e_limiter_minimal.available(
-            entity_id="concurrent-user",
+        available = await e2e_limiter_minimal_module.available(
+            entity_id=entity_id,
             resource="api",
             limits=limits,
         )
@@ -923,17 +868,20 @@ class TestE2ELocalStackErrorHandling:
         # The exact amount varies based on timing and retry behavior.
         assert available["rph"] < 1000, "Some tokens should have been consumed"
 
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_lease_rollback_on_exception(self, e2e_limiter_minimal):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_lease_rollback_on_exception(
+        self, e2e_limiter_minimal_module, unique_entity_prefix
+    ):
         """Test that lease is rolled back when exception occurs."""
-        await e2e_limiter_minimal.create_entity("rollback-user")
+        entity_id = f"{unique_entity_prefix}-rollback-user"
+        await e2e_limiter_minimal_module.create_entity(entity_id)
 
         limits = [Limit.per_minute("rpm", 100)]
 
         # Acquire and raise exception
         try:
-            async with e2e_limiter_minimal.acquire(
-                entity_id="rollback-user",
+            async with e2e_limiter_minimal_module.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 10},
@@ -943,28 +891,29 @@ class TestE2ELocalStackErrorHandling:
             pass
 
         # Tokens should be returned (rollback)
-        available = await e2e_limiter_minimal.available(
-            entity_id="rollback-user",
+        available = await e2e_limiter_minimal_module.available(
+            entity_id=entity_id,
             resource="api",
             limits=limits,
         )
         assert available["rpm"] == 100  # Full capacity restored
 
-    @pytest.mark.asyncio(loop_scope="class")
-    async def test_negative_bucket_handling(self, e2e_limiter_minimal):
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_negative_bucket_handling(self, e2e_limiter_minimal_module, unique_entity_prefix):
         """
         Test that buckets can go negative for post-hoc reconciliation.
 
         This is a key feature for LLM token counting where the actual
         token count is unknown until after the API call completes.
         """
-        await e2e_limiter_minimal.create_entity("negative-bucket-user")
+        entity_id = f"{unique_entity_prefix}-negative-bucket-user"
+        await e2e_limiter_minimal_module.create_entity(entity_id)
 
         limits = [Limit.per_minute("rpm", 10)]
 
         # Consume all tokens
-        async with e2e_limiter_minimal.acquire(
-            entity_id="negative-bucket-user",
+        async with e2e_limiter_minimal_module.acquire(
+            entity_id=entity_id,
             resource="api",
             limits=limits,
             consume={"rpm": 10},
@@ -975,8 +924,8 @@ class TestE2ELocalStackErrorHandling:
         # Verify bucket is negative
         # With 10 rpm, refill rate is ~0.17 tokens/second
         # Allow small tolerance for refill during test execution
-        available = await e2e_limiter_minimal.available(
-            entity_id="negative-bucket-user",
+        available = await e2e_limiter_minimal_module.available(
+            entity_id=entity_id,
             resource="api",
             limits=limits,
         )

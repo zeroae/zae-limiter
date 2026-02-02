@@ -436,19 +436,27 @@ class TestLambdaColdStartBenchmarks:
 
     In LocalStack, cold start is emulated but may not match real AWS latency.
     These benchmarks establish a baseline for cold start performance.
+
+    Uses class-scoped fixture with unique_entity_prefix for data isolation.
+    See issue #253 for details.
     """
 
     @pytest.fixture
-    def lambda_cold_start_hierarchy(self, sync_localstack_limiter_with_aggregator):
+    def lambda_cold_start_hierarchy(
+        self, sync_localstack_limiter_with_aggregator, unique_entity_prefix
+    ):
         """Setup entity for cold start benchmark.
 
         We create a fresh entity that hasn't been used yet to ensure
         the Lambda function gets invoked for the first time.
+
+        Uses unique_entity_prefix for data isolation within the class-scoped stack.
         """
+        entity_id = f"{unique_entity_prefix}-lambda-cold-entity"
         sync_localstack_limiter_with_aggregator.create_entity(
-            "lambda-cold-entity", name="Lambda Cold Start Test"
+            entity_id, name="Lambda Cold Start Test"
         )
-        return sync_localstack_limiter_with_aggregator
+        return sync_localstack_limiter_with_aggregator, entity_id, unique_entity_prefix
 
     @pytest.mark.benchmark(group="lambda-cold-start")
     def test_lambda_cold_start_first_invocation(self, benchmark, lambda_cold_start_hierarchy):
@@ -466,12 +474,13 @@ class TestLambdaColdStartBenchmarks:
         Expected: Higher latency than warm start (100-500ms typical).
         In LocalStack, latency may be lower due to local execution.
         """
+        limiter, entity_id, _ = lambda_cold_start_hierarchy
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
             # Consume tokens (triggers DynamoDB stream write)
-            with lambda_cold_start_hierarchy.acquire(
-                entity_id="lambda-cold-entity",
+            with limiter.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -496,12 +505,13 @@ class TestLambdaColdStartBenchmarks:
 
         Expected: 50-200ms latency (lower than cold start).
         """
+        limiter, entity_id, _ = lambda_cold_start_hierarchy
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         # First, warm up the Lambda by doing an initial invocation
         # This simulates real usage where cold start is already past
-        with lambda_cold_start_hierarchy.acquire(
-            entity_id="lambda-cold-entity",
+        with limiter.acquire(
+            entity_id=entity_id,
             resource="api",
             limits=limits,
             consume={"rpm": 1},
@@ -511,8 +521,8 @@ class TestLambdaColdStartBenchmarks:
 
         def operation():
             # Subsequent invocation - Lambda container is warm
-            with lambda_cold_start_hierarchy.acquire(
-                entity_id="lambda-cold-entity",
+            with limiter.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -539,14 +549,15 @@ class TestLambdaColdStartBenchmarks:
 
         Expected: Scales with event count but benefits from batching.
         """
+        limiter, _, prefix = lambda_cold_start_hierarchy
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
             # Generate multiple concurrent consumptions
             # In a real system, these would create multiple stream records
             for i in range(3):
-                with lambda_cold_start_hierarchy.acquire(
-                    entity_id=f"lambda-cold-entity-multi-{i}",
+                with limiter.acquire(
+                    entity_id=f"{prefix}-lambda-cold-entity-multi-{i}",
                     resource="api",
                     limits=limits,
                     consume={"rpm": 1},
@@ -570,11 +581,12 @@ class TestLambdaColdStartBenchmarks:
 
         Expected: Consistent latency (10-50ms per operation).
         """
+        limiter, entity_id, _ = lambda_cold_start_hierarchy
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         # Pre-warm Lambda
-        with lambda_cold_start_hierarchy.acquire(
-            entity_id="lambda-cold-entity",
+        with limiter.acquire(
+            entity_id=entity_id,
             resource="api",
             limits=limits,
             consume={"rpm": 1},
@@ -585,8 +597,8 @@ class TestLambdaColdStartBenchmarks:
         def operation():
             # Repeated operations with warm container
             for _ in range(5):
-                with lambda_cold_start_hierarchy.acquire(
-                    entity_id="lambda-cold-entity",
+                with limiter.acquire(
+                    entity_id=entity_id,
                     resource="api",
                     limits=limits,
                     consume={"rpm": 1},
