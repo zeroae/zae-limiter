@@ -11,28 +11,24 @@ import click
 
 def _select_target(region: str | None) -> str:
     """Interactively select a zae-limiter target stack."""
+    import asyncio
+
     import questionary
 
-    cfn = boto3.client("cloudformation", region_name=region)
-    paginator = cfn.get_paginator("list_stacks")
+    from zae_limiter.infra.discovery import InfrastructureDiscovery
 
-    # Find stacks that export AdminPolicyArn (zae-limiter stacks)
-    targets = []
-    for page in paginator.paginate(StackStatusFilter=["CREATE_COMPLETE", "UPDATE_COMPLETE"]):
-        for stack in page.get("StackSummaries", []):
-            stack_name = stack["StackName"]
-            # Skip stress stacks
-            if stack_name.endswith("-stress"):
-                continue
-            try:
-                desc = cfn.describe_stacks(StackName=stack_name)
-                outputs = {
-                    o["OutputKey"]: o["OutputValue"] for o in desc["Stacks"][0].get("Outputs", [])
-                }
-                if "AdminPolicyArn" in outputs:
-                    targets.append(stack_name)
-            except Exception:
-                pass
+    async def list_targets() -> list[str]:
+        async with InfrastructureDiscovery(region=region) as discovery:
+            limiters = await discovery.list_limiters()
+            # Exclude stress stacks, only include healthy stacks
+            return [
+                info.stack_name
+                for info in limiters
+                if not info.stack_name.endswith("-stress")
+                and info.stack_status in ("CREATE_COMPLETE", "UPDATE_COMPLETE")
+            ]
+
+    targets = asyncio.run(list_targets())
 
     if not targets:
         click.echo("Error: No zae-limiter stacks found", err=True)
