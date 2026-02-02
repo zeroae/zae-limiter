@@ -121,7 +121,7 @@ limiter = RateLimiter(
 )
 ```
 
-Other `StackOptions` fields: `lambda_memory`, `usage_retention_days`, `enable_alarms`, `alarm_sns_topic`, `enable_audit_archival`, `audit_archive_glacier_days`, `enable_tracing`, `create_iam_roles` (default: False), `role_name_format`, `policy_name_format`, `enable_deletion_protection`, `create_iam` (default: True), `aggregator_role_arn`.
+Other `StackOptions` fields: `lambda_memory`, `usage_retention_days`, `audit_retention_days`, `enable_alarms`, `alarm_sns_topic`, `enable_audit_archival`, `audit_archive_glacier_days`, `enable_tracing`, `create_iam_roles` (default: False), `role_name_format`, `policy_name_format`, `enable_deletion_protection`, `create_iam` (default: True), `aggregator_role_arn`.
 
 **IAM Resource Defaults (ADR-117):**
 - **Managed policies** are **created by default** (`AppPolicy`, `AdminPolicy`, `ReadOnlyPolicy`)

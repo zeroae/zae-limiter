@@ -217,6 +217,26 @@ class TestStackOptions:
         with pytest.raises(ValueError, match="usage_retention_days must be positive"):
             StackOptions(usage_retention_days=0)
 
+    def test_invalid_audit_retention_days(self):
+        """Test validation of audit_retention_days must be positive."""
+        with pytest.raises(ValueError, match="audit_retention_days must be positive"):
+            StackOptions(audit_retention_days=0)
+
+    def test_invalid_audit_retention_days_negative(self):
+        """Test validation of negative audit_retention_days."""
+        with pytest.raises(ValueError, match="audit_retention_days must be positive"):
+            StackOptions(audit_retention_days=-1)
+
+    def test_default_audit_retention_days(self):
+        """Test default audit_retention_days is 90."""
+        opts = StackOptions()
+        assert opts.audit_retention_days == 90
+
+    def test_custom_audit_retention_days(self):
+        """Test custom audit_retention_days value."""
+        opts = StackOptions(audit_retention_days=30)
+        assert opts.audit_retention_days == 30
+
     def test_invalid_log_retention_days(self):
         """Test validation of log_retention_days must be valid CloudWatch value."""
         with pytest.raises(ValueError, match="log_retention_days must be one of"):

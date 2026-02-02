@@ -1357,6 +1357,134 @@ class TestRepositoryAuditLogging:
         assert repo._caller_identity_fetched is True
         assert repo._caller_identity_arn is None
 
+    @pytest.mark.asyncio
+    async def test_get_audit_retention_days_from_stack_options(self, repo):
+        """Should return audit_retention_days from stack_options if available."""
+        from zae_limiter.models import StackOptions
+
+        repo._stack_options = StackOptions(audit_retention_days=30)
+        repo._audit_retention_days_cache = None
+
+        days = await repo._get_audit_retention_days()
+
+        assert days == 30
+        assert repo._audit_retention_days_cache == 30
+
+    @pytest.mark.asyncio
+    async def test_get_audit_retention_days_from_cache(self, repo):
+        """Should return cached value if available."""
+        repo._audit_retention_days_cache = 45
+
+        days = await repo._get_audit_retention_days()
+
+        assert days == 45
+
+    @pytest.mark.asyncio
+    async def test_get_audit_retention_days_from_dynamodb(self, repo):
+        """Should read from DynamoDB system config when no stack_options."""
+        from zae_limiter import schema
+
+        repo._stack_options = None
+        repo._audit_retention_days_cache = None
+
+        # Write audit_retention_days to system config
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+            UpdateExpression="SET audit_retention_days = :ard",
+            ExpressionAttributeValues={
+                ":ard": {"N": "60"},
+            },
+        )
+
+        days = await repo._get_audit_retention_days()
+
+        assert days == 60
+        assert repo._audit_retention_days_cache == 60
+
+    @pytest.mark.asyncio
+    async def test_get_audit_retention_days_default_when_not_set(self, repo):
+        """Should return default 90 days when not configured."""
+        repo._stack_options = None
+        repo._audit_retention_days_cache = None
+
+        days = await repo._get_audit_retention_days()
+
+        assert days == 90
+        assert repo._audit_retention_days_cache == 90
+
+    @pytest.mark.asyncio
+    async def test_write_audit_retention_config(self, repo):
+        """Should write audit_retention_days to system config."""
+        from zae_limiter import schema
+        from zae_limiter.models import StackOptions
+
+        repo._stack_options = StackOptions(audit_retention_days=14)
+
+        await repo._write_audit_retention_config()
+
+        # Verify it was written
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item.get("audit_retention_days", {}).get("N") == "14"
+        assert repo._audit_retention_days_cache == 14
+
+    @pytest.mark.asyncio
+    async def test_write_audit_retention_config_noop_without_stack_options(self, repo):
+        """Should be a no-op when stack_options is None."""
+        repo._stack_options = None
+
+        # Should not raise
+        await repo._write_audit_retention_config()
+
+    @pytest.mark.asyncio
+    async def test_audit_event_uses_configured_ttl(self, repo):
+        """Audit event TTL should be based on audit_retention_days."""
+        from zae_limiter import schema
+        from zae_limiter.models import StackOptions
+
+        # Set audit retention to 7 days
+        repo._stack_options = StackOptions(audit_retention_days=7)
+        repo._audit_retention_days_cache = None
+
+        # Create entity to trigger audit event
+        await repo.create_entity(entity_id="ttl-test")
+
+        # Get the audit record directly to check TTL
+        client = await repo._get_client()
+        response = await client.query(
+            TableName=repo.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_audit("ttl-test")},
+                ":sk_prefix": {"S": schema.SK_AUDIT},
+            },
+        )
+
+        items = response.get("Items", [])
+        assert len(items) >= 1
+
+        # Check TTL attribute exists and is reasonable
+        # 7 days = 604800 seconds from now
+        ttl = int(items[0]["ttl"]["N"])
+        now_seconds = int(repo._now_ms() / 1000)
+        expected_ttl = now_seconds + (7 * 86400)
+
+        # Allow 10 second tolerance
+        assert abs(ttl - expected_ttl) < 10
+
 
 class TestRepositoryUsageSnapshots:
     """Tests for usage snapshot queries."""
