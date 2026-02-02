@@ -3280,19 +3280,17 @@ class TestBucketLimitSync:
     """Tests for bucket synchronization when limits are updated.
 
     These tests verify that bucket parameters (capacity, burst, refill)
-    are updated when entity limits change. Currently marked as xfail
-    because this functionality is not yet implemented.
+    are updated when entity limits change via set_limits().
     """
 
-    @pytest.mark.xfail(reason="Bucket params not synced when limits change - needs fix")
     async def test_bucket_updated_when_limit_increased(self, limiter):
-        """Bucket capacity SHOULD be updated when entity limit is increased.
+        """Bucket capacity is synced when entity limit is increased.
 
-        Expected behavior:
+        Behavior (issue #294):
         1. Create entity with rpm=100
         2. Use bucket (creates bucket with capacity=100)
-        3. Update limit to rpm=200
-        4. Next acquire() should sync bucket to capacity=200
+        3. Update limit to rpm=200 - set_limits() syncs bucket
+        4. Bucket capacity is now 200
         """
         from zae_limiter.schema import pk_entity, sk_bucket
 
@@ -3312,32 +3310,22 @@ class TestBucketLimitSync:
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Initial capacity should be 100 RPM"
 
-        # Step 3: Update limit to rpm=200
+        # Step 3: Update limit to rpm=200 - bucket synced immediately
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
-        await limiter.invalidate_config_cache()
 
-        # Step 4: Use the bucket again
-        async with limiter.acquire(
-            entity_id="user-1",
-            resource="api",
-            consume={"rpm": 10},
-        ):
-            pass
-
-        # Verify bucket capacity was updated to match new limit
+        # Verify bucket capacity was updated immediately (no acquire needed)
         item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"
 
-    @pytest.mark.xfail(reason="Bucket params not synced when limits change - needs fix")
     async def test_bucket_updated_when_limit_decreased(self, limiter):
-        """Bucket capacity SHOULD be updated when entity limit is decreased.
+        """Bucket capacity is synced when entity limit is decreased.
 
-        Expected behavior:
+        Behavior (issue #294):
         1. Create entity with rpm=200
         2. Use bucket (creates bucket with capacity=200)
-        3. Update limit to rpm=100
-        4. Next acquire() should sync bucket to capacity=100
+        3. Update limit to rpm=100 - set_limits() syncs bucket
+        4. Bucket capacity is now 100
         """
         from zae_limiter.schema import pk_entity, sk_bucket
 
@@ -3357,19 +3345,141 @@ class TestBucketLimitSync:
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Initial capacity should be 200 RPM"
 
-        # Step 3: Downgrade limit to rpm=100
+        # Step 3: Downgrade limit to rpm=100 - bucket synced immediately
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="api")
-        await limiter.invalidate_config_cache()
 
-        # Step 4: Use the bucket again
-        async with limiter.acquire(
-            entity_id="user-1",
-            resource="api",
-            consume={"rpm": 10},
-        ):
-            pass
-
-        # Verify bucket capacity was updated to match new limit
+        # Verify bucket capacity was updated immediately (no acquire needed)
         item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Bucket capacity should be synced to 100 RPM"
+
+    async def test_bucket_updated_with_multiple_limits(self, limiter):
+        """All bucket params synced when entity has multiple limits.
+
+        Verifies that the SET expression correctly handles multiple limits
+        and all parameters (capacity, burst, refill) are updated.
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Set initial limits: rpm=100, tpm=10000
+        await limiter.set_limits(
+            "user-2",
+            [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000)],
+            resource="api",
+        )
+
+        # Create buckets via acquire
+        async with limiter.acquire(
+            entity_id="user-2", resource="api", consume={"rpm": 1, "tpm": 10}
+        ):
+            pass
+
+        # Verify initial values
+        item = await limiter._repository._get_item(pk_entity("user-2"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000
+        assert item["b_tpm_cp"] == 10000000
+
+        # Update both limits
+        await limiter.set_limits(
+            "user-2",
+            [Limit.per_minute("rpm", 200), Limit.per_minute("tpm", 20000)],
+            resource="api",
+        )
+
+        # Verify both buckets synced
+        item = await limiter._repository._get_item(pk_entity("user-2"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "rpm capacity should be synced"
+        assert item["b_tpm_cp"] == 20000000, "tpm capacity should be synced"
+
+    async def test_bucket_refill_params_synced_when_changed(self, limiter):
+        """Bucket refill rate is synced when limit period changes.
+
+        Verifies that all four bucket parameters are updated:
+        capacity, burst, refill_amount, refill_period.
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Initial: 100 per minute
+        await limiter.set_limits(
+            "user-3",
+            [Limit.per_minute("rpm", 100, burst=150)],
+            resource="api",
+        )
+        async with limiter.acquire(entity_id="user-3", resource="api", consume={"rpm": 1}):
+            pass
+
+        # Verify initial values (per minute: refill_period=60s)
+        item = await limiter._repository._get_item(pk_entity("user-3"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000  # capacity: 100 * 1000
+        assert item["b_rpm_bx"] == 150000  # burst: 150 * 1000
+        assert item["b_rpm_ra"] == 100000  # refill_amount: 100 * 1000
+        assert item["b_rpm_rp"] == 60000  # refill_period: 60s * 1000
+
+        # Update to 200 per hour with different burst
+        await limiter.set_limits(
+            "user-3",
+            [Limit.per_hour("rpm", 200, burst=300)],
+            resource="api",
+        )
+
+        # Verify all params updated
+        item = await limiter._repository._get_item(pk_entity("user-3"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "capacity should be synced"
+        assert item["b_rpm_bx"] == 300000, "burst should be synced"
+        assert item["b_rpm_ra"] == 200000, "refill_amount should be synced"
+        assert item["b_rpm_rp"] == 3600000, "refill_period should be synced (3600s)"
+
+    async def test_set_limits_with_empty_list_skips_bucket_sync(self, limiter):
+        """set_limits() with empty limits list skips bucket sync.
+
+        Verifies the early return path when limits=[] is passed.
+        """
+        # Set limits then clear them - should not raise
+        await limiter.set_limits("user-4", [Limit.per_minute("rpm", 100)], resource="api")
+        await limiter.set_limits("user-4", [], resource="api")
+        # No error means the empty list path was handled
+
+    async def test_bucket_sync_skipped_when_bucket_does_not_exist(self, limiter):
+        """Bucket sync is skipped when bucket doesn't exist yet.
+
+        Verifies ConditionalCheckFailedException is handled gracefully.
+        """
+        # Set limits without creating bucket first - should not raise
+        await limiter.set_limits("user-5", [Limit.per_minute("rpm", 100)], resource="api")
+        # Update limits again - still no bucket exists
+        await limiter.set_limits("user-5", [Limit.per_minute("rpm", 200)], resource="api")
+        # No error means ConditionalCheckFailedException was handled
+
+    async def test_bucket_sync_reraises_unexpected_client_error(self, limiter):
+        """Unexpected ClientError during bucket sync is re-raised.
+
+        Verifies that non-ConditionalCheckFailed errors propagate.
+        """
+
+        # First create a bucket so the conditional check passes
+        await limiter.set_limits("user-6", [Limit.per_minute("rpm", 100)], resource="api")
+        async with limiter.acquire(entity_id="user-6", resource="api", consume={"rpm": 1}):
+            pass
+
+        # Mock update_item to raise an unexpected error
+        original_update = limiter._repository._client.update_item
+
+        async def mock_update_item(**kwargs):
+            # Only fail for bucket sync calls (not other updates)
+            if kwargs.get("Key", {}).get("SK", {}).get("S", "").startswith("#BUCKET#"):
+                raise ClientError(
+                    {"Error": {"Code": "InternalServerError", "Message": "Test error"}},
+                    "UpdateItem",
+                )
+            return await original_update(**kwargs)
+
+        limiter._repository._client.update_item = mock_update_item
+
+        with pytest.raises(ClientError) as exc_info:
+            await limiter.set_limits("user-6", [Limit.per_minute("rpm", 200)], resource="api")
+
+        assert exc_info.value.response["Error"]["Code"] == "InternalServerError"

@@ -1035,6 +1035,9 @@ class Repository:
         # Single PutItem replaces any existing config for this entity+resource
         await client.put_item(TableName=self.table_name, Item=item)
 
+        # Sync bucket static params if bucket exists (issue #294)
+        await self._sync_bucket_params(entity_id, resource, limits)
+
         # Log audit event
         await self._log_audit_event(
             action=AuditAction.LIMITS_SET,
@@ -1043,6 +1046,79 @@ class Repository:
             resource=resource,
             details={"limits": [limit.to_dict() for limit in limits]},
         )
+
+    async def _sync_bucket_params(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+    ) -> None:
+        """Sync bucket static params when limits change (issue #294).
+
+        Updates capacity, burst, refill_amount, and refill_period for existing
+        buckets. Uses conditional update with attribute_exists(PK) to skip if
+        bucket doesn't exist yet.
+
+        Args:
+            entity_id: ID of the entity
+            resource: Resource name
+            limits: New limit configurations
+        """
+        if not limits:
+            return
+
+        client = await self._get_client()
+
+        # Build SET expression for static bucket params
+        # Use numeric index for expression names since limit names can contain hyphens
+        set_parts: list[str] = []
+        expr_names: dict[str, str] = {}
+        expr_values: dict[str, dict[str, str]] = {}
+
+        for i, limit in enumerate(limits):
+            name = limit.name
+            # Capacity (millitokens)
+            cp_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
+            set_parts.append(f"#cp{i} = :cp{i}")
+            expr_names[f"#cp{i}"] = cp_attr
+            expr_values[f":cp{i}"] = {"N": str(limit.capacity * 1000)}
+
+            # Burst (millitokens)
+            bx_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_BX)
+            set_parts.append(f"#bx{i} = :bx{i}")
+            expr_names[f"#bx{i}"] = bx_attr
+            expr_values[f":bx{i}"] = {"N": str(limit.burst * 1000)}
+
+            # Refill amount (millitokens)
+            ra_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_RA)
+            set_parts.append(f"#ra{i} = :ra{i}")
+            expr_names[f"#ra{i}"] = ra_attr
+            expr_values[f":ra{i}"] = {"N": str(limit.refill_amount * 1000)}
+
+            # Refill period (milliseconds)
+            rp_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_RP)
+            set_parts.append(f"#rp{i} = :rp{i}")
+            expr_names[f"#rp{i}"] = rp_attr
+            expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
+
+        try:
+            await client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                },
+                UpdateExpression=f"SET {', '.join(set_parts)}",
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames=expr_names,
+                ExpressionAttributeValues=expr_values,
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                # Bucket doesn't exist yet - that's fine, it will be created
+                # with the correct params on first acquire()
+                return
+            raise
 
     async def get_limits(
         self,
