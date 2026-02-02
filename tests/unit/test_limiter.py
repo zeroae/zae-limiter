@@ -3200,6 +3200,31 @@ class TestLeaseCommitTTL:
         assert item is not None
         assert "ttl" not in item
 
+    async def test_commit_sets_ttl_for_entity_default_config(self, limiter):
+        """Lease._commit() sets TTL when entity has _default_ config (not resource-specific).
+
+        Entity _default_ config is treated as a kind of default (not custom config),
+        so TTL should be applied. This contrasts with resource-specific entity config
+        which removes TTL.
+        """
+        # Set entity _default_ config (applies to all resources for this entity)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)])  # resource="_default_"
+
+        # Acquire for a specific resource - should use entity _default_ config
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="gpt-4",  # Different from _default_
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify TTL IS set (entity_default is treated as a default, not custom)
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("gpt-4"))
+        assert item is not None
+        assert "ttl" in item, "entity_default config should have TTL (treated as default)"
+
     async def test_ttl_value_matches_formula(self, limiter):
         """TTL = now + max_refill_period × multiplier."""
         import time
