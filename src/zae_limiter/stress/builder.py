@@ -79,7 +79,7 @@ def _generate_dockerfile(zae_limiter_source: Path | str) -> str:
     if isinstance(zae_limiter_source, Path):
         install_cmd = """\
 # Install stable deps first (cached layer)
-RUN pip install locust gevent nest-asyncio
+RUN pip install locust gevent asyncio-gevent
 
 # Install wheel (may change frequently)
 COPY wheels/*.whl /tmp/
@@ -87,7 +87,7 @@ RUN pip install /tmp/*.whl"""
     else:
         # Version string - install from PyPI
         install_cmd = (
-            f"RUN pip install zae-limiter=={zae_limiter_source} locust gevent nest-asyncio"
+            f"RUN pip install zae-limiter=={zae_limiter_source} locust gevent asyncio-gevent"
         )
 
     return f"""\

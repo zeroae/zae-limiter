@@ -61,6 +61,7 @@ local = [
     "docker>=7.0.0",
 ]
 stress = [
+    "asyncio-gevent>=0.2.5",
     "locust>=2.20",
     "gevent>=23.0",
     "questionary>=2.0",
