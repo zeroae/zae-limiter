@@ -824,6 +824,35 @@ class TestRateLimiterThreeTierResolution:
         ):
             pass  # Should succeed
 
+    @pytest.mark.xfail(reason="Issue #297: Entity _default_ not used as fallback")
+    async def test_resolution_entity_default_fallback(self, limiter):
+        """Entity _default_ config should be used when no resource-specific entity config exists.
+
+        Expected resolution for acquire(entity_id="user-1", resource="gpt-4"):
+        1. Entity config for "gpt-4"? -> No
+        2. Entity config for "_default_"? -> Yes (100 rpm) <- SHOULD USE THIS
+        3. Resource defaults for "gpt-4"? -> Yes (50 rpm)
+        4. System defaults? -> Yes (10 rpm)
+
+        Current bug: Step 2 is skipped, so resource defaults (50 rpm) are used instead
+        of entity's _default_ config (100 rpm).
+        """
+        # Set system and resource defaults
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+
+        # Set entity-level _default_ (should apply to all resources for this entity)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="_default_")
+
+        # Entity's _default_ should be used (100 rpm), not resource defaults (50 rpm)
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+            consume={"rpm": 75},  # Exceeds resource (50), but not entity _default_ (100)
+        ):
+            pass  # Should succeed if entity _default_ is used
+
     async def test_resolution_resource_level_fallback(self, limiter):
         """Test that resource-level limits are used when no entity limits exist."""
         # Set system and resource levels only
