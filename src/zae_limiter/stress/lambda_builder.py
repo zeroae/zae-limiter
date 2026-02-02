@@ -14,7 +14,7 @@ def _generate_requirements(zae_limiter_source: Path | str) -> str:
     reqs = [
         "locust>=2.20",
         "gevent>=23.0",
-        "nest-asyncio>=1.5.0",  # Allow nested event loops
+        "asyncio-gevent>=0.2.5",  # Proper asyncio/gevent integration
     ]
 
     # Add zae-limiter

@@ -4,19 +4,21 @@ Usage:
     Local:  locust -f locustfile.py
     Lambda: Imported by worker handler
 
-Uses greenlet-local SyncRateLimiter instances to avoid asyncio event loop
-conflicts. Each gevent greenlet gets its own limiter with its own event loop.
-nest_asyncio allows nested event loops (needed for gevent + asyncio).
+Uses asyncio-gevent for proper asyncio/gevent integration. This makes
+asyncio use gevent's event loop, avoiding the "Timeout should be used
+inside a task" errors from aiohttp.
 """
 
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 
-import nest_asyncio
+import asyncio_gevent
 
-nest_asyncio.apply()
+# Set asyncio to use gevent's event loop - must be done before any asyncio usage
+asyncio.set_event_loop_policy(asyncio_gevent.EventLoopPolicy())
 
 from gevent.local import local as greenlet_local  # noqa: E402
 from locust import User, between, task  # noqa: E402
