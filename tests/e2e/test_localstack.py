@@ -635,7 +635,8 @@ class TestE2ELocalStackFullWorkflow:
         """
         premium_id = f"{unique_entity_prefix}-premium-user"
         free_id = f"{unique_entity_prefix}-free-user"
-        resource = f"{unique_entity_prefix}-api"
+        # Resource names must start with a letter (hex prefix can start with digit)
+        resource = f"r-{unique_entity_prefix}-api"
 
         # Invalidate cache to ensure fresh config resolution
         await e2e_limiter_module.invalidate_config_cache()
