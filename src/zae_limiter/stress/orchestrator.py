@@ -56,13 +56,25 @@ def get_task_ip() -> str:
     raise RuntimeError("Could not determine task IP from ECS metadata")
 
 
+def get_connected_workers() -> int:
+    """Query Locust master API for connected worker count."""
+    try:
+        with urllib.request.urlopen("http://localhost:8089/stats/requests", timeout=5) as resp:
+            data = json.loads(resp.read())
+            # The stats endpoint includes worker count in state info
+            count = data.get("worker_count", 0)
+            return int(count) if count is not None else 0
+    except Exception:
+        # Master might not be ready yet, or API format changed
+        return -1  # Unknown
+
+
 def main() -> None:
     """Run the worker orchestration loop."""
     desired_workers = int(os.environ.get("DESIRED_WORKERS", "10"))
     worker_function = os.environ["WORKER_FUNCTION_NAME"]
     master_port = int(os.environ.get("MASTER_PORT", "5557"))
     poll_interval = int(os.environ.get("POLL_INTERVAL", "5"))
-    lambda_timeout = int(os.environ.get("LAMBDA_TIMEOUT", "300"))
 
     master_ip = get_task_ip()
     logger.info(
@@ -93,21 +105,17 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    active = 0
-    last_invoke_time = 0.0
-
     while not shutdown:
         try:
-            # Reset worker count after Lambda timeout
-            # Workers will have disconnected, need fresh invocations
-            if last_invoke_time and (time.time() - last_invoke_time) > lambda_timeout:
-                logger.info(
-                    "Lambda timeout elapsed, resetting active count from %d to 0",
-                    active,
-                )
-                active = 0
+            # Query Locust master for actual connected workers
+            connected = get_connected_workers()
 
-            needed = desired_workers - active
+            if connected < 0:
+                # Master not ready, invoke full batch
+                needed = desired_workers
+            else:
+                needed = max(0, desired_workers - connected)
+
             if needed > 0:
                 for _ in range(needed):
                     lambda_client.invoke(
@@ -115,9 +123,12 @@ def main() -> None:
                         InvocationType="Event",  # Async invocation
                         Payload=payload,
                     )
-                    active += 1
-                logger.info("Invoked %d workers, total active: %d", needed, active)
-                last_invoke_time = time.time()
+                logger.info(
+                    "Invoked %d workers (connected=%s, desired=%d)",
+                    needed,
+                    connected if connected >= 0 else "unknown",
+                    desired_workers,
+                )
 
             time.sleep(poll_interval)
         except Exception:
