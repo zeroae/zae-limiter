@@ -420,6 +420,7 @@ docs/
 | Get resource config (limits) | `PK=RESOURCE#{resource}, SK=#CONFIG` |
 | Get entity config (limits) | `PK=ENTITY#{id}, SK=#CONFIG#{resource}` |
 | List entities with custom limits | GSI3: `GSI3PK=ENTITY_CONFIG#{resource}` |
+| List resources with entity configs | `PK=SYSTEM#, SK=#ENTITY_CONFIG_RESOURCES` (wide column, issue #288) |
 
 **Optimized read patterns (issue #133):**
 - `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
@@ -433,6 +434,7 @@ docs/
 - `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
 - `sk_config()` - Returns `#CONFIG` (for system/resource level)
 - `sk_config(resource)` - Returns `#CONFIG#{resource}` (for entity level)
+- `sk_entity_config_resources()` - Returns `#ENTITY_CONFIG_RESOURCES` (registry with ref counts)
 
 **Audit entity IDs for config levels** (ADR-106):
 - System config: Audit events use `$SYSTEM` as entity_id
@@ -450,6 +452,9 @@ Limit configs use a four-level hierarchy with precedence: **Entity (resource-spe
 | Resource | `set_resource_defaults(resource, limits)` | `get_resource_defaults(resource)` | `delete_resource_defaults(resource)` | `list_resources_with_defaults()` |
 | Entity | `set_limits(entity_id, limits, resource)` | `get_limits(entity_id, resource)` | `delete_limits(entity_id, resource)` | `list_entities_with_custom_limits(resource)` |
 
+**Cross-level queries:**
+- `list_resources_with_entity_configs()` - Returns which resources have entity-level custom limits (useful for discovery and cleanup)
+
 **CLI commands for managing stored limits:**
 
 ```bash
@@ -463,7 +468,7 @@ zae-limiter resource set-defaults gpt-4 -l tpm:50000 -l rpm:500
 zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
 ```
 
-Each level also has `get-*` and `delete-*` subcommands. Use `zae-limiter resource list` to list resources with defaults. Use `zae-limiter entity list --with-custom-limits <resource>` to list entities with custom limits for a specific resource.
+Each level also has `get-*` and `delete-*` subcommands. Use `zae-limiter resource list` to list resources with defaults. Use `zae-limiter entity list-resources` to list all resources with entity-level configs. Use `zae-limiter entity list --with-custom-limits <resource>` to list entities with custom limits for a specific resource.
 
 Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for a config level are stored in a single item:
 

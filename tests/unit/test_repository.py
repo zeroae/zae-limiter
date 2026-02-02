@@ -1980,3 +1980,239 @@ class TestGSI3EntityConfigIndex:
             # Combined results should include remaining entities
             all_entities = set(entities + more_entities)
             assert len(all_entities) >= 2  # At least got more than first page
+
+
+class TestEntityConfigRegistry:
+    """Tests for entity config registry (issue #288)."""
+
+    @pytest.mark.asyncio
+    async def test_set_limits_increments_registry_on_new(self, repo):
+        """set_limits should increment registry count for NEW entity configs."""
+        await repo.create_entity("user-1")
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        # Set limits for first time (NEW)
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+
+        # Verify registry was updated
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" in resources
+
+    @pytest.mark.asyncio
+    async def test_set_limits_no_increment_on_update(self, repo):
+        """set_limits should NOT increment registry count on UPDATE."""
+        await repo.create_entity("user-1")
+        limits1 = [Limit.per_minute("rpm", 1000)]
+        limits2 = [Limit.per_minute("rpm", 2000)]
+
+        # Set limits twice (second is UPDATE)
+        await repo.set_limits("user-1", limits1, resource="gpt-4")
+        await repo.set_limits("user-1", limits2, resource="gpt-4")
+
+        # Verify limits were updated
+        stored = await repo.get_limits("user-1", resource="gpt-4")
+        assert stored[0].capacity == 2000
+
+        # Verify registry count is still 1 (not 2)
+        # We can verify by checking raw DynamoDB item
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_entity_config_resources()},
+            },
+        )
+        item = response.get("Item", {})
+        count = int(item.get("gpt-4", {}).get("N", "0"))
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_limits_decrements_registry(self, repo):
+        """delete_limits should decrement registry count."""
+        await repo.create_entity("user-1")
+        await repo.create_entity("user-2")
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        # Create two entity configs for same resource
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+        await repo.set_limits("user-2", limits, resource="gpt-4")
+
+        # Verify both are registered
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" in resources
+
+        # Delete one
+        await repo.delete_limits("user-1", resource="gpt-4")
+
+        # Resource should still be listed (count = 1)
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" in resources
+
+        # Delete the other
+        await repo.delete_limits("user-2", resource="gpt-4")
+
+        # Resource should no longer be listed (count = 0, attribute removed)
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" not in resources
+
+    @pytest.mark.asyncio
+    async def test_delete_limits_nonexistent_config_is_silent(self, repo):
+        """delete_limits silently succeeds when config doesn't exist."""
+        await repo.create_entity("user-1")
+
+        # Delete limits that were never set - should not raise
+        await repo.delete_limits("user-1", resource="gpt-4")
+
+        # Registry should be unaffected (no resource was ever added)
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" not in resources
+
+    @pytest.mark.asyncio
+    async def test_list_resources_with_entity_configs_empty(self, repo):
+        """list_resources_with_entity_configs returns empty list when no configs exist."""
+        resources = await repo.list_resources_with_entity_configs()
+        assert resources == []
+
+    @pytest.mark.asyncio
+    async def test_list_resources_with_entity_configs_multiple_resources(self, repo):
+        """list_resources_with_entity_configs returns all resources with entity configs."""
+        await repo.create_entity("user-1")
+        await repo.create_entity("user-2")
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        # Create configs for multiple resources
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+        await repo.set_limits("user-2", limits, resource="claude-3")
+
+        resources = await repo.list_resources_with_entity_configs()
+        assert set(resources) == {"gpt-4", "claude-3"}
+
+    @pytest.mark.asyncio
+    async def test_list_resources_with_entity_configs_sorted(self, repo):
+        """list_resources_with_entity_configs returns sorted list."""
+        await repo.create_entity("user-1")
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        # Create in non-alphabetical order
+        await repo.set_limits("user-1", limits, resource="zebra")
+        await repo.set_limits("user-1", limits, resource="alpha")
+        await repo.set_limits("user-1", limits, resource="middle")
+
+        resources = await repo.list_resources_with_entity_configs()
+        assert resources == ["alpha", "middle", "zebra"]
+
+    @pytest.mark.asyncio
+    async def test_set_limits_reraises_non_conditional_transaction_error(self, repo):
+        """set_limits re-raises transaction errors that aren't ConditionalCheckFailed."""
+        from unittest.mock import AsyncMock, patch
+
+        from botocore.exceptions import ClientError
+
+        await repo.create_entity("user-1")
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        # Mock the client to raise a non-conditional transaction error
+        error_response = {
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "ValidationError"}],  # Not ConditionalCheckFailed
+        }
+        mock_client = AsyncMock()
+        mock_client.transact_write_items = AsyncMock(
+            side_effect=ClientError(error_response, "TransactWriteItems")
+        )
+
+        with patch.object(repo, "_get_client", return_value=mock_client):
+            with pytest.raises(ClientError) as exc_info:
+                await repo.set_limits("user-1", limits, resource="gpt-4")
+            assert exc_info.value.response["Error"]["Code"] == "TransactionCanceledException"
+
+    @pytest.mark.asyncio
+    async def test_set_limits_reraises_non_transaction_error(self, repo):
+        """set_limits re-raises non-transaction ClientErrors."""
+        from unittest.mock import AsyncMock, patch
+
+        from botocore.exceptions import ClientError
+
+        await repo.create_entity("user-1")
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        # Mock the client to raise a different error type
+        error_response = {"Error": {"Code": "InternalServerError"}}
+        mock_client = AsyncMock()
+        mock_client.transact_write_items = AsyncMock(
+            side_effect=ClientError(error_response, "TransactWriteItems")
+        )
+
+        with patch.object(repo, "_get_client", return_value=mock_client):
+            with pytest.raises(ClientError) as exc_info:
+                await repo.set_limits("user-1", limits, resource="gpt-4")
+            assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+
+    @pytest.mark.asyncio
+    async def test_delete_limits_reraises_non_conditional_transaction_error(self, repo):
+        """delete_limits re-raises transaction errors that aren't ConditionalCheckFailed."""
+        from unittest.mock import AsyncMock, patch
+
+        from botocore.exceptions import ClientError
+
+        await repo.create_entity("user-1")
+        limits = [Limit.per_minute("rpm", 1000)]
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+
+        # Mock the client to raise a non-conditional transaction error
+        error_response = {
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "ValidationError"}],  # Not ConditionalCheckFailed
+        }
+        mock_client = AsyncMock()
+        mock_client.transact_write_items = AsyncMock(
+            side_effect=ClientError(error_response, "TransactWriteItems")
+        )
+
+        with patch.object(repo, "_get_client", return_value=mock_client):
+            with pytest.raises(ClientError) as exc_info:
+                await repo.delete_limits("user-1", resource="gpt-4")
+            assert exc_info.value.response["Error"]["Code"] == "TransactionCanceledException"
+
+    @pytest.mark.asyncio
+    async def test_delete_limits_reraises_non_transaction_error(self, repo):
+        """delete_limits re-raises non-transaction ClientErrors."""
+        from unittest.mock import AsyncMock, patch
+
+        from botocore.exceptions import ClientError
+
+        await repo.create_entity("user-1")
+        limits = [Limit.per_minute("rpm", 1000)]
+        await repo.set_limits("user-1", limits, resource="gpt-4")
+
+        # Mock the client to raise a different error type
+        error_response = {"Error": {"Code": "InternalServerError"}}
+        mock_client = AsyncMock()
+        mock_client.transact_write_items = AsyncMock(
+            side_effect=ClientError(error_response, "TransactWriteItems")
+        )
+
+        with patch.object(repo, "_get_client", return_value=mock_client):
+            with pytest.raises(ClientError) as exc_info:
+                await repo.delete_limits("user-1", resource="gpt-4")
+            assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_registry_reraises_non_conditional_error(self, repo):
+        """_cleanup_entity_config_registry re-raises non-ConditionalCheckFailedException."""
+        from unittest.mock import AsyncMock, patch
+
+        from botocore.exceptions import ClientError
+
+        # Mock the client to raise a different error type
+        error_response = {"Error": {"Code": "InternalServerError"}}
+        mock_client = AsyncMock()
+        mock_client.update_item = AsyncMock(side_effect=ClientError(error_response, "UpdateItem"))
+
+        with patch.object(repo, "_get_client", return_value=mock_client):
+            with pytest.raises(ClientError) as exc_info:
+                await repo._cleanup_entity_config_registry("gpt-4")
+            assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
