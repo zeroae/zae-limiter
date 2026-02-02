@@ -1069,3 +1069,26 @@ Outputs:
     Value: !Ref ReadOnlyRole
     Export:
       Name: !Sub ${AWS::StackName}-ReadOnlyRoleName
+
+  # -------------------------------------------------------------------------
+  # IAM Configuration Outputs (for stress test stack to import)
+  # -------------------------------------------------------------------------
+
+  PermissionBoundaryArn:
+    Description: Permission boundary ARN used for IAM roles (empty if none)
+    Value: !If
+      - HasPermissionBoundary
+      - !If
+        - PermissionBoundaryIsArn
+        - !Ref PermissionBoundary
+        - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundary}'
+      - ''
+    Export:
+      Name: !Sub ${AWS::StackName}-PermissionBoundaryArn
+
+  CodeBucketName:
+    Condition: DeployAuditArchive
+    Description: S3 bucket name for deployment artifacts (reuses audit archive bucket)
+    Value: !Ref AuditArchiveBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-CodeBucketName
