@@ -70,6 +70,7 @@ class Repository:
         self._client: Any = None
         self._caller_identity_arn: str | None = None
         self._caller_identity_fetched = False
+        self._audit_retention_days_cache: int | None = None
 
         # DynamoDB supports all extended features
         self._capabilities = BackendCapabilities(
@@ -210,6 +211,9 @@ class Repository:
             # Deploy Lambda code if aggregator is enabled
             if self._stack_options.enable_aggregator:
                 await manager.deploy_lambda_code()
+
+        # Write retention config to system config item
+        await self._write_audit_retention_config()
 
     async def create_stack(
         self,
@@ -1526,6 +1530,66 @@ class Repository:
         return limits
 
     # -------------------------------------------------------------------------
+    # Audit retention configuration
+    # -------------------------------------------------------------------------
+
+    async def _write_audit_retention_config(self) -> None:
+        """
+        Write audit_retention_days to system config item.
+
+        Uses atomic UpdateItem to avoid overwriting other system config fields.
+        Called from ensure_infrastructure() after stack creation.
+        """
+        if self._stack_options is None:
+            return
+        client = await self._get_client()
+        await client.update_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+            UpdateExpression="SET audit_retention_days = :ard",
+            ExpressionAttributeValues={
+                ":ard": {"N": str(self._stack_options.audit_retention_days)},
+            },
+        )
+        # Update cache
+        self._audit_retention_days_cache = self._stack_options.audit_retention_days
+
+    async def _get_audit_retention_days(self) -> int:
+        """
+        Get audit retention days from system config or default.
+
+        Returns cached value if available, otherwise reads from DynamoDB.
+        Falls back to stack_options if available (saves DynamoDB call).
+        Default is 90 days if not configured anywhere.
+        """
+        if self._audit_retention_days_cache is not None:
+            return self._audit_retention_days_cache
+
+        # Try to read from stack_options first (saves DynamoDB call)
+        if self._stack_options is not None:
+            self._audit_retention_days_cache = self._stack_options.audit_retention_days
+            return self._audit_retention_days_cache
+
+        # Read from DynamoDB system config
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+            ConsistentRead=False,
+        )
+
+        item = response.get("Item", {})
+        ard = item.get("audit_retention_days", {}).get("N")
+        self._audit_retention_days_cache = int(ard) if ard else 90  # Default 90 days
+        return self._audit_retention_days_cache
+
+    # -------------------------------------------------------------------------
     # Version record operations
     # -------------------------------------------------------------------------
 
@@ -1633,7 +1697,6 @@ class Repository:
         principal: str | None = None,
         resource: str | None = None,
         details: dict[str, Any] | None = None,
-        ttl_seconds: int = 7776000,  # 90 days default
     ) -> AuditEvent:
         """
         Log an audit event to DynamoDB.
@@ -1645,7 +1708,6 @@ class Repository:
                 auto-detects from AWS STS caller identity (lazy cached).
             resource: Resource name for limit-related actions
             details: Additional action-specific details
-            ttl_seconds: TTL for the audit record (default 90 days)
 
         Returns:
             The created AuditEvent
@@ -1662,6 +1724,10 @@ class Repository:
         # Only validate user-provided principals that aren't ARNs
         if principal is not None and not principal.startswith("arn:"):
             validate_identifier(principal, "principal")
+
+        # Get TTL from system config (cached)
+        audit_retention_days = await self._get_audit_retention_days()
+        ttl_seconds = audit_retention_days * 86400
 
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

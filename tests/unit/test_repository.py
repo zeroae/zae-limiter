@@ -1095,6 +1095,109 @@ class TestRepositoryEntityValidation:
         assert entity.id == "user@example.com"
 
 
+class TestRepositoryNoTTLOnConfigRecords:
+    """Tests verifying entity metadata and config records do NOT have TTL.
+
+    Issue #234: Entity metadata and config are intentional configuration that
+    must not be auto-deleted. Only usage snapshots and audit records have TTL.
+    """
+
+    @pytest.mark.asyncio
+    async def test_entity_metadata_has_no_ttl(self, repo):
+        """Entity metadata record (SK=#META) should NOT have ttl attribute."""
+        from zae_limiter import schema
+
+        await repo.create_entity(entity_id="no-ttl-meta-test", name="Test")
+
+        # Get the raw DynamoDB item to check for ttl attribute
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("no-ttl-meta-test")},
+                "SK": {"S": schema.sk_meta()},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item, "Entity metadata record should exist"
+        assert "ttl" not in item, "Entity metadata should NOT have ttl attribute"
+
+    @pytest.mark.asyncio
+    async def test_entity_config_has_no_ttl(self, repo):
+        """Entity config record (SK=#CONFIG#) should NOT have ttl attribute."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.create_entity(entity_id="no-ttl-config-test")
+        await repo.set_limits(
+            entity_id="no-ttl-config-test",
+            limits=[Limit.per_minute("rpm", 100)],
+            resource="api",
+        )
+
+        # Get the raw DynamoDB item to check for ttl attribute
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("no-ttl-config-test")},
+                "SK": {"S": schema.sk_config("api")},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item, "Entity config record should exist"
+        assert "ttl" not in item, "Entity config should NOT have ttl attribute"
+
+    @pytest.mark.asyncio
+    async def test_system_config_has_no_ttl(self, repo):
+        """System config record (SYSTEM# / #CONFIG) should NOT have ttl attribute."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.set_system_defaults(limits=[Limit.per_minute("rpm", 1000)])
+
+        # Get the raw DynamoDB item to check for ttl attribute
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item, "System config record should exist"
+        assert "ttl" not in item, "System config should NOT have ttl attribute"
+
+    @pytest.mark.asyncio
+    async def test_resource_config_has_no_ttl(self, repo):
+        """Resource config record (RESOURCE# / #CONFIG) should NOT have ttl attribute."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.set_resource_defaults(
+            resource="gpt-4",
+            limits=[Limit.per_minute("rpm", 500)],
+        )
+
+        # Get the raw DynamoDB item to check for ttl attribute
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_resource("gpt-4")},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item, "Resource config record should exist"
+        assert "ttl" not in item, "Resource config should NOT have ttl attribute"
+
+
 class TestRepositoryAuditLogging:
     """Tests for security audit logging."""
 
@@ -1356,6 +1459,134 @@ class TestRepositoryAuditLogging:
         # Should be cached
         assert repo._caller_identity_fetched is True
         assert repo._caller_identity_arn is None
+
+    @pytest.mark.asyncio
+    async def test_get_audit_retention_days_from_stack_options(self, repo):
+        """Should return audit_retention_days from stack_options if available."""
+        from zae_limiter.models import StackOptions
+
+        repo._stack_options = StackOptions(audit_retention_days=30)
+        repo._audit_retention_days_cache = None
+
+        days = await repo._get_audit_retention_days()
+
+        assert days == 30
+        assert repo._audit_retention_days_cache == 30
+
+    @pytest.mark.asyncio
+    async def test_get_audit_retention_days_from_cache(self, repo):
+        """Should return cached value if available."""
+        repo._audit_retention_days_cache = 45
+
+        days = await repo._get_audit_retention_days()
+
+        assert days == 45
+
+    @pytest.mark.asyncio
+    async def test_get_audit_retention_days_from_dynamodb(self, repo):
+        """Should read from DynamoDB system config when no stack_options."""
+        from zae_limiter import schema
+
+        repo._stack_options = None
+        repo._audit_retention_days_cache = None
+
+        # Write audit_retention_days to system config
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+            UpdateExpression="SET audit_retention_days = :ard",
+            ExpressionAttributeValues={
+                ":ard": {"N": "60"},
+            },
+        )
+
+        days = await repo._get_audit_retention_days()
+
+        assert days == 60
+        assert repo._audit_retention_days_cache == 60
+
+    @pytest.mark.asyncio
+    async def test_get_audit_retention_days_default_when_not_set(self, repo):
+        """Should return default 90 days when not configured."""
+        repo._stack_options = None
+        repo._audit_retention_days_cache = None
+
+        days = await repo._get_audit_retention_days()
+
+        assert days == 90
+        assert repo._audit_retention_days_cache == 90
+
+    @pytest.mark.asyncio
+    async def test_write_audit_retention_config(self, repo):
+        """Should write audit_retention_days to system config."""
+        from zae_limiter import schema
+        from zae_limiter.models import StackOptions
+
+        repo._stack_options = StackOptions(audit_retention_days=14)
+
+        await repo._write_audit_retention_config()
+
+        # Verify it was written
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item.get("audit_retention_days", {}).get("N") == "14"
+        assert repo._audit_retention_days_cache == 14
+
+    @pytest.mark.asyncio
+    async def test_write_audit_retention_config_noop_without_stack_options(self, repo):
+        """Should be a no-op when stack_options is None."""
+        repo._stack_options = None
+
+        # Should not raise
+        await repo._write_audit_retention_config()
+
+    @pytest.mark.asyncio
+    async def test_audit_event_uses_configured_ttl(self, repo):
+        """Audit event TTL should be based on audit_retention_days."""
+        from zae_limiter import schema
+        from zae_limiter.models import StackOptions
+
+        # Set audit retention to 7 days
+        repo._stack_options = StackOptions(audit_retention_days=7)
+        repo._audit_retention_days_cache = None
+
+        # Create entity to trigger audit event
+        await repo.create_entity(entity_id="ttl-test")
+
+        # Get the audit record directly to check TTL
+        client = await repo._get_client()
+        response = await client.query(
+            TableName=repo.table_name,
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_audit("ttl-test")},
+                ":sk_prefix": {"S": schema.SK_AUDIT},
+            },
+        )
+
+        items = response.get("Items", [])
+        assert len(items) >= 1
+
+        # Check TTL attribute exists and is reasonable
+        # 7 days = 604800 seconds from now
+        ttl = int(items[0]["ttl"]["N"])
+        now_seconds = int(repo._now_ms() / 1000)
+        expected_ttl = now_seconds + (7 * 86400)
+
+        # Allow 10 second tolerance
+        assert abs(ttl - expected_ttl) < 10
 
 
 class TestRepositoryUsageSnapshots:
@@ -1760,11 +1991,13 @@ class TestRepositoryDeprecation:
             mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
             mock_manager_class.return_value = mock_manager
 
-            # Verify deprecation warning is raised
-            with pytest.warns(DeprecationWarning, match="create_stack.*deprecated"):
-                from zae_limiter import StackOptions
+            # Also mock _write_audit_retention_config to avoid DynamoDB call
+            with patch.object(repo, "_write_audit_retention_config", AsyncMock()):
+                # Verify deprecation warning is raised
+                with pytest.warns(DeprecationWarning, match="create_stack.*deprecated"):
+                    from zae_limiter import StackOptions
 
-                await repo.create_stack(stack_options=StackOptions())
+                    await repo.create_stack(stack_options=StackOptions())
 
         await repo.close()
 
@@ -1785,20 +2018,24 @@ class TestRepositoryDeprecation:
             mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
             mock_manager_class.return_value = mock_manager
 
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                from zae_limiter import StackOptions
+            # Also mock _write_audit_retention_config to avoid DynamoDB call
+            with patch.object(repo, "_write_audit_retention_config", AsyncMock()):
+                with warnings.catch_warnings(record=True) as w:
+                    warnings.simplefilter("always")
+                    from zae_limiter import StackOptions
 
-                await repo.create_stack(stack_options=StackOptions())
+                    await repo.create_stack(stack_options=StackOptions())
 
-                # Should have exactly one deprecation warning
-                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-                assert len(deprecation_warnings) == 1
+                    # Should have exactly one deprecation warning
+                    deprecation_warnings = [
+                        x for x in w if issubclass(x.category, DeprecationWarning)
+                    ]
+                    assert len(deprecation_warnings) == 1
 
-                # Message should mention ensure_infrastructure
-                msg = str(deprecation_warnings[0].message)
-                assert "ensure_infrastructure" in msg
-                assert "v2.0.0" in msg
+                    # Message should mention ensure_infrastructure
+                    msg = str(deprecation_warnings[0].message)
+                    assert "ensure_infrastructure" in msg
+                    assert "v2.0.0" in msg
 
         await repo.close()
 
@@ -1824,15 +2061,17 @@ class TestRepositoryDeprecation:
             mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
             mock_manager_class.return_value = mock_manager
 
-            # Suppress the deprecation warning - we're testing the functionality
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                await repo.create_stack()  # No stack_options arg
+            # Also mock _write_audit_retention_config to avoid DynamoDB call
+            with patch.object(repo, "_write_audit_retention_config", AsyncMock()):
+                # Suppress the deprecation warning - we're testing the functionality
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    await repo.create_stack()  # No stack_options arg
 
-            # Verify create_stack was called with the constructor-provided options
-            mock_manager.create_stack.assert_called_once()
-            call_kwargs = mock_manager.create_stack.call_args[1]
-            assert call_kwargs["stack_options"].lambda_memory == 512
+                # Verify create_stack was called with the constructor-provided options
+                mock_manager.create_stack.assert_called_once()
+                call_kwargs = mock_manager.create_stack.call_args[1]
+                assert call_kwargs["stack_options"].lambda_memory == 512
 
         await repo.close()
 

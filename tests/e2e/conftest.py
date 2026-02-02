@@ -49,7 +49,7 @@ def e2e_stack_options():
         enable_aggregator=True,
         enable_alarms=True,
         snapshot_windows="hourly",
-        retention_days=7,
+        usage_retention_days=7,
     )
 
 

@@ -56,7 +56,7 @@ class TestAWSLatencyBenchmarks:
         stack_options = StackOptions(
             enable_aggregator=False,
             enable_alarms=False,
-            retention_days=1,
+            usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
         )
@@ -191,7 +191,7 @@ class TestAWSThroughputBenchmarks:
         stack_options = StackOptions(
             enable_aggregator=False,
             enable_alarms=False,
-            retention_days=1,
+            usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
         )
@@ -395,7 +395,7 @@ class TestAWSCascadeBenchmarks:
         stack_options = StackOptions(
             enable_aggregator=False,
             enable_alarms=False,
-            retention_days=1,
+            usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
         )

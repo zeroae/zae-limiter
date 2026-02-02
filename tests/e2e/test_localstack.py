@@ -80,7 +80,7 @@ class TestE2ELocalStackCLIWorkflow:
                     "us-east-1",
                     "--snapshot-windows",
                     "hourly",
-                    "--retention-days",
+                    "--usage-retention-days",
                     "7",
                     "--no-aggregator",  # Faster deployment for CLI test
                     "--no-alarms",
@@ -786,7 +786,7 @@ class TestE2ELocalStackAggregatorWorkflow:
             enable_aggregator=True,
             enable_alarms=False,  # Faster deployment
             snapshot_windows="hourly",
-            retention_days=7,
+            usage_retention_days=7,
         )
 
         limiter = RateLimiter(

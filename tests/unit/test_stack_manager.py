@@ -42,7 +42,7 @@ class TestStackManager:
         params = manager._format_parameters(
             {
                 "snapshot_windows": "hourly,daily,monthly",
-                "retention_days": "180",
+                "usage_retention_days": "180",
                 "enable_aggregator": "false",
             }
         )
@@ -156,7 +156,7 @@ class TestStackManager:
             result = await manager.create_stack(
                 stack_options=StackOptions(
                     snapshot_windows="hourly",
-                    retention_days=30,
+                    usage_retention_days=30,
                 )
             )
 

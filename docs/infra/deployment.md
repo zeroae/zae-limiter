@@ -38,6 +38,8 @@ zae-limiter deploy \
 | `--endpoint-url` | Custom endpoint (LocalStack) | None |
 | `--enable-aggregator/--no-aggregator` | Deploy Lambda aggregator | `true` |
 | `--log-retention-days` | CloudWatch log retention | `30` |
+| `--usage-retention-days` | Usage snapshot retention | `90` |
+| `--audit-retention-days` | Audit record retention in DynamoDB | `90` |
 | `--pitr-recovery-days` | Point-in-time recovery (1-35 days) | None (disabled) |
 | `--enable-audit-archival/--no-audit-archival` | Archive expired audit events to S3 | `true` |
 | `--audit-archive-glacier-days` | Days before Glacier IR transition | `90` |
@@ -295,7 +297,7 @@ limiter = RateLimiter(
     region="us-east-1",
     stack_options=StackOptions(
         snapshot_windows="hourly,daily",
-        retention_days=90,
+        usage_retention_days=90,
     ),
 )
 ```

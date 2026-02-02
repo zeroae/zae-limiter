@@ -175,7 +175,7 @@ class TestCLI:
                 "us-west-2",
                 "--snapshot-windows",
                 "hourly",
-                "--retention-days",
+                "--usage-retention-days",
                 "30",
                 "--no-aggregator",
             ],

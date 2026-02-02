@@ -72,10 +72,16 @@ Examples:
     help="Comma-separated list of snapshot windows",
 )
 @click.option(
-    "--retention-days",
+    "--usage-retention-days",
     default=90,
     type=int,
     help="Number of days to retain usage snapshots",
+)
+@click.option(
+    "--audit-retention-days",
+    default=90,
+    type=int,
+    help="Number of days to retain audit records (default: 90)",
 )
 @click.option(
     "--enable-aggregator/--no-aggregator",
@@ -229,7 +235,8 @@ def deploy(
     region: str | None,
     endpoint_url: str | None,
     snapshot_windows: str,
-    retention_days: int,
+    usage_retention_days: int,
+    audit_retention_days: int,
     enable_aggregator: bool,
     pitr_recovery_days: int | None,
     log_retention_days: str,
@@ -322,7 +329,8 @@ def deploy(
             # Build StackOptions from CLI arguments
             stack_options = StackOptions(
                 snapshot_windows=snapshot_windows,
-                retention_days=retention_days,
+                usage_retention_days=usage_retention_days,
+                audit_retention_days=audit_retention_days,
                 enable_aggregator=effective_enable_aggregator,
                 pitr_recovery_days=pitr_recovery_days,
                 log_retention_days=int(log_retention_days),
@@ -348,7 +356,8 @@ def deploy(
             click.echo(f"  Table name: {manager.table_name}")
             click.echo(f"  Region: {region or 'default'}")
             click.echo(f"  Snapshot windows: {stack_options.snapshot_windows}")
-            click.echo(f"  Retention days: {stack_options.retention_days}")
+            click.echo(f"  Usage retention days: {stack_options.usage_retention_days}")
+            click.echo(f"  Audit retention days: {stack_options.audit_retention_days}")
             click.echo(
                 f"  Aggregator: {'enabled' if stack_options.enable_aggregator else 'disabled'}"
             )
