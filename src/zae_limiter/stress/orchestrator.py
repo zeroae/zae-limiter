@@ -5,11 +5,17 @@ This script runs as a non-essential container in the ECS task alongside
 the Locust master. It continuously invokes Lambda workers to connect to
 the master, replacing them as they timeout (60s Lambda limit).
 
+Uses a closed-loop control system:
+- Tracks pending invocations (Lambda invoked but not yet connected)
+- Only invokes new workers when connected + pending < desired
+- Times out pending invocations after PENDING_TIMEOUT seconds
+
 Environment variables:
     DESIRED_WORKERS: Number of workers to maintain (default: 10)
     WORKER_FUNCTION_NAME: Lambda function name to invoke
     MASTER_PORT: Locust master port (default: 5557)
     POLL_INTERVAL: Seconds between maintenance loops (default: 5)
+    PENDING_TIMEOUT: Seconds before pending invocation expires (default: 30)
 """
 
 from __future__ import annotations
@@ -69,19 +75,54 @@ def get_connected_workers() -> int:
         return -1  # Unknown
 
 
+class WorkerPool:
+    """Tracks pending Lambda invocations for closed-loop control."""
+
+    def __init__(self, pending_timeout: float = 30.0):
+        self.pending_timeout = pending_timeout
+        self.pending: list[float] = []  # Timestamps of pending invocations
+
+    def add_pending(self, count: int = 1) -> None:
+        """Record new pending invocations."""
+        now = time.time()
+        self.pending.extend([now] * count)
+
+    def expire_old(self) -> int:
+        """Remove expired pending invocations. Returns count expired."""
+        now = time.time()
+        cutoff = now - self.pending_timeout
+        original = len(self.pending)
+        self.pending = [t for t in self.pending if t > cutoff]
+        return original - len(self.pending)
+
+    def connected(self, actual_count: int, previous_count: int) -> None:
+        """Adjust pending based on newly connected workers."""
+        # If connected count increased, remove that many from pending
+        new_connections = max(0, actual_count - previous_count)
+        if new_connections > 0 and self.pending:
+            # Remove oldest pending entries (FIFO)
+            self.pending = self.pending[new_connections:]
+
+    @property
+    def pending_count(self) -> int:
+        return len(self.pending)
+
+
 def main() -> None:
     """Run the worker orchestration loop."""
     desired_workers = int(os.environ.get("DESIRED_WORKERS", "10"))
     worker_function = os.environ["WORKER_FUNCTION_NAME"]
     master_port = int(os.environ.get("MASTER_PORT", "5557"))
     poll_interval = int(os.environ.get("POLL_INTERVAL", "5"))
+    pending_timeout = float(os.environ.get("PENDING_TIMEOUT", "30"))
 
     master_ip = get_task_ip()
     logger.info(
-        "Orchestrator started: master=%s:%d, desired_workers=%d",
+        "Orchestrator started: master=%s:%d, desired=%d, pending_timeout=%ds",
         master_ip,
         master_port,
         desired_workers,
+        int(pending_timeout),
     )
 
     lambda_client = boto3.client("lambda")
@@ -95,6 +136,8 @@ def main() -> None:
         }
     ).encode()
 
+    pool = WorkerPool(pending_timeout=pending_timeout)
+    last_connected = -1
     shutdown = False
 
     def handle_signal(signum: int, frame: object) -> None:
@@ -110,12 +153,40 @@ def main() -> None:
             # Query Locust master for actual connected workers
             connected = get_connected_workers()
 
-            if connected < 0:
-                # Master not ready, invoke full batch
-                needed = desired_workers
-            else:
-                needed = max(0, desired_workers - connected)
+            # Expire old pending invocations
+            expired = pool.expire_old()
+            if expired > 0:
+                logger.warning("Expired %d pending invocations (failed to connect)", expired)
 
+            # Update pending based on new connections
+            if connected >= 0 and last_connected >= 0:
+                pool.connected(connected, last_connected)
+
+            # Calculate how many workers we need
+            if connected < 0:
+                # Master not ready - assume 0 connected, keep pending
+                effective = pool.pending_count
+                needed = max(0, desired_workers - effective)
+                logger.info(
+                    "Master not ready: pending=%d, invoking=%d",
+                    pool.pending_count,
+                    needed,
+                )
+            else:
+                effective = connected + pool.pending_count
+                needed = max(0, desired_workers - effective)
+
+                # Log state on every poll for visibility
+                logger.info(
+                    "Workers: connected=%d, pending=%d, effective=%d/%d, need=%d",
+                    connected,
+                    pool.pending_count,
+                    effective,
+                    desired_workers,
+                    needed,
+                )
+
+            # Invoke new workers if needed
             if needed > 0:
                 for _ in range(needed):
                     lambda_client.invoke(
@@ -123,14 +194,12 @@ def main() -> None:
                         InvocationType="Event",  # Async invocation
                         Payload=payload,
                     )
-                logger.info(
-                    "Invoked %d workers (connected=%s, desired=%d)",
-                    needed,
-                    connected if connected >= 0 else "unknown",
-                    desired_workers,
-                )
+                pool.add_pending(needed)
+                logger.info("Invoked %d new Lambda workers", needed)
 
+            last_connected = connected
             time.sleep(poll_interval)
+
         except Exception:
             logger.exception("Error in orchestration loop")
             time.sleep(poll_interval)
