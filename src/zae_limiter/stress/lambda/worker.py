@@ -77,13 +77,14 @@ def _run_headless(config: dict[str, Any]) -> dict[str, Any]:
     env.runner.quit()
     print(f"Runner stopped. State: {env.runner.state}", flush=True)
 
-    # Collect stats immediately
-    print("Getting stats...", flush=True)
+    # Collect stats
     stats = env.stats.total
-    print(f"total.num_requests: {stats.num_requests}", flush=True)
-    print(f"entries keys: {list(env.stats.entries.keys())}", flush=True)
-    for key, entry in env.stats.entries.items():
-        print(f"  {key}: {entry.num_requests} requests", flush=True)
+    p95 = stats.get_response_time_percentile(0.95)
+    print(
+        f"Total: {stats.num_requests} reqs, {stats.num_failures} failures, "
+        f"avg={stats.avg_response_time:.1f}ms, p95={p95:.1f}ms",
+        flush=True,
+    )
 
     return {
         "total_requests": stats.num_requests,

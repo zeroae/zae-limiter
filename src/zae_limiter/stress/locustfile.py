@@ -50,8 +50,6 @@ class RateLimiterUser(User):  # type: ignore[misc]
 
     def on_start(self) -> None:
         """Initialize per-user state."""
-        print("on_start called", flush=True)
-
         # Initialize shared limiter (connection pooling across all users)
         if RateLimiterUser._limiter is None:
             RateLimiterUser._config = StressConfig.from_environment()
@@ -65,7 +63,6 @@ class RateLimiterUser(User):  # type: ignore[misc]
         self.config = RateLimiterUser._config
         self.limiter = RateLimiterUser._limiter
         self.distributor = RateLimiterUser._distributor
-        print("User started", flush=True)
 
     def _do_acquire(self, entity_id: str, api: str, tpm: int) -> None:
         """Execute async acquire operation."""
