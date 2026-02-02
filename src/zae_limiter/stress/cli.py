@@ -55,6 +55,15 @@ def deploy(
         click.echo(f"Error: Target stack missing outputs: {missing}", err=True)
         sys.exit(1)
 
+    # Get IAM configuration from target stack (override CLI args if present)
+    target_permission_boundary = outputs.get("PermissionBoundaryArn", "")
+    target_role_name_format = outputs.get("RoleNameFormat", "{}")
+    if target_permission_boundary:
+        permission_boundary = target_permission_boundary
+        click.echo(f"  Using permission boundary from target: {permission_boundary}")
+    if target_role_name_format and target_role_name_format != "{}":
+        click.echo(f"  Using role name format from target: {target_role_name_format}")
+
     click.echo("  Target stack validated")
 
     # Get zae-limiter source
@@ -67,17 +76,21 @@ def deploy(
 
     subnet_list = [s.strip() for s in subnet_ids.split(",")]
 
+    # Build parameters list
+    stack_params = [
+        {"ParameterKey": "TargetStackName", "ParameterValue": target},
+        {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
+        {"ParameterKey": "PrivateSubnetIds", "ParameterValue": ",".join(subnet_list)},
+        {"ParameterKey": "MaxWorkers", "ParameterValue": str(max_workers)},
+        {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
+        {"ParameterKey": "RoleNameFormat", "ParameterValue": target_role_name_format},
+    ]
+
     try:
         cfn.create_stack(
             StackName=name,
             TemplateBody=template_body,
-            Parameters=[
-                {"ParameterKey": "TargetStackName", "ParameterValue": target},
-                {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
-                {"ParameterKey": "PrivateSubnetIds", "ParameterValue": ",".join(subnet_list)},
-                {"ParameterKey": "MaxWorkers", "ParameterValue": str(max_workers)},
-                {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
-            ],
+            Parameters=stack_params,  # type: ignore[arg-type]
             Capabilities=["CAPABILITY_NAMED_IAM"],
         )
         click.echo("  CloudFormation stack creation started")
@@ -90,21 +103,21 @@ def deploy(
 
     except cfn.exceptions.AlreadyExistsException:
         click.echo("  Stack already exists, updating...")
-        cfn.update_stack(
-            StackName=name,
-            TemplateBody=template_body,
-            Parameters=[
-                {"ParameterKey": "TargetStackName", "ParameterValue": target},
-                {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
-                {"ParameterKey": "PrivateSubnetIds", "ParameterValue": ",".join(subnet_list)},
-                {"ParameterKey": "MaxWorkers", "ParameterValue": str(max_workers)},
-                {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
-            ],
-            Capabilities=["CAPABILITY_NAMED_IAM"],
-        )
-        update_waiter = cfn.get_waiter("stack_update_complete")
-        update_waiter.wait(StackName=name)
-        click.echo("  CloudFormation stack updated")
+        try:
+            cfn.update_stack(
+                StackName=name,
+                TemplateBody=template_body,
+                Parameters=stack_params,  # type: ignore[arg-type]
+                Capabilities=["CAPABILITY_NAMED_IAM"],
+            )
+            update_waiter = cfn.get_waiter("stack_update_complete")
+            update_waiter.wait(StackName=name)
+            click.echo("  CloudFormation stack updated")
+        except cfn.exceptions.ClientError as e:
+            if "No updates are to be performed" in str(e):
+                click.echo("  Stack is up to date")
+            else:
+                raise
 
     # Build and push Docker image
     click.echo("  Building Locust image...")
@@ -249,9 +262,13 @@ def connect(name: str, region: str | None) -> None:
     task_arn = tasks["taskArns"][0]
     task_id = task_arn.split("/")[-1]
 
+    # Get runtime ID for SSM target
+    task_details = ecs.describe_tasks(cluster=name, tasks=[task_arn])
+    runtime_id = task_details["tasks"][0]["containers"][0]["runtimeId"]
+
     click.echo("Run this command to port-forward:\n")
     click.echo("  aws ssm start-session \\")
-    click.echo(f"    --target ecs:{name}_{task_id}_locust-master \\")
+    click.echo(f"    --target ecs:{name}_{task_id}_{runtime_id} \\")
     click.echo("    --document-name AWS-StartPortForwardingSessionToRemoteHost \\")
     click.echo(
         '    --parameters \'host=["localhost"],portNumber=["8089"],localPortNumber=["8089"]\''

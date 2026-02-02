@@ -143,6 +143,7 @@ class StackManager:
             "acquire_only_policy_name": "AcquireOnlyPolicyName",
             "full_access_policy_name": "FullAccessPolicyName",
             "readonly_policy_name": "ReadOnlyPolicyName",
+            "role_name_format": "RoleNameFormat",
             "enable_audit_archival": "EnableAuditArchival",
             "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
             "enable_tracing": "EnableTracing",

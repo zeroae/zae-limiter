@@ -23,9 +23,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     config = event.get("config", {})
     mode = config.get("mode", "headless")
 
-    # Set environment for locustfile
-    os.environ["TARGET_STACK_NAME"] = config["target_stack_name"]
-    os.environ["TARGET_REGION"] = config.get("region", "us-east-1")
+    # Set environment for locustfile (use config or fall back to Lambda env vars)
+    if "target_stack_name" in config:
+        os.environ["TARGET_STACK_NAME"] = config["target_stack_name"]
+    # TARGET_STACK_NAME and TARGET_REGION are set via Lambda env vars in CloudFormation
+    os.environ.setdefault("TARGET_REGION", config.get("region", "us-east-1"))
     os.environ["BASELINE_RPM"] = str(config.get("baseline_rpm", 400))
     os.environ["SPIKE_RPM"] = str(config.get("spike_rpm", 1500))
     os.environ["SPIKE_PROBABILITY"] = str(config.get("spike_probability", 0.10))
@@ -41,25 +43,47 @@ def _run_headless(config: dict[str, Any]) -> dict[str, Any]:
     import gevent
     from locust.env import Environment
 
+    print("Starting headless Locust test...", flush=True)
+
     # Import locustfile (copied into Lambda package)
     from locustfile import RateLimiterUser
 
+    print(f"Loaded RateLimiterUser: {RateLimiterUser}")
+
     env = Environment(user_classes=[RateLimiterUser])
     env.create_local_runner()
+
+    # Initialize stats BEFORE starting - this sets up the request event listener
+    # Without this, stats.entries will be empty because the listener isn't registered
+    _ = env.stats
+    print(f"Created runner: {env.runner}, stats initialized")
 
     user_count = config.get("users", 10)
     spawn_rate = config.get("spawn_rate", 5)
     duration = config.get("duration_seconds", 60)
 
+    print(f"Starting {user_count} users at {spawn_rate}/s for {duration}s...", flush=True)
+
     # Start users
     env.runner.start(user_count, spawn_rate=spawn_rate)
+    print(f"Started. Runner state: {env.runner.state}", flush=True)
 
-    # Run for duration
-    gevent.spawn_later(duration, env.runner.quit)
-    env.runner.greenlet.join()
+    # Let gevent run and process greenlets
+    print(f"Running for {duration}s...", flush=True)
+    gevent.sleep(duration)
+    print(f"Duration elapsed. Runner state: {env.runner.state}", flush=True)
 
-    # Collect stats
+    # Stop the test
+    env.runner.quit()
+    print(f"Runner stopped. State: {env.runner.state}", flush=True)
+
+    # Collect stats immediately
+    print("Getting stats...", flush=True)
     stats = env.stats.total
+    print(f"total.num_requests: {stats.num_requests}", flush=True)
+    print(f"entries keys: {list(env.stats.entries.keys())}", flush=True)
+    for key, entry in env.stats.entries.items():
+        print(f"  {key}: {entry.num_requests} requests", flush=True)
 
     return {
         "total_requests": stats.num_requests,
