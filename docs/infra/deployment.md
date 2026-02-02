@@ -295,7 +295,7 @@ limiter = RateLimiter(
     region="us-east-1",
     stack_options=StackOptions(
         snapshot_windows="hourly,daily",
-        retention_days=90,
+        usage_retention_days=90,
     ),
 )
 ```

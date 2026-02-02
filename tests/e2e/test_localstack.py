@@ -786,7 +786,7 @@ class TestE2ELocalStackAggregatorWorkflow:
             enable_aggregator=True,
             enable_alarms=False,  # Faster deployment
             snapshot_windows="hourly",
-            retention_days=7,
+            usage_retention_days=7,
         )
 
         limiter = RateLimiter(

@@ -88,7 +88,7 @@ class TestRepositoryLocalStackCloudFormation:
         # Pass stack_options to constructor - this is the new API pattern
         stack_options = StackOptions(
             snapshot_windows="hourly,daily",
-            retention_days=90,
+            usage_retention_days=90,
             enable_aggregator=False,
             enable_alarms=False,
         )

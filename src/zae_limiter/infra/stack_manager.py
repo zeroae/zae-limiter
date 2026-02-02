@@ -122,7 +122,7 @@ class StackManager:
         # Map common parameter names
         param_mapping = {
             "snapshot_windows": "SnapshotWindows",
-            "retention_days": "SnapshotRetentionDays",
+            "usage_retention_days": "SnapshotRetentionDays",
             "lambda_memory_size": "LambdaMemorySize",
             "lambda_timeout": "LambdaTimeout",
             "enable_aggregator": "EnableAggregator",

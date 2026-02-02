@@ -44,7 +44,7 @@ def archival_stack_options():
         enable_audit_archival=True,
         audit_archive_glacier_days=90,
         snapshot_windows="hourly",
-        retention_days=7,
+        usage_retention_days=7,
     )
 
 

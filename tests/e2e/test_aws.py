@@ -86,7 +86,7 @@ class TestE2EAWSFullWorkflow:
             enable_aggregator=True,
             enable_alarms=True,
             snapshot_windows="hourly",
-            retention_days=1,  # Minimum for cost
+            usage_retention_days=1,  # Minimum for cost
             lambda_timeout=60,
             lambda_memory=256,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
@@ -337,7 +337,7 @@ class TestE2EAWSUsageSnapshots:
             enable_aggregator=True,
             enable_alarms=False,  # Faster for snapshot tests
             snapshot_windows="hourly,daily",
-            retention_days=1,
+            usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
         )
@@ -500,7 +500,7 @@ class TestE2EAWSRateLimiting:
         stack_options = StackOptions(
             enable_aggregator=False,
             enable_alarms=False,
-            retention_days=1,
+            usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
         )
@@ -620,7 +620,7 @@ class TestE2EAWSXRayTracingEnabled:
             enable_aggregator=True,
             enable_tracing=True,
             enable_alarms=False,  # Faster for tracing tests
-            retention_days=1,
+            usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
         )
@@ -852,7 +852,7 @@ class TestE2EAWSXRayTracingDisabled:
             enable_aggregator=True,
             enable_tracing=False,  # Explicitly disabled
             enable_alarms=False,
-            retention_days=1,
+            usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
         )

@@ -152,7 +152,7 @@ class TestStackOptions:
         """Test default values match expected defaults."""
         opts = StackOptions()
         assert opts.snapshot_windows == "hourly,daily"
-        assert opts.retention_days == 90
+        assert opts.usage_retention_days == 90
         assert opts.enable_aggregator is True
         assert opts.pitr_recovery_days is None
         assert opts.log_retention_days == 30
@@ -169,13 +169,13 @@ class TestStackOptions:
         """Test custom values are preserved."""
         opts = StackOptions(
             snapshot_windows="hourly",
-            retention_days=30,
+            usage_retention_days=30,
             lambda_timeout=120,
             lambda_memory=512,
             enable_aggregator=False,
         )
         assert opts.snapshot_windows == "hourly"
-        assert opts.retention_days == 30
+        assert opts.usage_retention_days == 30
         assert opts.lambda_timeout == 120
         assert opts.lambda_memory == 512
         assert opts.enable_aggregator is False
@@ -212,10 +212,10 @@ class TestStackOptions:
         with pytest.raises(ValueError, match="pitr_recovery_days must be between 1 and 35"):
             StackOptions(pitr_recovery_days=40)
 
-    def test_invalid_retention_days(self):
-        """Test validation of retention_days must be positive."""
-        with pytest.raises(ValueError, match="retention_days must be positive"):
-            StackOptions(retention_days=0)
+    def test_invalid_usage_retention_days(self):
+        """Test validation of usage_retention_days must be positive."""
+        with pytest.raises(ValueError, match="usage_retention_days must be positive"):
+            StackOptions(usage_retention_days=0)
 
     def test_invalid_log_retention_days(self):
         """Test validation of log_retention_days must be valid CloudWatch value."""

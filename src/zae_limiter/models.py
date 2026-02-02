@@ -651,7 +651,7 @@ class StackOptions:
 
     Attributes:
         snapshot_windows: Comma-separated list of snapshot windows (e.g., "hourly,daily")
-        retention_days: Number of days to retain usage snapshots
+        usage_retention_days: Number of days to retain usage snapshots
         enable_aggregator: Deploy Lambda aggregator for usage snapshots
         pitr_recovery_days: Point-in-Time Recovery period (1-35, None for AWS default)
         log_retention_days: CloudWatch log retention period in days (must be valid CloudWatch value)
@@ -680,7 +680,7 @@ class StackOptions:
     """
 
     snapshot_windows: str = "hourly,daily"
-    retention_days: int = 90
+    usage_retention_days: int = 90
     enable_aggregator: bool = True
     pitr_recovery_days: int | None = None
     log_retention_days: int = 30
@@ -711,8 +711,8 @@ class StackOptions:
             raise ValueError("lambda_duration_threshold_pct must be between 1 and 100")
         if self.pitr_recovery_days is not None and not (1 <= self.pitr_recovery_days <= 35):
             raise ValueError("pitr_recovery_days must be between 1 and 35")
-        if self.retention_days <= 0:
-            raise ValueError("retention_days must be positive")
+        if self.usage_retention_days <= 0:
+            raise ValueError("usage_retention_days must be positive")
         if self.log_retention_days not in VALID_LOG_RETENTION_DAYS:
             raise ValueError(
                 f"log_retention_days must be one of {sorted(VALID_LOG_RETENTION_DAYS)}"
@@ -857,7 +857,7 @@ class StackOptions:
         )
         params: dict[str, str] = {
             "snapshot_windows": self.snapshot_windows,
-            "retention_days": str(self.retention_days),
+            "usage_retention_days": str(self.usage_retention_days),
             "enable_aggregator": "true" if self.enable_aggregator else "false",
             "log_retention_days": str(self.log_retention_days),
             "lambda_timeout": str(self.lambda_timeout),
