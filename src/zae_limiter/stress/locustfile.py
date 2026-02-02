@@ -54,6 +54,8 @@ class RateLimiterUser(User):  # type: ignore[misc]
 
         self.config = RateLimiterUser._config
         self.distributor = RateLimiterUser._distributor
+        # Set host for Locust UI display
+        self.host = f"zael://{self.config.stack_name}"
         # Limiter is fetched per-greenlet in tasks (via _get_limiter)
 
     def _do_acquire(self, entity_id: str, api: str, tpm: int) -> None:
