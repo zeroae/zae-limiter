@@ -91,6 +91,7 @@ class TestE2EAWSFullWorkflow:
             lambda_memory=256,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
         )
 
         limiter = RateLimiter(
@@ -340,6 +341,7 @@ class TestE2EAWSUsageSnapshots:
             usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
         )
 
         limiter = RateLimiter(
@@ -503,6 +505,7 @@ class TestE2EAWSRateLimiting:
             usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
         )
 
         limiter = RateLimiter(
@@ -623,6 +626,7 @@ class TestE2EAWSXRayTracingEnabled:
             usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
         )
 
         limiter = RateLimiter(
@@ -855,6 +859,7 @@ class TestE2EAWSXRayTracingDisabled:
             usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
         )
 
         limiter = RateLimiter(
