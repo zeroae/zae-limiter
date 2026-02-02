@@ -60,6 +60,10 @@ plot = [
 local = [
     "docker>=7.0.0",
 ]
+stress = [
+    "locust>=2.20",
+    "gevent>=23.0",
+]
 cdk = [
     "aws-cdk-lib>=2.0.0",
     "constructs>=10.0.0",
