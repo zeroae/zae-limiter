@@ -33,7 +33,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     os.environ["SPIKE_PROBABILITY"] = str(config.get("spike_probability", 0.10))
 
     if mode == "worker":
-        return _run_as_worker(config)
+        return _run_as_worker(config, context)
     else:
         return _run_headless(config)
 
@@ -100,18 +100,33 @@ def _run_headless(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _run_as_worker(config: dict[str, Any]) -> dict[str, Any]:
+def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any]:
     """Connect to Fargate master as distributed worker."""
+    import uuid
+
     from locust.env import Environment
     from locustfile import RateLimiterUser
 
     master_host = config["master_host"]
     master_port = config.get("master_port", 5557)
 
+    # Generate unique worker ID per invocation (Lambda reuses containers)
+    # Use request ID if available, otherwise generate UUID
+    if context and hasattr(context, "aws_request_id"):
+        worker_id = f"lambda_{context.aws_request_id[:8]}"
+    else:
+        worker_id = f"lambda_{uuid.uuid4().hex[:8]}"
+
+    print(f"Starting worker {worker_id} connecting to {master_host}:{master_port}", flush=True)
+
     env = Environment(user_classes=[RateLimiterUser])
     env.create_worker_runner(master_host, master_port)
+
+    # Set the worker ID after runner creation (Locust uses this for identification)
+    if hasattr(env.runner, "client_id"):
+        env.runner.client_id = worker_id
 
     # Worker runs until master signals stop or Lambda times out
     env.runner.greenlet.join()
 
-    return {"status": "worker_completed"}
+    return {"status": "worker_completed", "worker_id": worker_id}
