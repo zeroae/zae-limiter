@@ -126,14 +126,15 @@ if wait_seconds > 0:
 
 ## Automatic Limit Resolution
 
-zae-limiter automatically resolves limits from stored configurations using a three-level hierarchy. See [Configuration Hierarchy](config-hierarchy.md) for full details.
+zae-limiter automatically resolves limits from stored configurations using a four-level hierarchy. See [Configuration Hierarchy](config-hierarchy.md) for full details.
 
 **Resolution order (highest to lowest precedence):**
 
-1. **Entity level** - Specific limits for an entity+resource pair
-2. **Resource level** - Default limits for a resource (all entities)
-3. **System level** - Global defaults (all resources)
-4. **Override parameter** - Fallback if no stored config exists
+1. **Entity level (resource-specific)** - Specific limits for an entity+resource pair
+2. **Entity level (_default_)** - Default limits for an entity (all resources)
+3. **Resource level** - Default limits for a resource (all entities)
+4. **System level** - Global defaults (all resources)
+5. **Override parameter** - Fallback if no stored config exists
 
 ```python
 # Set system-wide defaults (lowest precedence)

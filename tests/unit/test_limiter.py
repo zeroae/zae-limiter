@@ -805,8 +805,8 @@ class TestRateLimiterSystemDefaults:
         assert retrieved[0].name == "tpm"
 
 
-class TestRateLimiterThreeTierResolution:
-    """Tests for three-tier limit resolution: Entity > Resource > System > Override."""
+class TestRateLimiterFourTierResolution:
+    """Tests for four-tier limit resolution: Entity > Entity Default > Resource > System."""
 
     async def test_resolution_entity_level(self, limiter):
         """Test that entity-level limits take precedence."""
@@ -823,6 +823,33 @@ class TestRateLimiterThreeTierResolution:
             consume={"rpm": 75},  # Exceeds resource (50) and system (10), but not entity (100)
         ):
             pass  # Should succeed
+
+    async def test_resolution_entity_default_fallback(self, limiter):
+        """Entity _default_ config is used when no resource-specific entity config exists.
+
+        Resolution for acquire(entity_id="user-1", resource="gpt-4"):
+        1. Entity config for "gpt-4"? -> No
+        2. Entity config for "_default_"? -> Yes (100 rpm) <- USED
+        3. Resource defaults for "gpt-4"? -> Yes (50 rpm)
+        4. System defaults? -> Yes (10 rpm)
+
+        Entity's _default_ config (100 rpm) takes precedence over resource defaults (50 rpm).
+        """
+        # Set system and resource defaults
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+
+        # Set entity-level _default_ (should apply to all resources for this entity)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="_default_")
+
+        # Entity's _default_ should be used (100 rpm), not resource defaults (50 rpm)
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="gpt-4",
+            limits=None,  # Auto-resolve
+            consume={"rpm": 75},  # Exceeds resource (50), but not entity _default_ (100)
+        ):
+            pass  # Should succeed if entity _default_ is used
 
     async def test_resolution_resource_level_fallback(self, limiter):
         """Test that resource-level limits are used when no entity limits exist."""
@@ -2936,3 +2963,617 @@ class TestListEntitiesWithCustomLimits:
         entities, cursor = await limiter.list_entities_with_custom_limits("nonexistent")
         assert entities == []
         assert cursor is None
+
+
+class TestConfigSourceTracking:
+    """Tests for config source tracking (Issue #271: Refill-based TTL).
+
+    _resolve_limits() should return (limits, config_source) tuple where
+    config_source indicates which level the limits came from:
+    - 'entity': Entity-level config
+    - 'resource': Resource-level defaults
+    - 'system': System-level defaults
+    - 'override': Override parameter provided
+    """
+
+    async def test_resolve_limits_returns_entity_source_when_entity_config_exists(self, limiter):
+        """_resolve_limits returns ('entity', limits) when entity has custom config."""
+        # Set entity-level limits
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+
+        limits, source = await limiter._resolve_limits("user-1", "gpt-4", None)
+
+        assert source == "entity"
+        assert len(limits) == 1
+        assert limits[0].name == "rpm"
+
+    async def test_resolve_limits_returns_resource_source_when_no_entity_config(self, limiter):
+        """_resolve_limits returns ('resource', limits) when using resource defaults."""
+        # Set resource-level limits only (no entity-level)
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+
+        limits, source = await limiter._resolve_limits("user-1", "gpt-4", None)
+
+        assert source == "resource"
+        assert len(limits) == 1
+        assert limits[0].capacity == 50
+
+    async def test_resolve_limits_returns_system_source_when_no_resource_config(self, limiter):
+        """_resolve_limits returns ('system', limits) when using system defaults."""
+        # Set system-level limits only
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+
+        limits, source = await limiter._resolve_limits("user-1", "gpt-4", None)
+
+        assert source == "system"
+        assert len(limits) == 1
+        assert limits[0].capacity == 10
+
+    async def test_resolve_limits_returns_override_source_when_parameter_provided(self, limiter):
+        """_resolve_limits returns ('override', limits) when using parameter override."""
+        # No stored limits at any level, but provide override parameter
+        override_limits = [Limit.per_minute("rpm", 200)]
+
+        limits, source = await limiter._resolve_limits("user-1", "gpt-4", override_limits)
+
+        assert source == "override"
+        assert len(limits) == 1
+        assert limits[0].capacity == 200
+
+    async def test_resolve_limits_entity_takes_precedence_over_resource(self, limiter):
+        """Entity-level config takes precedence over resource-level defaults."""
+        # Set both levels
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+
+        limits, source = await limiter._resolve_limits("user-1", "gpt-4", None)
+
+        assert source == "entity"
+        assert limits[0].capacity == 100
+
+    async def test_resolve_limits_resource_takes_precedence_over_system(self, limiter):
+        """Resource-level defaults take precedence over system-level defaults."""
+        # Set both levels
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 50)])
+
+        limits, source = await limiter._resolve_limits("user-1", "gpt-4", None)
+
+        assert source == "resource"
+        assert limits[0].capacity == 50
+
+
+class TestBucketTTLConfiguration:
+    """Tests for bucket_ttl_refill_multiplier parameter (Issue #271)."""
+
+    async def test_bucket_ttl_multiplier_default_is_seven(self, mock_dynamodb):
+        """Default bucket_ttl_refill_multiplier is 7."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(name="test")
+            assert limiter._bucket_ttl_refill_multiplier == 7
+            await limiter.close()
+
+    async def test_bucket_ttl_multiplier_custom_value(self, mock_dynamodb):
+        """Custom bucket_ttl_refill_multiplier is accepted."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(name="test", bucket_ttl_refill_multiplier=14)
+            assert limiter._bucket_ttl_refill_multiplier == 14
+            await limiter.close()
+
+    async def test_bucket_ttl_multiplier_zero_disables(self, mock_dynamodb):
+        """Setting bucket_ttl_refill_multiplier=0 disables TTL."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(name="test", bucket_ttl_refill_multiplier=0)
+            assert limiter._bucket_ttl_refill_multiplier == 0
+            await limiter.close()
+
+
+class TestLeaseEntryConfigTracking:
+    """Tests for LeaseEntry config source tracking (Issue #271)."""
+
+    def test_lease_entry_has_custom_config_field(self):
+        """LeaseEntry has _has_custom_config field."""
+        from zae_limiter.lease import LeaseEntry
+        from zae_limiter.models import BucketState
+
+        state = BucketState(
+            entity_id="test",
+            resource="api",
+            limit_name="rpm",
+            tokens_milli=1000,
+            capacity_milli=1000,
+            burst_milli=1000,
+            refill_amount_milli=1000,
+            refill_period_ms=60000,
+            last_refill_ms=0,
+        )
+
+        # Default should be False
+        entry = LeaseEntry(
+            entity_id="test",
+            resource="api",
+            limit=Limit.per_minute("rpm", 100),
+            state=state,
+        )
+        assert entry._has_custom_config is False
+
+        # Should be settable
+        entry_with_custom = LeaseEntry(
+            entity_id="test",
+            resource="api",
+            limit=Limit.per_minute("rpm", 100),
+            state=state,
+            _has_custom_config=True,
+        )
+        assert entry_with_custom._has_custom_config is True
+
+
+class TestLeaseConfigPropagation:
+    """Tests for Lease config source propagation (Issue #271)."""
+
+    def test_lease_has_bucket_ttl_multiplier_field(self):
+        """Lease has bucket_ttl_refill_multiplier field."""
+        from unittest.mock import MagicMock
+
+        from zae_limiter.lease import Lease
+
+        repo = MagicMock()
+        lease = Lease(repository=repo)
+        assert lease.bucket_ttl_refill_multiplier == 7  # Default
+
+        lease_custom = Lease(repository=repo, bucket_ttl_refill_multiplier=14)
+        assert lease_custom.bucket_ttl_refill_multiplier == 14
+
+
+class TestLeaseCommitTTL:
+    """Tests for TTL behavior in Lease._commit() (Issue #271)."""
+
+    async def test_commit_sets_ttl_for_default_config(self, limiter):
+        """Lease._commit() sets TTL when using system/resource defaults."""
+        # Set system defaults (not entity-level config)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Acquire should set TTL (config source is 'system', not 'entity')
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify bucket has TTL set
+        buckets = await limiter._repository.get_buckets("user-1", "api")
+        # TTL should be present (non-None)
+        # The bucket TTL attribute should be set
+        bucket = next((b for b in buckets if b.limit_name == "rpm"), None)
+        assert bucket is not None
+        # We need to check the raw item has ttl - let's query directly
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" in item
+
+    async def test_get_item_returns_none_for_missing_bucket(self, limiter):
+        """_get_item returns None when bucket doesn't exist."""
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Query for a bucket that doesn't exist
+        item = await limiter._repository._get_item(pk_entity("nonexistent-user"), sk_bucket("api"))
+        assert item is None
+
+    async def test_commit_removes_ttl_for_entity_config(self, limiter):
+        """Lease._commit() removes TTL when entity has custom limits."""
+        # First set system defaults and create a bucket with TTL
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Now set entity-level config
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Invalidate cache to ensure entity config is read (cache has negative entry)
+        await limiter.invalidate_config_cache()
+
+        # Acquire again - should remove TTL since entity now has custom config
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify TTL was removed
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" not in item
+
+    async def test_commit_sets_ttl_for_entity_default_config(self, limiter):
+        """Lease._commit() sets TTL when entity has _default_ config (not resource-specific).
+
+        Entity _default_ config is treated as a kind of default (not custom config),
+        so TTL should be applied. This contrasts with resource-specific entity config
+        which removes TTL.
+        """
+        # Set entity _default_ config (applies to all resources for this entity)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)])  # resource="_default_"
+
+        # Acquire for a specific resource - should use entity _default_ config
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="gpt-4",  # Different from _default_
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify TTL IS set (entity_default is treated as a default, not custom)
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("gpt-4"))
+        assert item is not None
+        assert "ttl" in item, "entity_default config should have TTL (treated as default)"
+
+    async def test_ttl_value_matches_formula(self, limiter):
+        """TTL = now + max_refill_period × multiplier."""
+        import time
+
+        # Set system defaults with known refill period (60 seconds)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        now_before = int(time.time())
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+        now_after = int(time.time())
+
+        # Get TTL from item
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+
+        # TTL = now + (60 seconds * 7 multiplier) = now + 420
+        # Allow ±1 second for timing
+        expected_min = now_before + (60 * 7)
+        expected_max = now_after + (60 * 7) + 1
+
+        ttl = item["ttl"]
+        assert expected_min <= ttl <= expected_max
+
+    async def test_ttl_accounts_for_slow_refill_rate(self, limiter):
+        """TTL should be based on time to fill bucket, not just refill period (Issue #296).
+
+        For a limit with capacity=1000 and refill_rate=10/min:
+        - Time to fill bucket = 1000 / (10/min) = 100 minutes = 6000 seconds
+        - TTL should be >= 6000 seconds × multiplier = 42000 seconds (700 minutes)
+        """
+        import time
+
+        # Create a slow-refill limit: 1000 capacity, refills 10 per minute
+        slow_refill_limit = Limit(
+            name="tokens",
+            capacity=1000,
+            burst=1000,
+            refill_amount=10,
+            refill_period_seconds=60,
+        )
+        await limiter.set_system_defaults([slow_refill_limit])
+
+        now_before = int(time.time())
+        async with limiter.acquire(
+            entity_id="user-slow",
+            resource="api",
+            consume={"tokens": 1},
+        ):
+            pass
+
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        item = await limiter._repository._get_item(pk_entity("user-slow"), sk_bucket("api"))
+
+        # Time to fill = (capacity / refill_amount) × refill_period = 100 × 60 = 6000 seconds
+        # Expected TTL = time_to_fill × multiplier = 6000 × 7 = 42000 seconds
+        time_to_fill = (1000 / 10) * 60  # 6000 seconds
+        expected_min = now_before + int(time_to_fill * 7)
+
+        ttl = item["ttl"]
+        assert ttl >= expected_min, (
+            f"TTL {ttl - now_before}s is shorter than time to fill bucket "
+            f"({time_to_fill}s × 7 = {time_to_fill * 7}s)"
+        )
+
+    async def test_ttl_disabled_when_multiplier_zero(self, mock_dynamodb):
+        """No TTL when bucket_ttl_refill_multiplier=0."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-no-ttl",
+                region="us-east-1",
+                bucket_ttl_refill_multiplier=0,
+            )
+            await limiter._repository.create_table()
+            async with limiter:
+                await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+                async with limiter.acquire(
+                    entity_id="user-1",
+                    resource="api",
+                    consume={"rpm": 1},
+                ):
+                    pass
+
+                # Verify no TTL set
+                from zae_limiter.schema import pk_entity, sk_bucket
+
+                item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+                assert item is not None
+                assert "ttl" not in item
+
+    async def test_commit_sets_ttl_after_deleting_entity_config(self, limiter):
+        """Lease._commit() sets TTL when entity downgrades from custom to default limits.
+
+        When an entity's custom limits are deleted, the next acquire() should set TTL
+        on the bucket since the entity now uses default limits again.
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Set system defaults
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Set entity-level config (custom limits)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Acquire with custom limits - should NOT have TTL
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify no TTL (entity has custom config)
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" not in item
+
+        # Delete entity-level config (downgrade to defaults)
+        await limiter.delete_limits("user-1", resource="api")
+
+        # Invalidate cache to ensure deleted config is recognized
+        await limiter.invalidate_config_cache()
+
+        # Acquire again - should now set TTL since entity uses defaults
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify TTL is now set (entity uses default config)
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" in item
+
+
+class TestBucketLimitSync:
+    """Tests for bucket synchronization when limits are updated.
+
+    These tests verify that bucket parameters (capacity, burst, refill)
+    are updated when entity limits change via set_limits().
+    """
+
+    async def test_bucket_updated_when_limit_increased(self, limiter):
+        """Bucket capacity is synced when entity limit is increased.
+
+        Behavior (issue #294):
+        1. Create entity with rpm=100
+        2. Use bucket (creates bucket with capacity=100)
+        3. Update limit to rpm=200 - set_limits() syncs bucket
+        4. Bucket capacity is now 200
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Step 1: Set initial limit (rpm=100)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="api")
+
+        # Step 2: Use the bucket (creates it with capacity=100)
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Verify bucket was created with capacity=100
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000, "Initial capacity should be 100 RPM"
+
+        # Step 3: Update limit to rpm=200 - bucket synced immediately
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Verify bucket capacity was updated immediately (no acquire needed)
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"
+
+    async def test_bucket_updated_when_limit_decreased(self, limiter):
+        """Bucket capacity is synced when entity limit is decreased.
+
+        Behavior (issue #294):
+        1. Create entity with rpm=200
+        2. Use bucket (creates bucket with capacity=200)
+        3. Update limit to rpm=100 - set_limits() syncs bucket
+        4. Bucket capacity is now 100
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Step 1: Set initial limit (rpm=200)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Step 2: Use the bucket (creates it with capacity=200)
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Verify bucket was created with capacity=200
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "Initial capacity should be 200 RPM"
+
+        # Step 3: Downgrade limit to rpm=100 - bucket synced immediately
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="api")
+
+        # Verify bucket capacity was updated immediately (no acquire needed)
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000, "Bucket capacity should be synced to 100 RPM"
+
+    async def test_bucket_updated_with_multiple_limits(self, limiter):
+        """All bucket params synced when entity has multiple limits.
+
+        Verifies that the SET expression correctly handles multiple limits
+        and all parameters (capacity, burst, refill) are updated.
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Set initial limits: rpm=100, tpm=10000
+        await limiter.set_limits(
+            "user-2",
+            [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000)],
+            resource="api",
+        )
+
+        # Create buckets via acquire
+        async with limiter.acquire(
+            entity_id="user-2", resource="api", consume={"rpm": 1, "tpm": 10}
+        ):
+            pass
+
+        # Verify initial values
+        item = await limiter._repository._get_item(pk_entity("user-2"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000
+        assert item["b_tpm_cp"] == 10000000
+
+        # Update both limits
+        await limiter.set_limits(
+            "user-2",
+            [Limit.per_minute("rpm", 200), Limit.per_minute("tpm", 20000)],
+            resource="api",
+        )
+
+        # Verify both buckets synced
+        item = await limiter._repository._get_item(pk_entity("user-2"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "rpm capacity should be synced"
+        assert item["b_tpm_cp"] == 20000000, "tpm capacity should be synced"
+
+    async def test_bucket_refill_params_synced_when_changed(self, limiter):
+        """Bucket refill rate is synced when limit period changes.
+
+        Verifies that all four bucket parameters are updated:
+        capacity, burst, refill_amount, refill_period.
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Initial: 100 per minute
+        await limiter.set_limits(
+            "user-3",
+            [Limit.per_minute("rpm", 100, burst=150)],
+            resource="api",
+        )
+        async with limiter.acquire(entity_id="user-3", resource="api", consume={"rpm": 1}):
+            pass
+
+        # Verify initial values (per minute: refill_period=60s)
+        item = await limiter._repository._get_item(pk_entity("user-3"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000  # capacity: 100 * 1000
+        assert item["b_rpm_bx"] == 150000  # burst: 150 * 1000
+        assert item["b_rpm_ra"] == 100000  # refill_amount: 100 * 1000
+        assert item["b_rpm_rp"] == 60000  # refill_period: 60s * 1000
+
+        # Update to 200 per hour with different burst
+        await limiter.set_limits(
+            "user-3",
+            [Limit.per_hour("rpm", 200, burst=300)],
+            resource="api",
+        )
+
+        # Verify all params updated
+        item = await limiter._repository._get_item(pk_entity("user-3"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "capacity should be synced"
+        assert item["b_rpm_bx"] == 300000, "burst should be synced"
+        assert item["b_rpm_ra"] == 200000, "refill_amount should be synced"
+        assert item["b_rpm_rp"] == 3600000, "refill_period should be synced (3600s)"
+
+    async def test_set_limits_with_empty_list_skips_bucket_sync(self, limiter):
+        """set_limits() with empty limits list skips bucket sync.
+
+        Verifies the early return path when limits=[] is passed.
+        """
+        # Set limits then clear them - should not raise
+        await limiter.set_limits("user-4", [Limit.per_minute("rpm", 100)], resource="api")
+        await limiter.set_limits("user-4", [], resource="api")
+        # No error means the empty list path was handled
+
+    async def test_bucket_sync_skipped_when_bucket_does_not_exist(self, limiter):
+        """Bucket sync is skipped when bucket doesn't exist yet.
+
+        Verifies ConditionalCheckFailedException is handled gracefully.
+        """
+        # Set limits without creating bucket first - should not raise
+        await limiter.set_limits("user-5", [Limit.per_minute("rpm", 100)], resource="api")
+        # Update limits again - still no bucket exists
+        await limiter.set_limits("user-5", [Limit.per_minute("rpm", 200)], resource="api")
+        # No error means ConditionalCheckFailedException was handled
+
+    async def test_bucket_sync_reraises_unexpected_client_error(self, limiter):
+        """Unexpected ClientError during bucket sync is re-raised.
+
+        Verifies that non-ConditionalCheckFailed errors propagate.
+        """
+
+        # First create a bucket so the conditional check passes
+        await limiter.set_limits("user-6", [Limit.per_minute("rpm", 100)], resource="api")
+        async with limiter.acquire(entity_id="user-6", resource="api", consume={"rpm": 1}):
+            pass
+
+        # Mock update_item to raise an unexpected error
+        original_update = limiter._repository._client.update_item
+
+        async def mock_update_item(**kwargs):
+            # Only fail for bucket sync calls (not other updates)
+            if kwargs.get("Key", {}).get("SK", {}).get("S", "").startswith("#BUCKET#"):
+                raise ClientError(
+                    {"Error": {"Code": "InternalServerError", "Message": "Test error"}},
+                    "UpdateItem",
+                )
+            return await original_update(**kwargs)
+
+        limiter._repository._client.update_item = mock_update_item
+
+        with pytest.raises(ClientError) as exc_info:
+            await limiter.set_limits("user-6", [Limit.per_minute("rpm", 200)], resource="api")
+
+        assert exc_info.value.response["Error"]["Code"] == "InternalServerError"

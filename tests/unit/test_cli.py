@@ -3796,11 +3796,23 @@ class TestEntityCommands:
         assert result.exit_code != 0
         assert "ENTITY_ID" in result.output
 
-    def test_entity_set_limits_requires_resource(self, runner: CliRunner) -> None:
-        """Test entity set-limits requires --resource option."""
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_limits_defaults_resource_to_default(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity set-limits defaults --resource to _default_ (ADR-118)."""
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
         result = runner.invoke(cli, ["entity", "set-limits", "user-123", "-l", "tpm:10000"])
-        assert result.exit_code != 0
-        assert "resource" in result.output.lower()
+        assert result.exit_code == 0
+        assert "_default_" in result.output
+        # Verify set_limits called with resource="_default_"
+        mock_repo.set_limits.assert_called_once()
+        call_args = mock_repo.set_limits.call_args
+        assert call_args.kwargs.get("resource") == "_default_"
 
     def test_entity_set_limits_requires_limit(self, runner: CliRunner) -> None:
         """Test entity set-limits requires at least one --limit."""

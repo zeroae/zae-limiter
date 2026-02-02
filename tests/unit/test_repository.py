@@ -9,6 +9,7 @@ from zae_limiter.exceptions import InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
 from zae_limiter.schema import (
+    calculate_bucket_ttl,
     limit_attr,
     parse_bucket_attr,
     parse_bucket_sk,
@@ -52,6 +53,110 @@ async def repo_with_buckets(repo):
             await repo.transact_write([put_item])
 
     yield repo
+
+
+class TestBucketTTLCalculation:
+    """Tests for calculate_bucket_ttl (Issue #271, #296: Time-to-fill based TTL)."""
+
+    def test_calculate_bucket_ttl_single_limit(self):
+        """TTL = now + time_to_fill × multiplier for single limit.
+
+        For Limit.per_minute("rpm", 100): capacity=100, refill_amount=100
+        time_to_fill = (100/100) × 60 = 60 seconds
+        """
+        now_ms = 1700000000000  # Example timestamp
+        limits = [Limit.per_minute("rpm", 100)]  # time_to_fill = 60s
+        multiplier = 7
+
+        ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
+
+        # Expected: (now_ms // 1000) + (60 * 7) = 1700000000 + 420 = 1700000420
+        assert ttl == 1700000420
+
+    def test_calculate_bucket_ttl_slow_refill_limit(self):
+        """TTL accounts for slow refill rate (Issue #296).
+
+        For slow-refill limit: capacity=1000, refill_amount=10, refill_period=60s
+        time_to_fill = (1000/10) × 60 = 6000 seconds (100 minutes)
+        TTL should be 6000 × 7 = 42000 seconds, NOT 60 × 7 = 420 seconds
+        """
+        now_ms = 1700000000000
+        # Slow refill: 1000 capacity, refills 10 per minute
+        slow_refill_limit = Limit(
+            name="tokens",
+            capacity=1000,
+            burst=1000,
+            refill_amount=10,
+            refill_period_seconds=60,
+        )
+        limits = [slow_refill_limit]
+        multiplier = 7
+
+        ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
+
+        # time_to_fill = (1000/10) × 60 = 6000 seconds
+        # Expected: (now_ms // 1000) + (6000 * 7) = 1700000000 + 42000 = 1700042000
+        assert ttl == 1700042000
+
+    def test_calculate_bucket_ttl_multiple_limits_uses_max_time_to_fill(self):
+        """TTL uses maximum time_to_fill when multiple limits exist."""
+        now_ms = 1700000000000
+        limits = [
+            Limit.per_minute("rpm", 100),  # time_to_fill = 60s
+            Limit.per_day("tpd", 1000000),  # time_to_fill = 86400s
+        ]
+        multiplier = 7
+
+        ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
+
+        # Expected: (now_ms // 1000) + (86400 * 7) = 1700000000 + 604800 = 1700604800
+        assert ttl == 1700604800
+
+    def test_calculate_bucket_ttl_multiple_limits_slow_refill_wins(self):
+        """Slow refill limit should dominate even with shorter refill_period.
+
+        Fast limit: per_minute(100) -> time_to_fill = 60s
+        Slow limit: capacity=1000, refill_amount=10, period=60s -> time_to_fill = 6000s
+        The slow limit should determine TTL even though both have same refill_period.
+        """
+        now_ms = 1700000000000
+        limits = [
+            Limit.per_minute("rpm", 100),  # time_to_fill = 60s
+            Limit(  # time_to_fill = 6000s
+                name="slow",
+                capacity=1000,
+                burst=1000,
+                refill_amount=10,
+                refill_period_seconds=60,
+            ),
+        ]
+        multiplier = 7
+
+        ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
+
+        # max time_to_fill = 6000s (from slow limit)
+        # Expected: (now_ms // 1000) + (6000 * 7) = 1700000000 + 42000 = 1700042000
+        assert ttl == 1700042000
+
+    def test_calculate_bucket_ttl_returns_none_when_multiplier_zero(self):
+        """TTL is None when multiplier is 0 (disabled)."""
+        now_ms = 1700000000000
+        limits = [Limit.per_minute("rpm", 100)]
+        multiplier = 0
+
+        ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
+
+        assert ttl is None
+
+    def test_calculate_bucket_ttl_returns_none_when_multiplier_negative(self):
+        """TTL is None when multiplier is negative (disabled)."""
+        now_ms = 1700000000000
+        limits = [Limit.per_minute("rpm", 100)]
+        multiplier = -1
+
+        ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
+
+        assert ttl is None
 
 
 class TestSchemaCompositeKeys:
@@ -462,6 +567,142 @@ class TestCompositeWritePaths:
         await repo.create_entity("entity-1")
         result = await repo.get_buckets("entity-1", resource="nonexistent")
         assert result == []
+
+
+class TestCompositeBucketTTL:
+    """Tests for TTL in composite bucket build methods (Issue #271)."""
+
+    @pytest.mark.asyncio
+    async def test_build_composite_create_sets_ttl_when_provided(self, repo):
+        """build_composite_create includes ttl attribute when ttl_seconds provided."""
+        now_ms = 1700000000000
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=100000,
+            last_refill_ms=now_ms,
+            capacity_milli=100000,
+            burst_milli=100000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+            total_consumed_milli=0,
+        )
+
+        result = repo.build_composite_create(
+            entity_id="e1",
+            resource="gpt-4",
+            states=[state],
+            now_ms=now_ms,
+            ttl_seconds=604800,  # 7 days
+        )
+
+        # Verify TTL attribute is set
+        item = result["Put"]["Item"]
+        assert "ttl" in item
+        # Expected: (now_ms // 1000) + 604800 = 1700000000 + 604800 = 1700604800
+        assert item["ttl"]["N"] == "1700604800"
+
+    @pytest.mark.asyncio
+    async def test_build_composite_create_no_ttl_when_none(self, repo):
+        """build_composite_create omits ttl when ttl_seconds is None."""
+        now_ms = 1700000000000
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=100000,
+            last_refill_ms=now_ms,
+            capacity_milli=100000,
+            burst_milli=100000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+            total_consumed_milli=0,
+        )
+
+        result = repo.build_composite_create(
+            entity_id="e1",
+            resource="gpt-4",
+            states=[state],
+            now_ms=now_ms,
+            ttl_seconds=None,  # TTL disabled
+        )
+
+        # Verify TTL attribute is NOT set
+        item = result["Put"]["Item"]
+        assert "ttl" not in item
+
+    @pytest.mark.asyncio
+    async def test_build_composite_normal_updates_ttl_when_provided(self, repo):
+        """build_composite_normal includes SET ttl in expression."""
+        now_ms = 1700000000000
+
+        result = repo.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 500},
+            now_ms=now_ms,
+            expected_rf=now_ms - 1000,
+            ttl_seconds=604800,  # Update TTL
+        )
+
+        update = result["Update"]
+        expr = update["UpdateExpression"]
+
+        # Verify SET #ttl = :ttl_val in expression
+        assert "#ttl" in expr
+        assert ":ttl_val" in update["ExpressionAttributeValues"]
+        assert update["ExpressionAttributeNames"]["#ttl"] == "ttl"
+        # Expected TTL value
+        assert update["ExpressionAttributeValues"][":ttl_val"]["N"] == "1700604800"
+
+    @pytest.mark.asyncio
+    async def test_build_composite_normal_removes_ttl_when_zero(self, repo):
+        """build_composite_normal includes REMOVE ttl when ttl_seconds is 0."""
+        now_ms = 1700000000000
+
+        result = repo.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 500},
+            now_ms=now_ms,
+            expected_rf=now_ms - 1000,
+            ttl_seconds=0,  # Remove TTL (entity has custom limits)
+        )
+
+        update = result["Update"]
+        expr = update["UpdateExpression"]
+
+        # Verify REMOVE #ttl in expression
+        assert "REMOVE" in expr
+        assert "#ttl" in expr
+        assert update["ExpressionAttributeNames"]["#ttl"] == "ttl"
+        # Should NOT have :ttl_val in values
+        assert ":ttl_val" not in update.get("ExpressionAttributeValues", {})
+
+    @pytest.mark.asyncio
+    async def test_build_composite_normal_no_ttl_change_when_none(self, repo):
+        """build_composite_normal doesn't touch ttl when ttl_seconds is None."""
+        now_ms = 1700000000000
+
+        result = repo.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 500},
+            now_ms=now_ms,
+            expected_rf=now_ms - 1000,
+            ttl_seconds=None,  # Don't change TTL
+        )
+
+        update = result["Update"]
+        expr = update["UpdateExpression"]
+
+        # Verify no ttl references
+        assert "#ttl" not in update.get("ExpressionAttributeNames", {})
+        assert "REMOVE" not in expr or "#ttl" not in expr
 
 
 class TestCompositeLimitConfig:

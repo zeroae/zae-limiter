@@ -9,6 +9,7 @@ from zae_limiter import (
     OnUnavailable,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    SyncRateLimiter,
 )
 
 
@@ -846,3 +847,77 @@ class TestSyncListEntitiesWithCustomLimits:
 
         assert len(entities) == 1
         # cursor may or may not be None depending on moto behavior
+
+
+class TestSyncRateLimiterBucketTTL:
+    """Tests for sync bucket TTL configuration (Issue #271)."""
+
+    def test_bucket_ttl_multiplier_default_is_seven(self, mock_dynamodb):
+        """Default bucket_ttl_refill_multiplier is 7 for SyncRateLimiter."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test")
+            assert limiter._limiter._bucket_ttl_refill_multiplier == 7
+            limiter.close()
+
+    def test_bucket_ttl_multiplier_custom_value(self, mock_dynamodb):
+        """Custom bucket_ttl_refill_multiplier is passed through."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test", bucket_ttl_refill_multiplier=14)
+            assert limiter._limiter._bucket_ttl_refill_multiplier == 14
+            limiter.close()
+
+    def test_bucket_ttl_multiplier_zero_disables(self, mock_dynamodb):
+        """Setting bucket_ttl_refill_multiplier=0 disables TTL."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test", bucket_ttl_refill_multiplier=0)
+            assert limiter._limiter._bucket_ttl_refill_multiplier == 0
+            limiter.close()
+
+
+class TestSyncBucketLimitSync:
+    """Tests for sync bucket synchronization when limits are updated (Issue #294)."""
+
+    def test_bucket_updated_when_limit_changed(self, sync_limiter):
+        """Bucket capacity is synced when entity limit is changed via set_limits().
+
+        Behavior (issue #294):
+        1. Create entity with rpm=100
+        2. Use bucket (creates bucket with capacity=100)
+        3. Update limit to rpm=200 - set_limits() syncs bucket
+        4. Bucket capacity is now 200
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Step 1: Set initial limit (rpm=100)
+        sync_limiter.set_limits("user-sync-1", [Limit.per_minute("rpm", 100)], resource="api")
+
+        # Step 2: Use the bucket (creates it with capacity=100)
+        with sync_limiter.acquire(
+            entity_id="user-sync-1",
+            resource="api",
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Verify bucket was created with capacity=100
+        item = sync_limiter._run(
+            sync_limiter._limiter._repository._get_item(pk_entity("user-sync-1"), sk_bucket("api"))
+        )
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000, "Initial capacity should be 100 RPM"
+
+        # Step 3: Update limit to rpm=200 - bucket synced immediately
+        sync_limiter.set_limits("user-sync-1", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Verify bucket capacity was updated immediately (no acquire needed)
+        item = sync_limiter._run(
+            sync_limiter._limiter._repository._get_item(pk_entity("user-sync-1"), sk_bucket("api"))
+        )
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"

@@ -440,7 +440,7 @@ docs/
 
 ### Centralized Configuration (v0.5.0+)
 
-Limit configs use a three-level hierarchy with precedence: **Entity > Resource > System > Constructor defaults**.
+Limit configs use a four-level hierarchy with precedence: **Entity (resource-specific) > Entity (_default_) > Resource > System > Constructor defaults**.
 
 **API methods for managing stored limits:**
 
@@ -489,6 +489,44 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 All records use flat schema (v0.6.0+, top-level attributes, no nested `data.M`). See `dynamodb-patterns.md` rules and [ADR-111](docs/adr/111-flatten-all-records.md).
 
 See [ADR-100](docs/adr/100-centralized-config.md) for full config design details.
+
+### Bucket TTL for Default Limits (Issue #271, #296)
+
+Buckets using system/resource default limits have TTL for auto-expiration:
+
+| Config Source | TTL Behavior |
+|---------------|--------------|
+| Entity custom limits | No TTL (persist indefinitely) |
+| Resource defaults | TTL = now + max_time_to_fill × multiplier |
+| System defaults | TTL = now + max_time_to_fill × multiplier |
+| Override parameter | TTL = now + max_time_to_fill × multiplier |
+
+Where `time_to_fill = (capacity / refill_amount) × refill_period_seconds`. This ensures slow-refill limits (where `capacity >> refill_amount`) have enough time to fully refill before expiring.
+
+Configure via `bucket_ttl_refill_multiplier` parameter (default: 7). Set to 0 to disable.
+
+**Example:**
+```python
+# Custom multiplier (14 days for a limit that takes 24h to refill)
+limiter = RateLimiter(
+    name="my-app",
+    bucket_ttl_refill_multiplier=14,
+)
+
+# Disable TTL (all buckets persist indefinitely)
+limiter = RateLimiter(
+    name="my-app",
+    bucket_ttl_refill_multiplier=0,
+)
+```
+
+**TTL calculation examples:**
+- `Limit.per_minute("rpm", 100)`: time_to_fill = (100/100)×60 = 60s, TTL = 60×7 = 420s (7 min)
+- Slow refill: capacity=1000, refill_amount=10, period=60s → time_to_fill = 6000s, TTL = 42000s (11.7 hours)
+
+**TTL behavior on upgrade/downgrade:**
+- Entity with custom limits → TTL removed on next acquire
+- Entity downgrades to defaults → TTL set on next acquire
 
 ## Dependencies
 

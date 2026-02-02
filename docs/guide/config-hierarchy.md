@@ -1,26 +1,29 @@
 # Configuration Hierarchy
 
-zae-limiter supports a three-level configuration hierarchy for rate limits, allowing you to set defaults at the system level and override them at the resource or entity level.
+zae-limiter supports a four-level configuration hierarchy for rate limits, allowing you to set defaults at the system level and override them at the resource, entity default, or entity-resource level.
 
 ## Overview
 
 ```mermaid
 flowchart TD
-    A[Acquire Request] --> B{Entity config?}
+    A[Acquire Request] --> B{Entity config<br/>for resource?}
     B -->|Yes| C[Use Entity Limits]
-    B -->|No| D{Resource config?}
-    D -->|Yes| E[Use Resource Limits]
-    D -->|No| F{System config?}
-    F -->|Yes| G[Use System Limits]
-    F -->|No| H[Use Constructor Defaults]
+    B -->|No| D{Entity _default_<br/>config?}
+    D -->|Yes| E[Use Entity Default Limits]
+    D -->|No| F{Resource config?}
+    F -->|Yes| G[Use Resource Limits]
+    F -->|No| H{System config?}
+    H -->|Yes| I[Use System Limits]
+    H -->|No| J[Use Constructor Defaults]
 ```
 
 **Precedence order (highest to lowest):**
 
-1. **Entity limits** - Per-entity + resource overrides (e.g., premium user on gpt-4)
-2. **Resource defaults** - Per-resource limits (e.g., all users on gpt-4)
-3. **System defaults** - Global limits for all resources
-4. **Constructor defaults** - Fallback from code
+1. **Entity limits (resource-specific)** - Per-entity + specific resource overrides (e.g., premium user on gpt-4)
+2. **Entity default limits** - Per-entity `_default_` config (applies to all resources for that entity)
+3. **Resource defaults** - Per-resource limits (e.g., all users on gpt-4)
+4. **System defaults** - Global limits for all resources
+5. **Constructor defaults** - Fallback from code
 
 ## When to Use Each Level
 
@@ -28,7 +31,8 @@ flowchart TD
 |-------|----------|---------|
 | **System** | Universal defaults across all resources | 100 RPM baseline for all models |
 | **Resource** | Per-model or per-API limits | gpt-4 gets 50 RPM, claude-3 gets 200 RPM |
-| **Entity** | Premium tiers, custom contracts | Enterprise customer gets 10x limits |
+| **Entity Default** | Per-user/tenant defaults for ALL resources | Premium user gets 500 RPM on any model |
+| **Entity (resource-specific)** | Per-user + specific model overrides | Enterprise customer gets 10x only on gpt-4 |
 
 ## Python API
 
@@ -85,28 +89,50 @@ resources = await limiter.list_resources_with_defaults()
 await limiter.delete_resource_defaults("gpt-4")
 ```
 
-### Entity Limits
+### Entity Default Limits
 
-Entity limits override both system and resource defaults for a specific entity+resource pair:
+Entity default limits apply to **all resources** for a specific entity unless overridden by a resource-specific entity config:
 
 ```python
-# Set entity-specific limits (highest precedence)
+# Set entity-level defaults (applies to ALL resources for this entity)
 await limiter.set_limits(
     entity_id="user-premium",
-    resource="gpt-4",
+    # resource defaults to "_default_" when omitted
     limits=[
-        Limit.per_minute("rpm", 500),       # 10x normal
-        Limit.per_minute("tpm", 1_000_000), # 10x normal
+        Limit.per_minute("rpm", 500),       # 10x normal on any model
+        Limit.per_minute("tpm", 100_000),
     ],
 )
 
-# Get entity limits
+# Get entity default limits
+limits = await limiter.get_limits(entity_id="user-premium")
+
+# Delete entity default limits
+await limiter.delete_limits(entity_id="user-premium")
+```
+
+### Entity Limits (Resource-Specific)
+
+Entity limits override entity defaults, resource defaults, and system defaults for a specific entity+resource pair:
+
+```python
+# Set entity-specific limits for a particular resource (highest precedence)
+await limiter.set_limits(
+    entity_id="user-premium",
+    resource="gpt-4",  # Only applies to gpt-4
+    limits=[
+        Limit.per_minute("rpm", 1000),      # Even higher for this specific model
+        Limit.per_minute("tpm", 1_000_000),
+    ],
+)
+
+# Get entity limits for specific resource
 limits = await limiter.get_limits(
     entity_id="user-premium",
     resource="gpt-4",
 )
 
-# Delete entity limits
+# Delete entity limits for specific resource
 await limiter.delete_limits(
     entity_id="user-premium",
     resource="gpt-4",
@@ -144,16 +170,29 @@ zae-limiter resource list
 zae-limiter resource delete-defaults gpt-4 --yes
 ```
 
-### Entity Limits
+### Entity Default Limits
 
 ```bash
-# Set entity-specific limits
-zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:500 -l tpm:1000000
+# Set entity default limits (applies to ALL resources)
+zae-limiter entity set-limits user-premium -l rpm:500 -l tpm:100000
 
-# Get entity limits
+# Get entity default limits
+zae-limiter entity get-limits user-premium
+
+# Delete entity default limits
+zae-limiter entity delete-limits user-premium --yes
+```
+
+### Entity Limits (Resource-Specific)
+
+```bash
+# Set entity-specific limits for a particular resource
+zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:1000 -l tpm:1000000
+
+# Get entity limits for specific resource
 zae-limiter entity get-limits user-premium --resource gpt-4
 
-# Delete entity limits
+# Delete entity limits for specific resource
 zae-limiter entity delete-limits user-premium --resource gpt-4 --yes
 ```
 
@@ -189,12 +228,22 @@ async def setup_rate_limits(limiter: RateLimiter):
         ],
     )
 
-    # 3. Entity limits: Premium customers
+    # 3. Entity default limits: Premium tier (applies to ALL models)
+    await limiter.set_limits(
+        entity_id="premium-user",
+        # resource defaults to "_default_" - applies to all resources
+        limits=[
+            Limit.per_minute("rpm", 100),  # 10x free tier on any model
+            Limit.per_minute("tpm", 10_000),
+        ],
+    )
+
+    # 4. Entity resource-specific limits: Enterprise customer on specific model
     await limiter.set_limits(
         entity_id="enterprise-customer",
-        resource="gpt-4",
+        resource="gpt-4",  # Only gpt-4
         limits=[
-            Limit.per_minute("rpm", 100),  # 20x free tier
+            Limit.per_minute("rpm", 500),  # 50x free tier
             Limit.per_minute("tpm", 100_000),
         ],
     )
@@ -202,13 +251,16 @@ async def setup_rate_limits(limiter: RateLimiter):
 
 With this setup:
 
-| User | Resource | RPM | TPM |
-|------|----------|-----|-----|
-| Free user | gpt-4 | 5 | 500 |
-| Free user | gpt-3.5-turbo | 20 | 5,000 |
-| Free user | any other | 10 | 1,000 |
-| Enterprise | gpt-4 | 100 | 100,000 |
-| Enterprise | gpt-3.5-turbo | 20 | 5,000 (resource default) |
+| User | Resource | RPM | TPM | Source |
+|------|----------|-----|-----|--------|
+| Free user | gpt-4 | 5 | 500 | Resource default |
+| Free user | gpt-3.5-turbo | 20 | 5,000 | Resource default |
+| Free user | any other | 10 | 1,000 | System default |
+| Premium user | gpt-4 | 100 | 10,000 | Entity default |
+| Premium user | gpt-3.5-turbo | 100 | 10,000 | Entity default |
+| Premium user | any other | 100 | 10,000 | Entity default |
+| Enterprise | gpt-4 | 500 | 100,000 | Entity resource-specific |
+| Enterprise | gpt-3.5-turbo | 20 | 5,000 | Resource default |
 
 ## System Config: on_unavailable
 
