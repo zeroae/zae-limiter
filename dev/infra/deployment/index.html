@@ -3409,6 +3409,16 @@
 <td><code>30</code></td>
 </tr>
 <tr>
+<td><code>--usage-retention-days</code></td>
+<td>Usage snapshot retention</td>
+<td><code>90</code></td>
+</tr>
+<tr>
+<td><code>--audit-retention-days</code></td>
+<td>Audit record retention in DynamoDB</td>
+<td><code>90</code></td>
+</tr>
+<tr>
 <td><code>--pitr-recovery-days</code></td>
 <td>Point-in-time recovery (1-35 days)</td>
 <td>None (disabled)</td>
@@ -3694,7 +3704,7 @@
 </span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
 </span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>    <span class="n">stack_options</span><span class="o">=</span><span class="n">StackOptions</span><span class="p">(</span>
 </span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>        <span class="n">snapshot_windows</span><span class="o">=</span><span class="s2">&quot;hourly,daily&quot;</span><span class="p">,</span>
-</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>        <span class="n">retention_days</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>        <span class="n">usage_retention_days</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span>
 </span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>    <span class="p">),</span>
 </span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="p">)</span>
 </span></code></pre></div>
