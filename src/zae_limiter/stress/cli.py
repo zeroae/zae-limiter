@@ -260,32 +260,107 @@ def setup(
 @stress.command()
 @click.option("--target", "-t", required=True, help="Target zae-limiter stack name")
 @click.option("--region", default=None, help="AWS region")
-def connect(target: str, region: str | None) -> None:
-    """Print SSM port-forward command for Locust UI."""
+@click.option("--port", default=8089, type=int, help="Local port for Locust UI")
+def connect(target: str, region: str | None, port: int) -> None:
+    """Start Fargate master, open SSM tunnel, and block until interrupted."""
+    import json
+    import subprocess
+    import time
+
     name = f"{target}-stress"
     ecs = boto3.client("ecs", region_name=region)
+    service_name = f"{name}-master"
 
-    # Get task ARN
-    tasks = ecs.list_tasks(cluster=name, serviceName=f"{name}-master")
-    if not tasks["taskArns"]:
-        click.echo("Error: No running tasks. Run 'stress start' first.", err=True)
-        sys.exit(1)
+    def scale_service(count: int) -> None:
+        ecs.update_service(cluster=name, service=service_name, desiredCount=count)
 
-    task_arn = tasks["taskArns"][0]
-    task_id = task_arn.split("/")[-1]
+    def get_running_task() -> tuple[str, str] | None:
+        """Get (task_id, runtime_id) for the running task, or None."""
+        tasks = ecs.list_tasks(cluster=name, serviceName=service_name)
+        if not tasks["taskArns"]:
+            return None
 
-    # Get runtime ID for SSM target
-    task_details = ecs.describe_tasks(cluster=name, tasks=[task_arn])
-    runtime_id = task_details["tasks"][0]["containers"][0]["runtimeId"]
+        task_arn = tasks["taskArns"][0]
+        task_id = task_arn.split("/")[-1]
 
-    click.echo("Run this command to port-forward:\n")
-    click.echo("  aws ssm start-session \\")
-    click.echo(f"    --target ecs:{name}_{task_id}_{runtime_id} \\")
-    click.echo("    --document-name AWS-StartPortForwardingSessionToRemoteHost \\")
-    click.echo(
-        '    --parameters \'host=["localhost"],portNumber=["8089"],localPortNumber=["8089"]\''
-    )
-    click.echo("\nThen open: http://localhost:8089")
+        task_details = ecs.describe_tasks(cluster=name, tasks=[task_arn])
+        task = task_details["tasks"][0]
+
+        # Check if task is running and has runtime ID
+        if task.get("lastStatus") != "RUNNING":
+            return None
+
+        for container in task.get("containers", []):
+            if container.get("name") == "locust-master":
+                runtime_id = container.get("runtimeId")
+                if runtime_id:
+                    return task_id, runtime_id
+        return None
+
+    try:
+        # Start Fargate task
+        click.echo(f"Starting Fargate master: {name}")
+        scale_service(1)
+
+        # Wait for task to be running
+        click.echo("  Waiting for task to start...")
+        for _ in range(60):  # 2 minute timeout
+            result = get_running_task()
+            if result:
+                task_id, runtime_id = result
+                break
+            time.sleep(2)
+        else:
+            click.echo("Error: Task failed to start within 2 minutes", err=True)
+            scale_service(0)
+            sys.exit(1)
+
+        click.echo(f"  Task running: {task_id}")
+
+        # Build SSM target
+        ssm_target = f"ecs:{name}_{task_id}_{runtime_id}"
+        params = json.dumps(
+            {
+                "host": ["localhost"],
+                "portNumber": ["8089"],
+                "localPortNumber": [str(port)],
+            }
+        )
+
+        click.echo(f"  Starting SSM tunnel on port {port}...")
+        click.echo(f"  Open: http://localhost:{port}")
+
+        # Start SSM tunnel (blocks until interrupted or fails)
+        region_args = ["--region", region] if region else []
+        proc = subprocess.run(
+            [
+                "aws",
+                "ssm",
+                "start-session",
+                "--target",
+                ssm_target,
+                "--document-name",
+                "AWS-StartPortForwardingSessionToRemoteHost",
+                "--parameters",
+                params,
+                *region_args,
+            ],
+        )
+
+        if proc.returncode != 0:
+            click.echo(f"SSM tunnel exited with code {proc.returncode}", err=True)
+
+    except KeyboardInterrupt:
+        click.echo("\nInterrupted")
+
+    finally:
+        # Always scale down on exit
+        click.echo("Stopping Fargate master...")
+        try:
+            scale_service(0)
+            click.echo("  Fargate master stopped")
+        except Exception as e:
+            click.echo(f"  Warning: Failed to stop service: {e}", err=True)
 
 
 @stress.command()
