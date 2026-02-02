@@ -4,37 +4,34 @@ Usage:
     Local:  locust -f locustfile.py
     Lambda: Imported by worker handler
 
-NOTE: Uses nest_asyncio to allow nested event loops. This is needed because
-Locust uses gevent which monkey-patches asyncio, and aioboto3 needs to run
-its own event loop.
+Uses greenlet-local SyncRateLimiter instances to avoid asyncio event loop
+conflicts. Each gevent greenlet gets its own limiter with its own event loop.
 """
 
 from __future__ import annotations
 
-import asyncio
 import random
 import time
-from typing import Any
 
-# Allow nested event loops (needed when gevent monkey-patches asyncio)
-import nest_asyncio
+from gevent.local import local as greenlet_local
+from locust import User, between, task
 
-nest_asyncio.apply()
+from zae_limiter import RateLimitExceeded, SyncRateLimiter
+from zae_limiter.stress.config import StressConfig
+from zae_limiter.stress.distribution import TrafficDistributor
 
-from locust import User, between, task  # noqa: E402
-
-from zae_limiter import RateLimiter, RateLimitExceeded  # noqa: E402
-from zae_limiter.stress.config import StressConfig  # noqa: E402
-from zae_limiter.stress.distribution import TrafficDistributor  # noqa: E402
+# Greenlet-local storage for limiters (avoids event loop conflicts)
+_greenlet_state = greenlet_local()
 
 
-def _run_async(coro: Any) -> Any:
-    """Run async operation using asyncio.run().
-
-    nest_asyncio.apply() allows this to work even when called from
-    within an existing event loop (gevent's monkey-patched asyncio).
-    """
-    return asyncio.run(coro)
+def _get_limiter(config: StressConfig) -> SyncRateLimiter:
+    """Get or create a greenlet-local SyncRateLimiter instance."""
+    if not hasattr(_greenlet_state, "limiter"):
+        _greenlet_state.limiter = SyncRateLimiter(
+            name=config.stack_name,
+            region=config.region,
+        )
+    return _greenlet_state.limiter  # type: ignore[no-any-return]
 
 
 class RateLimiterUser(User):  # type: ignore[misc]
@@ -43,46 +40,38 @@ class RateLimiterUser(User):  # type: ignore[misc]
     # Adaptive wait time based on target RPM
     wait_time = between(0.01, 0.1)
 
-    # Class-level shared limiter (connection pooling)
-    _limiter: RateLimiter | None = None
+    # Class-level shared config (immutable, safe to share)
     _config: StressConfig | None = None
     _distributor: TrafficDistributor | None = None
 
     def on_start(self) -> None:
         """Initialize per-user state."""
-        # Initialize shared limiter (connection pooling across all users)
-        if RateLimiterUser._limiter is None:
+        # Initialize shared config (only once, thread-safe for reads)
+        if RateLimiterUser._config is None:
             RateLimiterUser._config = StressConfig.from_environment()
             RateLimiterUser._distributor = TrafficDistributor(RateLimiterUser._config.distribution)
-            RateLimiterUser._limiter = RateLimiter(
-                name=RateLimiterUser._config.stack_name,
-                region=RateLimiterUser._config.region,
-            )
-            print(f"Limiter initialized: {RateLimiterUser._config.stack_name}", flush=True)
+            print(f"Config loaded: {RateLimiterUser._config.stack_name}", flush=True)
 
         self.config = RateLimiterUser._config
-        self.limiter = RateLimiterUser._limiter
         self.distributor = RateLimiterUser._distributor
+        # Limiter is fetched per-greenlet in tasks (via _get_limiter)
 
     def _do_acquire(self, entity_id: str, api: str, tpm: int) -> None:
-        """Execute async acquire operation."""
-
-        async def inner() -> None:
-            async with self.limiter.acquire(
-                entity_id=entity_id,
-                resource=api,
-                consume={"rpm": 1, "tpm": tpm},
-            ):
-                pass  # Work would happen here
-
-        _run_async(inner())
+        """Execute sync acquire operation."""
+        assert self.config is not None
+        limiter = _get_limiter(self.config)
+        with limiter.acquire(
+            entity_id=entity_id,
+            resource=api,
+            consume={"rpm": 1, "tpm": tpm},
+        ):
+            pass  # Work would happen here
 
     @task(weight=100)  # type: ignore[misc]
     def acquire_tokens(self) -> None:
         """Primary task: acquire rate limit tokens."""
         assert self.distributor is not None
         assert self.config is not None
-        assert self.limiter is not None
 
         entity_id, traffic_type = self.distributor.pick_entity()
         api = f"api-{random.randint(0, self.config.num_apis - 1)}"
@@ -128,7 +117,6 @@ class RateLimiterUser(User):  # type: ignore[misc]
         """Secondary task: read-only availability check."""
         assert self.distributor is not None
         assert self.config is not None
-        assert self.limiter is not None
 
         entity_id, traffic_type = self.distributor.pick_entity()
         api = f"api-{random.randint(0, self.config.num_apis - 1)}"
@@ -136,11 +124,10 @@ class RateLimiterUser(User):  # type: ignore[misc]
         start_time = time.perf_counter()
 
         try:
-            _run_async(
-                self.limiter.available(
-                    entity_id=entity_id,
-                    resource=api,
-                )
+            limiter = _get_limiter(self.config)
+            limiter.available(
+                entity_id=entity_id,
+                resource=api,
             )
             response_time = (time.perf_counter() - start_time) * 1000
             self.environment.events.request.fire(
