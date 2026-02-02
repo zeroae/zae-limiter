@@ -1991,11 +1991,13 @@ class TestRepositoryDeprecation:
             mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
             mock_manager_class.return_value = mock_manager
 
-            # Verify deprecation warning is raised
-            with pytest.warns(DeprecationWarning, match="create_stack.*deprecated"):
-                from zae_limiter import StackOptions
+            # Also mock _write_audit_retention_config to avoid DynamoDB call
+            with patch.object(repo, "_write_audit_retention_config", AsyncMock()):
+                # Verify deprecation warning is raised
+                with pytest.warns(DeprecationWarning, match="create_stack.*deprecated"):
+                    from zae_limiter import StackOptions
 
-                await repo.create_stack(stack_options=StackOptions())
+                    await repo.create_stack(stack_options=StackOptions())
 
         await repo.close()
 
@@ -2016,20 +2018,24 @@ class TestRepositoryDeprecation:
             mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
             mock_manager_class.return_value = mock_manager
 
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                from zae_limiter import StackOptions
+            # Also mock _write_audit_retention_config to avoid DynamoDB call
+            with patch.object(repo, "_write_audit_retention_config", AsyncMock()):
+                with warnings.catch_warnings(record=True) as w:
+                    warnings.simplefilter("always")
+                    from zae_limiter import StackOptions
 
-                await repo.create_stack(stack_options=StackOptions())
+                    await repo.create_stack(stack_options=StackOptions())
 
-                # Should have exactly one deprecation warning
-                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-                assert len(deprecation_warnings) == 1
+                    # Should have exactly one deprecation warning
+                    deprecation_warnings = [
+                        x for x in w if issubclass(x.category, DeprecationWarning)
+                    ]
+                    assert len(deprecation_warnings) == 1
 
-                # Message should mention ensure_infrastructure
-                msg = str(deprecation_warnings[0].message)
-                assert "ensure_infrastructure" in msg
-                assert "v2.0.0" in msg
+                    # Message should mention ensure_infrastructure
+                    msg = str(deprecation_warnings[0].message)
+                    assert "ensure_infrastructure" in msg
+                    assert "v2.0.0" in msg
 
         await repo.close()
 
@@ -2055,15 +2061,17 @@ class TestRepositoryDeprecation:
             mock_manager.create_stack = AsyncMock(return_value={"StackId": "test"})
             mock_manager_class.return_value = mock_manager
 
-            # Suppress the deprecation warning - we're testing the functionality
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                await repo.create_stack()  # No stack_options arg
+            # Also mock _write_audit_retention_config to avoid DynamoDB call
+            with patch.object(repo, "_write_audit_retention_config", AsyncMock()):
+                # Suppress the deprecation warning - we're testing the functionality
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    await repo.create_stack()  # No stack_options arg
 
-            # Verify create_stack was called with the constructor-provided options
-            mock_manager.create_stack.assert_called_once()
-            call_kwargs = mock_manager.create_stack.call_args[1]
-            assert call_kwargs["stack_options"].lambda_memory == 512
+                # Verify create_stack was called with the constructor-provided options
+                mock_manager.create_stack.assert_called_once()
+                call_kwargs = mock_manager.create_stack.call_args[1]
+                assert call_kwargs["stack_options"].lambda_memory == 512
 
         await repo.close()
 
