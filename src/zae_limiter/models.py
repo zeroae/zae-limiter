@@ -894,6 +894,8 @@ class StackOptions:
         # Generate 4 separate role name parameters (ADR-116)
         # get_role_name returns str when role_name_format is set (which we check above)
         if self.role_name_format and stack_name:
+            # Export the format template for dependent stacks (e.g., stress test)
+            params["role_name_format"] = self.role_name_format
             aggregator_role = self.get_role_name(stack_name, "aggr")
             app_role = self.get_role_name(stack_name, "app")
             admin_role = self.get_role_name(stack_name, "admin")

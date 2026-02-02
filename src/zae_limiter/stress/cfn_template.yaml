@@ -27,6 +27,13 @@ Parameters:
     Default: ''
     Description: Permission boundary ARN for IAM roles (optional)
 
+  RoleNameFormat:
+    Type: String
+    Default: '{}'
+    Description: >
+      Format string for IAM role names. Use {} as placeholder for the role suffix.
+      Example: 'PowerUserPB-{}' produces 'PowerUserPB-stress-test-exec'
+
 Conditions:
   HasPermissionBoundary: !Not
     - !Equals
@@ -255,7 +262,7 @@ Resources:
       FunctionName: !Sub ${AWS::StackName}-worker
       Runtime: python3.12
       Handler: stress_lambda.worker.handler
-      Timeout: 900
+      Timeout: 60
       MemorySize: 256
       Role: !GetAtt LambdaWorkerRole.Arn
       ReservedConcurrentExecutions: !Ref MaxWorkers
@@ -328,7 +335,10 @@ Resources:
   EcsExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub ${AWS::StackName}-exec
+      RoleName: !Sub
+        - '${Prefix}${AWS::StackName}-exec${Suffix}'
+        - Prefix: !Select [0, !Split ['{}', !Ref RoleNameFormat]]
+          Suffix: !Select [1, !Split ['{}', !Ref RoleNameFormat]]
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !Ref PermissionBoundary
@@ -361,7 +371,10 @@ Resources:
   EcsTaskRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub ${AWS::StackName}-task
+      RoleName: !Sub
+        - '${Prefix}${AWS::StackName}-task${Suffix}'
+        - Prefix: !Select [0, !Split ['{}', !Ref RoleNameFormat]]
+          Suffix: !Select [1, !Split ['{}', !Ref RoleNameFormat]]
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !Ref PermissionBoundary
@@ -385,11 +398,25 @@ Resources:
                   - ssmmessages:OpenControlChannel
                   - ssmmessages:OpenDataChannel
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:StartSession
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: '*'
 
   LambdaWorkerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub ${AWS::StackName}-worker
+      RoleName: !Sub
+        - '${Prefix}${AWS::StackName}-worker${Suffix}'
+        - Prefix: !Select [0, !Split ['{}', !Ref RoleNameFormat]]
+          Suffix: !Select [1, !Split ['{}', !Ref RoleNameFormat]]
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !Ref PermissionBoundary
@@ -404,7 +431,7 @@ Resources:
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
         - !ImportValue
-            Fn::Sub: ${TargetStackName}-AppPolicyArn
+            Fn::Sub: ${TargetStackName}-AdminPolicyArn
       Policies:
         - PolicyName: StressTestMetrics
           PolicyDocument:
@@ -421,7 +448,10 @@ Resources:
   LambdaSetupRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub ${AWS::StackName}-setup
+      RoleName: !Sub
+        - '${Prefix}${AWS::StackName}-setup${Suffix}'
+        - Prefix: !Select [0, !Split ['{}', !Ref RoleNameFormat]]
+          Suffix: !Select [1, !Split ['{}', !Ref RoleNameFormat]]
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !Ref PermissionBoundary
