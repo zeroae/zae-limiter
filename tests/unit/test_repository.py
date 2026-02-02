@@ -1095,6 +1095,109 @@ class TestRepositoryEntityValidation:
         assert entity.id == "user@example.com"
 
 
+class TestRepositoryNoTTLOnConfigRecords:
+    """Tests verifying entity metadata and config records do NOT have TTL.
+
+    Issue #234: Entity metadata and config are intentional configuration that
+    must not be auto-deleted. Only usage snapshots and audit records have TTL.
+    """
+
+    @pytest.mark.asyncio
+    async def test_entity_metadata_has_no_ttl(self, repo):
+        """Entity metadata record (SK=#META) should NOT have ttl attribute."""
+        from zae_limiter import schema
+
+        await repo.create_entity(entity_id="no-ttl-meta-test", name="Test")
+
+        # Get the raw DynamoDB item to check for ttl attribute
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("no-ttl-meta-test")},
+                "SK": {"S": schema.sk_meta()},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item, "Entity metadata record should exist"
+        assert "ttl" not in item, "Entity metadata should NOT have ttl attribute"
+
+    @pytest.mark.asyncio
+    async def test_entity_config_has_no_ttl(self, repo):
+        """Entity config record (SK=#CONFIG#) should NOT have ttl attribute."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.create_entity(entity_id="no-ttl-config-test")
+        await repo.set_limits(
+            entity_id="no-ttl-config-test",
+            limits=[Limit.per_minute("rpm", 100)],
+            resource="api",
+        )
+
+        # Get the raw DynamoDB item to check for ttl attribute
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("no-ttl-config-test")},
+                "SK": {"S": schema.sk_config("api")},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item, "Entity config record should exist"
+        assert "ttl" not in item, "Entity config should NOT have ttl attribute"
+
+    @pytest.mark.asyncio
+    async def test_system_config_has_no_ttl(self, repo):
+        """System config record (SYSTEM# / #CONFIG) should NOT have ttl attribute."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.set_system_defaults(limits=[Limit.per_minute("rpm", 1000)])
+
+        # Get the raw DynamoDB item to check for ttl attribute
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system()},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item, "System config record should exist"
+        assert "ttl" not in item, "System config should NOT have ttl attribute"
+
+    @pytest.mark.asyncio
+    async def test_resource_config_has_no_ttl(self, repo):
+        """Resource config record (RESOURCE# / #CONFIG) should NOT have ttl attribute."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.set_resource_defaults(
+            resource="gpt-4",
+            limits=[Limit.per_minute("rpm", 500)],
+        )
+
+        # Get the raw DynamoDB item to check for ttl attribute
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_resource("gpt-4")},
+                "SK": {"S": schema.sk_config()},
+            },
+        )
+
+        item = response.get("Item", {})
+        assert item, "Resource config record should exist"
+        assert "ttl" not in item, "Resource config should NOT have ttl attribute"
+
+
 class TestRepositoryAuditLogging:
     """Tests for security audit logging."""
 
