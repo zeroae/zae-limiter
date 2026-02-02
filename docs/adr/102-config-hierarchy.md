@@ -1,6 +1,6 @@
 # ADR-102: Three-Level Configuration Hierarchy
 
-**Status:** Accepted
+**Status:** Superseded by ADR-118
 **Date:** 2026-01-18
 **Issues:** [#129](https://github.com/zeroae/zae-limiter/issues/129), [#130](https://github.com/zeroae/zae-limiter/issues/130), [#131](https://github.com/zeroae/zae-limiter/issues/131)
 
