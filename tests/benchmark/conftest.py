@@ -16,8 +16,10 @@ from tests.integration.conftest import (
     localstack_endpoint,
     minimal_stack_options,
     sync_localstack_limiter,
+    unique_entity_prefix,
     unique_name,
     unique_name_class,
+    unique_name_module,
 )
 from tests.unit.conftest import (
     _patch_aiobotocore_response,
@@ -37,10 +39,13 @@ __all__ = [
     "minimal_stack_options",
     "aggregator_stack_options",
     "sync_localstack_limiter",
+    "sync_localstack_limiter_module",
     "sync_localstack_limiter_no_cache",
     "sync_localstack_limiter_with_aggregator",
+    "unique_entity_prefix",
     "unique_name",
     "unique_name_class",
+    "unique_name_module",
     "capacity_counter",
     "benchmark_entities",
 ]
@@ -309,3 +314,37 @@ def sync_localstack_limiter_no_cache(localstack_endpoint, minimal_stack_options)
         limiter.delete_stack()
     except Exception as e:
         print(f"Warning: Stack cleanup failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped fixtures for shared infrastructure (issue #253)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def sync_localstack_limiter_module(localstack_endpoint, minimal_stack_options, unique_name_module):
+    """SyncRateLimiter with minimal stack (module-scoped, shared across all tests).
+
+    Creates CloudFormation stack once per test module. Tests MUST use
+    unique_entity_prefix for entity ID isolation within the shared table.
+
+    This fixture reduces benchmark time by avoiding repeated stack creation/deletion.
+    See issue #253 for details.
+
+    Note: Do not use for benchmarks that require fresh infrastructure (e.g., Lambda
+    cold start benchmarks). Use function-scoped sync_localstack_limiter instead.
+    """
+    limiter = SyncRateLimiter(
+        name=unique_name_module,
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=minimal_stack_options,
+    )
+
+    with limiter:
+        yield limiter
+
+    try:
+        limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Module-scoped stack cleanup failed: {e}")

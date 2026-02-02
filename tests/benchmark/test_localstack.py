@@ -30,18 +30,22 @@ class TestLocalStackBenchmarks:
     """Benchmarks against LocalStack for realistic DynamoDB latency.
 
     These tests require LocalStack to be running.
+    Uses module-scoped fixtures to share infrastructure across tests.
     """
 
-    def test_acquire_release_localstack(self, benchmark, sync_localstack_limiter):
+    def test_acquire_release_localstack(
+        self, benchmark, sync_localstack_limiter_module, unique_entity_prefix
+    ):
         """Benchmark acquire/release against real DynamoDB (LocalStack).
 
         Measures realistic latency including network round-trip.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
+        entity_id = f"{unique_entity_prefix}-bench-entity"
 
         def operation():
-            with sync_localstack_limiter.acquire(
-                entity_id="ls-bench-entity",
+            with sync_localstack_limiter_module.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -51,24 +55,27 @@ class TestLocalStackBenchmarks:
         benchmark(operation)
 
     @pytest.fixture
-    def cascade_hierarchy(self, sync_localstack_limiter):
+    def cascade_hierarchy(self, sync_localstack_limiter_module, unique_entity_prefix):
         """Setup parent-child hierarchy for cascade tests."""
-        sync_localstack_limiter.create_entity("ls-cascade-parent", name="Parent")
-        sync_localstack_limiter.create_entity(
-            "ls-cascade-child", name="Child", parent_id="ls-cascade-parent", cascade=True
+        parent_id = f"{unique_entity_prefix}-cascade-parent"
+        child_id = f"{unique_entity_prefix}-cascade-child"
+        sync_localstack_limiter_module.create_entity(parent_id, name="Parent")
+        sync_localstack_limiter_module.create_entity(
+            child_id, name="Child", parent_id=parent_id, cascade=True
         )
-        return sync_localstack_limiter
+        return sync_localstack_limiter_module, child_id
 
     def test_cascade_localstack(self, benchmark, cascade_hierarchy):
         """Benchmark cascade against LocalStack.
 
         Measures realistic cascade overhead including network latency.
         """
+        limiter, child_id = cascade_hierarchy
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
-            with cascade_hierarchy.acquire(
-                entity_id="ls-cascade-child",
+            with limiter.acquire(
+                entity_id=child_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -84,10 +91,14 @@ class TestLocalStackLatencyBenchmarks:
     These benchmarks capture p50/p95/p99 latency including actual network
     round-trips to LocalStack's DynamoDB emulation. Results are more
     representative of production behavior than moto-based tests.
+
+    Uses module-scoped fixtures to share infrastructure across tests.
     """
 
     @pytest.mark.benchmark(group="localstack-acquire")
-    def test_acquire_realistic_latency(self, benchmark, sync_localstack_limiter):
+    def test_acquire_realistic_latency(
+        self, benchmark, sync_localstack_limiter_module, unique_entity_prefix
+    ):
         """Measure realistic latency including network overhead.
 
         This test captures the full latency of an acquire operation
@@ -97,10 +108,11 @@ class TestLocalStackLatencyBenchmarks:
         Typical values: 10-50ms p50, 20-100ms p95.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
+        entity_id = f"{unique_entity_prefix}-latency-entity"
 
         def operation():
-            with sync_localstack_limiter.acquire(
-                entity_id="ls-latency-entity",
+            with sync_localstack_limiter_module.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -110,7 +122,9 @@ class TestLocalStackLatencyBenchmarks:
         benchmark(operation)
 
     @pytest.mark.benchmark(group="localstack-acquire")
-    def test_acquire_two_limits_realistic_latency(self, benchmark, sync_localstack_limiter):
+    def test_acquire_two_limits_realistic_latency(
+        self, benchmark, sync_localstack_limiter_module, unique_entity_prefix
+    ):
         """Measure multi-limit acquire with realistic network latency.
 
         Tests the overhead of tracking multiple limits (rpm + tpm pattern)
@@ -120,10 +134,11 @@ class TestLocalStackLatencyBenchmarks:
             Limit.per_minute("rpm", 1_000_000),
             Limit.per_minute("tpm", 100_000_000),
         ]
+        entity_id = f"{unique_entity_prefix}-latency-multi"
 
         def operation():
-            with sync_localstack_limiter.acquire(
-                entity_id="ls-latency-multi",
+            with sync_localstack_limiter_module.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1, "tpm": 100},
@@ -133,13 +148,15 @@ class TestLocalStackLatencyBenchmarks:
         benchmark(operation)
 
     @pytest.fixture
-    def cascade_latency_hierarchy(self, sync_localstack_limiter):
+    def cascade_latency_hierarchy(self, sync_localstack_limiter_module, unique_entity_prefix):
         """Setup parent-child hierarchy for cascade latency tests."""
-        sync_localstack_limiter.create_entity("ls-latency-parent", name="Parent")
-        sync_localstack_limiter.create_entity(
-            "ls-latency-child", name="Child", parent_id="ls-latency-parent", cascade=True
+        parent_id = f"{unique_entity_prefix}-latency-parent"
+        child_id = f"{unique_entity_prefix}-latency-child"
+        sync_localstack_limiter_module.create_entity(parent_id, name="Parent")
+        sync_localstack_limiter_module.create_entity(
+            child_id, name="Child", parent_id=parent_id, cascade=True
         )
-        return sync_localstack_limiter
+        return sync_localstack_limiter_module, child_id
 
     @pytest.mark.benchmark(group="localstack-acquire")
     def test_cascade_realistic_latency(self, benchmark, cascade_latency_hierarchy):
@@ -152,11 +169,12 @@ class TestLocalStackLatencyBenchmarks:
 
         Expected: Higher overhead than non-cascade due to extra round-trips.
         """
+        limiter, child_id = cascade_latency_hierarchy
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
-            with cascade_latency_hierarchy.acquire(
-                entity_id="ls-latency-child",
+            with limiter.acquire(
+                entity_id=child_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -166,17 +184,20 @@ class TestLocalStackLatencyBenchmarks:
         benchmark(operation)
 
     @pytest.mark.benchmark(group="localstack-check")
-    def test_available_realistic_latency(self, benchmark, sync_localstack_limiter):
+    def test_available_realistic_latency(
+        self, benchmark, sync_localstack_limiter_module, unique_entity_prefix
+    ):
         """Measure read-only availability check with network latency.
 
         The available() method only reads bucket state.
         Compare with acquire to measure transaction overhead.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
+        entity_id = f"{unique_entity_prefix}-available-entity"
 
         # Setup: create bucket first
-        with sync_localstack_limiter.acquire(
-            entity_id="ls-available-entity",
+        with sync_localstack_limiter_module.acquire(
+            entity_id=entity_id,
             resource="api",
             limits=limits,
             consume={"rpm": 1},
@@ -184,8 +205,8 @@ class TestLocalStackLatencyBenchmarks:
             pass
 
         def operation():
-            sync_localstack_limiter.available(
-                entity_id="ls-available-entity",
+            sync_localstack_limiter_module.available(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
             )
@@ -199,19 +220,24 @@ class TestCascadeOptimizationBenchmarks:
     These benchmarks measure the impact of the BatchGetItem optimization
     which reduces multiple GetItem calls to a single BatchGetItem call
     when resolving cascade scenarios.
+
+    Uses module-scoped fixtures to share infrastructure across tests.
     """
 
     @pytest.fixture
-    def deep_hierarchy(self, sync_localstack_limiter):
+    def deep_hierarchy(self, sync_localstack_limiter_module, unique_entity_prefix):
         """Setup deeper hierarchy for cascade optimization testing."""
-        sync_localstack_limiter.create_entity("opt-root", name="Root")
-        sync_localstack_limiter.create_entity(
-            "opt-level1", name="Level 1", parent_id="opt-root", cascade=True
+        root_id = f"{unique_entity_prefix}-opt-root"
+        level1_id = f"{unique_entity_prefix}-opt-level1"
+        level2_id = f"{unique_entity_prefix}-opt-level2"
+        sync_localstack_limiter_module.create_entity(root_id, name="Root")
+        sync_localstack_limiter_module.create_entity(
+            level1_id, name="Level 1", parent_id=root_id, cascade=True
         )
-        sync_localstack_limiter.create_entity(
-            "opt-level2", name="Level 2", parent_id="opt-level1", cascade=True
+        sync_localstack_limiter_module.create_entity(
+            level2_id, name="Level 2", parent_id=level1_id, cascade=True
         )
-        return sync_localstack_limiter
+        return sync_localstack_limiter_module, level2_id
 
     @pytest.mark.benchmark(group="cascade-optimization")
     def test_cascade_with_batchgetitem_optimization(self, benchmark, deep_hierarchy):
@@ -222,11 +248,12 @@ class TestCascadeOptimizationBenchmarks:
 
         Expected: Single round-trip vs sequential GetItem calls.
         """
+        limiter, level2_id = deep_hierarchy
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
-            with deep_hierarchy.acquire(
-                entity_id="opt-level2",
+            with limiter.acquire(
+                entity_id=level2_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -242,14 +269,15 @@ class TestCascadeOptimizationBenchmarks:
         Measures cascade overhead when tracking multiple resource limits
         (e.g., gpt-4 and gpt-3.5-turbo).
         """
+        limiter, level2_id = deep_hierarchy
         limits = [
             Limit.per_minute("rpm", 1_000_000),
             Limit.per_minute("tpm", 100_000_000),
         ]
 
         def operation():
-            with deep_hierarchy.acquire(
-                entity_id="opt-level2",
+            with limiter.acquire(
+                entity_id=level2_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1, "tpm": 100},
@@ -259,24 +287,26 @@ class TestCascadeOptimizationBenchmarks:
         benchmark(operation)
 
     @pytest.fixture
-    def cascade_with_config(self, sync_localstack_limiter):
+    def cascade_with_config(self, sync_localstack_limiter_module, unique_entity_prefix):
         """Setup hierarchy with stored config for optimization testing."""
         limits = [Limit.per_minute("rpm", 1_000_000)]
+        root_id = f"{unique_entity_prefix}-opt-config-root"
+        child_id = f"{unique_entity_prefix}-opt-config-child"
 
         # Create hierarchy
-        sync_localstack_limiter.create_entity("opt-config-root", name="Root")
-        sync_localstack_limiter.create_entity(
-            "opt-config-child",
+        sync_localstack_limiter_module.create_entity(root_id, name="Root")
+        sync_localstack_limiter_module.create_entity(
+            child_id,
             name="Child",
-            parent_id="opt-config-root",
+            parent_id=root_id,
             cascade=True,
         )
 
         # Set stored limits to exercise config cache + cascade
-        sync_localstack_limiter.set_limits("opt-config-root", limits)
-        sync_localstack_limiter.set_limits("opt-config-child", limits)
+        sync_localstack_limiter_module.set_limits(root_id, limits)
+        sync_localstack_limiter_module.set_limits(child_id, limits)
 
-        return sync_localstack_limiter
+        return sync_localstack_limiter_module, child_id
 
     @pytest.mark.benchmark(group="cascade-optimization")
     def test_cascade_with_config_cache_optimization(self, benchmark, cascade_with_config):
@@ -287,11 +317,12 @@ class TestCascadeOptimizationBenchmarks:
 
         Expected: Combines benefits of both optimizations.
         """
+        limiter, child_id = cascade_with_config
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         # Warm up cache
-        with cascade_with_config.acquire(
-            entity_id="opt-config-child",
+        with limiter.acquire(
+            entity_id=child_id,
             resource="api",
             limits=limits,
             consume={"rpm": 1},
@@ -299,8 +330,8 @@ class TestCascadeOptimizationBenchmarks:
             pass
 
         def operation():
-            with cascade_with_config.acquire(
-                entity_id="opt-config-child",
+            with limiter.acquire(
+                entity_id=child_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
