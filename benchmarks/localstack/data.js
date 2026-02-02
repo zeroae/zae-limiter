@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769987950095,
+  "lastUpdate": 1770020138131,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -6297,6 +6297,135 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.01963235495771716",
             "extra": "mean: 1.1147193061999814 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "41e51634814d3426748e6c0ebe4258ca321379a6",
+          "message": "✨ feat(limiter): add refill-based TTL for default-limit buckets (#291)\n\n## Summary\n\n- Add `bucket_ttl_refill_multiplier` parameter to\nRateLimiter/SyncRateLimiter constructors (default: 7)\n- Buckets using system/resource defaults get TTL = `now +\n(max_time_to_fill × multiplier)`\n- Buckets with entity-level custom limits persist indefinitely (no TTL)\n- Config source tracking via `_resolve_limits()` returning `(limits,\nconfig_source)` tuple\n- LeaseEntry tracks `_has_custom_config` for TTL decisions at commit\ntime\n- Set multiplier to 0 to disable refill-based TTL entirely\n\n### Four-Level Config Hierarchy (ADR-118)\n\nExtended limit resolution from 3-tier to 4-tier:\n- Entity (resource-specific) → Entity (`_default_`) → Resource → System\n→ Override\n\n### Bucket TTL Strategy (ADR-119)\n\n- TTL = `max_time_to_fill × multiplier` where `time_to_fill = (capacity\n/ refill_amount) × refill_period`\n- Custom entity limits: no TTL (persist indefinitely)\n- Default limits (system/resource/entity `_default_`): TTL applied\n\n### Bucket Param Sync (ADR-120)\n\nWhen `set_limits()` updates entity config, existing bucket static\nparameters are synchronized.\n\n## Test plan\n\n- [x] Unit tests verify TTL presence for default-limit buckets\n- [x] Unit tests verify TTL absence for custom-limit buckets\n- [x] Unit tests verify TTL removal when upgrading to custom limits\n- [x] Unit tests verify TTL added when downgrading from custom limits\n- [x] Unit tests verify multiplier=0 disables TTL\n- [x] Unit tests verify slow-refill limits get longer TTL (time-to-fill\nbased)\n- [x] Sync limiter tests verify parity with async behavior\n- [x] Integration test verifies TTL downgrade workflow against\nLocalStack\n\n## Issues Closed\n\nCloses #271 - Refill-based TTL for default-limit buckets (main issue)\nCloses #293 - TTL set after deleting entity config (subissue of #271)\nCloses #296 - TTL calculation uses time-to-fill instead of refill_period\nCloses #297 - Entity-level `_default_` config fallback in limit\nresolution\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-02-02T03:01:36-05:00",
+          "tree_id": "255d0631325378b9bb9856b1b932d33848bd7d70",
+          "url": "https://github.com/zeroae/zae-limiter/commit/41e51634814d3426748e6c0ebe4258ca321379a6"
+        },
+        "date": 1770020136943,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 18.557307701841754,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02376840079937909",
+            "extra": "mean: 53.887127166660775 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.277358711523814,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00454038284575911",
+            "extra": "mean: 46.998314666679 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 30.507397882294327,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006778136707031633",
+            "extra": "mean: 32.77893460000314 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 31.040018383858364,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0055093126550449095",
+            "extra": "mean: 32.21647576471883 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 27.228188430283645,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002955820292689901",
+            "extra": "mean: 36.726644615393624 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 228.3793865205339,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007854382594841717",
+            "extra": "mean: 4.378678895829719 msec\nrounds: 144"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 28.04512797632322,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0059811982918179405",
+            "extra": "mean: 35.65681714286484 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 16.81996611161962,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06665961498975044",
+            "extra": "mean: 59.453151888883816 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 28.573845335602325,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006211527627098176",
+            "extra": "mean: 34.997039714288086 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 17.48791525918723,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006747853039568218",
+            "extra": "mean: 57.182344789476986 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 29.969809457726605,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004697841230397744",
+            "extra": "mean: 33.3669121724158 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9162164444272367,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0023377555395150524",
+            "extra": "mean: 521.861715 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.913830430222827,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006837602138073492",
+            "extra": "mean: 522.512331400003 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9222728943646736,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02319097290015235",
+            "extra": "mean: 1.084277773000008 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8940770554387659,
+            "unit": "iter/sec",
+            "range": "stddev: 0.021469993229414185",
+            "extra": "mean: 1.1184718296000256 sec\nrounds: 5"
           }
         ]
       }
