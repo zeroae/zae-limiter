@@ -149,5 +149,7 @@ ignore_missing_imports = true
 omit = [
     # Generated sync files - coverage measured on async source only
     "*/sync_*.py",
+    # Stress testing module - separate test infrastructure
+    "src/zae_limiter/stress/*",
 ]
 
