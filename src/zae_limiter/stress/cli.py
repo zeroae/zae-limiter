@@ -274,8 +274,12 @@ def connect(target: str, region: str | None, port: int) -> None:
     def scale_service(count: int) -> None:
         ecs.update_service(cluster=name, service=service_name, desiredCount=count)
 
-    def get_running_task() -> tuple[str, str] | None:
-        """Get (task_id, runtime_id) for the running task, or None."""
+    def get_running_task(require_ssm: bool = False) -> tuple[str, str] | None:
+        """Get (task_id, runtime_id) for the running task, or None.
+
+        Args:
+            require_ssm: If True, also check that ExecuteCommandAgent is running.
+        """
         tasks = ecs.list_tasks(cluster=name, serviceName=service_name)
         if not tasks["taskArns"]:
             return None
@@ -290,12 +294,23 @@ def connect(target: str, region: str | None, port: int) -> None:
         if task.get("lastStatus") != "RUNNING":
             return None
 
+        runtime_id = None
+        ssm_ready = False
+
         for container in task.get("containers", []):
             if container.get("name") == "locust-master":
                 runtime_id = container.get("runtimeId")
-                if runtime_id:
-                    return task_id, runtime_id
-        return None
+                # Check managed agents for SSM readiness
+                for agent in container.get("managedAgents", []):
+                    if agent.get("name") == "ExecuteCommandAgent":
+                        ssm_ready = agent.get("lastStatus") == "RUNNING"
+
+        if not runtime_id:
+            return None
+        if require_ssm and not ssm_ready:
+            return None
+
+        return task_id, runtime_id
 
     try:
         # Start Fargate task
@@ -317,6 +332,21 @@ def connect(target: str, region: str | None, port: int) -> None:
 
         click.echo(f"  Task running: {task_id}")
 
+        # Wait for SSM agent to be ready
+        click.echo("  Waiting for SSM agent...")
+        for _ in range(30):  # 1 minute timeout
+            result = get_running_task(require_ssm=True)
+            if result:
+                break
+            time.sleep(2)
+        else:
+            click.echo("Error: SSM agent failed to start", err=True)
+            scale_service(0)
+            sys.exit(1)
+
+        click.echo("  SSM agent ready")
+        time.sleep(3)  # Give SSM agent a moment to fully initialize
+
         # Build SSM target
         ssm_target = f"ecs:{name}_{task_id}_{runtime_id}"
         params = json.dumps(
@@ -327,28 +357,32 @@ def connect(target: str, region: str | None, port: int) -> None:
             }
         )
 
-        click.echo(f"  Starting SSM tunnel on port {port}...")
-        click.echo(f"  Open: http://localhost:{port}")
+        click.echo(f"  Connecting to http://localhost:{port} ...")
 
-        # Start SSM tunnel (blocks until interrupted or fails)
+        # Start SSM tunnel with retries
         region_args = ["--region", region] if region else []
-        proc = subprocess.run(
-            [
-                "aws",
-                "ssm",
-                "start-session",
-                "--target",
-                ssm_target,
-                "--document-name",
-                "AWS-StartPortForwardingSessionToRemoteHost",
-                "--parameters",
-                params,
-                *region_args,
-            ],
-        )
+        ssm_cmd = [
+            "aws",
+            "ssm",
+            "start-session",
+            "--target",
+            ssm_target,
+            "--document-name",
+            "AWS-StartPortForwardingSessionToRemoteHost",
+            "--parameters",
+            params,
+            *region_args,
+        ]
 
-        if proc.returncode != 0:
-            click.echo(f"SSM tunnel exited with code {proc.returncode}", err=True)
+        for attempt in range(5):
+            proc = subprocess.run(ssm_cmd)
+            if proc.returncode == 0:
+                break
+            if attempt < 4:
+                click.echo(f"  SSM connection failed, retrying ({attempt + 1}/5)...")
+                time.sleep(5)
+        else:
+            click.echo("SSM tunnel failed after 5 attempts", err=True)
 
     except KeyboardInterrupt:
         click.echo("\nInterrupted")
