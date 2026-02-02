@@ -3228,3 +3228,148 @@ class TestLeaseCommitTTL:
                 item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
                 assert item is not None
                 assert "ttl" not in item
+
+    async def test_commit_sets_ttl_after_deleting_entity_config(self, limiter):
+        """Lease._commit() sets TTL when entity downgrades from custom to default limits.
+
+        When an entity's custom limits are deleted, the next acquire() should set TTL
+        on the bucket since the entity now uses default limits again.
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Set system defaults
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Set entity-level config (custom limits)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Acquire with custom limits - should NOT have TTL
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify no TTL (entity has custom config)
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" not in item
+
+        # Delete entity-level config (downgrade to defaults)
+        await limiter.delete_limits("user-1", resource="api")
+
+        # Invalidate cache to ensure deleted config is recognized
+        await limiter.invalidate_config_cache()
+
+        # Acquire again - should now set TTL since entity uses defaults
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify TTL is now set (entity uses default config)
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" in item
+
+
+class TestBucketLimitSync:
+    """Tests for bucket synchronization when limits are updated.
+
+    These tests verify that bucket parameters (capacity, burst, refill)
+    are updated when entity limits change. Currently marked as xfail
+    because this functionality is not yet implemented.
+    """
+
+    @pytest.mark.xfail(reason="Bucket params not synced when limits change - needs fix")
+    async def test_bucket_updated_when_limit_increased(self, limiter):
+        """Bucket capacity SHOULD be updated when entity limit is increased.
+
+        Expected behavior:
+        1. Create entity with rpm=100
+        2. Use bucket (creates bucket with capacity=100)
+        3. Update limit to rpm=200
+        4. Next acquire() should sync bucket to capacity=200
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Step 1: Set initial limit (rpm=100)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="api")
+
+        # Step 2: Use the bucket (creates it with capacity=100)
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Verify bucket was created with capacity=100
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000, "Initial capacity should be 100 RPM"
+
+        # Step 3: Update limit to rpm=200
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
+        await limiter.invalidate_config_cache()
+
+        # Step 4: Use the bucket again
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Verify bucket capacity was updated to match new limit
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"
+
+    @pytest.mark.xfail(reason="Bucket params not synced when limits change - needs fix")
+    async def test_bucket_updated_when_limit_decreased(self, limiter):
+        """Bucket capacity SHOULD be updated when entity limit is decreased.
+
+        Expected behavior:
+        1. Create entity with rpm=200
+        2. Use bucket (creates bucket with capacity=200)
+        3. Update limit to rpm=100
+        4. Next acquire() should sync bucket to capacity=100
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Step 1: Set initial limit (rpm=200)
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Step 2: Use the bucket (creates it with capacity=200)
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Verify bucket was created with capacity=200
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "Initial capacity should be 200 RPM"
+
+        # Step 3: Downgrade limit to rpm=100
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="api")
+        await limiter.invalidate_config_cache()
+
+        # Step 4: Use the bucket again
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="api",
+            consume={"rpm": 10},
+        ):
+            pass
+
+        # Verify bucket capacity was updated to match new limit
+        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        assert item is not None
+        assert item["b_rpm_cp"] == 100000, "Bucket capacity should be synced to 100 RPM"
