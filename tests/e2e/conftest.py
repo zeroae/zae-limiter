@@ -81,6 +81,20 @@ def unique_name_class():
     return f"e2e-{unique_id}"
 
 
+@pytest.fixture
+def unique_entity_prefix():
+    """Generate unique entity ID prefix for data isolation within shared infrastructure.
+
+    Returns an 8-character hex prefix that tests prepend to entity names.
+    This allows multiple tests to share the same DynamoDB table while
+    maintaining complete data isolation.
+
+    Example usage:
+        entity_id = f"{unique_entity_prefix}-user-1"
+    """
+    return uuid.uuid4().hex[:8]
+
+
 # LocalStack limiter fixtures
 
 
