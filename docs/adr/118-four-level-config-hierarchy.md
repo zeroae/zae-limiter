@@ -1,6 +1,6 @@
 # ADR-118: Four-Level Configuration Hierarchy
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-02-02
 **Issue:** [#297](https://github.com/zeroae/zae-limiter/issues/297)
 **Supersedes:** ADR-102
