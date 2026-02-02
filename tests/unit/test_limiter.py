@@ -3202,26 +3202,20 @@ class TestLeaseCommitTTL:
         ttl = item["ttl"]
         assert expected_min <= ttl <= expected_max
 
-    @pytest.mark.xfail(reason="TTL should be based on time to fill bucket, not refill period")
+    @pytest.mark.xfail(reason="Issue #296: TTL uses refill_period, not time-to-fill")
     async def test_ttl_accounts_for_slow_refill_rate(self, limiter):
-        """TTL should allow bucket to fully refill before expiring.
+        """TTL should be based on time to fill bucket, not just refill period.
 
-        Bug: When capacity >> refill_amount, the current formula
-        (TTL = refill_period × multiplier) expires the bucket before
-        it can refill.
+        For a limit with capacity=1000 and refill_rate=10/min:
+        - Time to fill bucket = 1000 / (10/min) = 100 minutes
+        - TTL should be >= 100 minutes × multiplier = 700 minutes
 
-        Example: capacity=1000, refill_amount=10, refill_period=60s
-        - Time to fill bucket: 1000 / (10/60s) = 6000s = 100 minutes
-        - Current TTL: 60 × 7 = 420s = 7 minutes (WRONG!)
-        - Correct TTL: (1000/10) × 60 × 7 = 42000s = ~11.6 hours
-
-        Correct formula should be:
-        TTL = (capacity / refill_amount) × refill_period × multiplier
-            = time_to_fill_bucket × multiplier
+        Current bug: TTL = refill_period × multiplier = 60s × 7 = 7 minutes
+        The bucket expires before it can refill!
         """
         import time
 
-        # Create a limit with slow refill: capacity=1000, fills at 10/minute
+        # Create a slow-refill limit: 1000 capacity, refills 10 per minute
         slow_refill_limit = Limit(
             name="tokens",
             capacity=1000,
@@ -3238,26 +3232,20 @@ class TestLeaseCommitTTL:
             consume={"tokens": 1},
         ):
             pass
-        now_after = int(time.time())
 
         from zae_limiter.schema import pk_entity, sk_bucket
 
         item = await limiter._repository._get_item(pk_entity("user-slow"), sk_bucket("api"))
 
-        # Time to fill bucket = (capacity / refill_amount) × refill_period
-        # = (1000 / 10) × 60 = 6000 seconds
-        time_to_fill = (1000 / 10) * 60  # 6000 seconds = 100 minutes
-
-        # TTL should be time_to_fill × multiplier
-        # = 6000 × 7 = 42000 seconds ≈ 11.6 hours
-        expected_ttl_seconds = int(time_to_fill * 7)
-        expected_min = now_before + expected_ttl_seconds
-        expected_max = now_after + expected_ttl_seconds + 1
+        # Time to fill = (capacity / refill_amount) × refill_period = 100 × 60 = 6000 seconds
+        # Expected TTL = time_to_fill × multiplier = 6000 × 7 = 42000 seconds
+        time_to_fill = (1000 / 10) * 60  # 6000 seconds
+        expected_min = now_before + int(time_to_fill * 7)
 
         ttl = item["ttl"]
-        assert expected_min <= ttl <= expected_max, (
-            f"TTL {ttl} should be ~{expected_ttl_seconds}s from now, "
-            f"not {ttl - now_before}s (current buggy value)"
+        assert ttl >= expected_min, (
+            f"TTL {ttl - now_before}s is shorter than time to fill bucket "
+            f"({time_to_fill}s × 7 = {time_to_fill * 7}s)"
         )
 
     async def test_ttl_disabled_when_multiplier_zero(self, mock_dynamodb):
