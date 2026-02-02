@@ -1401,6 +1401,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.list_resources_with_entity_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_resources_with_entity_configs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.set_resource_defaults" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1758,6 +1769,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_entities_with_custom_limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.SyncRateLimiter.list_resources_with_entity_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_resources_with_entity_configs
       
     </span>
   </a>
@@ -3683,6 +3705,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.list_resources_with_entity_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_resources_with_entity_configs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.set_resource_defaults" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4040,6 +4073,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_entities_with_custom_limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.SyncRateLimiter.list_resources_with_entity_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;list_resources_with_entity_configs
       
     </span>
   </a>
@@ -6742,6 +6786,62 @@ for entity_id in entities:
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.limiter.RateLimiter.list_resources_with_entity_configs" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">list_resources_with_entity_configs</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.limiter.RateLimiter.list_resources_with_entity_configs" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">list_resources_with_entity_configs</span><span class="p">()</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>List all resources that have entity-level custom limit configurations.</p>
+<p>Uses the entity config resources registry for efficient O(1) lookup.</p>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<span title="str">str</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Sorted list of resource names with at least one entity having custom limits</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>resources = await limiter.list_resources_with_entity_configs()
+for resource in resources:
+    entities, _ = await limiter.list_entities_with_custom_limits(resource)
+    print(f"{resource}: {len(entities)} entities with custom limits")</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.limiter.RateLimiter.set_resource_defaults" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">set_resource_defaults</span>
 
@@ -8272,6 +8372,26 @@ If no stored limits found, falls back to the <code>limits</code> parameter.</p>
     <div class="doc doc-contents ">
 
         <p>List all entities that have custom limit configurations.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.limiter.SyncRateLimiter.list_resources_with_entity_configs" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">list_resources_with_entity_configs</span>
+
+
+<a href="#zae_limiter.limiter.SyncRateLimiter.list_resources_with_entity_configs" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">list_resources_with_entity_configs</span><span class="p">()</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>List all resources that have entity-level custom limit configurations.</p>
 
 
     </div>

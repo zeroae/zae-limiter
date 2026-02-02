@@ -1114,6 +1114,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae-limiter-entity-list-resources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        list-resources
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae-limiter-entity-set-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3119,6 +3130,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae-limiter-entity-list-resources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        list-resources
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae-limiter-entity-set-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4045,6 +4067,7 @@ Entity limits have highest priority, overriding resource and system defaults.</p
 <li><em><a href="#zae-limiter-entity-delete-limits">delete-limits</a></em>: Delete limits for a specific entity and resource.</li>
 <li><em><a href="#zae-limiter-entity-get-limits">get-limits</a></em>: Get limits for a specific entity and resource.</li>
 <li><em><a href="#zae-limiter-entity-list">list</a></em>: List entities with custom limit configurations.</li>
+<li><em><a href="#zae-limiter-entity-list-resources">list-resources</a></em>: List resources with entity-level custom limit configurations.</li>
 <li><em><a href="#zae-limiter-entity-set-limits">set-limits</a></em>: Set limits for a specific entity and resource.</li>
 <li><em><a href="#zae-limiter-entity-show">show</a></em>: Show details for an entity.</li>
 </ul>
@@ -4301,19 +4324,72 @@ Entity limits have highest priority, overriding resource and system defaults.</p
 </tr>
 </tbody>
 </table>
+<h5 id="zae-limiter-entity-list-resources">zae-limiter entity list-resources<a class="headerlink" href="#zae-limiter-entity-list-resources" title="Permanent link">&para;</a></h5>
+<p>List resources with entity-level custom limit configurations.</p>
+<p>Shows which resources have at least one entity with custom limits.
+Uses the entity config resources registry for fast O(1) lookup.</p>
+<p><strong>Examples:</strong>
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>list-resources
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>list-resources<span class="w"> </span>--name<span class="w"> </span>prod
+</span></code></pre></div></p>
+<p><strong>Sample Output:</strong>
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>Resources with entity-level custom limits:
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>  gpt-4
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a>  claude-3
+</span></code></pre></div></p>
+<p><strong>Usage:</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>zae-limiter entity list-resources [OPTIONS]
+</span></code></pre></div>
+<p><strong>Options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--name</code>, <code>-n</code></td>
+<td>text</td>
+<td>Stack identifier used as the CloudFormation stack name. Default: limiter</td>
+<td><code>limiter</code></td>
+</tr>
+<tr>
+<td><code>--region</code></td>
+<td>text</td>
+<td>AWS region (default: use boto3 defaults)</td>
+<td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--endpoint-url</code></td>
+<td>text</td>
+<td>AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)</td>
+<td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--help</code></td>
+<td>boolean</td>
+<td>Show this message and exit.</td>
+<td><code>False</code></td>
+</tr>
+</tbody>
+</table>
 <h5 id="zae-limiter-entity-set-limits">zae-limiter entity set-limits<a class="headerlink" href="#zae-limiter-entity-set-limits" title="Permanent link">&para;</a></h5>
 <p>Set limits for a specific entity and resource.</p>
 <p>ENTITY_ID is the entity to configure (e.g., 'user-123', 'api-key-abc').
 Entity limits override resource and system defaults.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="c1"># Set premium user limits for gpt-4</span>
-</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>user-premium<span class="w"> </span>-r<span class="w"> </span>gpt-4<span class="w"> </span>-l<span class="w"> </span>tpm:100000<span class="w"> </span>-l<span class="w"> </span>rpm:1000
-</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>
-</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="c1"># Set limits with burst</span>
-</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>api-key-123<span class="w"> </span>-r<span class="w"> </span>claude-3<span class="w"> </span>-l<span class="w"> </span>tpm:50000:75000
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="c1"># Set premium user limits for gpt-4</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>user-premium<span class="w"> </span>-r<span class="w"> </span>gpt-4<span class="w"> </span>-l<span class="w"> </span>tpm:100000<span class="w"> </span>-l<span class="w"> </span>rpm:1000
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="c1"># Set limits with burst</span>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>api-key-123<span class="w"> </span>-r<span class="w"> </span>claude-3<span class="w"> </span>-l<span class="w"> </span>tpm:50000:75000
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>zae-limiter entity set-limits [OPTIONS] ENTITY_ID
+<div class="language-text highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>zae-limiter entity set-limits [OPTIONS] ENTITY_ID
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4368,19 +4444,19 @@ Entity limits override resource and system defaults.</p>
 <p>Show details for an entity.</p>
 <p>ENTITY_ID is the entity to query (e.g., 'user-123', 'api-key-abc').</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>show<span class="w"> </span>user-123
-</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>show<span class="w"> </span>api-key-abc<span class="w"> </span>--name<span class="w"> </span>prod
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>show<span class="w"> </span>user-123
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>show<span class="w"> </span>api-key-abc<span class="w"> </span>--name<span class="w"> </span>prod
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>Entity: user-123
-</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>  Name:       Alice Smith
-</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>  Parent:     org-456
-</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a>  Cascade:    True
-</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>  Created:    2026-01-15T10:30:00Z
-</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a>  Metadata:   {&#39;tier&#39;: &#39;premium&#39;}
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>Entity: user-123
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>  Name:       Alice Smith
+</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>  Parent:     org-456
+</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a>  Cascade:    True
+</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>  Created:    2026-01-15T10:30:00Z
+</span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>  Metadata:   {&#39;tier&#39;: &#39;premium&#39;}
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>zae-limiter entity show [OPTIONS] ENTITY_ID
+<div class="language-text highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>zae-limiter entity show [OPTIONS] ENTITY_ID
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4424,28 +4500,28 @@ Entity limits override resource and system defaults.</p>
 <p>Creates a ZIP file containing the Lambda aggregator code for manual
 deployment or inspection. Useful for custom deployment pipelines.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># Export Lambda package</span>
-</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>zae-limiter<span class="w"> </span>lambda-export<span class="w"> </span>--output<span class="w"> </span>lambda.zip
-</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>
-</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a><span class="c1"># Show package info without building</span>
-</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>zae-limiter<span class="w"> </span>lambda-export<span class="w"> </span>--info
-</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>
-</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="c1"># Overwrite existing file</span>
-</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>zae-limiter<span class="w"> </span>lambda-export<span class="w"> </span>--force
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a><span class="c1"># Export Lambda package</span>
+</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a>zae-limiter<span class="w"> </span>lambda-export<span class="w"> </span>--output<span class="w"> </span>lambda.zip
+</span><span id="__span-32-3"><a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a>
+</span><span id="__span-32-4"><a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a><span class="c1"># Show package info without building</span>
+</span><span id="__span-32-5"><a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a>zae-limiter<span class="w"> </span>lambda-export<span class="w"> </span>--info
+</span><span id="__span-32-6"><a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a>
+</span><span id="__span-32-7"><a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a><span class="c1"># Overwrite existing file</span>
+</span><span id="__span-32-8"><a id="__codelineno-32-8" name="__codelineno-32-8" href="#__codelineno-32-8"></a>zae-limiter<span class="w"> </span>lambda-export<span class="w"> </span>--force
 </span></code></pre></div></p>
 <p><strong>Sample Output (--info):</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>Lambda Package Information
-</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>==========================
-</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>
-</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a>Package path:      /path/to/zae_limiter_aggregator
-</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>Python files:      4
-</span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>Uncompressed size: 24.5 KB
-</span><span id="__span-30-7"><a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a>Handler:           zae_limiter_aggregator.handler.handler
-</span><span id="__span-30-8"><a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>Dependencies:      1
-</span><span id="__span-30-9"><a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a>  - aws-lambda-powertools
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>Lambda Package Information
+</span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a>==========================
+</span><span id="__span-33-3"><a id="__codelineno-33-3" name="__codelineno-33-3" href="#__codelineno-33-3"></a>
+</span><span id="__span-33-4"><a id="__codelineno-33-4" name="__codelineno-33-4" href="#__codelineno-33-4"></a>Package path:      /path/to/zae_limiter_aggregator
+</span><span id="__span-33-5"><a id="__codelineno-33-5" name="__codelineno-33-5" href="#__codelineno-33-5"></a>Python files:      4
+</span><span id="__span-33-6"><a id="__codelineno-33-6" name="__codelineno-33-6" href="#__codelineno-33-6"></a>Uncompressed size: 24.5 KB
+</span><span id="__span-33-7"><a id="__codelineno-33-7" name="__codelineno-33-7" href="#__codelineno-33-7"></a>Handler:           zae_limiter_aggregator.handler.handler
+</span><span id="__span-33-8"><a id="__codelineno-33-8" name="__codelineno-33-8" href="#__codelineno-33-8"></a>Dependencies:      1
+</span><span id="__span-33-9"><a id="__codelineno-33-9" name="__codelineno-33-9" href="#__codelineno-33-9"></a>  - aws-lambda-powertools
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>zae-limiter lambda-export [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>zae-limiter lambda-export [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4489,19 +4565,19 @@ deployment or inspection. Useful for custom deployment pipelines.</p>
 <p>Discovers stacks by CloudFormation tags. Shows name, status, version, and
 creation date for each instance.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>zae-limiter<span class="w"> </span>list<span class="w"> </span>--region<span class="w"> </span>us-east-1
-</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a>zae-limiter<span class="w"> </span>list<span class="w"> </span>--endpoint-url<span class="w"> </span>http://localhost:4566
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>zae-limiter<span class="w"> </span>list<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-35-2"><a id="__codelineno-35-2" name="__codelineno-35-2" href="#__codelineno-35-2"></a>zae-limiter<span class="w"> </span>list<span class="w"> </span>--endpoint-url<span class="w"> </span>http://localhost:4566
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>Rate Limiter Instances (us-east-1)
-</span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a>
-</span><span id="__span-33-3"><a id="__codelineno-33-3" name="__codelineno-33-3" href="#__codelineno-33-3"></a>Name        Status             Version   Created
-</span><span id="__span-33-4"><a id="__codelineno-33-4" name="__codelineno-33-4" href="#__codelineno-33-4"></a>──────────  ─────────────────  ────────  ──────────
-</span><span id="__span-33-5"><a id="__codelineno-33-5" name="__codelineno-33-5" href="#__codelineno-33-5"></a>my-app      CREATE_COMPLETE    0.6.0     2026-01-15
-</span><span id="__span-33-6"><a id="__codelineno-33-6" name="__codelineno-33-6" href="#__codelineno-33-6"></a>prod-api    UPDATE_COMPLETE    0.6.0     2026-01-10
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>Rate Limiter Instances (us-east-1)
+</span><span id="__span-36-2"><a id="__codelineno-36-2" name="__codelineno-36-2" href="#__codelineno-36-2"></a>
+</span><span id="__span-36-3"><a id="__codelineno-36-3" name="__codelineno-36-3" href="#__codelineno-36-3"></a>Name        Status             Version   Created
+</span><span id="__span-36-4"><a id="__codelineno-36-4" name="__codelineno-36-4" href="#__codelineno-36-4"></a>──────────  ─────────────────  ────────  ──────────
+</span><span id="__span-36-5"><a id="__codelineno-36-5" name="__codelineno-36-5" href="#__codelineno-36-5"></a>my-app      CREATE_COMPLETE    0.6.0     2026-01-15
+</span><span id="__span-36-6"><a id="__codelineno-36-6" name="__codelineno-36-6" href="#__codelineno-36-6"></a>prod-api    UPDATE_COMPLETE    0.6.0     2026-01-10
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>zae-limiter list [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>zae-limiter list [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4540,7 +4616,7 @@ creation date for each instance.</p>
 <div class="language-text highlight"><pre><span></span><code>pip install &#39;zae-limiter[local]&#39;
 </code></pre></div>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>zae-limiter local [OPTIONS] COMMAND [ARGS]...
+<div class="language-text highlight"><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>zae-limiter local [OPTIONS] COMMAND [ARGS]...
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4575,7 +4651,7 @@ creation date for each instance.</p>
 <div class="language-text highlight"><pre><span></span><code>zae-limiter local down
 </code></pre></div>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>zae-limiter local down [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>zae-limiter local down [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4612,7 +4688,7 @@ zae-limiter local env --format direnv &gt; .envrc  # direnv
 zae-limiter local env --format powershell       # PowerShell
 </code></pre></div>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>zae-limiter local env [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>zae-limiter local env [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4658,7 +4734,7 @@ zae-limiter local logs --follow
 zae-limiter local logs --tail 50
 </code></pre></div>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>zae-limiter local logs [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-41-1"><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>zae-limiter local logs [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4715,7 +4791,7 @@ To configure your shell:
   zae-limiter local env --format powershell       # PowerShell
 </code></pre></div>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>zae-limiter local status [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-42-1"><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>zae-limiter local status [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4755,7 +4831,7 @@ zae-limiter local up --name my-app
 zae-limiter local up --port 4567
 </code></pre></div>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>zae-limiter local up [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-43-1"><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>zae-limiter local up [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4805,7 +4881,7 @@ zae-limiter local up --port 4567
 <p>Configure default limits for specific resources (e.g., gpt-4, claude-3).
 Resource defaults override system defaults but are overridden by entity limits.</p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-41-1"><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>zae-limiter resource [OPTIONS] COMMAND [ARGS]...
+<div class="language-text highlight"><pre><span></span><code><span id="__span-44-1"><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>zae-limiter resource [OPTIONS] COMMAND [ARGS]...
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4837,14 +4913,14 @@ Resource defaults override system defaults but are overridden by entity limits.<
 <p>Delete default limits for a resource.</p>
 <p>RESOURCE_NAME is the resource to delete defaults from (e.g., 'gpt-4', 'claude-3').</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-42-1"><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a><span class="c1"># Delete with confirmation prompt</span>
-</span><span id="__span-42-2"><a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>delete-defaults<span class="w"> </span>gpt-4
-</span><span id="__span-42-3"><a id="__codelineno-42-3" name="__codelineno-42-3" href="#__codelineno-42-3"></a>
-</span><span id="__span-42-4"><a id="__codelineno-42-4" name="__codelineno-42-4" href="#__codelineno-42-4"></a><span class="c1"># Skip confirmation</span>
-</span><span id="__span-42-5"><a id="__codelineno-42-5" name="__codelineno-42-5" href="#__codelineno-42-5"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>delete-defaults<span class="w"> </span>gpt-4<span class="w"> </span>--yes
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-45-1"><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a><span class="c1"># Delete with confirmation prompt</span>
+</span><span id="__span-45-2"><a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>delete-defaults<span class="w"> </span>gpt-4
+</span><span id="__span-45-3"><a id="__codelineno-45-3" name="__codelineno-45-3" href="#__codelineno-45-3"></a>
+</span><span id="__span-45-4"><a id="__codelineno-45-4" name="__codelineno-45-4" href="#__codelineno-45-4"></a><span class="c1"># Skip confirmation</span>
+</span><span id="__span-45-5"><a id="__codelineno-45-5" name="__codelineno-45-5" href="#__codelineno-45-5"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>delete-defaults<span class="w"> </span>gpt-4<span class="w"> </span>--yes
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-43-1"><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>zae-limiter resource delete-defaults [OPTIONS] RESOURCE_NAME
+<div class="language-text highlight"><pre><span></span><code><span id="__span-46-1"><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>zae-limiter resource delete-defaults [OPTIONS] RESOURCE_NAME
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4893,16 +4969,16 @@ Resource defaults override system defaults but are overridden by entity limits.<
 <p>Get default limits for a resource.</p>
 <p>RESOURCE_NAME is the resource to query (e.g., 'gpt-4', 'claude-3').</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-44-1"><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>get-defaults<span class="w"> </span>gpt-4
-</span><span id="__span-44-2"><a id="__codelineno-44-2" name="__codelineno-44-2" href="#__codelineno-44-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>get-defaults<span class="w"> </span>claude-3<span class="w"> </span>--name<span class="w"> </span>prod
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>get-defaults<span class="w"> </span>gpt-4
+</span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>get-defaults<span class="w"> </span>claude-3<span class="w"> </span>--name<span class="w"> </span>prod
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-45-1"><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>Defaults for resource &#39;gpt-4&#39;:
-</span><span id="__span-45-2"><a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>  rpm: 500/min (burst: 500)
-</span><span id="__span-45-3"><a id="__codelineno-45-3" name="__codelineno-45-3" href="#__codelineno-45-3"></a>  tpm: 50000/min (burst: 50000)
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>Defaults for resource &#39;gpt-4&#39;:
+</span><span id="__span-48-2"><a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>  rpm: 500/min (burst: 500)
+</span><span id="__span-48-3"><a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>  tpm: 50000/min (burst: 50000)
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-46-1"><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>zae-limiter resource get-defaults [OPTIONS] RESOURCE_NAME
+<div class="language-text highlight"><pre><span></span><code><span id="__span-49-1"><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>zae-limiter resource get-defaults [OPTIONS] RESOURCE_NAME
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4944,17 +5020,17 @@ Resource defaults override system defaults but are overridden by entity limits.<
 <h5 id="zae-limiter-resource-list">zae-limiter resource list<a class="headerlink" href="#zae-limiter-resource-list" title="Permanent link">&para;</a></h5>
 <p>List all resources with configured defaults.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>list
-</span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>list<span class="w"> </span>--name<span class="w"> </span>prod
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-50-1"><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>list
+</span><span id="__span-50-2"><a id="__codelineno-50-2" name="__codelineno-50-2" href="#__codelineno-50-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>list<span class="w"> </span>--name<span class="w"> </span>prod
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>Resources with configured defaults:
-</span><span id="__span-48-2"><a id="__codelineno-48-2" name="__codelineno-48-2" href="#__codelineno-48-2"></a>  gpt-4
-</span><span id="__span-48-3"><a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>  gpt-3.5-turbo
-</span><span id="__span-48-4"><a id="__codelineno-48-4" name="__codelineno-48-4" href="#__codelineno-48-4"></a>  claude-3
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-51-1"><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>Resources with configured defaults:
+</span><span id="__span-51-2"><a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a>  gpt-4
+</span><span id="__span-51-3"><a id="__codelineno-51-3" name="__codelineno-51-3" href="#__codelineno-51-3"></a>  gpt-3.5-turbo
+</span><span id="__span-51-4"><a id="__codelineno-51-4" name="__codelineno-51-4" href="#__codelineno-51-4"></a>  claude-3
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-49-1"><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>zae-limiter resource list [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-52-1"><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>zae-limiter resource list [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -4998,14 +5074,14 @@ Resource defaults override system defaults but are overridden by entity limits.<
 <p>RESOURCE_NAME is the resource to configure (e.g., 'gpt-4', 'claude-3').
 Resource defaults override system defaults for this specific resource.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-50-1"><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a><span class="c1"># Set TPM and RPM defaults for gpt-4</span>
-</span><span id="__span-50-2"><a id="__codelineno-50-2" name="__codelineno-50-2" href="#__codelineno-50-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-defaults<span class="w"> </span>gpt-4<span class="w"> </span>-l<span class="w"> </span>tpm:100000<span class="w"> </span>-l<span class="w"> </span>rpm:1000
-</span><span id="__span-50-3"><a id="__codelineno-50-3" name="__codelineno-50-3" href="#__codelineno-50-3"></a>
-</span><span id="__span-50-4"><a id="__codelineno-50-4" name="__codelineno-50-4" href="#__codelineno-50-4"></a><span class="c1"># Set limits with burst capacity</span>
-</span><span id="__span-50-5"><a id="__codelineno-50-5" name="__codelineno-50-5" href="#__codelineno-50-5"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-defaults<span class="w"> </span>claude-3<span class="w"> </span>-l<span class="w"> </span>tpm:50000:75000
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-53-1"><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a><span class="c1"># Set TPM and RPM defaults for gpt-4</span>
+</span><span id="__span-53-2"><a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-defaults<span class="w"> </span>gpt-4<span class="w"> </span>-l<span class="w"> </span>tpm:100000<span class="w"> </span>-l<span class="w"> </span>rpm:1000
+</span><span id="__span-53-3"><a id="__codelineno-53-3" name="__codelineno-53-3" href="#__codelineno-53-3"></a>
+</span><span id="__span-53-4"><a id="__codelineno-53-4" name="__codelineno-53-4" href="#__codelineno-53-4"></a><span class="c1"># Set limits with burst capacity</span>
+</span><span id="__span-53-5"><a id="__codelineno-53-5" name="__codelineno-53-5" href="#__codelineno-53-5"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-defaults<span class="w"> </span>claude-3<span class="w"> </span>-l<span class="w"> </span>tpm:50000:75000
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-51-1"><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>zae-limiter resource set-defaults [OPTIONS] RESOURCE_NAME
+<div class="language-text highlight"><pre><span></span><code><span id="__span-54-1"><a id="__codelineno-54-1" name="__codelineno-54-1" href="#__codelineno-54-1"></a>zae-limiter resource set-defaults [OPTIONS] RESOURCE_NAME
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5055,36 +5131,36 @@ Resource defaults override system defaults for this specific resource.</p>
 <p>Shows connectivity, stack status, version compatibility, table metrics,
 and IAM role ARNs. Read-only operation - does not modify any resources.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-52-1"><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>zae-limiter<span class="w"> </span>status<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
-</span><span id="__span-52-2"><a id="__codelineno-52-2" name="__codelineno-52-2" href="#__codelineno-52-2"></a>zae-limiter<span class="w"> </span>status<span class="w"> </span>--name<span class="w"> </span>dev<span class="w"> </span>--endpoint-url<span class="w"> </span>http://localhost:4566
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-55-1"><a id="__codelineno-55-1" name="__codelineno-55-1" href="#__codelineno-55-1"></a>zae-limiter<span class="w"> </span>status<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-55-2"><a id="__codelineno-55-2" name="__codelineno-55-2" href="#__codelineno-55-2"></a>zae-limiter<span class="w"> </span>status<span class="w"> </span>--name<span class="w"> </span>dev<span class="w"> </span>--endpoint-url<span class="w"> </span>http://localhost:4566
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-53-1"><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>Status: my-app
-</span><span id="__span-53-2"><a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a>==================================================
-</span><span id="__span-53-3"><a id="__codelineno-53-3" name="__codelineno-53-3" href="#__codelineno-53-3"></a>
-</span><span id="__span-53-4"><a id="__codelineno-53-4" name="__codelineno-53-4" href="#__codelineno-53-4"></a>Connectivity
-</span><span id="__span-53-5"><a id="__codelineno-53-5" name="__codelineno-53-5" href="#__codelineno-53-5"></a>  Available:     ✓ Yes
-</span><span id="__span-53-6"><a id="__codelineno-53-6" name="__codelineno-53-6" href="#__codelineno-53-6"></a>  Latency:       42ms
-</span><span id="__span-53-7"><a id="__codelineno-53-7" name="__codelineno-53-7" href="#__codelineno-53-7"></a>  Region:        us-east-1
-</span><span id="__span-53-8"><a id="__codelineno-53-8" name="__codelineno-53-8" href="#__codelineno-53-8"></a>
-</span><span id="__span-53-9"><a id="__codelineno-53-9" name="__codelineno-53-9" href="#__codelineno-53-9"></a>Infrastructure
-</span><span id="__span-53-10"><a id="__codelineno-53-10" name="__codelineno-53-10" href="#__codelineno-53-10"></a>  Stack:         CREATE_COMPLETE
-</span><span id="__span-53-11"><a id="__codelineno-53-11" name="__codelineno-53-11" href="#__codelineno-53-11"></a>  Table:         ACTIVE
-</span><span id="__span-53-12"><a id="__codelineno-53-12" name="__codelineno-53-12" href="#__codelineno-53-12"></a>  Aggregator:    Enabled
-</span><span id="__span-53-13"><a id="__codelineno-53-13" name="__codelineno-53-13" href="#__codelineno-53-13"></a>
-</span><span id="__span-53-14"><a id="__codelineno-53-14" name="__codelineno-53-14" href="#__codelineno-53-14"></a>Versions
-</span><span id="__span-53-15"><a id="__codelineno-53-15" name="__codelineno-53-15" href="#__codelineno-53-15"></a>  Client:        0.6.0
-</span><span id="__span-53-16"><a id="__codelineno-53-16" name="__codelineno-53-16" href="#__codelineno-53-16"></a>  Schema:        0.6.0
-</span><span id="__span-53-17"><a id="__codelineno-53-17" name="__codelineno-53-17" href="#__codelineno-53-17"></a>  Lambda:        0.6.0
-</span><span id="__span-53-18"><a id="__codelineno-53-18" name="__codelineno-53-18" href="#__codelineno-53-18"></a>
-</span><span id="__span-53-19"><a id="__codelineno-53-19" name="__codelineno-53-19" href="#__codelineno-53-19"></a>Table Metrics
-</span><span id="__span-53-20"><a id="__codelineno-53-20" name="__codelineno-53-20" href="#__codelineno-53-20"></a>  Items:         1,234
-</span><span id="__span-53-21"><a id="__codelineno-53-21" name="__codelineno-53-21" href="#__codelineno-53-21"></a>  Size:          256 KB
-</span><span id="__span-53-22"><a id="__codelineno-53-22" name="__codelineno-53-22" href="#__codelineno-53-22"></a>
-</span><span id="__span-53-23"><a id="__codelineno-53-23" name="__codelineno-53-23" href="#__codelineno-53-23"></a>✓ Infrastructure is ready
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-56-1"><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a>Status: my-app
+</span><span id="__span-56-2"><a id="__codelineno-56-2" name="__codelineno-56-2" href="#__codelineno-56-2"></a>==================================================
+</span><span id="__span-56-3"><a id="__codelineno-56-3" name="__codelineno-56-3" href="#__codelineno-56-3"></a>
+</span><span id="__span-56-4"><a id="__codelineno-56-4" name="__codelineno-56-4" href="#__codelineno-56-4"></a>Connectivity
+</span><span id="__span-56-5"><a id="__codelineno-56-5" name="__codelineno-56-5" href="#__codelineno-56-5"></a>  Available:     ✓ Yes
+</span><span id="__span-56-6"><a id="__codelineno-56-6" name="__codelineno-56-6" href="#__codelineno-56-6"></a>  Latency:       42ms
+</span><span id="__span-56-7"><a id="__codelineno-56-7" name="__codelineno-56-7" href="#__codelineno-56-7"></a>  Region:        us-east-1
+</span><span id="__span-56-8"><a id="__codelineno-56-8" name="__codelineno-56-8" href="#__codelineno-56-8"></a>
+</span><span id="__span-56-9"><a id="__codelineno-56-9" name="__codelineno-56-9" href="#__codelineno-56-9"></a>Infrastructure
+</span><span id="__span-56-10"><a id="__codelineno-56-10" name="__codelineno-56-10" href="#__codelineno-56-10"></a>  Stack:         CREATE_COMPLETE
+</span><span id="__span-56-11"><a id="__codelineno-56-11" name="__codelineno-56-11" href="#__codelineno-56-11"></a>  Table:         ACTIVE
+</span><span id="__span-56-12"><a id="__codelineno-56-12" name="__codelineno-56-12" href="#__codelineno-56-12"></a>  Aggregator:    Enabled
+</span><span id="__span-56-13"><a id="__codelineno-56-13" name="__codelineno-56-13" href="#__codelineno-56-13"></a>
+</span><span id="__span-56-14"><a id="__codelineno-56-14" name="__codelineno-56-14" href="#__codelineno-56-14"></a>Versions
+</span><span id="__span-56-15"><a id="__codelineno-56-15" name="__codelineno-56-15" href="#__codelineno-56-15"></a>  Client:        0.6.0
+</span><span id="__span-56-16"><a id="__codelineno-56-16" name="__codelineno-56-16" href="#__codelineno-56-16"></a>  Schema:        0.6.0
+</span><span id="__span-56-17"><a id="__codelineno-56-17" name="__codelineno-56-17" href="#__codelineno-56-17"></a>  Lambda:        0.6.0
+</span><span id="__span-56-18"><a id="__codelineno-56-18" name="__codelineno-56-18" href="#__codelineno-56-18"></a>
+</span><span id="__span-56-19"><a id="__codelineno-56-19" name="__codelineno-56-19" href="#__codelineno-56-19"></a>Table Metrics
+</span><span id="__span-56-20"><a id="__codelineno-56-20" name="__codelineno-56-20" href="#__codelineno-56-20"></a>  Items:         1,234
+</span><span id="__span-56-21"><a id="__codelineno-56-21" name="__codelineno-56-21" href="#__codelineno-56-21"></a>  Size:          256 KB
+</span><span id="__span-56-22"><a id="__codelineno-56-22" name="__codelineno-56-22" href="#__codelineno-56-22"></a>
+</span><span id="__span-56-23"><a id="__codelineno-56-23" name="__codelineno-56-23" href="#__codelineno-56-23"></a>✓ Infrastructure is ready
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-54-1"><a id="__codelineno-54-1" name="__codelineno-54-1" href="#__codelineno-54-1"></a>zae-limiter status [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-57-1"><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>zae-limiter status [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5128,7 +5204,7 @@ and IAM role ARNs. Read-only operation - does not modify any resources.</p>
 <p>Configure global defaults that apply to ALL resources unless overridden.
 System defaults are the lowest priority in the hierarchy.</p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-55-1"><a id="__codelineno-55-1" name="__codelineno-55-1" href="#__codelineno-55-1"></a>zae-limiter system [OPTIONS] COMMAND [ARGS]...
+<div class="language-text highlight"><pre><span></span><code><span id="__span-58-1"><a id="__codelineno-58-1" name="__codelineno-58-1" href="#__codelineno-58-1"></a>zae-limiter system [OPTIONS] COMMAND [ARGS]...
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5158,14 +5234,14 @@ System defaults are the lowest priority in the hierarchy.</p>
 <h5 id="zae-limiter-system-delete-defaults">zae-limiter system delete-defaults<a class="headerlink" href="#zae-limiter-system-delete-defaults" title="Permanent link">&para;</a></h5>
 <p>Delete all system-wide default limits and config.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-56-1"><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a><span class="c1"># Delete with confirmation prompt</span>
-</span><span id="__span-56-2"><a id="__codelineno-56-2" name="__codelineno-56-2" href="#__codelineno-56-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>delete-defaults
-</span><span id="__span-56-3"><a id="__codelineno-56-3" name="__codelineno-56-3" href="#__codelineno-56-3"></a>
-</span><span id="__span-56-4"><a id="__codelineno-56-4" name="__codelineno-56-4" href="#__codelineno-56-4"></a><span class="c1"># Skip confirmation</span>
-</span><span id="__span-56-5"><a id="__codelineno-56-5" name="__codelineno-56-5" href="#__codelineno-56-5"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>delete-defaults<span class="w"> </span>--yes
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-59-1"><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a><span class="c1"># Delete with confirmation prompt</span>
+</span><span id="__span-59-2"><a id="__codelineno-59-2" name="__codelineno-59-2" href="#__codelineno-59-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>delete-defaults
+</span><span id="__span-59-3"><a id="__codelineno-59-3" name="__codelineno-59-3" href="#__codelineno-59-3"></a>
+</span><span id="__span-59-4"><a id="__codelineno-59-4" name="__codelineno-59-4" href="#__codelineno-59-4"></a><span class="c1"># Skip confirmation</span>
+</span><span id="__span-59-5"><a id="__codelineno-59-5" name="__codelineno-59-5" href="#__codelineno-59-5"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>delete-defaults<span class="w"> </span>--yes
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-57-1"><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>zae-limiter system delete-defaults [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-60-1"><a id="__codelineno-60-1" name="__codelineno-60-1" href="#__codelineno-60-1"></a>zae-limiter system delete-defaults [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5213,18 +5289,18 @@ System defaults are the lowest priority in the hierarchy.</p>
 <h5 id="zae-limiter-system-get-defaults">zae-limiter system get-defaults<a class="headerlink" href="#zae-limiter-system-get-defaults" title="Permanent link">&para;</a></h5>
 <p>Get system-wide default limits and config.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-58-1"><a id="__codelineno-58-1" name="__codelineno-58-1" href="#__codelineno-58-1"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>get-defaults
-</span><span id="__span-58-2"><a id="__codelineno-58-2" name="__codelineno-58-2" href="#__codelineno-58-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>get-defaults<span class="w"> </span>--name<span class="w"> </span>prod
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-61-1"><a id="__codelineno-61-1" name="__codelineno-61-1" href="#__codelineno-61-1"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>get-defaults
+</span><span id="__span-61-2"><a id="__codelineno-61-2" name="__codelineno-61-2" href="#__codelineno-61-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>get-defaults<span class="w"> </span>--name<span class="w"> </span>prod
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-59-1"><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a>System-wide defaults:
-</span><span id="__span-59-2"><a id="__codelineno-59-2" name="__codelineno-59-2" href="#__codelineno-59-2"></a>  Limits:
-</span><span id="__span-59-3"><a id="__codelineno-59-3" name="__codelineno-59-3" href="#__codelineno-59-3"></a>    rpm: 1000/min (burst: 1000)
-</span><span id="__span-59-4"><a id="__codelineno-59-4" name="__codelineno-59-4" href="#__codelineno-59-4"></a>    tpm: 100000/min (burst: 100000)
-</span><span id="__span-59-5"><a id="__codelineno-59-5" name="__codelineno-59-5" href="#__codelineno-59-5"></a>  on_unavailable: allow
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-62-1"><a id="__codelineno-62-1" name="__codelineno-62-1" href="#__codelineno-62-1"></a>System-wide defaults:
+</span><span id="__span-62-2"><a id="__codelineno-62-2" name="__codelineno-62-2" href="#__codelineno-62-2"></a>  Limits:
+</span><span id="__span-62-3"><a id="__codelineno-62-3" name="__codelineno-62-3" href="#__codelineno-62-3"></a>    rpm: 1000/min (burst: 1000)
+</span><span id="__span-62-4"><a id="__codelineno-62-4" name="__codelineno-62-4" href="#__codelineno-62-4"></a>    tpm: 100000/min (burst: 100000)
+</span><span id="__span-62-5"><a id="__codelineno-62-5" name="__codelineno-62-5" href="#__codelineno-62-5"></a>  on_unavailable: allow
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-60-1"><a id="__codelineno-60-1" name="__codelineno-60-1" href="#__codelineno-60-1"></a>zae-limiter system get-defaults [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-63-1"><a id="__codelineno-63-1" name="__codelineno-63-1" href="#__codelineno-63-1"></a>zae-limiter system get-defaults [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5267,14 +5343,14 @@ System defaults are the lowest priority in the hierarchy.</p>
 <p>Set system-wide default limits.</p>
 <p>System defaults apply to ALL resources unless overridden at resource or entity level.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-61-1"><a id="__codelineno-61-1" name="__codelineno-61-1" href="#__codelineno-61-1"></a><span class="c1"># Set global defaults</span>
-</span><span id="__span-61-2"><a id="__codelineno-61-2" name="__codelineno-61-2" href="#__codelineno-61-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>-l<span class="w"> </span>tpm:10000<span class="w"> </span>-l<span class="w"> </span>rpm:100
-</span><span id="__span-61-3"><a id="__codelineno-61-3" name="__codelineno-61-3" href="#__codelineno-61-3"></a>
-</span><span id="__span-61-4"><a id="__codelineno-61-4" name="__codelineno-61-4" href="#__codelineno-61-4"></a><span class="c1"># Set defaults with unavailability behavior</span>
-</span><span id="__span-61-5"><a id="__codelineno-61-5" name="__codelineno-61-5" href="#__codelineno-61-5"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>-l<span class="w"> </span>tpm:10000<span class="w"> </span>--on-unavailable<span class="w"> </span>allow
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-64-1"><a id="__codelineno-64-1" name="__codelineno-64-1" href="#__codelineno-64-1"></a><span class="c1"># Set global defaults</span>
+</span><span id="__span-64-2"><a id="__codelineno-64-2" name="__codelineno-64-2" href="#__codelineno-64-2"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>-l<span class="w"> </span>tpm:10000<span class="w"> </span>-l<span class="w"> </span>rpm:100
+</span><span id="__span-64-3"><a id="__codelineno-64-3" name="__codelineno-64-3" href="#__codelineno-64-3"></a>
+</span><span id="__span-64-4"><a id="__codelineno-64-4" name="__codelineno-64-4" href="#__codelineno-64-4"></a><span class="c1"># Set defaults with unavailability behavior</span>
+</span><span id="__span-64-5"><a id="__codelineno-64-5" name="__codelineno-64-5" href="#__codelineno-64-5"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>-l<span class="w"> </span>tpm:10000<span class="w"> </span>--on-unavailable<span class="w"> </span>allow
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-62-1"><a id="__codelineno-62-1" name="__codelineno-62-1" href="#__codelineno-62-1"></a>zae-limiter system set-defaults [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-65-1"><a id="__codelineno-65-1" name="__codelineno-65-1" href="#__codelineno-65-1"></a>zae-limiter system set-defaults [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5330,14 +5406,14 @@ System defaults are the lowest priority in the hierarchy.</p>
 <p>Updates Lambda code and version records to match the current client.
 Use --force to update even when versions already match.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-63-1"><a id="__codelineno-63-1" name="__codelineno-63-1" href="#__codelineno-63-1"></a><span class="c1"># Standard upgrade</span>
-</span><span id="__span-63-2"><a id="__codelineno-63-2" name="__codelineno-63-2" href="#__codelineno-63-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
-</span><span id="__span-63-3"><a id="__codelineno-63-3" name="__codelineno-63-3" href="#__codelineno-63-3"></a>
-</span><span id="__span-63-4"><a id="__codelineno-63-4" name="__codelineno-63-4" href="#__codelineno-63-4"></a><span class="c1"># Force Lambda update</span>
-</span><span id="__span-63-5"><a id="__codelineno-63-5" name="__codelineno-63-5" href="#__codelineno-63-5"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--force
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-66-1"><a id="__codelineno-66-1" name="__codelineno-66-1" href="#__codelineno-66-1"></a><span class="c1"># Standard upgrade</span>
+</span><span id="__span-66-2"><a id="__codelineno-66-2" name="__codelineno-66-2" href="#__codelineno-66-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-66-3"><a id="__codelineno-66-3" name="__codelineno-66-3" href="#__codelineno-66-3"></a>
+</span><span id="__span-66-4"><a id="__codelineno-66-4" name="__codelineno-66-4" href="#__codelineno-66-4"></a><span class="c1"># Force Lambda update</span>
+</span><span id="__span-66-5"><a id="__codelineno-66-5" name="__codelineno-66-5" href="#__codelineno-66-5"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--force
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-64-1"><a id="__codelineno-64-1" name="__codelineno-64-1" href="#__codelineno-64-1"></a>zae-limiter upgrade [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-67-1"><a id="__codelineno-67-1" name="__codelineno-67-1" href="#__codelineno-67-1"></a>zae-limiter upgrade [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5393,7 +5469,7 @@ Use --force to update even when versions already match.</p>
 <p>Query historical usage data aggregated by the Lambda aggregator.
 Snapshots track token consumption per entity/resource in hourly and daily windows.</p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-65-1"><a id="__codelineno-65-1" name="__codelineno-65-1" href="#__codelineno-65-1"></a>zae-limiter usage [OPTIONS] COMMAND [ARGS]...
+<div class="language-text highlight"><pre><span></span><code><span id="__span-68-1"><a id="__codelineno-68-1" name="__codelineno-68-1" href="#__codelineno-68-1"></a>zae-limiter usage [OPTIONS] COMMAND [ARGS]...
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5424,9 +5500,9 @@ Snapshots track token consumption per entity/resource in hourly and daily window
 <p>Query historical token consumption data. Requires either --entity-id or
 --resource. Use --plot for ASCII chart visualization.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-66-1"><a id="__codelineno-66-1" name="__codelineno-66-1" href="#__codelineno-66-1"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>user-123
-</span><span id="__span-66-2"><a id="__codelineno-66-2" name="__codelineno-66-2" href="#__codelineno-66-2"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--window<span class="w"> </span>hourly
-</span><span id="__span-66-3"><a id="__codelineno-66-3" name="__codelineno-66-3" href="#__codelineno-66-3"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span>--plot
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-69-1"><a id="__codelineno-69-1" name="__codelineno-69-1" href="#__codelineno-69-1"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>user-123
+</span><span id="__span-69-2"><a id="__codelineno-69-2" name="__codelineno-69-2" href="#__codelineno-69-2"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--window<span class="w"> </span>hourly
+</span><span id="__span-69-3"><a id="__codelineno-69-3" name="__codelineno-69-3" href="#__codelineno-69-3"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--entity-id<span class="w"> </span>user-123<span class="w"> </span>--plot
 </span></code></pre></div></p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -5438,17 +5514,17 @@ Snapshots track token consumption per entity/resource in hourly and daily window
 <code>pip install 'zae-limiter[plot]'</code></p>
 </div>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-67-1"><a id="__codelineno-67-1" name="__codelineno-67-1" href="#__codelineno-67-1"></a>Usage Snapshots
-</span><span id="__span-67-2"><a id="__codelineno-67-2" name="__codelineno-67-2" href="#__codelineno-67-2"></a>
-</span><span id="__span-67-3"><a id="__codelineno-67-3" name="__codelineno-67-3" href="#__codelineno-67-3"></a>Window Start          Type    Resource  Entity    Events  Counters
-</span><span id="__span-67-4"><a id="__codelineno-67-4" name="__codelineno-67-4" href="#__codelineno-67-4"></a>────────────────────  ──────  ────────  ────────  ──────  ────────────────
-</span><span id="__span-67-5"><a id="__codelineno-67-5" name="__codelineno-67-5" href="#__codelineno-67-5"></a>2026-01-15T10:00:00Z  hourly  gpt-4     user-123  42      tpm=15,000
-</span><span id="__span-67-6"><a id="__codelineno-67-6" name="__codelineno-67-6" href="#__codelineno-67-6"></a>2026-01-15T09:00:00Z  hourly  gpt-4     user-123  38      tpm=12,500
-</span><span id="__span-67-7"><a id="__codelineno-67-7" name="__codelineno-67-7" href="#__codelineno-67-7"></a>
-</span><span id="__span-67-8"><a id="__codelineno-67-8" name="__codelineno-67-8" href="#__codelineno-67-8"></a>Total: 2 snapshots
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-70-1"><a id="__codelineno-70-1" name="__codelineno-70-1" href="#__codelineno-70-1"></a>Usage Snapshots
+</span><span id="__span-70-2"><a id="__codelineno-70-2" name="__codelineno-70-2" href="#__codelineno-70-2"></a>
+</span><span id="__span-70-3"><a id="__codelineno-70-3" name="__codelineno-70-3" href="#__codelineno-70-3"></a>Window Start          Type    Resource  Entity    Events  Counters
+</span><span id="__span-70-4"><a id="__codelineno-70-4" name="__codelineno-70-4" href="#__codelineno-70-4"></a>────────────────────  ──────  ────────  ────────  ──────  ────────────────
+</span><span id="__span-70-5"><a id="__codelineno-70-5" name="__codelineno-70-5" href="#__codelineno-70-5"></a>2026-01-15T10:00:00Z  hourly  gpt-4     user-123  42      tpm=15,000
+</span><span id="__span-70-6"><a id="__codelineno-70-6" name="__codelineno-70-6" href="#__codelineno-70-6"></a>2026-01-15T09:00:00Z  hourly  gpt-4     user-123  38      tpm=12,500
+</span><span id="__span-70-7"><a id="__codelineno-70-7" name="__codelineno-70-7" href="#__codelineno-70-7"></a>
+</span><span id="__span-70-8"><a id="__codelineno-70-8" name="__codelineno-70-8" href="#__codelineno-70-8"></a>Total: 2 snapshots
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-68-1"><a id="__codelineno-68-1" name="__codelineno-68-1" href="#__codelineno-68-1"></a>zae-limiter usage list [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-71-1"><a id="__codelineno-71-1" name="__codelineno-71-1" href="#__codelineno-71-1"></a>zae-limiter usage list [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5534,28 +5610,28 @@ Snapshots track token consumption per entity/resource in hourly and daily window
 <p>Computes total and average consumption across matching snapshots.
 Useful for billing, reporting, and capacity planning.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-69-1"><a id="__codelineno-69-1" name="__codelineno-69-1" href="#__codelineno-69-1"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span>--entity-id<span class="w"> </span>user-123
-</span><span id="__span-69-2"><a id="__codelineno-69-2" name="__codelineno-69-2" href="#__codelineno-69-2"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--window<span class="w"> </span>daily
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-72-1"><a id="__codelineno-72-1" name="__codelineno-72-1" href="#__codelineno-72-1"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span>--entity-id<span class="w"> </span>user-123
+</span><span id="__span-72-2"><a id="__codelineno-72-2" name="__codelineno-72-2" href="#__codelineno-72-2"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>summary<span class="w"> </span>--resource<span class="w"> </span>gpt-4<span class="w"> </span>--window<span class="w"> </span>daily
 </span></code></pre></div></p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Either <code>--entity-id</code> or <code>--resource</code> must be provided.</p>
 </div>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-70-1"><a id="__codelineno-70-1" name="__codelineno-70-1" href="#__codelineno-70-1"></a>Usage Summary
-</span><span id="__span-70-2"><a id="__codelineno-70-2" name="__codelineno-70-2" href="#__codelineno-70-2"></a>
-</span><span id="__span-70-3"><a id="__codelineno-70-3" name="__codelineno-70-3" href="#__codelineno-70-3"></a>Entity:     user-123
-</span><span id="__span-70-4"><a id="__codelineno-70-4" name="__codelineno-70-4" href="#__codelineno-70-4"></a>Resource:   gpt-4
-</span><span id="__span-70-5"><a id="__codelineno-70-5" name="__codelineno-70-5" href="#__codelineno-70-5"></a>Snapshots:  24
-</span><span id="__span-70-6"><a id="__codelineno-70-6" name="__codelineno-70-6" href="#__codelineno-70-6"></a>Time Range: 2026-01-14T00:00:00Z to 2026-01-15T23:00:00Z
-</span><span id="__span-70-7"><a id="__codelineno-70-7" name="__codelineno-70-7" href="#__codelineno-70-7"></a>
-</span><span id="__span-70-8"><a id="__codelineno-70-8" name="__codelineno-70-8" href="#__codelineno-70-8"></a>Limit  Total     Average
-</span><span id="__span-70-9"><a id="__codelineno-70-9" name="__codelineno-70-9" href="#__codelineno-70-9"></a>─────  ────────  ─────────
-</span><span id="__span-70-10"><a id="__codelineno-70-10" name="__codelineno-70-10" href="#__codelineno-70-10"></a>rpm        950      39.58
-</span><span id="__span-70-11"><a id="__codelineno-70-11" name="__codelineno-70-11" href="#__codelineno-70-11"></a>tpm    450,000  18,750.00
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-73-1"><a id="__codelineno-73-1" name="__codelineno-73-1" href="#__codelineno-73-1"></a>Usage Summary
+</span><span id="__span-73-2"><a id="__codelineno-73-2" name="__codelineno-73-2" href="#__codelineno-73-2"></a>
+</span><span id="__span-73-3"><a id="__codelineno-73-3" name="__codelineno-73-3" href="#__codelineno-73-3"></a>Entity:     user-123
+</span><span id="__span-73-4"><a id="__codelineno-73-4" name="__codelineno-73-4" href="#__codelineno-73-4"></a>Resource:   gpt-4
+</span><span id="__span-73-5"><a id="__codelineno-73-5" name="__codelineno-73-5" href="#__codelineno-73-5"></a>Snapshots:  24
+</span><span id="__span-73-6"><a id="__codelineno-73-6" name="__codelineno-73-6" href="#__codelineno-73-6"></a>Time Range: 2026-01-14T00:00:00Z to 2026-01-15T23:00:00Z
+</span><span id="__span-73-7"><a id="__codelineno-73-7" name="__codelineno-73-7" href="#__codelineno-73-7"></a>
+</span><span id="__span-73-8"><a id="__codelineno-73-8" name="__codelineno-73-8" href="#__codelineno-73-8"></a>Limit  Total     Average
+</span><span id="__span-73-9"><a id="__codelineno-73-9" name="__codelineno-73-9" href="#__codelineno-73-9"></a>─────  ────────  ─────────
+</span><span id="__span-73-10"><a id="__codelineno-73-10" name="__codelineno-73-10" href="#__codelineno-73-10"></a>rpm        950      39.58
+</span><span id="__span-73-11"><a id="__codelineno-73-11" name="__codelineno-73-11" href="#__codelineno-73-11"></a>tpm    450,000  18,750.00
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-71-1"><a id="__codelineno-71-1" name="__codelineno-71-1" href="#__codelineno-71-1"></a>zae-limiter usage summary [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-74-1"><a id="__codelineno-74-1" name="__codelineno-74-1" href="#__codelineno-74-1"></a>zae-limiter usage summary [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5629,24 +5705,24 @@ Useful for billing, reporting, and capacity planning.</p>
 <p>Displays client version, schema version, and deployed infrastructure
 versions. Checks compatibility between client and infrastructure.</p>
 <p><strong>Examples:</strong>
-    <div class="language-bash highlight"><pre><span></span><code><span id="__span-72-1"><a id="__codelineno-72-1" name="__codelineno-72-1" href="#__codelineno-72-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
-</span><span id="__span-72-2"><a id="__codelineno-72-2" name="__codelineno-72-2" href="#__codelineno-72-2"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--endpoint-url<span class="w"> </span>http://localhost:4566
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-75-1"><a id="__codelineno-75-1" name="__codelineno-75-1" href="#__codelineno-75-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-75-2"><a id="__codelineno-75-2" name="__codelineno-75-2" href="#__codelineno-75-2"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--endpoint-url<span class="w"> </span>http://localhost:4566
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-73-1"><a id="__codelineno-73-1" name="__codelineno-73-1" href="#__codelineno-73-1"></a>zae-limiter Infrastructure Version
-</span><span id="__span-73-2"><a id="__codelineno-73-2" name="__codelineno-73-2" href="#__codelineno-73-2"></a>====================================
-</span><span id="__span-73-3"><a id="__codelineno-73-3" name="__codelineno-73-3" href="#__codelineno-73-3"></a>
-</span><span id="__span-73-4"><a id="__codelineno-73-4" name="__codelineno-73-4" href="#__codelineno-73-4"></a>Client Version:     0.6.0
-</span><span id="__span-73-5"><a id="__codelineno-73-5" name="__codelineno-73-5" href="#__codelineno-73-5"></a>Schema Version:     0.6.0
-</span><span id="__span-73-6"><a id="__codelineno-73-6" name="__codelineno-73-6" href="#__codelineno-73-6"></a>
-</span><span id="__span-73-7"><a id="__codelineno-73-7" name="__codelineno-73-7" href="#__codelineno-73-7"></a>Infra Schema:       0.6.0
-</span><span id="__span-73-8"><a id="__codelineno-73-8" name="__codelineno-73-8" href="#__codelineno-73-8"></a>Lambda Version:     0.6.0
-</span><span id="__span-73-9"><a id="__codelineno-73-9" name="__codelineno-73-9" href="#__codelineno-73-9"></a>Min Client Version: 0.5.0
-</span><span id="__span-73-10"><a id="__codelineno-73-10" name="__codelineno-73-10" href="#__codelineno-73-10"></a>
-</span><span id="__span-73-11"><a id="__codelineno-73-11" name="__codelineno-73-11" href="#__codelineno-73-11"></a>Status: COMPATIBLE
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-76-1"><a id="__codelineno-76-1" name="__codelineno-76-1" href="#__codelineno-76-1"></a>zae-limiter Infrastructure Version
+</span><span id="__span-76-2"><a id="__codelineno-76-2" name="__codelineno-76-2" href="#__codelineno-76-2"></a>====================================
+</span><span id="__span-76-3"><a id="__codelineno-76-3" name="__codelineno-76-3" href="#__codelineno-76-3"></a>
+</span><span id="__span-76-4"><a id="__codelineno-76-4" name="__codelineno-76-4" href="#__codelineno-76-4"></a>Client Version:     0.6.0
+</span><span id="__span-76-5"><a id="__codelineno-76-5" name="__codelineno-76-5" href="#__codelineno-76-5"></a>Schema Version:     0.6.0
+</span><span id="__span-76-6"><a id="__codelineno-76-6" name="__codelineno-76-6" href="#__codelineno-76-6"></a>
+</span><span id="__span-76-7"><a id="__codelineno-76-7" name="__codelineno-76-7" href="#__codelineno-76-7"></a>Infra Schema:       0.6.0
+</span><span id="__span-76-8"><a id="__codelineno-76-8" name="__codelineno-76-8" href="#__codelineno-76-8"></a>Lambda Version:     0.6.0
+</span><span id="__span-76-9"><a id="__codelineno-76-9" name="__codelineno-76-9" href="#__codelineno-76-9"></a>Min Client Version: 0.5.0
+</span><span id="__span-76-10"><a id="__codelineno-76-10" name="__codelineno-76-10" href="#__codelineno-76-10"></a>
+</span><span id="__span-76-11"><a id="__codelineno-76-11" name="__codelineno-76-11" href="#__codelineno-76-11"></a>Status: COMPATIBLE
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-74-1"><a id="__codelineno-74-1" name="__codelineno-74-1" href="#__codelineno-74-1"></a>zae-limiter version [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-77-1"><a id="__codelineno-77-1" name="__codelineno-77-1" href="#__codelineno-77-1"></a>zae-limiter version [OPTIONS]
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
