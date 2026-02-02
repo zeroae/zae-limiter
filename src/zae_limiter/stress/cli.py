@@ -9,8 +9,8 @@ import boto3
 import click
 
 
-def _select_target(region: str | None) -> str:
-    """Interactively select a zae-limiter target stack."""
+def _select_name(region: str | None) -> str:
+    """Interactively select a zae-limiter instance."""
     import asyncio
 
     import questionary
@@ -34,7 +34,7 @@ def _select_target(region: str | None) -> str:
         click.echo("Error: No zae-limiter stacks found", err=True)
         sys.exit(1)
 
-    result: str = questionary.select("Select target stack:", choices=targets).ask()
+    result: str = questionary.select("Select zae-limiter stack:", choices=targets).ask()
     return result
 
 
@@ -95,7 +95,7 @@ def stress() -> None:
 
 
 @stress.command()
-@click.option("--target", "-t", default=None, help="Target zae-limiter stack name")
+@click.option("--name", "-n", default=None, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--vpc-id", default=None, help="VPC ID for stress test resources")
 @click.option("--subnet-ids", default=None, help="Comma-separated private subnet IDs")
@@ -112,7 +112,7 @@ def stress() -> None:
     help="Create VPC endpoints for SSM (not needed if VPC has NAT gateway)",
 )
 def deploy(
-    target: str | None,
+    name: str | None,
     region: str | None,
     vpc_id: str | None,
     subnet_ids: str | None,
@@ -125,31 +125,31 @@ def deploy(
     from .lambda_builder import build_stress_lambda_package
 
     # Interactive prompts for missing options
-    if not target:
-        target = _select_target(region)
+    if not name:
+        name = _select_name(region)
     if not vpc_id:
         vpc_id = _select_vpc(region)
     if not subnet_ids:
         subnet_ids = _select_subnets(region, vpc_id)
 
-    name = f"{target}-stress"
-    click.echo(f"Deploying stress test stack: {name}")
+    stack_name = f"{name}-stress"
+    click.echo(f"Deploying stress test stack: {stack_name}")
 
     # Validate target stack
     cfn = boto3.client("cloudformation", region_name=region)
     try:
-        response = cfn.describe_stacks(StackName=target)
+        response = cfn.describe_stacks(StackName=name)
         outputs = {
             o["OutputKey"]: o["OutputValue"] for o in response["Stacks"][0].get("Outputs", [])
         }
     except cfn.exceptions.ClientError:
-        click.echo(f"Error: Target stack not found: {target}", err=True)
+        click.echo(f"Error: Stack not found: {name}", err=True)
         sys.exit(1)
 
     required_outputs = ["AppPolicyArn", "AdminPolicyArn"]
     missing = [k for k in required_outputs if k not in outputs]
     if missing:
-        click.echo(f"Error: Target stack missing outputs: {missing}", err=True)
+        click.echo(f"Error: Stack missing outputs: {missing}", err=True)
         sys.exit(1)
 
     # Get IAM configuration from target stack
@@ -160,7 +160,7 @@ def deploy(
     if role_name_format and role_name_format != "{}":
         click.echo(f"  Using role name format: {role_name_format}")
 
-    click.echo("  Target stack validated")
+    click.echo("  Stack validated")
 
     # Get zae-limiter source
     zae_limiter_source = get_zae_limiter_source()
@@ -174,7 +174,7 @@ def deploy(
 
     # Build parameters list
     stack_params = [
-        {"ParameterKey": "TargetStackName", "ParameterValue": target},
+        {"ParameterKey": "TargetStackName", "ParameterValue": name},
         {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
         {"ParameterKey": "PrivateSubnetIds", "ParameterValue": ",".join(subnet_list)},
         {"ParameterKey": "MaxWorkers", "ParameterValue": str(max_workers)},
@@ -186,7 +186,7 @@ def deploy(
 
     try:
         cfn.create_stack(
-            StackName=name,
+            StackName=stack_name,
             TemplateBody=template_body,
             Parameters=stack_params,  # type: ignore[arg-type]
             Capabilities=["CAPABILITY_NAMED_IAM"],
@@ -196,20 +196,20 @@ def deploy(
         # Wait for stack
         waiter = cfn.get_waiter("stack_create_complete")
         click.echo("  Waiting for stack creation...")
-        waiter.wait(StackName=name)
+        waiter.wait(StackName=stack_name)
         click.echo("  CloudFormation stack created")
 
     except cfn.exceptions.AlreadyExistsException:
         click.echo("  Stack already exists, updating...")
         try:
             cfn.update_stack(
-                StackName=name,
+                StackName=stack_name,
                 TemplateBody=template_body,
                 Parameters=stack_params,  # type: ignore[arg-type]
                 Capabilities=["CAPABILITY_NAMED_IAM"],
             )
             update_waiter = cfn.get_waiter("stack_update_complete")
-            update_waiter.wait(StackName=name)
+            update_waiter.wait(StackName=stack_name)
             click.echo("  CloudFormation stack updated")
         except cfn.exceptions.ClientError as e:
             if "No updates are to be performed" in str(e):
@@ -219,7 +219,7 @@ def deploy(
 
     # Build and push Docker image
     click.echo("  Building Locust image...")
-    image_uri = build_and_push_locust_image(name, region or "us-east-1", zae_limiter_source)
+    image_uri = build_and_push_locust_image(stack_name, region or "us-east-1", zae_limiter_source)
     click.echo(f"  Locust image pushed: {image_uri}")
 
     # Build Lambda package
@@ -234,18 +234,18 @@ def deploy(
         zip_bytes = f.read()
 
     for func_suffix in ["worker", "setup"]:
-        func_name = f"{name}-{func_suffix}"
+        func_name = f"{stack_name}-{func_suffix}"
         lambda_client.update_function_code(
             FunctionName=func_name,
             ZipFile=zip_bytes,
         )
         click.echo(f"  Lambda code uploaded: {func_name}")
 
-    click.echo(f"\nStack ready: {name}")
+    click.echo(f"\nStack ready: {stack_name}")
 
 
 @stress.command()
-@click.option("--target", "-t", required=True, help="Target zae-limiter stack name")
+@click.option("--name", "-n", required=True, help="zae-limiter stack name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--endpoint-url", default=None, help="AWS endpoint URL (for LocalStack)")
 @click.option(
@@ -253,7 +253,7 @@ def deploy(
 )
 @click.option("--apis", default=8, type=int, help="Number of APIs to configure")
 def setup(
-    target: str,
+    name: str,
     region: str | None,
     endpoint_url: str | None,
     custom_limits: int,
@@ -268,7 +268,7 @@ def setup(
 
     async def run_setup() -> None:
         limiter = RateLimiter(
-            name=target,
+            name=name,
             region=region or "us-east-1",
             endpoint_url=endpoint_url,
         )
@@ -345,21 +345,21 @@ def setup(
 
 
 @stress.command()
-@click.option("--target", "-t", required=True, help="Target zae-limiter stack name")
+@click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--port", default=8089, type=int, help="Local port for Locust UI")
-def connect(target: str, region: str | None, port: int) -> None:
+def connect(name: str, region: str | None, port: int) -> None:
     """Start Fargate master, open SSM tunnel, and block until interrupted."""
     import json
     import subprocess
     import time
 
-    name = f"{target}-stress"
+    stack_name = f"{name}-stress"
     ecs = boto3.client("ecs", region_name=region)
-    service_name = f"{name}-master"
+    service_name = f"{stack_name}-master"
 
     def scale_service(count: int) -> None:
-        ecs.update_service(cluster=name, service=service_name, desiredCount=count)
+        ecs.update_service(cluster=stack_name, service=service_name, desiredCount=count)
 
     def get_running_task(require_ssm: bool = False) -> tuple[str, str] | None:
         """Get (task_id, runtime_id) for the running task, or None.
@@ -367,14 +367,14 @@ def connect(target: str, region: str | None, port: int) -> None:
         Args:
             require_ssm: If True, also check that ExecuteCommandAgent is running.
         """
-        tasks = ecs.list_tasks(cluster=name, serviceName=service_name)
+        tasks = ecs.list_tasks(cluster=stack_name, serviceName=service_name)
         if not tasks["taskArns"]:
             return None
 
         task_arn = tasks["taskArns"][0]
         task_id = task_arn.split("/")[-1]
 
-        task_details = ecs.describe_tasks(cluster=name, tasks=[task_arn])
+        task_details = ecs.describe_tasks(cluster=stack_name, tasks=[task_arn])
         task = task_details["tasks"][0]
 
         # Check if task is running and has runtime ID
@@ -401,7 +401,7 @@ def connect(target: str, region: str | None, port: int) -> None:
 
     try:
         # Start Fargate task
-        click.echo(f"Starting Fargate master: {name}")
+        click.echo(f"Starting Fargate master: {stack_name}")
         scale_service(1)
 
         # Wait for task to be running
@@ -435,7 +435,7 @@ def connect(target: str, region: str | None, port: int) -> None:
         time.sleep(3)  # Give SSM agent a moment to fully initialize
 
         # Build SSM target
-        ssm_target = f"ecs:{name}_{task_id}_{runtime_id}"
+        ssm_target = f"ecs:{stack_name}_{task_id}_{runtime_id}"
         params = json.dumps(
             {
                 "host": ["localhost"],
@@ -485,30 +485,30 @@ def connect(target: str, region: str | None, port: int) -> None:
 
 
 @stress.command()
-@click.option("--target", "-t", required=True, help="Target zae-limiter stack name")
+@click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
-def teardown(target: str, region: str | None, yes: bool) -> None:
+def teardown(name: str, region: str | None, yes: bool) -> None:
     """Delete stress test infrastructure."""
-    name = f"{target}-stress"
+    stack_name = f"{name}-stress"
     if not yes:
-        click.confirm(f"Delete stress test stack '{name}'?", abort=True)
+        click.confirm(f"Delete stress test stack '{stack_name}'?", abort=True)
 
-    click.echo(f"Deleting stress test stack: {name}")
+    click.echo(f"Deleting stress test stack: {stack_name}")
 
     cfn = boto3.client("cloudformation", region_name=region)
     ecs = boto3.client("ecs", region_name=region)
 
     # Scale down service first
     try:
-        ecs.update_service(cluster=name, service=f"{name}-master", desiredCount=0)
+        ecs.update_service(cluster=stack_name, service=f"{stack_name}-master", desiredCount=0)
         click.echo("  Stopped Fargate tasks")
     except Exception:
         pass
 
     # Delete stack
-    cfn.delete_stack(StackName=name)
+    cfn.delete_stack(StackName=stack_name)
     waiter = cfn.get_waiter("stack_delete_complete")
     click.echo("  Waiting for stack deletion...")
-    waiter.wait(StackName=name)
+    waiter.wait(StackName=stack_name)
     click.echo("  Stack deleted")
