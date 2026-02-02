@@ -5,8 +5,11 @@ Usage:
     Lambda: Imported by worker handler
 
 Uses asyncio-gevent for proper asyncio/gevent integration. This makes
-asyncio use gevent's event loop, avoiding the "Timeout should be used
-inside a task" errors from aiohttp.
+asyncio use gevent's event loop, avoiding conflicts between gevent
+greenlets and asyncio's event loop.
+
+With asyncio-gevent, we use the async RateLimiter directly with asyncio.run()
+for each operation. The library handles the integration with gevent.
 """
 
 from __future__ import annotations
@@ -23,18 +26,18 @@ asyncio.set_event_loop_policy(asyncio_gevent.EventLoopPolicy())
 from gevent.local import local as greenlet_local  # noqa: E402
 from locust import User, between, task  # noqa: E402
 
-from zae_limiter import RateLimitExceeded, SyncRateLimiter  # noqa: E402
+from zae_limiter import RateLimiter, RateLimitExceeded  # noqa: E402
 from zae_limiter.stress.config import StressConfig  # noqa: E402
 from zae_limiter.stress.distribution import TrafficDistributor  # noqa: E402
 
-# Greenlet-local storage for limiters (avoids event loop conflicts)
+# Greenlet-local storage for limiters (avoids sharing async resources across greenlets)
 _greenlet_state = greenlet_local()
 
 
-def _get_limiter(config: StressConfig) -> SyncRateLimiter:
-    """Get or create a greenlet-local SyncRateLimiter instance."""
+def _get_limiter(config: StressConfig) -> RateLimiter:
+    """Get or create a greenlet-local RateLimiter instance."""
     if not hasattr(_greenlet_state, "limiter"):
-        _greenlet_state.limiter = SyncRateLimiter(
+        _greenlet_state.limiter = RateLimiter(
             name=config.stack_name,
             region=config.region,
         )
@@ -66,15 +69,32 @@ class RateLimiterUser(User):  # type: ignore[misc]
         # Limiter is fetched per-greenlet in tasks (via _get_limiter)
 
     def _do_acquire(self, entity_id: str, api: str, tpm: int) -> None:
-        """Execute sync acquire operation."""
+        """Execute acquire operation using async RateLimiter with asyncio.run()."""
         assert self.config is not None
         limiter = _get_limiter(self.config)
-        with limiter.acquire(
-            entity_id=entity_id,
-            resource=api,
-            consume={"rpm": 1, "tpm": tpm},
-        ):
-            pass  # Work would happen here
+
+        async def acquire_async() -> None:
+            async with limiter.acquire(
+                entity_id=entity_id,
+                resource=api,
+                consume={"rpm": 1, "tpm": tpm},
+            ):
+                pass  # Work would happen here
+
+        asyncio.run(acquire_async())
+
+    def _do_available(self, entity_id: str, api: str) -> dict[str, int] | None:
+        """Execute available check using async RateLimiter with asyncio.run()."""
+        assert self.config is not None
+        limiter = _get_limiter(self.config)
+
+        async def available_async() -> dict[str, int] | None:
+            return await limiter.available(
+                entity_id=entity_id,
+                resource=api,
+            )
+
+        return asyncio.run(available_async())
 
     @task(weight=100)  # type: ignore[misc]
     def acquire_tokens(self) -> None:
@@ -133,11 +153,7 @@ class RateLimiterUser(User):  # type: ignore[misc]
         start_time = time.perf_counter()
 
         try:
-            limiter = _get_limiter(self.config)
-            limiter.available(
-                entity_id=entity_id,
-                resource=api,
-            )
+            self._do_available(entity_id, api)
             response_time = (time.perf_counter() - start_time) * 1000
             self.environment.events.request.fire(
                 request_type="AVAILABLE",
