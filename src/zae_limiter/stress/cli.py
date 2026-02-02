@@ -16,26 +16,36 @@ def stress() -> None:
 
 
 @stress.command()
-@click.option("--name", "-n", required=True, help="Stress test stack name")
 @click.option("--target", "-t", required=True, help="Target zae-limiter stack name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--vpc-id", required=True, help="VPC ID for stress test resources")
 @click.option("--subnet-ids", required=True, help="Comma-separated private subnet IDs")
 @click.option("--max-workers", default=100, type=int, help="Maximum Lambda worker concurrency")
-@click.option("--permission-boundary", default="", help="Permission boundary ARN for IAM roles")
+@click.option(
+    "--lambda-timeout",
+    default=5,
+    type=int,
+    help="Lambda worker timeout in minutes (default: 5)",
+)
+@click.option(
+    "--create-vpc-endpoints",
+    is_flag=True,
+    help="Create VPC endpoints for SSM (not needed if VPC has NAT gateway)",
+)
 def deploy(
-    name: str,
     target: str,
     region: str | None,
     vpc_id: str,
     subnet_ids: str,
     max_workers: int,
-    permission_boundary: str,
+    lambda_timeout: int,
+    create_vpc_endpoints: bool,
 ) -> None:
     """Deploy stress test infrastructure."""
     from .builder import build_and_push_locust_image, get_zae_limiter_source
     from .lambda_builder import build_stress_lambda_package
 
+    name = f"{target}-stress"
     click.echo(f"Deploying stress test stack: {name}")
 
     # Validate target stack
@@ -55,14 +65,13 @@ def deploy(
         click.echo(f"Error: Target stack missing outputs: {missing}", err=True)
         sys.exit(1)
 
-    # Get IAM configuration from target stack (override CLI args if present)
-    target_permission_boundary = outputs.get("PermissionBoundaryArn", "")
-    target_role_name_format = outputs.get("RoleNameFormat", "{}")
-    if target_permission_boundary:
-        permission_boundary = target_permission_boundary
-        click.echo(f"  Using permission boundary from target: {permission_boundary}")
-    if target_role_name_format and target_role_name_format != "{}":
-        click.echo(f"  Using role name format from target: {target_role_name_format}")
+    # Get IAM configuration from target stack
+    permission_boundary = outputs.get("PermissionBoundaryArn", "")
+    role_name_format = outputs.get("RoleNameFormat", "{}")
+    if permission_boundary:
+        click.echo(f"  Using permission boundary: {permission_boundary}")
+    if role_name_format and role_name_format != "{}":
+        click.echo(f"  Using role name format: {role_name_format}")
 
     click.echo("  Target stack validated")
 
@@ -82,8 +91,10 @@ def deploy(
         {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
         {"ParameterKey": "PrivateSubnetIds", "ParameterValue": ",".join(subnet_list)},
         {"ParameterKey": "MaxWorkers", "ParameterValue": str(max_workers)},
+        {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
+        {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
         {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
-        {"ParameterKey": "RoleNameFormat", "ParameterValue": target_role_name_format},
+        {"ParameterKey": "RoleNameFormat", "ParameterValue": role_name_format},
     ]
 
     try:
@@ -247,10 +258,11 @@ def setup(
 
 
 @stress.command()
-@click.option("--name", "-n", required=True, help="Stress test stack name")
+@click.option("--target", "-t", required=True, help="Target zae-limiter stack name")
 @click.option("--region", default=None, help="AWS region")
-def connect(name: str, region: str | None) -> None:
+def connect(target: str, region: str | None) -> None:
     """Print SSM port-forward command for Locust UI."""
+    name = f"{target}-stress"
     ecs = boto3.client("ecs", region_name=region)
 
     # Get task ARN
@@ -277,11 +289,12 @@ def connect(name: str, region: str | None) -> None:
 
 
 @stress.command()
-@click.option("--name", "-n", required=True, help="Stress test stack name")
+@click.option("--target", "-t", required=True, help="Target zae-limiter stack name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
-def teardown(name: str, region: str | None, yes: bool) -> None:
+def teardown(target: str, region: str | None, yes: bool) -> None:
     """Delete stress test infrastructure."""
+    name = f"{target}-stress"
     if not yes:
         click.confirm(f"Delete stress test stack '{name}'?", abort=True)
 
