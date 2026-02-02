@@ -259,9 +259,10 @@ Resources:
         - Name: worker-orchestrator
           Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LocustRepository}:latest
           Essential: false
-          Command:
+          EntryPoint:
             - python
             - /mnt/orchestrator.py
+          Command: []
           Environment:
             - Name: DESIRED_WORKERS
               Value: !Ref DesiredWorkers
