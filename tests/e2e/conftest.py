@@ -43,6 +43,7 @@ __all__ = [
     "sync_localstack_limiter",
     "e2e_limiter_module",
     "e2e_limiter_minimal_module",
+    "cli_stack_module",
     # AWS client fixtures
     "cloudwatch_client",
     "sqs_client",
@@ -128,6 +129,67 @@ async def e2e_limiter_minimal_module(localstack_endpoint, minimal_stack_options)
         await limiter.delete_stack()
     except Exception as e:
         print(f"Warning: Module-scoped minimal stack cleanup failed: {e}")
+
+
+@pytest.fixture(scope="module")
+def cli_stack_module(localstack_endpoint, minimal_stack_options):
+    """Module-scoped CLI stack for CLI subcommand tests.
+
+    Deploys a minimal stack once per module for tests that verify CLI commands
+    (audit list, list, usage list) without needing to test deploy/delete lifecycle.
+
+    Yields:
+        tuple: (stack_name, endpoint_url) for use in CLI commands
+
+    Note: Tests using this fixture should use unique entity IDs to avoid conflicts.
+    """
+    from click.testing import CliRunner
+
+    from zae_limiter.cli import cli
+
+    # Generate unique name for CLI stack
+    timestamp = int(time.time())
+    unique_id = uuid.uuid4().hex[:8]
+    stack_name = f"e2e-cli-{timestamp}-{unique_id}"
+
+    runner = CliRunner()
+
+    # Deploy stack
+    result = runner.invoke(
+        cli,
+        [
+            "deploy",
+            "--name",
+            stack_name,
+            "--endpoint-url",
+            localstack_endpoint,
+            "--region",
+            "us-east-1",
+            "--no-aggregator",
+            "--no-alarms",
+            "--wait",
+        ],
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(f"CLI stack deployment failed: {result.output}")
+
+    yield stack_name, localstack_endpoint
+
+    # Cleanup
+    runner.invoke(
+        cli,
+        [
+            "delete",
+            "--name",
+            stack_name,
+            "--endpoint-url",
+            localstack_endpoint,
+            "--region",
+            "us-east-1",
+            "--yes",
+            "--wait",
+        ],
+    )
 
 
 # Function-scoped fixtures (for tests that need fresh infrastructure)

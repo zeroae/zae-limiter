@@ -195,317 +195,187 @@ def test_full_cli_workflow(cli_runner, localstack_endpoint, unique_name):
         # Don't assert exit code - stack might not exist if deploy failed
 
 
-def test_audit_list_cli_workflow(cli_runner, localstack_endpoint, unique_name):
+def test_audit_list_cli_workflow(cli_runner, cli_stack_module, unique_entity_prefix):
     """
     E2E workflow for audit list CLI command.
 
-    Steps:
-    1. Deploy stack via CLI
-    2. Create entity using SyncRateLimiter (generates audit event)
-    3. Run audit list CLI command
-    4. Verify table format output contains audit event data
-    5. Delete stack via CLI
+    Uses shared module-scoped stack for faster execution.
     """
-    stack_name = unique_name
+    stack_name, endpoint_url = cli_stack_module
+    entity_id = f"{unique_entity_prefix}-audit-test-user"
 
-    try:
-        # Step 1: Deploy stack via CLI
+    # Create entity using SyncRateLimiter (generates audit event)
+    limiter = SyncRateLimiter(
+        name=stack_name,
+        endpoint_url=endpoint_url,
+        region="us-east-1",
+    )
+
+    with limiter:
+        entity = limiter.create_entity(
+            entity_id,
+            name="Audit Test User",
+            principal="test-admin@example.com",
+        )
+        assert entity.id == entity_id
+
+        # Run audit list CLI command
         result = cli_runner.invoke(
             cli,
             [
-                "deploy",
-                "--name",
-                unique_name,
-                "--endpoint-url",
-                localstack_endpoint,
-                "--region",
-                "us-east-1",
-                "--no-aggregator",
-                "--no-alarms",
-                "--wait",
-            ],
-        )
-        assert result.exit_code == 0, f"Deploy failed: {result.output}"
-
-        # Step 2: Create entity using SyncRateLimiter (generates audit event)
-        limiter = SyncRateLimiter(
-            name=unique_name,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-        )
-
-        with limiter:
-            entity = limiter.create_entity(
-                "audit-test-user",
-                name="Audit Test User",
-                principal="test-admin@example.com",
-            )
-            assert entity.id == "audit-test-user"
-
-            # Step 3: Run audit list CLI command
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "audit",
-                    "list",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--entity-id",
-                    "audit-test-user",
-                ],
-            )
-            assert result.exit_code == 0, f"Audit list failed: {result.output}"
-
-            # Step 4: Verify table format output contains expected data
-            # Table should have header row and at least one data row
-            assert "Timestamp" in result.output, "Table header should include Timestamp"
-            assert "Action" in result.output, "Table header should include Action"
-            assert "Principal" in result.output, "Table header should include Principal"
-            assert "Resource" in result.output, "Table header should include Resource"
-
-            # Verify audit event data is present
-            assert "entity_created" in result.output, "Should show entity_created action"
-            assert "test-admin@example.com" in result.output, "Should show principal"
-
-    finally:
-        # Step 5: Delete stack via CLI
-        result = cli_runner.invoke(
-            cli,
-            [
-                "delete",
+                "audit",
+                "list",
                 "--name",
                 stack_name,
+                "--endpoint-url",
+                endpoint_url,
                 "--region",
                 "us-east-1",
-                "--endpoint-url",
-                localstack_endpoint,
-                "--yes",
-                "--wait",
+                "--entity-id",
+                entity_id,
             ],
         )
-        # Don't assert exit code - stack might not exist if deploy failed
+        assert result.exit_code == 0, f"Audit list failed: {result.output}"
+
+        # Verify table format output contains expected data
+        assert "Timestamp" in result.output, "Table header should include Timestamp"
+        assert "Action" in result.output, "Table header should include Action"
+        assert "Principal" in result.output, "Table header should include Principal"
+        assert "Resource" in result.output, "Table header should include Resource"
+
+        # Verify audit event data is present
+        assert "entity_created" in result.output, "Should show entity_created action"
+        assert "test-admin@example.com" in result.output, "Should show principal"
 
 
-def test_list_cli_workflow(cli_runner, localstack_endpoint, unique_name):
+def test_list_cli_workflow(cli_runner, cli_stack_module):
     """
     E2E workflow for list CLI command.
 
-    Steps:
-    1. Deploy stack via CLI
-    2. Run list CLI command
-    3. Verify table format output contains deployed stack
-    4. Delete stack via CLI
+    Uses shared module-scoped stack for faster execution.
     """
-    try:
-        # Step 1: Deploy stack via CLI
-        result = cli_runner.invoke(
-            cli,
-            [
-                "deploy",
-                "--name",
-                unique_name,
-                "--endpoint-url",
-                localstack_endpoint,
-                "--region",
-                "us-east-1",
-                "--no-aggregator",
-                "--no-alarms",
-                "--wait",
-            ],
-        )
-        assert result.exit_code == 0, f"Deploy failed: {result.output}"
+    stack_name, endpoint_url = cli_stack_module
 
-        # Step 2: Run list CLI command
-        result = cli_runner.invoke(
-            cli,
-            [
-                "list",
-                "--endpoint-url",
-                localstack_endpoint,
-                "--region",
-                "us-east-1",
-            ],
-        )
-        assert result.exit_code == 0, f"List failed: {result.output}"
+    # Run list CLI command
+    result = cli_runner.invoke(
+        cli,
+        [
+            "list",
+            "--endpoint-url",
+            endpoint_url,
+            "--region",
+            "us-east-1",
+        ],
+    )
+    assert result.exit_code == 0, f"List failed: {result.output}"
 
-        # Step 3: Verify rich table format output
-        assert "Rate Limiter Instances" in result.output
-        # Box-drawing table headers
-        assert "| Name" in result.output
-        assert "| Status" in result.output
-        assert "| Version" in result.output
-        assert "| Created" in result.output
-        assert "+-" in result.output  # Table border
+    # Verify rich table format output
+    assert "Rate Limiter Instances" in result.output
+    # Box-drawing table headers
+    assert "| Name" in result.output
+    assert "| Status" in result.output
+    assert "| Version" in result.output
+    assert "| Created" in result.output
+    assert "+-" in result.output  # Table border
 
-        # Deployed stack should appear in list (full name shown for copy/paste)
-        assert unique_name in result.output, f"Stack {unique_name} not in list"
-        assert "CREATE_COMPLETE" in result.output, "Stack should show full status"
-        assert "Total:" in result.output, "Should show total count"
-
-    finally:
-        # Step 4: Delete stack via CLI
-        result = cli_runner.invoke(
-            cli,
-            [
-                "delete",
-                "--name",
-                unique_name,
-                "--region",
-                "us-east-1",
-                "--endpoint-url",
-                localstack_endpoint,
-                "--yes",
-                "--wait",
-            ],
-        )
-        # Don't assert exit code - stack might not exist if deploy failed
+    # Deployed stack should appear in list (full name shown for copy/paste)
+    assert stack_name in result.output, f"Stack {stack_name} not in list"
+    assert "CREATE_COMPLETE" in result.output, "Stack should show full status"
+    assert "Total:" in result.output, "Should show total count"
 
 
-def test_usage_list_plot_cli_workflow(cli_runner, localstack_endpoint, unique_name):
+def test_usage_list_plot_cli_workflow(
+    cli_runner, cli_stack_module, dynamodb_client, unique_entity_prefix
+):
     """
     E2E workflow for usage list --plot CLI command.
 
-    Steps:
-    1. Deploy stack via CLI
-    2. Insert sample usage snapshots directly into DynamoDB
-    3. Run usage list --plot CLI command
-    4. Verify ASCII chart output
-    5. Delete stack via CLI
+    Uses shared module-scoped stack for faster execution.
     """
-    import boto3
+    from datetime import datetime, timedelta
 
-    stack_name = unique_name
-    table_name = stack_name
+    stack_name, endpoint_url = cli_stack_module
+    entity_id = f"{unique_entity_prefix}-plot-test-user"
 
-    try:
-        # Step 1: Deploy stack via CLI
-        result = cli_runner.invoke(
-            cli,
-            [
-                "deploy",
-                "--name",
-                unique_name,
-                "--endpoint-url",
-                localstack_endpoint,
-                "--region",
-                "us-east-1",
-                "--no-aggregator",
-                "--no-alarms",
-                "--wait",
-            ],
-        )
-        assert result.exit_code == 0, f"Deploy failed: {result.output}"
+    # Insert sample usage snapshots directly into DynamoDB
+    base_time = datetime(2024, 1, 15, 0, 0, 0)
+    for i in range(5):
+        window_start = base_time + timedelta(hours=i)
+        window_key = window_start.strftime("%Y-%m-%dT%H:00:00Z")
 
-        # Step 2: Insert sample usage snapshots directly into DynamoDB
-        dynamodb = boto3.client(
-            "dynamodb",
-            endpoint_url=localstack_endpoint,
-            region_name="us-east-1",
-        )
+        # Vary the values
+        tpm_value = 1000 + (i * 500)
+        rpm_value = 10 + (i * 2)
 
-        # Create snapshots with varying values for interesting chart
-        from datetime import datetime, timedelta
+        item = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": f"#USAGE#gpt-4#{window_key}"},
+            "entity_id": {"S": entity_id},
+            "resource": {"S": "gpt-4"},
+            "window": {"S": "hourly"},
+            "window_start": {"S": window_key},
+            "tpm": {"N": str(tpm_value)},
+            "rpm": {"N": str(rpm_value)},
+            "total_events": {"N": str(5 + i)},
+            "GSI2PK": {"S": "RESOURCE#gpt-4"},
+            "GSI2SK": {"S": f"USAGE#{window_key}#{entity_id}"},
+        }
+        dynamodb_client.put_item(TableName=stack_name, Item=item)
 
-        base_time = datetime(2024, 1, 15, 0, 0, 0)
-        for i in range(5):
-            window_start = base_time + timedelta(hours=i)
-            window_key = window_start.strftime("%Y-%m-%dT%H:00:00Z")
+    # Run usage list --plot CLI command
+    result = cli_runner.invoke(
+        cli,
+        [
+            "usage",
+            "list",
+            "--name",
+            stack_name,
+            "--endpoint-url",
+            endpoint_url,
+            "--region",
+            "us-east-1",
+            "--entity-id",
+            entity_id,
+            "--plot",
+        ],
+    )
+    assert result.exit_code == 0, f"Usage list --plot failed: {result.output}"
 
-            # Vary the values
-            tpm_value = 1000 + (i * 500)
-            rpm_value = 10 + (i * 2)
+    # Verify ASCII chart output
+    # Should have header with entity/resource context
+    assert "Usage Plot: gpt-4 (hourly)" in result.output, "Should have resource header"
+    assert f"Entity: {entity_id}" in result.output, "Should have entity header"
+    # Counter labels
+    assert "TPM" in result.output, "Should have TPM counter"
+    assert "RPM" in result.output, "Should have RPM counter"
 
-            item = {
-                "PK": {"S": "ENTITY#plot-test-user"},
-                "SK": {"S": f"#USAGE#gpt-4#{window_key}"},
-                "entity_id": {"S": "plot-test-user"},
-                "resource": {"S": "gpt-4"},
-                "window": {"S": "hourly"},
-                "window_start": {"S": window_key},
-                "tpm": {"N": str(tpm_value)},
-                "rpm": {"N": str(rpm_value)},
-                "total_events": {"N": str(5 + i)},
-                "GSI2PK": {"S": "RESOURCE#gpt-4"},
-                "GSI2SK": {"S": f"USAGE#{window_key}#plot-test-user"},
-            }
-            dynamodb.put_item(TableName=table_name, Item=item)
+    # Should have time range info
+    assert "Time range:" in result.output, "Should show time range"
+    assert "Data points: 5" in result.output, "Should show 5 data points"
 
-        # Step 3: Run usage list --plot CLI command
-        result = cli_runner.invoke(
-            cli,
-            [
-                "usage",
-                "list",
-                "--name",
-                unique_name,
-                "--endpoint-url",
-                localstack_endpoint,
-                "--region",
-                "us-east-1",
-                "--entity-id",
-                "plot-test-user",
-                "--plot",
-            ],
-        )
-        assert result.exit_code == 0, f"Usage list --plot failed: {result.output}"
+    # Should have total count
+    assert "Total: 5 snapshots" in result.output, "Should show total count"
 
-        # Step 4: Verify ASCII chart output
-        # Should have header with entity/resource context
-        assert "Usage Plot: gpt-4 (hourly)" in result.output, "Should have resource header"
-        assert "Entity: plot-test-user" in result.output, "Should have entity header"
-        # Counter labels
-        assert "TPM" in result.output, "Should have TPM counter"
-        assert "RPM" in result.output, "Should have RPM counter"
-
-        # Should have time range info
-        assert "Time range:" in result.output, "Should show time range"
-        assert "Data points: 5" in result.output, "Should show 5 data points"
-
-        # Should have total count
-        assert "Total: 5 snapshots" in result.output, "Should show total count"
-
-        # Step 5: Also test normal table output (without --plot)
-        result = cli_runner.invoke(
-            cli,
-            [
-                "usage",
-                "list",
-                "--name",
-                unique_name,
-                "--endpoint-url",
-                localstack_endpoint,
-                "--region",
-                "us-east-1",
-                "--entity-id",
-                "plot-test-user",
-            ],
-        )
-        assert result.exit_code == 0, f"Usage list failed: {result.output}"
-        assert "Usage Snapshots" in result.output, "Should have table header"
-        assert "Window Start" in result.output, "Should have column headers"
-        assert "gpt-4" in result.output, "Should show resource"
-
-    finally:
-        # Step 6: Delete stack via CLI
-        result = cli_runner.invoke(
-            cli,
-            [
-                "delete",
-                "--name",
-                stack_name,
-                "--region",
-                "us-east-1",
-                "--endpoint-url",
-                localstack_endpoint,
-                "--yes",
-                "--wait",
-            ],
-        )
-        # Don't assert exit code - stack might not exist if deploy failed
+    # Also test normal table output (without --plot)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "usage",
+            "list",
+            "--name",
+            stack_name,
+            "--endpoint-url",
+            endpoint_url,
+            "--region",
+            "us-east-1",
+            "--entity-id",
+            entity_id,
+        ],
+    )
+    assert result.exit_code == 0, f"Usage list failed: {result.output}"
+    assert "Usage Snapshots" in result.output, "Should have table header"
+    assert "Window Start" in result.output, "Should have column headers"
+    assert "gpt-4" in result.output, "Should show resource"
 
 
 # ---------------------------------------------------------------------------
