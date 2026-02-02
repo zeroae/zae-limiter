@@ -39,1091 +39,1088 @@ from zae_limiter.cli import cli
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 
 
-class TestE2ELocalStackCLIWorkflow:
-    """E2E tests using CLI for stack deployment."""
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
-    @pytest.fixture
-    def cli_runner(self):
-        """Create Click CLI runner."""
-        return CliRunner()
 
-    def test_full_cli_workflow(self, cli_runner, localstack_endpoint, unique_name):
-        """
-        Complete E2E workflow using CLI commands.
+@pytest.fixture
+def cli_runner():
+    """Create Click CLI runner."""
+    return CliRunner()
 
-        Steps:
-        1. Deploy stack via CLI
-        2. Create SyncRateLimiter and use it
-        3. Verify operations work
-        4. Check stack status via CLI
-        5. Delete stack via CLI
 
-        Note: Uses SyncRateLimiter because CLI uses asyncio.run() internally,
-        which conflicts with pytest-asyncio's event loop.
-        """
-        stack_name = unique_name
+# ---------------------------------------------------------------------------
+# CLI Workflow Tests
+# ---------------------------------------------------------------------------
 
-        try:
-            # Step 1: Deploy stack via CLI
+
+def test_full_cli_workflow(cli_runner, localstack_endpoint, unique_name):
+    """
+    Complete E2E workflow using CLI commands.
+
+    Steps:
+    1. Deploy stack via CLI
+    2. Create SyncRateLimiter and use it
+    3. Verify operations work
+    4. Check stack status via CLI
+    5. Delete stack via CLI
+
+    Note: Uses SyncRateLimiter because CLI uses asyncio.run() internally,
+    which conflicts with pytest-asyncio's event loop.
+    """
+    stack_name = unique_name
+
+    try:
+        # Step 1: Deploy stack via CLI
+        result = cli_runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--snapshot-windows",
+                "hourly",
+                "--usage-retention-days",
+                "7",
+                "--no-aggregator",  # Faster deployment for CLI test
+                "--no-alarms",
+                "--wait",
+            ],
+        )
+        assert result.exit_code == 0, f"Deploy failed: {result.output}"
+        assert "Stack create complete" in result.output
+
+        # Step 2: Check status via CLI
+        # Note: status command reads AWS_ENDPOINT_URL from environment (see #78)
+        result = cli_runner.invoke(
+            cli,
+            [
+                "status",
+                "--name",
+                stack_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+            ],
+        )
+        assert result.exit_code == 0, f"Status failed: {result.output}"
+
+        # Verify CLI output format with all sections
+        assert f"Status: {stack_name}" in result.output
+
+        # Connectivity section
+        assert "Connectivity" in result.output
+        assert "Available:" in result.output
+        assert "✓ Yes" in result.output
+        assert "Latency:" in result.output
+        assert "Region:" in result.output
+
+        # Infrastructure section
+        assert "Infrastructure" in result.output
+        assert "Stack:" in result.output
+        assert "Table:" in result.output
+        assert "ACTIVE" in result.output
+        assert "Aggregator:" in result.output
+
+        # Versions section
+        # After deploy, version record should exist (not N/A)
+        assert "Versions" in result.output
+        assert "Client:" in result.output
+        assert "Schema:" in result.output
+        # Schema should be initialized by deploy (not N/A)
+        assert "Schema:        0.8.0" in result.output
+        assert "Lambda:" in result.output
+        # Lambda version should match client version (fix #274)
+        assert f"Lambda:        {__version__}" in result.output
+
+        # Table Metrics section
+        assert "Table Metrics" in result.output
+        assert "Items:" in result.output
+        assert "Size:" in result.output
+
+        # Final status indicator
+        assert "✓ Infrastructure is ready" in result.output or "CREATE_COMPLETE" in result.output
+
+        # Step 3: Use SyncRateLimiter with deployed infrastructure
+        limiter = SyncRateLimiter(
+            name=unique_name,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+        )
+
+        with limiter:
+            # Create entity and use rate limiting
+            entity = limiter.create_entity("cli-test-user", name="CLI Test")
+            assert entity.id == "cli-test-user"
+
+            limits = [Limit.per_minute("rpm", 10)]
+            with limiter.acquire(
+                entity_id="cli-test-user",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ) as lease:
+                assert lease.consumed == {"rpm": 1}
+
+            # Step 3b: Test SyncRateLimiter.get_status()
+            status = limiter.get_status()
+            assert status.available is True
+            assert status.latency_ms is not None
+            assert status.latency_ms > 0
+            assert status.table_status == "ACTIVE"
+            assert status.name == stack_name
+
+    finally:
+        # Step 4: Delete stack via CLI
+        result = cli_runner.invoke(
+            cli,
+            [
+                "delete",
+                "--name",
+                stack_name,
+                "--region",
+                "us-east-1",
+                "--endpoint-url",
+                localstack_endpoint,
+                "--yes",
+                "--wait",
+            ],
+        )
+        # Don't assert exit code - stack might not exist if deploy failed
+
+
+def test_audit_list_cli_workflow(cli_runner, localstack_endpoint, unique_name):
+    """
+    E2E workflow for audit list CLI command.
+
+    Steps:
+    1. Deploy stack via CLI
+    2. Create entity using SyncRateLimiter (generates audit event)
+    3. Run audit list CLI command
+    4. Verify table format output contains audit event data
+    5. Delete stack via CLI
+    """
+    stack_name = unique_name
+
+    try:
+        # Step 1: Deploy stack via CLI
+        result = cli_runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--no-aggregator",
+                "--no-alarms",
+                "--wait",
+            ],
+        )
+        assert result.exit_code == 0, f"Deploy failed: {result.output}"
+
+        # Step 2: Create entity using SyncRateLimiter (generates audit event)
+        limiter = SyncRateLimiter(
+            name=unique_name,
+            endpoint_url=localstack_endpoint,
+            region="us-east-1",
+        )
+
+        with limiter:
+            entity = limiter.create_entity(
+                "audit-test-user",
+                name="Audit Test User",
+                principal="test-admin@example.com",
+            )
+            assert entity.id == "audit-test-user"
+
+            # Step 3: Run audit list CLI command
             result = cli_runner.invoke(
                 cli,
                 [
-                    "deploy",
+                    "audit",
+                    "list",
                     "--name",
                     unique_name,
                     "--endpoint-url",
                     localstack_endpoint,
                     "--region",
                     "us-east-1",
-                    "--snapshot-windows",
-                    "hourly",
-                    "--usage-retention-days",
-                    "7",
-                    "--no-aggregator",  # Faster deployment for CLI test
-                    "--no-alarms",
-                    "--wait",
-                ],
-            )
-            assert result.exit_code == 0, f"Deploy failed: {result.output}"
-            assert "Stack create complete" in result.output
-
-            # Step 2: Check status via CLI
-            # Note: status command reads AWS_ENDPOINT_URL from environment (see #78)
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "status",
-                    "--name",
-                    stack_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                ],
-            )
-            assert result.exit_code == 0, f"Status failed: {result.output}"
-
-            # Verify CLI output format with all sections
-            assert f"Status: {stack_name}" in result.output
-
-            # Connectivity section
-            assert "Connectivity" in result.output
-            assert "Available:" in result.output
-            assert "✓ Yes" in result.output
-            assert "Latency:" in result.output
-            assert "Region:" in result.output
-
-            # Infrastructure section
-            assert "Infrastructure" in result.output
-            assert "Stack:" in result.output
-            assert "Table:" in result.output
-            assert "ACTIVE" in result.output
-            assert "Aggregator:" in result.output
-
-            # Versions section
-            # After deploy, version record should exist (not N/A)
-            assert "Versions" in result.output
-            assert "Client:" in result.output
-            assert "Schema:" in result.output
-            # Schema should be initialized by deploy (not N/A)
-            assert "Schema:        0.8.0" in result.output
-            assert "Lambda:" in result.output
-            # Lambda version should match client version (fix #274)
-            assert f"Lambda:        {__version__}" in result.output
-
-            # Table Metrics section
-            assert "Table Metrics" in result.output
-            assert "Items:" in result.output
-            assert "Size:" in result.output
-
-            # Final status indicator
-            assert (
-                "✓ Infrastructure is ready" in result.output or "CREATE_COMPLETE" in result.output
-            )
-
-            # Step 3: Use SyncRateLimiter with deployed infrastructure
-            limiter = SyncRateLimiter(
-                name=unique_name,
-                endpoint_url=localstack_endpoint,
-                region="us-east-1",
-            )
-
-            with limiter:
-                # Create entity and use rate limiting
-                entity = limiter.create_entity("cli-test-user", name="CLI Test")
-                assert entity.id == "cli-test-user"
-
-                limits = [Limit.per_minute("rpm", 10)]
-                with limiter.acquire(
-                    entity_id="cli-test-user",
-                    resource="api",
-                    limits=limits,
-                    consume={"rpm": 1},
-                ) as lease:
-                    assert lease.consumed == {"rpm": 1}
-
-                # Step 3b: Test SyncRateLimiter.get_status()
-                status = limiter.get_status()
-                assert status.available is True
-                assert status.latency_ms is not None
-                assert status.latency_ms > 0
-                assert status.table_status == "ACTIVE"
-                assert status.name == stack_name
-
-        finally:
-            # Step 4: Delete stack via CLI
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "delete",
-                    "--name",
-                    stack_name,
-                    "--region",
-                    "us-east-1",
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--yes",
-                    "--wait",
-                ],
-            )
-            # Don't assert exit code - stack might not exist if deploy failed
-
-    def test_audit_list_cli_workflow(self, cli_runner, localstack_endpoint, unique_name):
-        """
-        E2E workflow for audit list CLI command.
-
-        Steps:
-        1. Deploy stack via CLI
-        2. Create entity using SyncRateLimiter (generates audit event)
-        3. Run audit list CLI command
-        4. Verify table format output contains audit event data
-        5. Delete stack via CLI
-        """
-        stack_name = unique_name
-
-        try:
-            # Step 1: Deploy stack via CLI
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "deploy",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--no-aggregator",
-                    "--no-alarms",
-                    "--wait",
-                ],
-            )
-            assert result.exit_code == 0, f"Deploy failed: {result.output}"
-
-            # Step 2: Create entity using SyncRateLimiter (generates audit event)
-            limiter = SyncRateLimiter(
-                name=unique_name,
-                endpoint_url=localstack_endpoint,
-                region="us-east-1",
-            )
-
-            with limiter:
-                entity = limiter.create_entity(
+                    "--entity-id",
                     "audit-test-user",
-                    name="Audit Test User",
-                    principal="test-admin@example.com",
-                )
-                assert entity.id == "audit-test-user"
-
-                # Step 3: Run audit list CLI command
-                result = cli_runner.invoke(
-                    cli,
-                    [
-                        "audit",
-                        "list",
-                        "--name",
-                        unique_name,
-                        "--endpoint-url",
-                        localstack_endpoint,
-                        "--region",
-                        "us-east-1",
-                        "--entity-id",
-                        "audit-test-user",
-                    ],
-                )
-                assert result.exit_code == 0, f"Audit list failed: {result.output}"
-
-                # Step 4: Verify table format output contains expected data
-                # Table should have header row and at least one data row
-                assert "Timestamp" in result.output, "Table header should include Timestamp"
-                assert "Action" in result.output, "Table header should include Action"
-                assert "Principal" in result.output, "Table header should include Principal"
-                assert "Resource" in result.output, "Table header should include Resource"
-
-                # Verify audit event data is present
-                assert "entity_created" in result.output, "Should show entity_created action"
-                assert "test-admin@example.com" in result.output, "Should show principal"
-
-        finally:
-            # Step 5: Delete stack via CLI
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "delete",
-                    "--name",
-                    stack_name,
-                    "--region",
-                    "us-east-1",
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--yes",
-                    "--wait",
                 ],
             )
-            # Don't assert exit code - stack might not exist if deploy failed
+            assert result.exit_code == 0, f"Audit list failed: {result.output}"
 
-    def test_list_cli_workflow(self, cli_runner, localstack_endpoint, unique_name):
-        """
-        E2E workflow for list CLI command.
+            # Step 4: Verify table format output contains expected data
+            # Table should have header row and at least one data row
+            assert "Timestamp" in result.output, "Table header should include Timestamp"
+            assert "Action" in result.output, "Table header should include Action"
+            assert "Principal" in result.output, "Table header should include Principal"
+            assert "Resource" in result.output, "Table header should include Resource"
 
-        Steps:
-        1. Deploy stack via CLI
-        2. Run list CLI command
-        3. Verify table format output contains deployed stack
-        4. Delete stack via CLI
-        """
-        try:
-            # Step 1: Deploy stack via CLI
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "deploy",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--no-aggregator",
-                    "--no-alarms",
-                    "--wait",
-                ],
-            )
-            assert result.exit_code == 0, f"Deploy failed: {result.output}"
+            # Verify audit event data is present
+            assert "entity_created" in result.output, "Should show entity_created action"
+            assert "test-admin@example.com" in result.output, "Should show principal"
 
-            # Step 2: Run list CLI command
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "list",
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                ],
-            )
-            assert result.exit_code == 0, f"List failed: {result.output}"
-
-            # Step 3: Verify rich table format output
-            assert "Rate Limiter Instances" in result.output
-            # Box-drawing table headers
-            assert "| Name" in result.output
-            assert "| Status" in result.output
-            assert "| Version" in result.output
-            assert "| Created" in result.output
-            assert "+-" in result.output  # Table border
-
-            # Deployed stack should appear in list (full name shown for copy/paste)
-            assert unique_name in result.output, f"Stack {unique_name} not in list"
-            assert "CREATE_COMPLETE" in result.output, "Stack should show full status"
-            assert "Total:" in result.output, "Should show total count"
-
-        finally:
-            # Step 4: Delete stack via CLI
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "delete",
-                    "--name",
-                    unique_name,
-                    "--region",
-                    "us-east-1",
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--yes",
-                    "--wait",
-                ],
-            )
-            # Don't assert exit code - stack might not exist if deploy failed
-
-    def test_usage_list_plot_cli_workflow(self, cli_runner, localstack_endpoint, unique_name):
-        """
-        E2E workflow for usage list --plot CLI command.
-
-        Steps:
-        1. Deploy stack via CLI
-        2. Insert sample usage snapshots directly into DynamoDB
-        3. Run usage list --plot CLI command
-        4. Verify ASCII chart output
-        5. Delete stack via CLI
-        """
-        import boto3
-
-        stack_name = unique_name
-        table_name = stack_name
-
-        try:
-            # Step 1: Deploy stack via CLI
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "deploy",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--no-aggregator",
-                    "--no-alarms",
-                    "--wait",
-                ],
-            )
-            assert result.exit_code == 0, f"Deploy failed: {result.output}"
-
-            # Step 2: Insert sample usage snapshots directly into DynamoDB
-            dynamodb = boto3.client(
-                "dynamodb",
-                endpoint_url=localstack_endpoint,
-                region_name="us-east-1",
-            )
-
-            # Create snapshots with varying values for interesting chart
-            from datetime import datetime, timedelta
-
-            base_time = datetime(2024, 1, 15, 0, 0, 0)
-            for i in range(5):
-                window_start = base_time + timedelta(hours=i)
-                window_key = window_start.strftime("%Y-%m-%dT%H:00:00Z")
-
-                # Vary the values
-                tpm_value = 1000 + (i * 500)
-                rpm_value = 10 + (i * 2)
-
-                item = {
-                    "PK": {"S": "ENTITY#plot-test-user"},
-                    "SK": {"S": f"#USAGE#gpt-4#{window_key}"},
-                    "entity_id": {"S": "plot-test-user"},
-                    "resource": {"S": "gpt-4"},
-                    "window": {"S": "hourly"},
-                    "window_start": {"S": window_key},
-                    "tpm": {"N": str(tpm_value)},
-                    "rpm": {"N": str(rpm_value)},
-                    "total_events": {"N": str(5 + i)},
-                    "GSI2PK": {"S": "RESOURCE#gpt-4"},
-                    "GSI2SK": {"S": f"USAGE#{window_key}#plot-test-user"},
-                }
-                dynamodb.put_item(TableName=table_name, Item=item)
-
-            # Step 3: Run usage list --plot CLI command
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "usage",
-                    "list",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--entity-id",
-                    "plot-test-user",
-                    "--plot",
-                ],
-            )
-            assert result.exit_code == 0, f"Usage list --plot failed: {result.output}"
-
-            # Step 4: Verify ASCII chart output
-            # Should have header with entity/resource context
-            assert "Usage Plot: gpt-4 (hourly)" in result.output, "Should have resource header"
-            assert "Entity: plot-test-user" in result.output, "Should have entity header"
-            # Counter labels
-            assert "TPM" in result.output, "Should have TPM counter"
-            assert "RPM" in result.output, "Should have RPM counter"
-
-            # Should have time range info
-            assert "Time range:" in result.output, "Should show time range"
-            assert "Data points: 5" in result.output, "Should show 5 data points"
-
-            # Should have total count
-            assert "Total: 5 snapshots" in result.output, "Should show total count"
-
-            # Step 5: Also test normal table output (without --plot)
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "usage",
-                    "list",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--entity-id",
-                    "plot-test-user",
-                ],
-            )
-            assert result.exit_code == 0, f"Usage list failed: {result.output}"
-            assert "Usage Snapshots" in result.output, "Should have table header"
-            assert "Window Start" in result.output, "Should have column headers"
-            assert "gpt-4" in result.output, "Should show resource"
-
-        finally:
-            # Step 6: Delete stack via CLI
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "delete",
-                    "--name",
-                    stack_name,
-                    "--region",
-                    "us-east-1",
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--yes",
-                    "--wait",
-                ],
-            )
-            # Don't assert exit code - stack might not exist if deploy failed
+    finally:
+        # Step 5: Delete stack via CLI
+        result = cli_runner.invoke(
+            cli,
+            [
+                "delete",
+                "--name",
+                stack_name,
+                "--region",
+                "us-east-1",
+                "--endpoint-url",
+                localstack_endpoint,
+                "--yes",
+                "--wait",
+            ],
+        )
+        # Don't assert exit code - stack might not exist if deploy failed
 
 
-class TestE2ELocalStackFullWorkflow:
-    """E2E tests for full rate limiting workflow.
-
-    Uses module-scoped fixture with unique_entity_prefix for data isolation.
+def test_list_cli_workflow(cli_runner, localstack_endpoint, unique_name):
     """
+    E2E workflow for list CLI command.
 
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_hierarchical_rate_limiting_workflow(
-        self, e2e_limiter_module, unique_entity_prefix
-    ):
-        """
-        Test hierarchical rate limiting with parent-child entities.
-
-        Workflow:
-        1. Create parent (organization) and child (API key) entities
-        2. Set limits on both
-        3. Consume from child with cascade
-        4. Verify both are affected
-        """
-        parent_id = f"{unique_entity_prefix}-org-acme"
-        child_id = f"{unique_entity_prefix}-api-key-123"
-
-        # Create parent organization
-        parent = await e2e_limiter_module.create_entity(parent_id, name="ACME Organization")
-        assert parent.id == parent_id
-
-        # Create child API key
-        child = await e2e_limiter_module.create_entity(
-            child_id,
-            name="Production API Key",
-            parent_id=parent_id,
-            cascade=True,
-        )
-        assert child.parent_id == parent_id
-
-        # Verify parent-child relationship
-        children = await e2e_limiter_module.get_children(parent_id)
-        assert len(children) == 1
-        assert children[0].id == child_id
-
-        # Use per_hour limits to prevent refill during test execution
-        # per_minute refills ~1.67 tokens/second, per_hour refills ~0.028 tokens/second
-        limits = [
-            Limit.per_hour("rph", 100),
-            Limit.per_hour("tph", 10000),
-        ]
-
-        # Consume from child with cascade
-        async with e2e_limiter_module.acquire(
-            entity_id=child_id,
-            resource="gpt-4",
-            limits=limits,
-            consume={"rph": 1, "tph": 500},
-        ) as lease:
-            # With cascade, consumes from both child and parent
-            assert lease.consumed["rph"] == 2  # 1 from child + 1 from parent
-            assert lease.consumed["tph"] == 1000  # 500 from each
-
-        # Verify both entities have reduced capacity
-        child_available = await e2e_limiter_module.available(
-            entity_id=child_id,
-            resource="gpt-4",
-            limits=limits,
-        )
-        parent_available = await e2e_limiter_module.available(
-            entity_id=parent_id,
-            resource="gpt-4",
-            limits=limits,
-        )
-
-        # After consuming 1 rph from each, both should have 99 available
-        assert child_available["rph"] == 99, f"child rph={child_available['rph']}"
-        assert parent_available["rph"] == 99, f"parent rph={parent_available['rph']}"
-
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_rate_limit_exceeded_workflow(self, e2e_limiter_module, unique_entity_prefix):
-        """
-        Test rate limit exceeded scenario.
-
-        Workflow:
-        1. Create entity with low limits
-        2. Exhaust the limits
-        3. Verify RateLimitExceeded with retry_after
-        """
-        entity_id = f"{unique_entity_prefix}-limited-user"
-        await e2e_limiter_module.create_entity(entity_id)
-
-        # Very low limit
-        limits = [Limit.per_minute("rpm", 2)]
-
-        # Exhaust the limit
-        for _ in range(2):
-            async with e2e_limiter_module.acquire(
-                entity_id=entity_id,
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1},
-            ):
-                pass
-
-        # Third request should fail
-        with pytest.raises(RateLimitExceeded) as exc_info:
-            async with e2e_limiter_module.acquire(
-                entity_id=entity_id,
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1},
-            ):
-                pass
-
-        # Verify exception details
-        exc = exc_info.value
-        assert len(exc.violations) > 0
-        assert exc.retry_after_seconds > 0
-        assert "rpm" in [v.limit_name for v in exc.violations]
-
-        # Verify as_dict() for API responses
-        error_dict = exc.as_dict()
-        assert "limits" in error_dict
-        assert "retry_after_seconds" in error_dict
-
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_stored_limits_workflow(self, e2e_limiter_module, unique_entity_prefix):
-        """
-        Test stored limits with three-tier hierarchy (premium vs default tiers).
-
-        Workflow:
-        1. Create premium and free tier users
-        2. Set entity-level limits for premium user (overrides resource/system)
-        3. Set resource-level limits as fallback for free users
-        4. Verify premium user has higher limits via entity config
-        5. Verify free user falls back to resource config
-        """
-        premium_id = f"{unique_entity_prefix}-premium-user"
-        free_id = f"{unique_entity_prefix}-free-user"
-        # Resource names must start with a letter (hex prefix can start with digit)
-        resource = f"r-{unique_entity_prefix}-api"
-
-        # Invalidate cache to ensure fresh config resolution
-        await e2e_limiter_module.invalidate_config_cache()
-
-        await e2e_limiter_module.create_entity(premium_id)
-        await e2e_limiter_module.create_entity(free_id)
-
-        # Set premium limits at entity level for resource
-        premium_limits = [
-            Limit.per_minute("rpm", 1000),
-            Limit.per_minute("tpm", 100000),
-        ]
-        await e2e_limiter_module.set_limits(premium_id, premium_limits, resource=resource)
-
-        # Set resource-level defaults as fallback (for free users)
-        default_limits = [
-            Limit.per_minute("rpm", 10),
-            Limit.per_minute("tpm", 1000),
-        ]
-        await e2e_limiter_module.set_resource_defaults(resource, default_limits)
-
-        # Premium user uses entity-level limits (auto-resolved, no use_stored_limits needed)
-        async with e2e_limiter_module.acquire(
-            entity_id=premium_id,
-            resource=resource,
-            limits=None,  # Let hierarchy resolve limits
-            consume={"rpm": 1},
-        ) as lease:
-            # Consumed includes all limit types, even if 0
-            assert lease.consumed["rpm"] == 1
-
-        # Verify premium capacity uses entity-level limits
-        premium_available = await e2e_limiter_module.available(
-            entity_id=premium_id,
-            resource=resource,
-        )
-        assert premium_available["rpm"] > 900  # High limit (1000 - 1 = 999)
-
-        # Free user falls back to resource-level defaults
-        free_available = await e2e_limiter_module.available(
-            entity_id=free_id,
-            resource=resource,
-        )
-        assert free_available["rpm"] == 10  # Default limit
-
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_lease_adjustment_workflow(self, e2e_limiter_module, unique_entity_prefix):
-        """
-        Test lease adjustment for post-hoc token counting (LLM tokens).
-
-        Workflow:
-        1. Acquire lease with estimated tokens
-        2. Simulate API call with actual token count
-        3. Adjust lease with actual tokens
-        4. Verify final token count
-        """
-        entity_id = f"{unique_entity_prefix}-llm-user"
-        await e2e_limiter_module.create_entity(entity_id)
-
-        limits = [
-            Limit.per_minute("rpm", 100),
-            Limit.per_minute("tpm", 10000),
-        ]
-
-        # Acquire with estimated tokens (pre-call)
-        async with e2e_limiter_module.acquire(
-            entity_id=entity_id,
-            resource="gpt-4",
-            limits=limits,
-            consume={"rpm": 1, "tpm": 100},  # Estimated
-        ) as lease:
-            # Simulate LLM API call returning actual token count
-            actual_tokens = 250  # Real tokens from response
-
-            # Adjust lease with actual tokens (uses **kwargs syntax)
-            await lease.adjust(tpm=actual_tokens - 100)  # Delta: +150
-
-        # Verify correct tokens consumed
-        available = await e2e_limiter_module.available(
-            entity_id=entity_id,
-            resource="gpt-4",
-            limits=limits,
-        )
-        # Should have consumed 250 tpm total (with tolerance for timing/refill)
-        assert available["tpm"] < 10000 - 150  # Consumed at least ~150 tokens
-        assert available["tpm"] > 10000 - 350  # But not more than ~350
-
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_get_status_returns_comprehensive_info(self, e2e_limiter_module):
-        """
-        Test get_status() returns comprehensive infrastructure information.
-
-        Verifies:
-        - Connectivity: available=True, latency_ms > 0
-        - Infrastructure: table_status='ACTIVE'
-        - Identity: name matches stack name, region set
-        - Versions: client_version populated, schema_version may be set
-        - Metrics: item_count and size_bytes are integers
-        """
-        from zae_limiter import Status
-
-        status = await e2e_limiter_module.get_status()
-
-        # Verify Status type
-        assert isinstance(status, Status)
-
-        # Connectivity
-        assert status.available is True
-        assert status.latency_ms is not None
-        assert status.latency_ms > 0
-
-        # Infrastructure
-        assert status.table_status == "ACTIVE"
-        # stack_status depends on CloudFormation availability in LocalStack
-
-        # Identity
-        assert status.name is not None
-        assert len(status.name) > 0
-        assert status.region == "us-east-1"
-
-        # Versions
-        assert status.client_version is not None
-        assert len(status.client_version) > 0
-
-        # Metrics
-        assert status.table_item_count is not None
-        assert status.table_item_count >= 0
-
-
-class TestE2ELocalStackAggregatorWorkflow:
-    """E2E tests for Lambda aggregator and usage snapshots.
-
-    Uses module-scoped fixture with unique_entity_prefix for data isolation.
+    Steps:
+    1. Deploy stack via CLI
+    2. Run list CLI command
+    3. Verify table format output contains deployed stack
+    4. Delete stack via CLI
     """
+    try:
+        # Step 1: Deploy stack via CLI
+        result = cli_runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--no-aggregator",
+                "--no-alarms",
+                "--wait",
+            ],
+        )
+        assert result.exit_code == 0, f"Deploy failed: {result.output}"
 
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_usage_snapshot_generation(self, e2e_limiter_module, unique_entity_prefix):
-        """
-        Test that aggregator creates usage snapshots.
+        # Step 2: Run list CLI command
+        result = cli_runner.invoke(
+            cli,
+            [
+                "list",
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+            ],
+        )
+        assert result.exit_code == 0, f"List failed: {result.output}"
 
-        Note: In LocalStack, Lambda stream processing may be delayed or
-        require explicit triggering. This test verifies the workflow
-        but may need adjustments based on LocalStack behavior.
-        """
-        entity_id = f"{unique_entity_prefix}-snapshot-user"
-        await e2e_limiter_module.create_entity(entity_id)
+        # Step 3: Verify rich table format output
+        assert "Rate Limiter Instances" in result.output
+        # Box-drawing table headers
+        assert "| Name" in result.output
+        assert "| Status" in result.output
+        assert "| Version" in result.output
+        assert "| Created" in result.output
+        assert "+-" in result.output  # Table border
 
-        limits = [Limit.per_minute("rpm", 100)]
+        # Deployed stack should appear in list (full name shown for copy/paste)
+        assert unique_name in result.output, f"Stack {unique_name} not in list"
+        assert "CREATE_COMPLETE" in result.output, "Stack should show full status"
+        assert "Total:" in result.output, "Should show total count"
 
-        # Generate some token consumption
-        for _ in range(5):
-            async with e2e_limiter_module.acquire(
-                entity_id=entity_id,
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1},
-            ):
-                pass
+    finally:
+        # Step 4: Delete stack via CLI
+        result = cli_runner.invoke(
+            cli,
+            [
+                "delete",
+                "--name",
+                unique_name,
+                "--region",
+                "us-east-1",
+                "--endpoint-url",
+                localstack_endpoint,
+                "--yes",
+                "--wait",
+            ],
+        )
+        # Don't assert exit code - stack might not exist if deploy failed
 
-        # Wait for stream processing (LocalStack may be slower)
-        await asyncio.sleep(10)
 
-        # Query usage snapshots directly from DynamoDB
-        # Note: In LocalStack, Lambda processing may not be reliable
-        # This test verifies the infrastructure is set up correctly
-        repo = e2e_limiter_module._repository
-        client = await repo._get_client()
+def test_usage_list_plot_cli_workflow(cli_runner, localstack_endpoint, unique_name):
+    """
+    E2E workflow for usage list --plot CLI command.
 
-        # Query for BUCKET records to verify data exists
-        response = await client.query(
-            TableName=repo.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": f"ENTITY#{entity_id}"},
-                ":sk_prefix": {"S": "#BUCKET#"},
-            },
+    Steps:
+    1. Deploy stack via CLI
+    2. Insert sample usage snapshots directly into DynamoDB
+    3. Run usage list --plot CLI command
+    4. Verify ASCII chart output
+    5. Delete stack via CLI
+    """
+    import boto3
+
+    stack_name = unique_name
+    table_name = stack_name
+
+    try:
+        # Step 1: Deploy stack via CLI
+        result = cli_runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--no-aggregator",
+                "--no-alarms",
+                "--wait",
+            ],
+        )
+        assert result.exit_code == 0, f"Deploy failed: {result.output}"
+
+        # Step 2: Insert sample usage snapshots directly into DynamoDB
+        dynamodb = boto3.client(
+            "dynamodb",
+            endpoint_url=localstack_endpoint,
+            region_name="us-east-1",
         )
 
-        # Verify bucket records were created
-        items = response.get("Items", [])
-        assert len(items) > 0, "Bucket records should exist"
+        # Create snapshots with varying values for interesting chart
+        from datetime import datetime, timedelta
+
+        base_time = datetime(2024, 1, 15, 0, 0, 0)
+        for i in range(5):
+            window_start = base_time + timedelta(hours=i)
+            window_key = window_start.strftime("%Y-%m-%dT%H:00:00Z")
+
+            # Vary the values
+            tpm_value = 1000 + (i * 500)
+            rpm_value = 10 + (i * 2)
+
+            item = {
+                "PK": {"S": "ENTITY#plot-test-user"},
+                "SK": {"S": f"#USAGE#gpt-4#{window_key}"},
+                "entity_id": {"S": "plot-test-user"},
+                "resource": {"S": "gpt-4"},
+                "window": {"S": "hourly"},
+                "window_start": {"S": window_key},
+                "tpm": {"N": str(tpm_value)},
+                "rpm": {"N": str(rpm_value)},
+                "total_events": {"N": str(5 + i)},
+                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2SK": {"S": f"USAGE#{window_key}#plot-test-user"},
+            }
+            dynamodb.put_item(TableName=table_name, Item=item)
+
+        # Step 3: Run usage list --plot CLI command
+        result = cli_runner.invoke(
+            cli,
+            [
+                "usage",
+                "list",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--entity-id",
+                "plot-test-user",
+                "--plot",
+            ],
+        )
+        assert result.exit_code == 0, f"Usage list --plot failed: {result.output}"
+
+        # Step 4: Verify ASCII chart output
+        # Should have header with entity/resource context
+        assert "Usage Plot: gpt-4 (hourly)" in result.output, "Should have resource header"
+        assert "Entity: plot-test-user" in result.output, "Should have entity header"
+        # Counter labels
+        assert "TPM" in result.output, "Should have TPM counter"
+        assert "RPM" in result.output, "Should have RPM counter"
+
+        # Should have time range info
+        assert "Time range:" in result.output, "Should show time range"
+        assert "Data points: 5" in result.output, "Should show 5 data points"
+
+        # Should have total count
+        assert "Total: 5 snapshots" in result.output, "Should show total count"
+
+        # Step 5: Also test normal table output (without --plot)
+        result = cli_runner.invoke(
+            cli,
+            [
+                "usage",
+                "list",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--entity-id",
+                "plot-test-user",
+            ],
+        )
+        assert result.exit_code == 0, f"Usage list failed: {result.output}"
+        assert "Usage Snapshots" in result.output, "Should have table header"
+        assert "Window Start" in result.output, "Should have column headers"
+        assert "gpt-4" in result.output, "Should show resource"
+
+    finally:
+        # Step 6: Delete stack via CLI
+        result = cli_runner.invoke(
+            cli,
+            [
+                "delete",
+                "--name",
+                stack_name,
+                "--region",
+                "us-east-1",
+                "--endpoint-url",
+                localstack_endpoint,
+                "--yes",
+                "--wait",
+            ],
+        )
+        # Don't assert exit code - stack might not exist if deploy failed
 
 
-class TestE2ELocalStackErrorHandling:
-    """E2E tests for error handling scenarios.
+# ---------------------------------------------------------------------------
+# Full Workflow Tests (module-scoped fixtures)
+# ---------------------------------------------------------------------------
 
-    Uses module-scoped fixture with unique_entity_prefix for data isolation.
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_hierarchical_rate_limiting_workflow(e2e_limiter_module, unique_entity_prefix):
     """
+    Test hierarchical rate limiting with parent-child entities.
 
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_concurrent_lease_acquisition(
-        self, e2e_limiter_minimal_module, unique_entity_prefix
-    ):
-        """
-        Test concurrent lease acquisitions don't cause conflicts.
+    Workflow:
+    1. Create parent (organization) and child (API key) entities
+    2. Set limits on both
+    3. Consume from child with cascade
+    4. Verify both are affected
+    """
+    parent_id = f"{unique_entity_prefix}-org-acme"
+    child_id = f"{unique_entity_prefix}-api-key-123"
 
-        Uses optimistic locking to handle concurrent updates.
-        """
-        entity_id = f"{unique_entity_prefix}-concurrent-user"
-        await e2e_limiter_minimal_module.create_entity(entity_id)
+    # Create parent organization
+    parent = await e2e_limiter_module.create_entity(parent_id, name="ACME Organization")
+    assert parent.id == parent_id
 
-        # Use per_hour to minimize refill during test (1000/hour = ~0.28/second)
-        limits = [Limit.per_hour("rph", 1000)]
+    # Create child API key
+    child = await e2e_limiter_module.create_entity(
+        child_id,
+        name="Production API Key",
+        parent_id=parent_id,
+        cascade=True,
+    )
+    assert child.parent_id == parent_id
 
-        async def acquire_lease(user_id: str):
-            async with e2e_limiter_minimal_module.acquire(
-                entity_id=user_id,
-                resource="api",
-                limits=limits,
-                consume={"rph": 10},
-            ):
-                await asyncio.sleep(0.1)  # Simulate work
-            return True
+    # Verify parent-child relationship
+    children = await e2e_limiter_module.get_children(parent_id)
+    assert len(children) == 1
+    assert children[0].id == child_id
 
-        # Run multiple concurrent acquisitions
-        tasks = [acquire_lease(entity_id) for _ in range(10)]
-        results = await asyncio.gather(*tasks)
+    # Use per_hour limits to prevent refill during test execution
+    # per_minute refills ~1.67 tokens/second, per_hour refills ~0.028 tokens/second
+    limits = [
+        Limit.per_hour("rph", 100),
+        Limit.per_hour("tph", 10000),
+    ]
 
-        # All should succeed
-        assert all(results)
+    # Consume from child with cascade
+    async with e2e_limiter_module.acquire(
+        entity_id=child_id,
+        resource="gpt-4",
+        limits=limits,
+        consume={"rph": 1, "tph": 500},
+    ) as lease:
+        # With cascade, consumes from both child and parent
+        assert lease.consumed["rph"] == 2  # 1 from child + 1 from parent
+        assert lease.consumed["tph"] == 1000  # 500 from each
 
-        # Verify tokens were consumed (concurrent operations may batch)
-        available = await e2e_limiter_minimal_module.available(
+    # Verify both entities have reduced capacity
+    child_available = await e2e_limiter_module.available(
+        entity_id=child_id,
+        resource="gpt-4",
+        limits=limits,
+    )
+    parent_available = await e2e_limiter_module.available(
+        entity_id=parent_id,
+        resource="gpt-4",
+        limits=limits,
+    )
+
+    # After consuming 1 rph from each, both should have 99 available
+    assert child_available["rph"] == 99, f"child rph={child_available['rph']}"
+    assert parent_available["rph"] == 99, f"parent rph={parent_available['rph']}"
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_rate_limit_exceeded_workflow(e2e_limiter_module, unique_entity_prefix):
+    """
+    Test rate limit exceeded scenario.
+
+    Workflow:
+    1. Create entity with low limits
+    2. Exhaust the limits
+    3. Verify RateLimitExceeded with retry_after
+    """
+    entity_id = f"{unique_entity_prefix}-limited-user"
+    await e2e_limiter_module.create_entity(entity_id)
+
+    # Very low limit
+    limits = [Limit.per_minute("rpm", 2)]
+
+    # Exhaust the limit
+    for _ in range(2):
+        async with e2e_limiter_module.acquire(
             entity_id=entity_id,
             resource="api",
             limits=limits,
-        )
-        # Due to optimistic locking, concurrent operations may conflict and retry.
-        # We can only reliably verify that SOME tokens were consumed.
-        # The exact amount varies based on timing and retry behavior.
-        assert available["rph"] < 1000, "Some tokens should have been consumed"
-
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_lease_rollback_on_exception(
-        self, e2e_limiter_minimal_module, unique_entity_prefix
-    ):
-        """Test that lease is rolled back when exception occurs."""
-        entity_id = f"{unique_entity_prefix}-rollback-user"
-        await e2e_limiter_minimal_module.create_entity(entity_id)
-
-        limits = [Limit.per_minute("rpm", 100)]
-
-        # Acquire and raise exception
-        try:
-            async with e2e_limiter_minimal_module.acquire(
-                entity_id=entity_id,
-                resource="api",
-                limits=limits,
-                consume={"rpm": 10},
-            ):
-                raise ValueError("Simulated failure")
-        except ValueError:
+            consume={"rpm": 1},
+        ):
             pass
 
-        # Tokens should be returned (rollback)
-        available = await e2e_limiter_minimal_module.available(
+    # Third request should fail
+    with pytest.raises(RateLimitExceeded) as exc_info:
+        async with e2e_limiter_module.acquire(
             entity_id=entity_id,
             resource="api",
             limits=limits,
-        )
-        assert available["rpm"] == 100  # Full capacity restored
+            consume={"rpm": 1},
+        ):
+            pass
 
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_negative_bucket_handling(self, e2e_limiter_minimal_module, unique_entity_prefix):
-        """
-        Test that buckets can go negative for post-hoc reconciliation.
+    # Verify exception details
+    exc = exc_info.value
+    assert len(exc.violations) > 0
+    assert exc.retry_after_seconds > 0
+    assert "rpm" in [v.limit_name for v in exc.violations]
 
-        This is a key feature for LLM token counting where the actual
-        token count is unknown until after the API call completes.
-        """
-        entity_id = f"{unique_entity_prefix}-negative-bucket-user"
-        await e2e_limiter_minimal_module.create_entity(entity_id)
+    # Verify as_dict() for API responses
+    error_dict = exc.as_dict()
+    assert "limits" in error_dict
+    assert "retry_after_seconds" in error_dict
 
-        limits = [Limit.per_minute("rpm", 10)]
 
-        # Consume all tokens
+@pytest.mark.asyncio(loop_scope="module")
+async def test_stored_limits_workflow(e2e_limiter_module, unique_entity_prefix):
+    """
+    Test stored limits with three-tier hierarchy (premium vs default tiers).
+
+    Workflow:
+    1. Create premium and free tier users
+    2. Set entity-level limits for premium user (overrides resource/system)
+    3. Set resource-level limits as fallback for free users
+    4. Verify premium user has higher limits via entity config
+    5. Verify free user falls back to resource config
+    """
+    premium_id = f"{unique_entity_prefix}-premium-user"
+    free_id = f"{unique_entity_prefix}-free-user"
+    # Resource names must start with a letter (hex prefix can start with digit)
+    resource = f"r-{unique_entity_prefix}-api"
+
+    # Invalidate cache to ensure fresh config resolution
+    await e2e_limiter_module.invalidate_config_cache()
+
+    await e2e_limiter_module.create_entity(premium_id)
+    await e2e_limiter_module.create_entity(free_id)
+
+    # Set premium limits at entity level for resource
+    premium_limits = [
+        Limit.per_minute("rpm", 1000),
+        Limit.per_minute("tpm", 100000),
+    ]
+    await e2e_limiter_module.set_limits(premium_id, premium_limits, resource=resource)
+
+    # Set resource-level defaults as fallback (for free users)
+    default_limits = [
+        Limit.per_minute("rpm", 10),
+        Limit.per_minute("tpm", 1000),
+    ]
+    await e2e_limiter_module.set_resource_defaults(resource, default_limits)
+
+    # Premium user uses entity-level limits (auto-resolved, no use_stored_limits needed)
+    async with e2e_limiter_module.acquire(
+        entity_id=premium_id,
+        resource=resource,
+        limits=None,  # Let hierarchy resolve limits
+        consume={"rpm": 1},
+    ) as lease:
+        # Consumed includes all limit types, even if 0
+        assert lease.consumed["rpm"] == 1
+
+    # Verify premium capacity uses entity-level limits
+    premium_available = await e2e_limiter_module.available(
+        entity_id=premium_id,
+        resource=resource,
+    )
+    assert premium_available["rpm"] > 900  # High limit (1000 - 1 = 999)
+
+    # Free user falls back to resource-level defaults
+    free_available = await e2e_limiter_module.available(
+        entity_id=free_id,
+        resource=resource,
+    )
+    assert free_available["rpm"] == 10  # Default limit
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_lease_adjustment_workflow(e2e_limiter_module, unique_entity_prefix):
+    """
+    Test lease adjustment for post-hoc token counting (LLM tokens).
+
+    Workflow:
+    1. Acquire lease with estimated tokens
+    2. Simulate API call with actual token count
+    3. Adjust lease with actual tokens
+    4. Verify final token count
+    """
+    entity_id = f"{unique_entity_prefix}-llm-user"
+    await e2e_limiter_module.create_entity(entity_id)
+
+    limits = [
+        Limit.per_minute("rpm", 100),
+        Limit.per_minute("tpm", 10000),
+    ]
+
+    # Acquire with estimated tokens (pre-call)
+    async with e2e_limiter_module.acquire(
+        entity_id=entity_id,
+        resource="gpt-4",
+        limits=limits,
+        consume={"rpm": 1, "tpm": 100},  # Estimated
+    ) as lease:
+        # Simulate LLM API call returning actual token count
+        actual_tokens = 250  # Real tokens from response
+
+        # Adjust lease with actual tokens (uses **kwargs syntax)
+        await lease.adjust(tpm=actual_tokens - 100)  # Delta: +150
+
+    # Verify correct tokens consumed
+    available = await e2e_limiter_module.available(
+        entity_id=entity_id,
+        resource="gpt-4",
+        limits=limits,
+    )
+    # Should have consumed 250 tpm total (with tolerance for timing/refill)
+    assert available["tpm"] < 10000 - 150  # Consumed at least ~150 tokens
+    assert available["tpm"] > 10000 - 350  # But not more than ~350
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_get_status_returns_comprehensive_info(e2e_limiter_module):
+    """
+    Test get_status() returns comprehensive infrastructure information.
+
+    Verifies:
+    - Connectivity: available=True, latency_ms > 0
+    - Infrastructure: table_status='ACTIVE'
+    - Identity: name matches stack name, region set
+    - Versions: client_version populated, schema_version may be set
+    - Metrics: item_count and size_bytes are integers
+    """
+    from zae_limiter import Status
+
+    status = await e2e_limiter_module.get_status()
+
+    # Verify Status type
+    assert isinstance(status, Status)
+
+    # Connectivity
+    assert status.available is True
+    assert status.latency_ms is not None
+    assert status.latency_ms > 0
+
+    # Infrastructure
+    assert status.table_status == "ACTIVE"
+    # stack_status depends on CloudFormation availability in LocalStack
+
+    # Identity
+    assert status.name is not None
+    assert len(status.name) > 0
+    assert status.region == "us-east-1"
+
+    # Versions
+    assert status.client_version is not None
+    assert len(status.client_version) > 0
+
+    # Metrics
+    assert status.table_item_count is not None
+    assert status.table_item_count >= 0
+
+
+# ---------------------------------------------------------------------------
+# Aggregator Workflow Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_usage_snapshot_generation(e2e_limiter_module, unique_entity_prefix):
+    """
+    Test that aggregator creates usage snapshots.
+
+    Note: In LocalStack, Lambda stream processing may be delayed or
+    require explicit triggering. This test verifies the workflow
+    but may need adjustments based on LocalStack behavior.
+    """
+    entity_id = f"{unique_entity_prefix}-snapshot-user"
+    await e2e_limiter_module.create_entity(entity_id)
+
+    limits = [Limit.per_minute("rpm", 100)]
+
+    # Generate some token consumption
+    for _ in range(5):
+        async with e2e_limiter_module.acquire(
+            entity_id=entity_id,
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+    # Wait for stream processing (LocalStack may be slower)
+    await asyncio.sleep(10)
+
+    # Query usage snapshots directly from DynamoDB
+    # Note: In LocalStack, Lambda processing may not be reliable
+    # This test verifies the infrastructure is set up correctly
+    repo = e2e_limiter_module._repository
+    client = await repo._get_client()
+
+    # Query for BUCKET records to verify data exists
+    response = await client.query(
+        TableName=repo.table_name,
+        KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
+        ExpressionAttributeValues={
+            ":pk": {"S": f"ENTITY#{entity_id}"},
+            ":sk_prefix": {"S": "#BUCKET#"},
+        },
+    )
+
+    # Verify bucket records were created
+    items = response.get("Items", [])
+    assert len(items) > 0, "Bucket records should exist"
+
+
+# ---------------------------------------------------------------------------
+# Error Handling Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_concurrent_lease_acquisition(e2e_limiter_minimal_module, unique_entity_prefix):
+    """
+    Test concurrent lease acquisitions don't cause conflicts.
+
+    Uses optimistic locking to handle concurrent updates.
+    """
+    entity_id = f"{unique_entity_prefix}-concurrent-user"
+    await e2e_limiter_minimal_module.create_entity(entity_id)
+
+    # Use per_hour to minimize refill during test (1000/hour = ~0.28/second)
+    limits = [Limit.per_hour("rph", 1000)]
+
+    async def acquire_lease(user_id: str):
+        async with e2e_limiter_minimal_module.acquire(
+            entity_id=user_id,
+            resource="api",
+            limits=limits,
+            consume={"rph": 10},
+        ):
+            await asyncio.sleep(0.1)  # Simulate work
+        return True
+
+    # Run multiple concurrent acquisitions
+    tasks = [acquire_lease(entity_id) for _ in range(10)]
+    results = await asyncio.gather(*tasks)
+
+    # All should succeed
+    assert all(results)
+
+    # Verify tokens were consumed (concurrent operations may batch)
+    available = await e2e_limiter_minimal_module.available(
+        entity_id=entity_id,
+        resource="api",
+        limits=limits,
+    )
+    # Due to optimistic locking, concurrent operations may conflict and retry.
+    # We can only reliably verify that SOME tokens were consumed.
+    # The exact amount varies based on timing and retry behavior.
+    assert available["rph"] < 1000, "Some tokens should have been consumed"
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_lease_rollback_on_exception(e2e_limiter_minimal_module, unique_entity_prefix):
+    """Test that lease is rolled back when exception occurs."""
+    entity_id = f"{unique_entity_prefix}-rollback-user"
+    await e2e_limiter_minimal_module.create_entity(entity_id)
+
+    limits = [Limit.per_minute("rpm", 100)]
+
+    # Acquire and raise exception
+    try:
         async with e2e_limiter_minimal_module.acquire(
             entity_id=entity_id,
             resource="api",
             limits=limits,
             consume={"rpm": 10},
-        ) as lease:
-            # Adjust to consume more than available (goes negative)
-            await lease.adjust(rpm=5)  # Now at -5
+        ):
+            raise ValueError("Simulated failure")
+    except ValueError:
+        pass
 
-        # Verify bucket is negative
-        # With 10 rpm, refill rate is ~0.17 tokens/second
-        # Allow small tolerance for refill during test execution
-        available = await e2e_limiter_minimal_module.available(
-            entity_id=entity_id,
-            resource="api",
-            limits=limits,
-        )
-        assert available["rpm"] < 0, "Bucket should be negative"
-        # Consumed 15 tokens with capacity 10, so at least -3 after some refill
-        assert available["rpm"] <= -3, "Bucket should still be significantly negative"
+    # Tokens should be returned (rollback)
+    available = await e2e_limiter_minimal_module.available(
+        entity_id=entity_id,
+        resource="api",
+        limits=limits,
+    )
+    assert available["rpm"] == 100  # Full capacity restored
 
 
-class TestE2ERoleNaming:
-    """E2E tests for IAM role naming (Issue #252, ADR-116).
-
-    Consolidated: Tests both prefix and suffix formats in one test to reduce
-    stack deployment overhead.
+@pytest.mark.asyncio(loop_scope="module")
+async def test_negative_bucket_handling(e2e_limiter_minimal_module, unique_entity_prefix):
     """
+    Test that buckets can go negative for post-hoc reconciliation.
 
-    @pytest.fixture
-    def cli_runner(self):
-        """Create Click CLI runner."""
-        return CliRunner()
+    This is a key feature for LLM token counting where the actual
+    token count is unknown until after the API call completes.
+    """
+    entity_id = f"{unique_entity_prefix}-negative-bucket-user"
+    await e2e_limiter_minimal_module.create_entity(entity_id)
 
-    def test_role_naming_formats(self, cli_runner, localstack_endpoint, unique_name):
-        """Test deploying with custom role_name_format (prefix and suffix patterns).
+    limits = [Limit.per_minute("rpm", 10)]
 
-        Tests that CloudFormation correctly applies role naming patterns.
-        Uses --no-aggregator for faster deployment since we only need to verify
-        the stack deploys successfully with custom role naming.
-        """
-        # Test prefix format: "test-{}"
+    # Consume all tokens
+    async with e2e_limiter_minimal_module.acquire(
+        entity_id=entity_id,
+        resource="api",
+        limits=limits,
+        consume={"rpm": 10},
+    ) as lease:
+        # Adjust to consume more than available (goes negative)
+        await lease.adjust(rpm=5)  # Now at -5
+
+    # Verify bucket is negative
+    # With 10 rpm, refill rate is ~0.17 tokens/second
+    # Allow small tolerance for refill during test execution
+    available = await e2e_limiter_minimal_module.available(
+        entity_id=entity_id,
+        resource="api",
+        limits=limits,
+    )
+    assert available["rpm"] < 0, "Bucket should be negative"
+    # Consumed 15 tokens with capacity 10, so at least -3 after some refill
+    assert available["rpm"] <= -3, "Bucket should still be significantly negative"
+
+
+# ---------------------------------------------------------------------------
+# Role Naming Tests (ADR-116)
+# ---------------------------------------------------------------------------
+
+
+def test_role_naming_formats(cli_runner, localstack_endpoint, unique_name):
+    """Test deploying with custom role_name_format (prefix and suffix patterns).
+
+    Tests that CloudFormation correctly applies role naming patterns.
+    Uses --no-aggregator for faster deployment since we only need to verify
+    the stack deploys successfully with custom role naming.
+    """
+    # Test prefix format: "test-{}"
+    try:
+        result = cli_runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--role-name-format",
+                "test-{}",
+                "--no-alarms",
+                "--no-aggregator",
+                "--wait",
+            ],
+        )
+        assert result.exit_code == 0, f"Deploy with prefix format failed: {result.output}"
+        assert "Stack create complete" in result.output
+
+        # Verify stack is functional
+        status_result = cli_runner.invoke(
+            cli,
+            [
+                "status",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+            ],
+        )
+        assert status_result.exit_code == 0, f"Status failed: {status_result.output}"
+        assert "✓ Yes" in status_result.output
+
+    finally:
+        cli_runner.invoke(
+            cli,
+            [
+                "delete",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--yes",
+            ],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Deletion Protection Tests (Issue #273)
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_with_deletion_protection_enabled(
+    cli_runner, localstack_endpoint, unique_name, dynamodb_client
+):
+    """Test deploying with --enable-deletion-protection sets table property.
+
+    Note: LocalStack may not fully support DeletionProtectionEnabled.
+    This test verifies the CLI correctly passes the parameter; the actual
+    DynamoDB property assertion is conditional on LocalStack support.
+    """
+    try:
+        # Deploy with deletion protection enabled
+        result = cli_runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--enable-deletion-protection",
+                "--no-alarms",
+                "--no-aggregator",
+                "--wait",
+            ],
+        )
+        assert result.exit_code == 0, f"Deploy failed: {result.output}"
+        assert "Stack create complete" in result.output
+        assert "Deletion protection: enabled" in result.output
+
+        # Verify table was created
+        table_desc = dynamodb_client.describe_table(TableName=unique_name)
+        assert table_desc["Table"]["TableStatus"] == "ACTIVE"
+
+        # Check if LocalStack supports DeletionProtectionEnabled
+        # LocalStack may not respect this CloudFormation property
+        deletion_protected = table_desc["Table"].get("DeletionProtectionEnabled", False)
+        if not deletion_protected:
+            pytest.skip(
+                "LocalStack does not support DeletionProtectionEnabled; "
+                "CLI parameter was correctly passed (verified via output)"
+            )
+
+    finally:
+        # Must disable deletion protection before deleting (if it was enabled)
         try:
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "deploy",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--role-name-format",
-                    "test-{}",
-                    "--no-alarms",
-                    "--no-aggregator",
-                    "--wait",
-                ],
+            dynamodb_client.update_table(
+                TableName=unique_name,
+                DeletionProtectionEnabled=False,
             )
-            assert result.exit_code == 0, f"Deploy with prefix format failed: {result.output}"
-            assert "Stack create complete" in result.output
+        except Exception:
+            pass  # Table may not exist if deploy failed
 
-            # Verify stack is functional
-            status_result = cli_runner.invoke(
-                cli,
-                [
-                    "status",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                ],
-            )
-            assert status_result.exit_code == 0, f"Status failed: {status_result.output}"
-            assert "✓ Yes" in status_result.output
-
-        finally:
-            cli_runner.invoke(
-                cli,
-                [
-                    "delete",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--yes",
-                ],
-            )
+        # Cleanup
+        cli_runner.invoke(
+            cli,
+            [
+                "delete",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--yes",
+            ],
+        )
 
 
-class TestE2EDeletionProtection:
-    """E2E tests for DynamoDB table deletion protection (Issue #273)."""
+def test_deploy_without_deletion_protection(
+    cli_runner, localstack_endpoint, unique_name, dynamodb_client
+):
+    """Test deploying without --enable-deletion-protection (default disabled)."""
+    try:
+        # Deploy without deletion protection (default)
+        result = cli_runner.invoke(
+            cli,
+            [
+                "deploy",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--no-alarms",
+                "--no-aggregator",
+                "--wait",
+            ],
+        )
+        assert result.exit_code == 0, f"Deploy failed: {result.output}"
+        assert "Deletion protection: disabled" in result.output
 
-    @pytest.fixture
-    def cli_runner(self):
-        """Create Click CLI runner."""
-        return CliRunner()
+        # Verify table has deletion protection disabled
+        table_desc = dynamodb_client.describe_table(TableName=unique_name)
+        assert table_desc["Table"]["DeletionProtectionEnabled"] is False
 
-    def test_deploy_with_deletion_protection_enabled(
-        self, cli_runner, localstack_endpoint, unique_name, dynamodb_client
-    ):
-        """Test deploying with --enable-deletion-protection sets table property.
-
-        Note: LocalStack may not fully support DeletionProtectionEnabled.
-        This test verifies the CLI correctly passes the parameter; the actual
-        DynamoDB property assertion is conditional on LocalStack support.
-        """
-        try:
-            # Deploy with deletion protection enabled
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "deploy",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--enable-deletion-protection",
-                    "--no-alarms",
-                    "--no-aggregator",
-                    "--wait",
-                ],
-            )
-            assert result.exit_code == 0, f"Deploy failed: {result.output}"
-            assert "Stack create complete" in result.output
-            assert "Deletion protection: enabled" in result.output
-
-            # Verify table was created
-            table_desc = dynamodb_client.describe_table(TableName=unique_name)
-            assert table_desc["Table"]["TableStatus"] == "ACTIVE"
-
-            # Check if LocalStack supports DeletionProtectionEnabled
-            # LocalStack may not respect this CloudFormation property
-            deletion_protected = table_desc["Table"].get("DeletionProtectionEnabled", False)
-            if not deletion_protected:
-                pytest.skip(
-                    "LocalStack does not support DeletionProtectionEnabled; "
-                    "CLI parameter was correctly passed (verified via output)"
-                )
-
-        finally:
-            # Must disable deletion protection before deleting (if it was enabled)
-            try:
-                dynamodb_client.update_table(
-                    TableName=unique_name,
-                    DeletionProtectionEnabled=False,
-                )
-            except Exception:
-                pass  # Table may not exist if deploy failed
-
-            # Cleanup
-            cli_runner.invoke(
-                cli,
-                [
-                    "delete",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--yes",
-                ],
-            )
-
-    def test_deploy_without_deletion_protection(
-        self, cli_runner, localstack_endpoint, unique_name, dynamodb_client
-    ):
-        """Test deploying without --enable-deletion-protection (default disabled)."""
-        try:
-            # Deploy without deletion protection (default)
-            result = cli_runner.invoke(
-                cli,
-                [
-                    "deploy",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--no-alarms",
-                    "--no-aggregator",
-                    "--wait",
-                ],
-            )
-            assert result.exit_code == 0, f"Deploy failed: {result.output}"
-            assert "Deletion protection: disabled" in result.output
-
-            # Verify table has deletion protection disabled
-            table_desc = dynamodb_client.describe_table(TableName=unique_name)
-            assert table_desc["Table"]["DeletionProtectionEnabled"] is False
-
-        finally:
-            # Cleanup
-            cli_runner.invoke(
-                cli,
-                [
-                    "delete",
-                    "--name",
-                    unique_name,
-                    "--endpoint-url",
-                    localstack_endpoint,
-                    "--region",
-                    "us-east-1",
-                    "--yes",
-                ],
-            )
+    finally:
+        # Cleanup
+        cli_runner.invoke(
+            cli,
+            [
+                "delete",
+                "--name",
+                unique_name,
+                "--endpoint-url",
+                localstack_endpoint,
+                "--region",
+                "us-east-1",
+                "--yes",
+            ],
+        )
