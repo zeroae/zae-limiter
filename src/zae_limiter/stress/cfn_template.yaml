@@ -22,6 +22,28 @@ Parameters:
     MinValue: 1
     MaxValue: 1000
 
+  DesiredWorkers:
+    Type: Number
+    Default: 10
+    Description: Number of Lambda workers to maintain via orchestrator sidecar
+    MinValue: 0
+    MaxValue: 1000
+
+  LambdaTimeout:
+    Type: Number
+    Default: 300
+    Description: Lambda worker timeout in seconds
+    MinValue: 60
+    MaxValue: 900
+
+  CreateVpcEndpoints:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Create VPC endpoints for SSM (not needed if VPC has NAT gateway)
+
   PermissionBoundary:
     Type: String
     Default: ''
@@ -39,6 +61,9 @@ Conditions:
     - !Equals
       - !Ref PermissionBoundary
       - ''
+  ShouldCreateVpcEndpoints: !Equals
+    - !Ref CreateVpcEndpoints
+    - 'true'
 
 Resources:
   # ===========================================================================
@@ -85,6 +110,7 @@ Resources:
 
   VpcEndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: ShouldCreateVpcEndpoints
     Properties:
       GroupDescription: VPC endpoint security group
       VpcId: !Ref VpcId
@@ -102,11 +128,12 @@ Resources:
           Value: !Sub ${AWS::StackName}-vpce-sg
 
   # ===========================================================================
-  # VPC Endpoints for SSM (ECS Exec)
+  # VPC Endpoints for SSM (ECS Exec) - Optional, not needed if VPC has NAT
   # ===========================================================================
 
   SsmEndpoint:
     Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
     Properties:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
       VpcId: !Ref VpcId
@@ -118,6 +145,7 @@ Resources:
 
   SsmMessagesEndpoint:
     Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
     Properties:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
       VpcId: !Ref VpcId
@@ -129,6 +157,7 @@ Resources:
 
   Ec2MessagesEndpoint:
     Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateVpcEndpoints
     Properties:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
       VpcId: !Ref VpcId
@@ -146,6 +175,7 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: !Sub ${AWS::StackName}-locust
+      EmptyOnDelete: true
       ImageScanningConfiguration:
         ScanOnPush: true
       LifecyclePolicy:
@@ -226,6 +256,30 @@ Resources:
               awslogs-group: !Ref MasterLogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: master
+        - Name: worker-orchestrator
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LocustRepository}:latest
+          Essential: false
+          Command:
+            - python
+            - /mnt/orchestrator.py
+          Environment:
+            - Name: DESIRED_WORKERS
+              Value: !Ref DesiredWorkers
+            - Name: WORKER_FUNCTION_NAME
+              Value: !Sub ${AWS::StackName}-worker
+            - Name: MASTER_PORT
+              Value: '5557'
+            - Name: LAMBDA_TIMEOUT
+              Value: !Ref LambdaTimeout
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MasterLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: orchestrator
+          DependsOn:
+            - ContainerName: locust-master
+              Condition: START
 
   # ===========================================================================
   # ECS Service
@@ -262,7 +316,7 @@ Resources:
       FunctionName: !Sub ${AWS::StackName}-worker
       Runtime: python3.12
       Handler: stress_lambda.worker.handler
-      Timeout: 60
+      Timeout: !Ref LambdaTimeout
       MemorySize: 256
       Role: !GetAtt LambdaWorkerRole.Arn
       ReservedConcurrentExecutions: !Ref MaxWorkers
@@ -409,6 +463,14 @@ Resources:
                   - logs:DescribeLogStreams
                   - logs:PutLogEvents
                 Resource: '*'
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt WorkerFunction.Arn
 
   LambdaWorkerRole:
     Type: AWS::IAM::Role

@@ -63,13 +63,32 @@ def _get_locustfile_path() -> Path:
     return Path(__file__).parent / "locustfile.py"
 
 
+def _get_orchestrator_path() -> Path:
+    """Get path to orchestrator.py."""
+    return Path(__file__).parent / "orchestrator.py"
+
+
 def _generate_dockerfile(zae_limiter_source: Path | str) -> str:
-    """Generate Dockerfile based on how zae-limiter is provided."""
+    """Generate Dockerfile based on how zae-limiter is provided.
+
+    Layer ordering optimized for caching:
+    1. Install stable external deps (cached even when wheel changes)
+    2. Copy and install wheel
+    3. Copy Python files last (invalidates least)
+    """
     if isinstance(zae_limiter_source, Path):
-        install_cmd = "COPY wheels/*.whl /tmp/\nRUN pip install /tmp/*.whl locust gevent"
+        install_cmd = """\
+# Install stable deps first (cached layer)
+RUN pip install locust gevent nest-asyncio
+
+# Install wheel (may change frequently)
+COPY wheels/*.whl /tmp/
+RUN pip install /tmp/*.whl"""
     else:
         # Version string - install from PyPI
-        install_cmd = f"RUN pip install zae-limiter=={zae_limiter_source} locust gevent"
+        install_cmd = (
+            f"RUN pip install zae-limiter=={zae_limiter_source} locust gevent nest-asyncio"
+        )
 
     return f"""\
 FROM python:3.12-slim
@@ -77,6 +96,7 @@ FROM python:3.12-slim
 {install_cmd}
 
 COPY locustfile.py /mnt/locustfile.py
+COPY orchestrator.py /mnt/orchestrator.py
 
 ENTRYPOINT ["locust"]
 CMD ["--master", "--master-bind-port=5557", "-f", "/mnt/locustfile.py"]
@@ -103,6 +123,11 @@ def _create_build_context(zae_limiter_source: Path | str) -> io.BytesIO:
         locustfile_path = _get_locustfile_path()
         if locustfile_path.exists():
             tar.add(locustfile_path, arcname="locustfile.py")
+
+        # Add orchestrator for sidecar container
+        orchestrator_path = _get_orchestrator_path()
+        if orchestrator_path.exists():
+            tar.add(orchestrator_path, arcname="orchestrator.py")
 
     context.seek(0)
     return context
@@ -162,7 +187,11 @@ def build_and_push_locust_image(
     # Build image context
     context = _create_build_context(zae_limiter_source)
 
-    # Build image
+    # Build image (this can take 15-30s due to pip install)
+    import sys
+
+    print("  Building Docker image (this may take 15-30s)...", file=sys.stderr)
+    sys.stderr.flush()
     image, build_logs = client.images.build(
         fileobj=context,
         custom_context=True,
@@ -170,10 +199,14 @@ def build_and_push_locust_image(
         rm=True,
         platform="linux/amd64",
     )
+    print("  Docker image built", file=sys.stderr)
 
     # Push to ECR
+    print("  Pushing to ECR...", file=sys.stderr)
+    sys.stderr.flush()
     for line in client.images.push(image_uri, stream=True, decode=True):
         if "error" in line:
             raise RuntimeError(f"Push failed: {line['error']}")
+    print("  Push complete", file=sys.stderr)
 
     return image_uri
