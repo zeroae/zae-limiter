@@ -444,3 +444,64 @@ class TestRepositoryPing:
         result = await repo.ping()
         assert result is False
         await repo.close()
+
+
+class TestBucketTTLDowngrade:
+    """Integration tests for bucket TTL when entity downgrades from custom to default limits."""
+
+    @pytest.mark.asyncio
+    async def test_ttl_set_after_deleting_entity_config(
+        self,
+        localstack_limiter,
+    ):
+        """TTL is set on bucket when entity's custom limits are deleted (issue #293).
+
+        Full workflow:
+        1. Set system defaults
+        2. Set entity-level custom limits
+        3. Acquire (no TTL)
+        4. Delete entity limits
+        5. Acquire again (TTL should be set)
+        """
+        from zae_limiter import Limit
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        limiter = localstack_limiter
+
+        # Set system defaults
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Set entity-level config (custom limits)
+        await limiter.set_limits("user-downgrade", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Acquire with custom limits - should NOT have TTL
+        async with limiter.acquire(
+            entity_id="user-downgrade",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify no TTL (entity has custom config)
+        item = await limiter._repository._get_item(pk_entity("user-downgrade"), sk_bucket("api"))
+        assert item is not None, "Bucket should exist after acquire"
+        assert "ttl" not in item, "Custom config entity should NOT have TTL"
+
+        # Delete entity-level config (downgrade to defaults)
+        await limiter.delete_limits("user-downgrade", resource="api")
+
+        # Invalidate cache to ensure deleted config is recognized
+        await limiter.invalidate_config_cache()
+
+        # Acquire again - should now set TTL since entity uses defaults
+        async with limiter.acquire(
+            entity_id="user-downgrade",
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Verify TTL is now set (entity uses default config)
+        item = await limiter._repository._get_item(pk_entity("user-downgrade"), sk_bucket("api"))
+        assert item is not None, "Bucket should still exist"
+        assert "ttl" in item, "Default config entity should have TTL after downgrade"
