@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from .bucket import calculate_available, force_consume, try_consume
 from .exceptions import RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
+from .schema import calculate_bucket_ttl_seconds
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -211,10 +212,12 @@ class Lease:
                 # TTL disabled via multiplier
                 ttl_seconds = None
             else:
-                # Using defaults - calculate relative TTL from refill period
-                # TTL = max_refill_period_seconds × multiplier
-                max_refill = max(lim.refill_period_seconds for lim in limits)
-                ttl_seconds = max_refill * self.bucket_ttl_refill_multiplier
+                # Using defaults - calculate TTL based on time-to-fill (Issue #296)
+                # TTL = max_time_to_fill × multiplier
+                # where time_to_fill = (capacity / refill_amount) × refill_period
+                ttl_seconds = calculate_bucket_ttl_seconds(
+                    limits, self.bucket_ttl_refill_multiplier
+                )
 
             if is_new:
                 # Create path: PutItem with attribute_not_exists

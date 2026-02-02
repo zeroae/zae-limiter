@@ -56,12 +56,16 @@ async def repo_with_buckets(repo):
 
 
 class TestBucketTTLCalculation:
-    """Tests for calculate_bucket_ttl (Issue #271: Refill-based TTL)."""
+    """Tests for calculate_bucket_ttl (Issue #271, #296: Time-to-fill based TTL)."""
 
     def test_calculate_bucket_ttl_single_limit(self):
-        """TTL = now + refill_period × multiplier for single limit."""
+        """TTL = now + time_to_fill × multiplier for single limit.
+
+        For Limit.per_minute("rpm", 100): capacity=100, refill_amount=100
+        time_to_fill = (100/100) × 60 = 60 seconds
+        """
         now_ms = 1700000000000  # Example timestamp
-        limits = [Limit.per_minute("rpm", 100)]  # 60s refill period
+        limits = [Limit.per_minute("rpm", 100)]  # time_to_fill = 60s
         multiplier = 7
 
         ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
@@ -69,12 +73,37 @@ class TestBucketTTLCalculation:
         # Expected: (now_ms // 1000) + (60 * 7) = 1700000000 + 420 = 1700000420
         assert ttl == 1700000420
 
-    def test_calculate_bucket_ttl_multiple_limits_uses_max(self):
-        """TTL uses maximum refill_period when multiple limits exist."""
+    def test_calculate_bucket_ttl_slow_refill_limit(self):
+        """TTL accounts for slow refill rate (Issue #296).
+
+        For slow-refill limit: capacity=1000, refill_amount=10, refill_period=60s
+        time_to_fill = (1000/10) × 60 = 6000 seconds (100 minutes)
+        TTL should be 6000 × 7 = 42000 seconds, NOT 60 × 7 = 420 seconds
+        """
+        now_ms = 1700000000000
+        # Slow refill: 1000 capacity, refills 10 per minute
+        slow_refill_limit = Limit(
+            name="tokens",
+            capacity=1000,
+            burst=1000,
+            refill_amount=10,
+            refill_period_seconds=60,
+        )
+        limits = [slow_refill_limit]
+        multiplier = 7
+
+        ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
+
+        # time_to_fill = (1000/10) × 60 = 6000 seconds
+        # Expected: (now_ms // 1000) + (6000 * 7) = 1700000000 + 42000 = 1700042000
+        assert ttl == 1700042000
+
+    def test_calculate_bucket_ttl_multiple_limits_uses_max_time_to_fill(self):
+        """TTL uses maximum time_to_fill when multiple limits exist."""
         now_ms = 1700000000000
         limits = [
-            Limit.per_minute("rpm", 100),  # 60s refill period
-            Limit.per_day("tpd", 1000000),  # 86400s (daily) refill period
+            Limit.per_minute("rpm", 100),  # time_to_fill = 60s
+            Limit.per_day("tpd", 1000000),  # time_to_fill = 86400s
         ]
         multiplier = 7
 
@@ -82,6 +111,32 @@ class TestBucketTTLCalculation:
 
         # Expected: (now_ms // 1000) + (86400 * 7) = 1700000000 + 604800 = 1700604800
         assert ttl == 1700604800
+
+    def test_calculate_bucket_ttl_multiple_limits_slow_refill_wins(self):
+        """Slow refill limit should dominate even with shorter refill_period.
+
+        Fast limit: per_minute(100) -> time_to_fill = 60s
+        Slow limit: capacity=1000, refill_amount=10, period=60s -> time_to_fill = 6000s
+        The slow limit should determine TTL even though both have same refill_period.
+        """
+        now_ms = 1700000000000
+        limits = [
+            Limit.per_minute("rpm", 100),  # time_to_fill = 60s
+            Limit(  # time_to_fill = 6000s
+                name="slow",
+                capacity=1000,
+                burst=1000,
+                refill_amount=10,
+                refill_period_seconds=60,
+            ),
+        ]
+        multiplier = 7
+
+        ttl = calculate_bucket_ttl(now_ms, limits, multiplier)
+
+        # max time_to_fill = 6000s (from slow limit)
+        # Expected: (now_ms // 1000) + (6000 * 7) = 1700000000 + 42000 = 1700042000
+        assert ttl == 1700042000
 
     def test_calculate_bucket_ttl_returns_none_when_multiplier_zero(self):
         """TTL is None when multiplier is 0 (disabled)."""

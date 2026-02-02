@@ -3231,16 +3231,12 @@ class TestLeaseCommitTTL:
         ttl = item["ttl"]
         assert expected_min <= ttl <= expected_max
 
-    @pytest.mark.xfail(reason="Issue #296: TTL uses refill_period, not time-to-fill")
     async def test_ttl_accounts_for_slow_refill_rate(self, limiter):
-        """TTL should be based on time to fill bucket, not just refill period.
+        """TTL should be based on time to fill bucket, not just refill period (Issue #296).
 
         For a limit with capacity=1000 and refill_rate=10/min:
-        - Time to fill bucket = 1000 / (10/min) = 100 minutes
-        - TTL should be >= 100 minutes × multiplier = 700 minutes
-
-        Current bug: TTL = refill_period × multiplier = 60s × 7 = 7 minutes
-        The bucket expires before it can refill!
+        - Time to fill bucket = 1000 / (10/min) = 100 minutes = 6000 seconds
+        - TTL should be >= 6000 seconds × multiplier = 42000 seconds (700 minutes)
         """
         import time
 

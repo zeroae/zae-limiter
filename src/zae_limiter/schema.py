@@ -305,28 +305,66 @@ def calculate_ttl(now_ms: int, ttl_seconds: int = 86400) -> int:
     return (now_ms // 1000) + ttl_seconds
 
 
+def calculate_bucket_ttl_seconds(
+    limits: "list[Limit]",
+    multiplier: int,
+) -> int | None:
+    """
+    Calculate bucket TTL in seconds based on time-to-fill (Issue #271, #296).
+
+    For buckets using default limits (system/resource), a TTL allows
+    DynamoDB to auto-expire unused buckets. The TTL is calculated as:
+    max_time_to_fill × multiplier
+
+    where time_to_fill = (capacity / refill_amount) × refill_period_seconds
+
+    This ensures buckets have enough time to fully refill before expiring,
+    even for slow-refill limits where capacity >> refill_amount.
+
+    Args:
+        limits: List of Limit objects to consider (must be non-empty)
+        multiplier: Multiplier applied to max time-to-fill (default: 7)
+
+    Returns:
+        TTL in seconds, or None if multiplier <= 0 (disabled) or limits is empty
+    """
+    if multiplier <= 0 or not limits:
+        return None
+
+    # Time-to-fill = (capacity / refill_amount) × refill_period_seconds
+    # Use max across all limits to ensure the slowest limit has time to refill
+    max_time_to_fill = max(
+        (limit.capacity / limit.refill_amount) * limit.refill_period_seconds for limit in limits
+    )
+    return int(max_time_to_fill * multiplier)
+
+
 def calculate_bucket_ttl(
     now_ms: int,
     limits: "list[Limit]",
     multiplier: int,
 ) -> int | None:
     """
-    Calculate bucket TTL based on refill periods (Issue #271).
+    Calculate bucket TTL timestamp based on time-to-fill (Issue #271, #296).
 
     For buckets using default limits (system/resource), a TTL allows
     DynamoDB to auto-expire unused buckets. The TTL is calculated as:
-    now + (max_refill_period_seconds × multiplier)
+    now + (max_time_to_fill × multiplier)
+
+    where time_to_fill = (capacity / refill_amount) × refill_period_seconds
+
+    This ensures buckets have enough time to fully refill before expiring,
+    even for slow-refill limits where capacity >> refill_amount.
 
     Args:
         now_ms: Current time in milliseconds
         limits: List of Limit objects to consider
-        multiplier: Multiplier applied to max refill period (default: 7)
+        multiplier: Multiplier applied to max time-to-fill (default: 7)
 
     Returns:
         TTL timestamp in epoch seconds, or None if multiplier <= 0 (disabled)
     """
-    if multiplier <= 0:
+    ttl_seconds = calculate_bucket_ttl_seconds(limits, multiplier)
+    if ttl_seconds is None:
         return None
-
-    max_refill = max(limit.refill_period_seconds for limit in limits)
-    return (now_ms // 1000) + (max_refill * multiplier)
+    return (now_ms // 1000) + ttl_seconds
