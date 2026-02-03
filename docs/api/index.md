@@ -9,7 +9,7 @@ The main components of the API are:
 | Component | Description |
 |-----------|-------------|
 | [`RateLimiter`](limiter.md#zae_limiter.limiter.RateLimiter) | Async rate limiter client |
-| [`SyncRateLimiter`](limiter.md#zae_limiter.limiter.SyncRateLimiter) | Synchronous rate limiter client |
+| [`SyncRateLimiter`](limiter.md#zae_limiter.sync_limiter.SyncRateLimiter) | Synchronous rate limiter client |
 | [`Repository`](repository.md) | DynamoDB data access and infrastructure management |
 | [`RepositoryProtocol`](repository.md#repositoryprotocol) | Protocol for pluggable backends |
 | [`Limit`](models.md#zae_limiter.models.Limit) | Rate limit configuration |

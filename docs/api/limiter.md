@@ -13,7 +13,7 @@ The main rate limiter classes for async and sync usage.
 
 ## SyncRateLimiter
 
-::: zae_limiter.limiter.SyncRateLimiter
+::: zae_limiter.sync_limiter.SyncRateLimiter
     options:
       show_root_heading: true
       show_source: false
