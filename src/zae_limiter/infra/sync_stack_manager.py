@@ -6,6 +6,7 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import logging
 import time
 from importlib.resources import files
 from typing import Any, cast
@@ -18,6 +19,7 @@ from ..models import StackOptions
 from ..naming import normalize_stack_name
 from .lambda_builder import build_lambda_package
 
+logger = logging.getLogger(__name__)
 VERSION_TAG_PREFIX = "zae-limiter:"
 VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}version"
 LAMBDA_VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}lambda-version"
@@ -354,7 +356,7 @@ class SyncStackManager:
                     try:
                         waiter.wait(StackName=stack_name)
                     except Exception:
-                        pass
+                        logger.debug("Best effort wait for existing stack failed", exc_info=True)
                 raise StackAlreadyExistsError(stack_name=stack_name, reason="Stack already exists")
             raise StackCreationError(
                 stack_name=stack_name,
@@ -566,12 +568,7 @@ class SyncStackManager:
     def close(self) -> None:
         """Close the underlying session and client."""
         if self._client is not None:
-            try:
-                pass
-            except Exception:
-                pass
-            finally:
-                self._client = None
+            self._client = None
         self._session = None
 
     def __enter__(self) -> "SyncStackManager":

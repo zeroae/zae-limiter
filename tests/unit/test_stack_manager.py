@@ -610,7 +610,6 @@ class TestClose:
 
         # Setup mock client
         mock_client = MagicMock()
-        mock_client.__aexit__ = AsyncMock()
         manager._client = mock_client
         manager._session = MagicMock()
 
@@ -618,7 +617,6 @@ class TestClose:
 
         assert manager._client is None
         assert manager._session is None
-        mock_client.__aexit__.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_close_handles_none_client(self) -> None:
@@ -634,16 +632,13 @@ class TestClose:
         assert manager._session is None
 
     @pytest.mark.asyncio
-    async def test_close_handles_client_exit_error(self) -> None:
-        """close handles errors from client __aexit__."""
+    async def test_close_clears_references(self) -> None:
+        """close sets client and session to None."""
         manager = StackManager(stack_name="test", region="us-east-1")
 
-        mock_client = MagicMock()
-        mock_client.__aexit__ = AsyncMock(side_effect=Exception("Cleanup error"))
-        manager._client = mock_client
+        manager._client = MagicMock()
         manager._session = MagicMock()
 
-        # Should not raise - errors are suppressed
         await manager.close()
 
         assert manager._client is None

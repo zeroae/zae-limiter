@@ -252,12 +252,7 @@ class SyncInfrastructureDiscovery:
     def close(self) -> None:
         """Close the underlying session and client."""
         if self._client is not None:
-            try:
-                pass
-            except Exception:
-                pass
-            finally:
-                self._client = None
+            self._client = None
         self._session = None
 
     def __enter__(self) -> "SyncInfrastructureDiscovery":

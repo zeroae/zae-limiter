@@ -6,13 +6,14 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import logging
 import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
@@ -45,7 +46,7 @@ from .sync_config_cache import CacheStats, SyncConfigCache
 from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
 
-_T = TypeVar("_T")
+logger = logging.getLogger(__name__)
 
 
 class OnUnavailable(Enum):
@@ -1349,9 +1350,9 @@ class SyncRateLimiter:
                                 elif key == "ReadOnlyRoleArn":
                                     readonly_role_arn = value
                     except Exception:
-                        pass
+                        logger.debug("Stack outputs unavailable", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Stack status unavailable", exc_info=True)
         try:
             start_time = time.time()
             if hasattr(self._repository, "_get_client"):
@@ -1370,7 +1371,7 @@ class SyncRateLimiter:
                 if available:
                     latency_ms = (time.time() - start_time) * 1000
         except Exception:
-            pass
+            logger.debug("DynamoDB unavailable", exc_info=True)
         if available:
             try:
                 version_record = self._repository.get_version_record()
@@ -1378,7 +1379,7 @@ class SyncRateLimiter:
                     schema_version = version_record.get("schema_version")
                     lambda_version = version_record.get("lambda_version")
             except Exception:
-                pass
+                logger.debug("Version record unavailable", exc_info=True)
         return Status(
             available=available,
             latency_ms=latency_ms,

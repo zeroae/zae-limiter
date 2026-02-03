@@ -1,6 +1,7 @@
 """CloudFormation stack management for zae-limiter infrastructure."""
 
 import asyncio
+import logging
 import time
 from importlib.resources import files
 from typing import Any, cast
@@ -12,6 +13,8 @@ from ..exceptions import StackAlreadyExistsError, StackCreationError
 from ..models import StackOptions
 from ..naming import normalize_stack_name
 from .lambda_builder import build_lambda_package
+
+logger = logging.getLogger(__name__)
 
 # Version tag keys for infrastructure
 VERSION_TAG_PREFIX = "zae-limiter:"
@@ -425,7 +428,7 @@ class StackManager:
                     try:
                         await waiter.wait(StackName=stack_name)
                     except Exception:
-                        pass  # Best effort
+                        logger.debug("Best effort wait for existing stack failed", exc_info=True)
 
                 raise StackAlreadyExistsError(
                     stack_name=stack_name,
@@ -701,12 +704,7 @@ class StackManager:
     async def close(self) -> None:
         """Close the underlying session and client."""
         if self._client is not None:
-            try:
-                await self._client.__aexit__(None, None, None)
-            except Exception:
-                pass  # Best effort cleanup
-            finally:
-                self._client = None
+            self._client = None
         self._session = None
 
     async def __aenter__(self) -> "StackManager":

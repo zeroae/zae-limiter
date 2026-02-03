@@ -100,7 +100,6 @@ class Repository:
     async def close(self) -> None:
         """Close the DynamoDB client."""
         if self._client is not None:
-            await self._client.__aexit__(None, None, None)
             self._client = None
             self._session = None
 

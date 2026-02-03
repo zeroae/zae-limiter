@@ -1,13 +1,14 @@
 """Main RateLimiter implementation."""
 
 import asyncio
+import logging
 import time
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -45,7 +46,7 @@ from .models import (
 from .repository import Repository
 from .schema import DEFAULT_RESOURCE
 
-_T = TypeVar("_T")
+logger = logging.getLogger(__name__)
 
 
 class OnUnavailable(Enum):
@@ -1602,9 +1603,9 @@ class RateLimiter:
                                 elif key == "ReadOnlyRoleArn":
                                     readonly_role_arn = value
                     except Exception:
-                        pass  # Stack outputs unavailable
+                        logger.debug("Stack outputs unavailable", exc_info=True)
         except Exception:
-            pass  # Stack status unavailable
+            logger.debug("Stack status unavailable", exc_info=True)
 
         # Ping DynamoDB and measure latency
         # Note: _get_client is DynamoDB-specific, use hasattr for protocol compliance
@@ -1634,7 +1635,7 @@ class RateLimiter:
                     latency_ms = (time.time() - start_time) * 1000
 
         except Exception:
-            pass  # DynamoDB unavailable
+            logger.debug("DynamoDB unavailable", exc_info=True)
 
         # Get version information from DynamoDB
         if available:
@@ -1644,7 +1645,7 @@ class RateLimiter:
                     schema_version = version_record.get("schema_version")
                     lambda_version = version_record.get("lambda_version")
             except Exception:
-                pass  # Version record unavailable
+                logger.debug("Version record unavailable", exc_info=True)
 
         return Status(
             available=available,

@@ -308,12 +308,7 @@ class InfrastructureDiscovery:
     async def close(self) -> None:
         """Close the underlying session and client."""
         if self._client is not None:
-            try:
-                await self._client.__aexit__(None, None, None)
-            except Exception:
-                pass  # Best effort cleanup
-            finally:
-                self._client = None
+            self._client = None
         self._session = None
 
     async def __aenter__(self) -> "InfrastructureDiscovery":
