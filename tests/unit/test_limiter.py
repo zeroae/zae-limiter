@@ -1633,6 +1633,55 @@ class TestRateLimiterGetStatus:
 
             await limiter.close()
 
+    @pytest.mark.asyncio
+    async def test_get_status_logs_when_stack_manager_fails(self, mock_dynamodb):
+        """get_status should log and continue when StackManager raises."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-stack-fail",
+                region="us-east-1",
+            )
+            await limiter._repository.create_table()
+
+            # Mock StackManager to raise on __aenter__
+            mock_manager = MagicMock()
+            mock_manager.__aenter__ = AsyncMock(side_effect=Exception("CFN unavailable"))
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_status()
+
+            # Stack status should be None but DynamoDB should still work
+            assert status.stack_status is None
+            assert status.available is True
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_status_logs_when_version_record_fails(self, limiter):
+        """get_status should log and continue when version record retrieval fails."""
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(
+            limiter._repository,
+            "get_version_record",
+            new=AsyncMock(side_effect=Exception("DynamoDB error")),
+        ):
+            status = await limiter.get_status()
+
+        # Should still be available, but version info should be None
+        assert status.available is True
+        assert status.schema_version is None
+        assert status.lambda_version is None
+
 
 class TestSyncRateLimiterGetStatus:
     """Tests for SyncRateLimiter.get_status method."""
