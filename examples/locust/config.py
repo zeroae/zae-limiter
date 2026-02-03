@@ -1,4 +1,4 @@
-"""Configuration models for stress testing."""
+"""Configuration models for load testing."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ class LoadDistribution:
 
 
 @dataclass
-class StressConfig:
+class LoadConfig:
     """Configuration for stress test execution."""
 
     # Target stack
@@ -70,8 +70,8 @@ class StressConfig:
     num_custom_limit_entities: int = 300
 
     @classmethod
-    def from_environment(cls) -> StressConfig:
-        """Create StressConfig from environment variables."""
+    def from_environment(cls) -> LoadConfig:
+        """Create LoadConfig from environment variables."""
         return cls(
             stack_name=os.environ["TARGET_STACK_NAME"],
             region=os.environ.get("TARGET_REGION", "us-east-1"),

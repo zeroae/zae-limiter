@@ -316,7 +316,7 @@ Resources:
     Properties:
       FunctionName: !Sub ${AWS::StackName}-worker
       Runtime: python3.12
-      Handler: stress_lambda.worker.handler
+      Handler: load_lambda.worker.handler
       Timeout: !Ref LambdaTimeout
       MemorySize: 256
       Role: !GetAtt LambdaWorkerRole.Arn
@@ -334,31 +334,7 @@ Resources:
         ZipFile: |
           def handler(event, context):
               raise RuntimeError(
-                  "Placeholder code. Run 'zae-limiter stress deploy' to upload real code."
-              )
-
-  SetupFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub ${AWS::StackName}-setup
-      Runtime: python3.12
-      Handler: stress_lambda.setup.handler
-      Timeout: 900
-      MemorySize: 512
-      Role: !GetAtt LambdaSetupRole.Arn
-      VpcConfig:
-        SubnetIds: !Ref PrivateSubnetIds
-        SecurityGroupIds:
-          - !Ref WorkerSecurityGroup
-      Environment:
-        Variables:
-          TARGET_STACK_NAME: !Ref TargetStackName
-          TARGET_REGION: !Ref AWS::Region
-      Code:
-        ZipFile: |
-          def handler(event, context):
-              raise RuntimeError(
-                  "Placeholder code. Run 'zae-limiter stress deploy' to upload real code."
+                  "Placeholder code. Run 'zae-limiter load deploy' to upload real code."
               )
 
   # ===========================================================================
@@ -375,12 +351,6 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /aws/lambda/${AWS::StackName}-worker
-      RetentionInDays: 7
-
-  SetupLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-setup
       RetentionInDays: 7
 
   # ===========================================================================
@@ -508,29 +478,6 @@ Resources:
                   StringEquals:
                     cloudwatch:namespace: ZaeLimiter/StressTest
 
-  LambdaSetupRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub
-        - '${Prefix}${AWS::StackName}-setup${Suffix}'
-        - Prefix: !Select [0, !Split ['{}', !Ref RoleNameFormat]]
-          Suffix: !Select [1, !Split ['{}', !Ref RoleNameFormat]]
-      PermissionsBoundary: !If
-        - HasPermissionBoundary
-        - !Ref PermissionBoundary
-        - !Ref AWS::NoValue
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-        - !ImportValue
-            Fn::Sub: ${TargetStackName}-AdminPolicyArn
-
 Outputs:
   ClusterArn:
     Description: ECS cluster ARN
@@ -555,12 +502,6 @@ Outputs:
     Value: !GetAtt WorkerFunction.Arn
     Export:
       Name: !Sub ${AWS::StackName}-WorkerFunctionArn
-
-  SetupFunctionArn:
-    Description: Setup Lambda function ARN
-    Value: !GetAtt SetupFunction.Arn
-    Export:
-      Name: !Sub ${AWS::StackName}-SetupFunctionArn
 
   MasterSecurityGroupId:
     Description: Security group ID for Locust master

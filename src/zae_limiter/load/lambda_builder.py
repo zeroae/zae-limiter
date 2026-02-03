@@ -1,4 +1,4 @@
-"""Build Lambda deployment packages for stress testing."""
+"""Build Lambda deployment packages for load testing."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ def _generate_requirements(zae_limiter_source: Path | str) -> str:
     reqs = [
         "locust>=2.20",
         "gevent>=23.0",
-        "asyncio-gevent>=0.2.5",  # Proper asyncio/gevent integration
     ]
 
     # Add zae-limiter
@@ -28,18 +27,24 @@ def _generate_requirements(zae_limiter_source: Path | str) -> str:
     return "\n".join(reqs) + "\n"
 
 
-def build_stress_lambda_package(
+def build_load_lambda_package(
     zae_limiter_source: Path | str,
+    locustfile_dir: Path,
     output_dir: Path | None = None,
 ) -> Path:
     """Build Lambda deployment package using aws-lambda-builders.
 
     Args:
         zae_limiter_source: Path to wheel or version string
+        locustfile_dir: Directory containing locustfile.py and supporting modules
         output_dir: Directory for output zip (default: build/)
 
     Returns:
         Path to the built zip file
+
+    Note:
+        All files in locustfile_dir are included in the package,
+        supporting examples with different file structures.
     """
     from aws_lambda_builders.architecture import X86_64
     from aws_lambda_builders.builder import LambdaBuilder
@@ -87,28 +92,18 @@ def build_stress_lambda_package(
         if placeholder.exists():
             placeholder.unlink()
 
-        # Copy stress_lambda package
-        stress_lambda_src = Path(__file__).parent / "lambda"
-        if stress_lambda_src.exists():
-            shutil.copytree(stress_lambda_src, artifacts_dir / "stress_lambda")
+        # Copy load_lambda package (handlers)
+        load_lambda_src = Path(__file__).parent / "lambda"
+        if load_lambda_src.exists():
+            shutil.copytree(load_lambda_src, artifacts_dir / "load_lambda")
 
-        # Copy locustfile
-        locustfile_src = Path(__file__).parent / "locustfile.py"
-        if locustfile_src.exists():
-            shutil.copy(locustfile_src, artifacts_dir / "locustfile.py")
-
-        # Copy distribution module
-        distribution_src = Path(__file__).parent / "distribution.py"
-        if distribution_src.exists():
-            shutil.copy(distribution_src, artifacts_dir / "distribution.py")
-
-        # Copy config module
-        config_src = Path(__file__).parent / "config.py"
-        if config_src.exists():
-            shutil.copy(config_src, artifacts_dir / "config.py")
+        # Copy all files from locustfile_dir
+        for f in locustfile_dir.iterdir():
+            if f.is_file():
+                shutil.copy(f, artifacts_dir / f.name)
 
         # Create zip
-        zip_path = output_dir / "stress-lambda.zip"
+        zip_path = output_dir / "load-lambda.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file in artifacts_dir.rglob("*"):
                 if file.is_file():

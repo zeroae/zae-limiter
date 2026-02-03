@@ -1,4 +1,4 @@
-"""Build Docker images and Lambda packages for stress testing."""
+"""Build Docker images and Lambda packages for load testing."""
 
 from __future__ import annotations
 
@@ -58,11 +58,6 @@ def _build_wheel(repo_root: Path) -> Path:
     return wheels[0]
 
 
-def _get_locustfile_path() -> Path:
-    """Get path to locustfile.py."""
-    return Path(__file__).parent / "locustfile.py"
-
-
 def _get_orchestrator_path() -> Path:
     """Get path to orchestrator.py."""
     return Path(__file__).parent / "orchestrator.py"
@@ -79,23 +74,24 @@ def _generate_dockerfile(zae_limiter_source: Path | str) -> str:
     if isinstance(zae_limiter_source, Path):
         install_cmd = """\
 # Install stable deps first (cached layer)
-RUN pip install locust gevent asyncio-gevent
+RUN pip install locust gevent boto3
 
 # Install wheel (may change frequently)
 COPY wheels/*.whl /tmp/
 RUN pip install /tmp/*.whl"""
     else:
         # Version string - install from PyPI
-        install_cmd = (
-            f"RUN pip install zae-limiter=={zae_limiter_source} locust gevent asyncio-gevent"
-        )
+        install_cmd = f"RUN pip install zae-limiter=={zae_limiter_source} locust gevent boto3"
 
     return f"""\
 FROM python:3.12-slim
 
 {install_cmd}
 
-COPY locustfile.py /mnt/locustfile.py
+# Copy all user files (locustfile.py and supporting modules)
+COPY userfiles/ /mnt/
+
+# Copy orchestrator for sidecar container
 COPY orchestrator.py /mnt/orchestrator.py
 
 ENTRYPOINT ["locust"]
@@ -103,8 +99,15 @@ CMD ["--master", "--master-bind-port=5557", "-f", "/mnt/locustfile.py"]
 """
 
 
-def _create_build_context(zae_limiter_source: Path | str) -> io.BytesIO:
-    """Create Docker build context as tar archive."""
+def _create_build_context(
+    zae_limiter_source: Path | str,
+    locustfile_dir: Path,
+) -> io.BytesIO:
+    """Create Docker build context as tar archive.
+
+    Copies all files from locustfile_dir into the image to support examples
+    with different file structures.
+    """
     context = io.BytesIO()
 
     with tarfile.open(fileobj=context, mode="w:gz") as tar:
@@ -119,12 +122,12 @@ def _create_build_context(zae_limiter_source: Path | str) -> io.BytesIO:
         if isinstance(zae_limiter_source, Path):
             tar.add(zae_limiter_source, arcname=f"wheels/{zae_limiter_source.name}")
 
-        # Add locustfile
-        locustfile_path = _get_locustfile_path()
-        if locustfile_path.exists():
-            tar.add(locustfile_path, arcname="locustfile.py")
+        # Add all files from locustfile_dir to userfiles/
+        for f in locustfile_dir.iterdir():
+            if f.is_file():
+                tar.add(f, arcname=f"userfiles/{f.name}")
 
-        # Add orchestrator for sidecar container
+        # Add orchestrator for sidecar container (always from load module)
         orchestrator_path = _get_orchestrator_path()
         if orchestrator_path.exists():
             tar.add(orchestrator_path, arcname="orchestrator.py")
@@ -136,13 +139,15 @@ def _create_build_context(zae_limiter_source: Path | str) -> io.BytesIO:
 def build_and_push_locust_image(
     stack_name: str,
     region: str,
+    locustfile_dir: Path,
     zae_limiter_source: Path | str | None = None,
 ) -> str:
     """Build Locust master image with zae-limiter and push to ECR.
 
     Args:
-        stack_name: Stress test stack name (ECR repo name derived from this)
+        stack_name: Load test stack name (ECR repo name derived from this)
         region: AWS region
+        locustfile_dir: Directory containing locustfile.py
         zae_limiter_source: Path to wheel, version string, or None to auto-detect
 
     Returns:
@@ -185,7 +190,7 @@ def build_and_push_locust_image(
     )
 
     # Build image context
-    context = _create_build_context(zae_limiter_source)
+    context = _create_build_context(zae_limiter_source, locustfile_dir)
 
     # Build image (this can take 15-30s due to pip install)
     import sys
