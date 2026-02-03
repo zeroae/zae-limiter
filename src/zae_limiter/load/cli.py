@@ -1,4 +1,4 @@
-"""CLI commands for stress testing."""
+"""CLI commands for load testing."""
 
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ def _select_name(region: str | None) -> str:
     async def list_targets() -> list[str]:
         async with InfrastructureDiscovery(region=region) as discovery:
             limiters = await discovery.list_limiters()
-            # Exclude stress stacks, only include healthy stacks
+            # Exclude load stacks, only include healthy stacks
             return [
                 info.stack_name
                 for info in limiters
-                if not info.stack_name.endswith("-stress")
+                if not info.stack_name.endswith("-load")
                 and info.stack_status in ("CREATE_COMPLETE", "UPDATE_COMPLETE")
             ]
 
@@ -89,15 +89,15 @@ def _select_subnets(region: str | None, vpc_id: str) -> str:
 
 
 @click.group()
-def stress() -> None:
-    """Stress testing commands for zae-limiter."""
+def load() -> None:
+    """Load testing commands for zae-limiter."""
     pass
 
 
-@stress.command()
+@load.command()
 @click.option("--name", "-n", default=None, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
-@click.option("--vpc-id", default=None, help="VPC ID for stress test resources")
+@click.option("--vpc-id", default=None, help="VPC ID for load test resources")
 @click.option("--subnet-ids", default=None, help="Comma-separated private subnet IDs")
 @click.option("--max-workers", default=100, type=int, help="Maximum Lambda worker concurrency")
 @click.option(
@@ -111,6 +111,13 @@ def stress() -> None:
     is_flag=True,
     help="Create VPC endpoints for SSM (not needed if VPC has NAT gateway)",
 )
+@click.option(
+    "-C",
+    "locustfile_dir",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory containing locustfile.py (default: current directory)",
+)
 def deploy(
     name: str | None,
     region: str | None,
@@ -119,10 +126,11 @@ def deploy(
     max_workers: int,
     lambda_timeout: int,
     create_vpc_endpoints: bool,
+    locustfile_dir: Path,
 ) -> None:
-    """Deploy stress test infrastructure."""
+    """Deploy load test infrastructure."""
     from .builder import build_and_push_locust_image, get_zae_limiter_source
-    from .lambda_builder import build_stress_lambda_package
+    from .lambda_builder import build_load_lambda_package
 
     # Interactive prompts for missing options
     if not name:
@@ -132,8 +140,8 @@ def deploy(
     if not subnet_ids:
         subnet_ids = _select_subnets(region, vpc_id)
 
-    stack_name = f"{name}-stress"
-    click.echo(f"Deploying stress test stack: {stack_name}")
+    stack_name = f"{name}-load"
+    click.echo(f"Deploying load test stack: {stack_name}")
 
     # Validate target stack
     cfn = boto3.client("cloudformation", region_name=region)
@@ -219,12 +227,14 @@ def deploy(
 
     # Build and push Docker image
     click.echo("  Building Locust image...")
-    image_uri = build_and_push_locust_image(stack_name, region or "us-east-1", zae_limiter_source)
+    image_uri = build_and_push_locust_image(
+        stack_name, region or "us-east-1", locustfile_dir, zae_limiter_source
+    )
     click.echo(f"  Locust image pushed: {image_uri}")
 
     # Build Lambda package
     click.echo("  Building Lambda package...")
-    zip_path = build_stress_lambda_package(zae_limiter_source)
+    zip_path = build_load_lambda_package(zae_limiter_source, locustfile_dir)
     click.echo(f"  Lambda package built: {zip_path}")
 
     # Upload Lambda code
@@ -244,7 +254,7 @@ def deploy(
     click.echo(f"\nStack ready: {stack_name}")
 
 
-@stress.command()
+@load.command()
 @click.option("--name", "-n", required=True, help="zae-limiter stack name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--endpoint-url", default=None, help="AWS endpoint URL (for LocalStack)")
@@ -344,7 +354,7 @@ def setup(
     click.echo("\nReady for testing")
 
 
-@stress.command()
+@load.command()
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--port", default=8089, type=int, help="Local port for Locust UI")
@@ -355,7 +365,7 @@ def connect(name: str, region: str | None, port: int, destroy: bool) -> None:
     import subprocess
     import time
 
-    stack_name = f"{name}-stress"
+    stack_name = f"{name}-load"
     ecs = boto3.client("ecs", region_name=region)
     service_name = f"{stack_name}-master"
 
@@ -497,17 +507,17 @@ def connect(name: str, region: str | None, port: int, destroy: bool) -> None:
             click.echo("Disconnected (Fargate task still running, use --destroy to stop)")
 
 
-@stress.command()
+@load.command()
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 def teardown(name: str, region: str | None, yes: bool) -> None:
-    """Delete stress test infrastructure."""
-    stack_name = f"{name}-stress"
+    """Delete load test infrastructure."""
+    stack_name = f"{name}-load"
     if not yes:
-        click.confirm(f"Delete stress test stack '{stack_name}'?", abort=True)
+        click.confirm(f"Delete load test stack '{stack_name}'?", abort=True)
 
-    click.echo(f"Deleting stress test stack: {stack_name}")
+    click.echo(f"Deleting load test stack: {stack_name}")
 
     cfn = boto3.client("cloudformation", region_name=region)
     ecs = boto3.client("ecs", region_name=region)

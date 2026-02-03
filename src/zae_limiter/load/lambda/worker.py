@@ -46,12 +46,13 @@ def _run_headless(config: dict[str, Any]) -> dict[str, Any]:
     print("Starting headless Locust test...", flush=True)
 
     # Import locustfile (copied into Lambda package)
-    from locustfile import RateLimiterUser
+    from locustfile import LoadTestUser
 
-    print(f"Loaded RateLimiterUser: {RateLimiterUser}")
+    print(f"Loaded LoadTestUser: {LoadTestUser}")
 
-    env = Environment(user_classes=[RateLimiterUser])
+    env = Environment(user_classes=[LoadTestUser])
     env.create_local_runner()
+    assert env.runner is not None
 
     # Initialize stats BEFORE starting - this sets up the request event listener
     # Without this, stats.entries will be empty because the listener isn't registered
@@ -105,7 +106,7 @@ def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any
     import uuid
 
     from locust.env import Environment
-    from locustfile import RateLimiterUser
+    from locustfile import LoadTestUser
 
     master_host = config["master_host"]
     master_port = config.get("master_port", 5557)
@@ -123,8 +124,9 @@ def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any
 
     print(f"Starting worker {worker_id} connecting to {master_host}:{master_port}", flush=True)
 
-    env = Environment(user_classes=[RateLimiterUser])
+    env = Environment(user_classes=[LoadTestUser])
     env.create_worker_runner(master_host, master_port)
+    assert env.runner is not None
 
     # Worker runs until master signals stop or Lambda times out
     env.runner.greenlet.join()

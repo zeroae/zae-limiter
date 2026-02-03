@@ -11,9 +11,9 @@ import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
 from .infra.stack_manager import StackManager
+from .load.cli import load
 from .local import local
 from .models import StackOptions
-from .stress.cli import stress
 
 if TYPE_CHECKING:
     from .models import Limit
@@ -3394,7 +3394,7 @@ def entity_list_resources(
 # ---------------------------------------------------------------------------
 
 cli.add_command(local)
-cli.add_command(stress)
+cli.add_command(load)
 
 
 if __name__ == "__main__":

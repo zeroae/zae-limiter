@@ -148,7 +148,7 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "locust.*"
+module = ["locust.*", "gevent.*", "locustfile"]
 ignore_missing_imports = true
 follow_untyped_imports = false
 
