@@ -41,6 +41,29 @@ pre-commit run --all-files
 uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 ```
 
+### Sync Code Generation
+
+Native sync code is generated from async source via AST transformation (see ADR-121):
+
+```bash
+# Generate sync code after modifying async source
+hatch run generate-sync
+
+# Or directly
+python scripts/generate_sync.py
+```
+
+**Generated files (DO NOT EDIT):**
+- `sync_repository_protocol.py` ← `repository_protocol.py`
+- `sync_repository.py` ← `repository.py`
+- `sync_limiter.py` ← `limiter.py`
+- `sync_lease.py` ← `lease.py`
+- `sync_config_cache.py` ← `config_cache.py`
+- `infra/sync_stack_manager.py` ← `infra/stack_manager.py`
+- `infra/sync_discovery.py` ← `infra/discovery.py`
+
+Pre-commit hook verifies generated code is up-to-date. CI also verifies before running tests.
+
 ### Using conda
 
 ```bash
@@ -168,8 +191,13 @@ src/zae_limiter/
 ├── repository_protocol.py # RepositoryProtocol for backend abstraction
 ├── repository.py      # DynamoDB operations
 ├── lease.py           # Lease context manager
-├── limiter.py         # RateLimiter, SyncRateLimiter
+├── limiter.py         # RateLimiter (async)
 ├── config_cache.py    # Client-side config caching with TTL (CacheStats)
+├── sync_repository_protocol.py  # Generated: SyncRepositoryProtocol
+├── sync_repository.py           # Generated: SyncRepository
+├── sync_limiter.py              # Generated: SyncRateLimiter
+├── sync_lease.py                # Generated: SyncLease
+├── sync_config_cache.py         # Generated: SyncConfigCache
 ├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, local)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
@@ -180,10 +208,12 @@ src/zae_limiter/
 │   ├── formatters.py  # PlotFormatter (ASCII charts)
 │   └── table.py       # TableFormatter for tabular output
 └── infra/
-    ├── stack_manager.py    # CloudFormation stack operations
-    ├── lambda_builder.py   # Lambda deployment package builder
-    ├── discovery.py        # Multi-stack discovery and listing
-    └── cfn_template.yaml   # CloudFormation template
+    ├── stack_manager.py         # CloudFormation stack operations
+    ├── sync_stack_manager.py    # Generated: SyncStackManager
+    ├── discovery.py             # Multi-stack discovery and listing
+    ├── sync_discovery.py        # Generated: SyncInfrastructureDiscovery
+    ├── lambda_builder.py        # Lambda deployment package builder
+    └── cfn_template.yaml        # CloudFormation template
 
 src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 ├── __init__.py               # Re-exports handler, processor types
