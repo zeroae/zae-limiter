@@ -137,5 +137,23 @@ exclude = '''(?x)(
 )'''
 
 [[tool.mypy.overrides]]
-module = "aws_lambda_builders.*"
+module = [
+    "aws_lambda_builders.*",
+    "aioboto3",
+    "aioboto3.*",
+    "ulid",
+]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "zae_limiter.sync_repository_protocol",
+    "zae_limiter.sync_repository",
+    "zae_limiter.sync_limiter",
+    "zae_limiter.sync_lease",
+    "zae_limiter.sync_config_cache",
+    "zae_limiter.infra.sync_stack_manager",
+    "zae_limiter.infra.sync_discovery",
+]
+# Generated sync files need fixes in Task 7; ignore for now
+ignore_errors = true

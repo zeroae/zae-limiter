@@ -82,6 +82,13 @@ from .models import (
 from .repository import Repository
 from .repository_protocol import RepositoryProtocol
 
+# Sync (generated from async via scripts/generate_sync.py)
+from .sync_config_cache import SyncConfigCache
+from .sync_lease import SyncLease
+from .sync_limiter import SyncRateLimiter
+from .sync_repository import SyncRepository
+from .sync_repository_protocol import SyncRepositoryProtocol
+
 try:
     from ._version import __version__
 except ImportError:
@@ -96,6 +103,12 @@ __all__ = [
     "RepositoryProtocol",
     "Lease",
     "StackManager",
+    # Sync classes (generated from async via scripts/generate_sync.py)
+    "SyncRateLimiter",
+    "SyncRepository",
+    "SyncRepositoryProtocol",
+    "SyncLease",
+    "SyncConfigCache",
     # Models
     "Limit",
     "LimiterInfo",

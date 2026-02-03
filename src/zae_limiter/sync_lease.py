@@ -45,7 +45,7 @@ class SyncLease:
     rollback on exception.
     """
 
-    repository: SyncRepositoryProtocol
+    repository: "SyncRepositoryProtocol"
     entries: list[LeaseEntry] = field(default_factory=list)
     _committed: bool = False
     _rolled_back: bool = False
