@@ -1645,7 +1645,7 @@ class TestSyncRateLimiterGetStatus:
 
         assert isinstance(status, Status)
         assert status.available is True
-        assert status.name == sync_limiter._limiter.name
+        assert status.name == sync_limiter.name
 
     def test_sync_get_status_includes_all_fields(self, sync_limiter):
         """SyncRateLimiter.get_status should include all status fields."""
