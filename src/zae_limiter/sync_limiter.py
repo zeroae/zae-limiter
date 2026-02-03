@@ -12,8 +12,9 @@ import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
+
+from .limiter import OnUnavailable
 
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
@@ -47,13 +48,6 @@ from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
 
 logger = logging.getLogger(__name__)
-
-
-class OnUnavailable(Enum):
-    """Behavior when DynamoDB is unavailable."""
-
-    ALLOW = "allow"
-    BLOCK = "block"
 
 
 class SyncRateLimiter:

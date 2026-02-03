@@ -116,33 +116,31 @@ class SyncInfrastructureDiscovery:
             kwargs["endpoint_url"] = self.endpoint_url
         try:
             session = self._session
-            with session.client("resourcegroupstaggingapi", **kwargs) as tagging_client:
-                limiters: list[LimiterInfo] = []
-                pagination_token: str = ""
-                while True:
-                    request_kwargs: dict[str, Any] = {
-                        "ResourceTypeFilters": ["cloudformation:stack"],
-                        "TagFilters": [
-                            {"Key": MANAGED_BY_TAG_KEY, "Values": [MANAGED_BY_TAG_VALUE]}
-                        ],
-                    }
-                    if pagination_token:
-                        request_kwargs["PaginationToken"] = pagination_token
-                    response = tagging_client.get_resources(**request_kwargs)
-                    for resource in response.get("ResourceTagMappingList", []):
-                        arn = resource["ResourceARN"]
-                        arn_parts = arn.split("/")
-                        if len(arn_parts) < 2:
-                            continue
-                        stack_name = arn_parts[1]
-                        tag_dict = {t["Key"]: t["Value"] for t in resource.get("Tags", [])}
-                        info = self._describe_stack_as_limiter_info(stack_name, tag_dict)
-                        if info is not None:
-                            limiters.append(info)
-                    pagination_token = response.get("PaginationToken", "")
-                    if not pagination_token:
-                        break
-                return limiters
+            tagging_client = session.client("resourcegroupstaggingapi", **kwargs)
+            limiters: list[LimiterInfo] = []
+            pagination_token: str = ""
+            while True:
+                request_kwargs: dict[str, Any] = {
+                    "ResourceTypeFilters": ["cloudformation:stack"],
+                    "TagFilters": [{"Key": MANAGED_BY_TAG_KEY, "Values": [MANAGED_BY_TAG_VALUE]}],
+                }
+                if pagination_token:
+                    request_kwargs["PaginationToken"] = pagination_token
+                response = tagging_client.get_resources(**request_kwargs)
+                for resource in response.get("ResourceTagMappingList", []):
+                    arn = resource["ResourceARN"]
+                    arn_parts = arn.split("/")
+                    if len(arn_parts) < 2:
+                        continue
+                    stack_name = arn_parts[1]
+                    tag_dict = {t["Key"]: t["Value"] for t in resource.get("Tags", [])}
+                    info = self._describe_stack_as_limiter_info(stack_name, tag_dict)
+                    if info is not None:
+                        limiters.append(info)
+                pagination_token = response.get("PaginationToken", "")
+                if not pagination_token:
+                    break
+            return limiters
         except Exception:
             return []
 

@@ -456,49 +456,47 @@ class SyncStackManager:
         if self.endpoint_url:
             kwargs["endpoint_url"] = self.endpoint_url
         session = self._session
-        with session.client("lambda", **kwargs) as lambda_client:
-            try:
-                response = lambda_client.update_function_code(
-                    FunctionName=function_name, ZipFile=zip_bytes
-                )
-                if wait:
-                    waiter = lambda_client.get_waiter("function_updated")
-                    try:
-                        waiter.wait(FunctionName=function_name)
-                    except Exception as e:
-                        raise StackCreationError(
-                            stack_name=self.stack_name,
-                            reason=f"Waiting for Lambda update failed: {e}",
-                        ) from e
-                if wait:
-                    waiter = lambda_client.get_waiter("function_active")
-                    try:
-                        waiter.wait(FunctionName=function_name)
-                    except Exception as e:
-                        raise StackCreationError(
-                            stack_name=self.stack_name,
-                            reason=f"Waiting for Lambda to be active failed: {e}",
-                        ) from e
-                from .. import __version__
+        lambda_client = session.client("lambda", **kwargs)
+        try:
+            response = lambda_client.update_function_code(
+                FunctionName=function_name, ZipFile=zip_bytes
+            )
+            if wait:
+                waiter = lambda_client.get_waiter("function_updated")
+                try:
+                    waiter.wait(FunctionName=function_name)
+                except Exception as e:
+                    raise StackCreationError(
+                        stack_name=self.stack_name, reason=f"Waiting for Lambda update failed: {e}"
+                    ) from e
+            if wait:
+                waiter = lambda_client.get_waiter("function_active")
+                try:
+                    waiter.wait(FunctionName=function_name)
+                except Exception as e:
+                    raise StackCreationError(
+                        stack_name=self.stack_name,
+                        reason=f"Waiting for Lambda to be active failed: {e}",
+                    ) from e
+            from .. import __version__
 
-                lambda_client.tag_resource(
-                    Resource=response["FunctionArn"],
-                    Tags={"zae-limiter:lambda-version": __version__},
-                )
-                result = {
-                    "function_arn": response["FunctionArn"],
-                    "code_sha256": response["CodeSha256"],
-                    "status": "deployed",
-                    "size_bytes": len(zip_bytes),
-                    "version": __version__,
-                }
-            except ClientError as e:
-                error_code = e.response["Error"]["Code"]
-                error_msg = e.response["Error"]["Message"]
-                raise StackCreationError(
-                    stack_name=self.stack_name,
-                    reason=f"Lambda deployment failed ({error_code}): {error_msg}",
-                ) from e
+            lambda_client.tag_resource(
+                Resource=response["FunctionArn"], Tags={"zae-limiter:lambda-version": __version__}
+            )
+            result = {
+                "function_arn": response["FunctionArn"],
+                "code_sha256": response["CodeSha256"],
+                "status": "deployed",
+                "size_bytes": len(zip_bytes),
+                "version": __version__,
+            }
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            error_msg = e.response["Error"]["Message"]
+            raise StackCreationError(
+                stack_name=self.stack_name,
+                reason=f"Lambda deployment failed ({error_code}): {error_msg}",
+            ) from e
         if wait:
             esm_ready = self.wait_for_esm_ready(function_name)
             result["esm_ready"] = esm_ready
@@ -537,32 +535,32 @@ class SyncStackManager:
         start_time = time.time()
         enabled_at: float | None = None
         interval = 5.0
-        with self._session.client("lambda", **kwargs) as lambda_client:
-            while time.time() - start_time < max_seconds:
-                try:
-                    response = lambda_client.list_event_source_mappings(FunctionName=function_name)
-                    mappings = response.get("EventSourceMappings", [])
-                    for mapping in mappings:
-                        state = mapping.get("State", "")
-                        last_result = mapping.get("LastProcessingResult")
-                        if state in ("Disabled", "Disabling"):
-                            return False
-                        if state in ("Creating", "Enabling", "Updating"):
+        lambda_client = self._session.client("lambda", **kwargs)
+        while time.time() - start_time < max_seconds:
+            try:
+                response = lambda_client.list_event_source_mappings(FunctionName=function_name)
+                mappings = response.get("EventSourceMappings", [])
+                for mapping in mappings:
+                    state = mapping.get("State", "")
+                    last_result = mapping.get("LastProcessingResult")
+                    if state in ("Disabled", "Disabling"):
+                        return False
+                    if state in ("Creating", "Enabling", "Updating"):
+                        break
+                    if state == "Enabled":
+                        if enabled_at is None:
+                            enabled_at = time.time()
+                        if last_result is None:
                             break
-                        if state == "Enabled":
-                            if enabled_at is None:
-                                enabled_at = time.time()
-                            if last_result is None:
-                                break
-                            if last_result not in ("OK", "No records processed"):
-                                break
-                            time_since_enabled = time.time() - enabled_at
-                            if time_since_enabled >= min_stabilization:
-                                return True
+                        if last_result not in ("OK", "No records processed"):
                             break
-                    time.sleep(interval)
-                except Exception:
-                    time.sleep(interval)
+                        time_since_enabled = time.time() - enabled_at
+                        if time_since_enabled >= min_stabilization:
+                            return True
+                        break
+                time.sleep(interval)
+            except Exception:
+                time.sleep(interval)
         return False
 
     def close(self) -> None:

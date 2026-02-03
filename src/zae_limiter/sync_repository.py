@@ -141,11 +141,11 @@ class SyncRepository:
         try:
             if self._session is None:
                 self._session = boto3.Session()
-            with self._session.client(
+            sts_client = self._session.client(
                 "sts", region_name=self.region, endpoint_url=self.endpoint_url
-            ) as sts_client:
-                response = sts_client.get_caller_identity()
-                self._caller_identity_arn = response.get("Arn")
+            )
+            response = sts_client.get_caller_identity()
+            self._caller_identity_arn = response.get("Arn")
         except Exception:
             self._caller_identity_arn = None
         return self._caller_identity_arn
