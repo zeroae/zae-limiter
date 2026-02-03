@@ -4,13 +4,15 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import (
-    CacheStats,
     Limit,
-    OnUnavailable,
     RateLimiterUnavailable,
     RateLimitExceeded,
     SyncRateLimiter,
 )
+
+# Import OnUnavailable from sync_limiter to avoid type mismatch
+# (sync_limiter has its own OnUnavailable enum definition)
+from zae_limiter.sync_limiter import OnUnavailable
 
 
 class TestSyncRateLimiter:
@@ -163,13 +165,13 @@ class TestSyncRateLimiterIsAvailable:
     def test_is_available_returns_false_on_client_error(self, sync_limiter, monkeypatch):
         """is_available should return False when DynamoDB returns error."""
 
-        async def mock_error(*args, **kwargs):
+        def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ResourceNotFoundException", "Message": "Table not found"}},
                 "GetItem",
             )
 
-        monkeypatch.setattr(sync_limiter._limiter._repository, "ping", mock_error)
+        monkeypatch.setattr(sync_limiter._repository, "ping", mock_error)
         result = sync_limiter.is_available()
         assert result is False
 
@@ -178,22 +180,15 @@ class TestSyncRateLimiterIsAvailable:
         result = sync_limiter.is_available(timeout=5.0)
         assert result is True
 
-    def test_is_available_returns_false_on_event_loop_error(self, sync_limiter):
-        """is_available should return False when event loop fails."""
-        original_run = sync_limiter._run
+    def test_is_available_returns_false_on_ping_exception(self, sync_limiter, monkeypatch):
+        """is_available should return False when ping raises exception."""
 
-        def mock_run_error(coro):
-            # Close the coroutine to avoid warning, then raise
-            coro.close()
-            raise RuntimeError("Event loop is closed")
+        def mock_error(*args, **kwargs):
+            raise RuntimeError("Connection failed")
 
-        try:
-            sync_limiter._run = mock_run_error
-            result = sync_limiter.is_available()
-            assert result is False
-        finally:
-            # Restore original _run for fixture cleanup
-            sync_limiter._run = original_run
+        monkeypatch.setattr(sync_limiter._repository, "ping", mock_error)
+        result = sync_limiter.is_available()
+        assert result is False
 
 
 class TestSyncRateLimiterOnUnavailable:
@@ -203,18 +198,16 @@ class TestSyncRateLimiterOnUnavailable:
         """ALLOW should return no-op lease on infrastructure error."""
 
         # Mock repository method to raise error
-        async def mock_error(*args, **kwargs):
+        def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ServiceUnavailable", "Message": "DynamoDB down"}},
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(
-            sync_limiter._limiter._repository, "batch_get_entity_and_buckets", mock_error
-        )
+        monkeypatch.setattr(sync_limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set on_unavailable to ALLOW
-        sync_limiter._limiter.on_unavailable = OnUnavailable.ALLOW
+        sync_limiter.on_unavailable = OnUnavailable.ALLOW
 
         # Should not raise, should return no-op lease
         limits = [Limit.per_minute("rpm", 100)]
@@ -225,25 +218,23 @@ class TestSyncRateLimiterOnUnavailable:
             consume={"rpm": 1},
         ) as lease:
             # No-op lease has no entries
-            assert len(lease._lease.entries) == 0
+            assert len(lease.entries) == 0
             assert lease.consumed == {}
 
     def test_block_raises_unavailable_on_dynamodb_error(self, sync_limiter, monkeypatch):
         """BLOCK should reject requests when DynamoDB is down."""
 
         # Mock repository method to raise error
-        async def mock_error(*args, **kwargs):
+        def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ProvisionedThroughputExceededException"}},
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(
-            sync_limiter._limiter._repository, "batch_get_entity_and_buckets", mock_error
-        )
+        monkeypatch.setattr(sync_limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set on_unavailable to BLOCK (default)
-        sync_limiter._limiter.on_unavailable = OnUnavailable.BLOCK
+        sync_limiter.on_unavailable = OnUnavailable.BLOCK
 
         # Should raise RateLimiterUnavailable
         limits = [Limit.per_minute("rpm", 100)]
@@ -264,18 +255,16 @@ class TestSyncRateLimiterOnUnavailable:
         """on_unavailable parameter should override limiter default."""
 
         # Mock error
-        async def mock_error(*args, **kwargs):
+        def mock_error(*args, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "InternalServerError"}},
                 "BatchGetItem",
             )
 
-        monkeypatch.setattr(
-            sync_limiter._limiter._repository, "batch_get_entity_and_buckets", mock_error
-        )
+        monkeypatch.setattr(sync_limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set limiter to BLOCK, but override in acquire
-        sync_limiter._limiter.on_unavailable = OnUnavailable.BLOCK
+        sync_limiter.on_unavailable = OnUnavailable.BLOCK
 
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
@@ -286,21 +275,19 @@ class TestSyncRateLimiterOnUnavailable:
             on_unavailable=OnUnavailable.ALLOW,  # Override to ALLOW
         ) as lease:
             # Should get no-op lease due to override
-            assert len(lease._lease.entries) == 0
+            assert len(lease.entries) == 0
 
     def test_block_override_in_acquire_call(self, sync_limiter, monkeypatch):
         """on_unavailable parameter should override limiter default."""
 
         # Mock error
-        async def mock_error(*args, **kwargs):
+        def mock_error(*args, **kwargs):
             raise Exception("DynamoDB timeout")
 
-        monkeypatch.setattr(
-            sync_limiter._limiter._repository, "batch_get_entity_and_buckets", mock_error
-        )
+        monkeypatch.setattr(sync_limiter._repository, "batch_get_entity_and_buckets", mock_error)
 
         # Set limiter to ALLOW, but override in acquire
-        sync_limiter._limiter.on_unavailable = OnUnavailable.ALLOW
+        sync_limiter.on_unavailable = OnUnavailable.ALLOW
 
         limits = [Limit.per_minute("rpm", 100)]
         with pytest.raises(RateLimiterUnavailable):
@@ -412,14 +399,13 @@ class TestSyncRateLimiterSystemDefaults:
 
     def test_set_system_defaults_with_on_unavailable(self, sync_limiter):
         """Test storing system defaults with on_unavailable config."""
-        from zae_limiter import OnUnavailable
-
         limits = [Limit.per_minute("rpm", 50)]
         sync_limiter.set_system_defaults(limits, on_unavailable=OnUnavailable.ALLOW)
 
         retrieved, on_unavailable = sync_limiter.get_system_defaults()
         assert len(retrieved) == 1
-        assert on_unavailable == OnUnavailable.ALLOW
+        # Compare by value since sync_limiter returns its own OnUnavailable type
+        assert on_unavailable.value == "allow"
 
     def test_delete_system_defaults(self, sync_limiter):
         """Test deleting system-level defaults."""
@@ -439,37 +425,33 @@ class TestSyncRateLimiterUsageSnapshots:
     @pytest.fixture
     def sync_limiter_with_snapshots(self, sync_limiter):
         """Sync limiter with test usage snapshots."""
-        import asyncio
-
         from zae_limiter import schema
 
-        async def setup():
-            repo = sync_limiter._limiter._repository
-            client = await repo._get_client()
+        repo = sync_limiter._repository
+        client = repo._get_client()
 
-            snapshots_data = [
-                ("entity-1", "gpt-4", "hourly", "2024-01-15T10:00:00Z", {"tpm": 1000}),
-                ("entity-1", "gpt-4", "hourly", "2024-01-15T11:00:00Z", {"tpm": 2000}),
-            ]
+        snapshots_data = [
+            ("entity-1", "gpt-4", "hourly", "2024-01-15T10:00:00Z", {"tpm": 1000}),
+            ("entity-1", "gpt-4", "hourly", "2024-01-15T11:00:00Z", {"tpm": 2000}),
+        ]
 
-            for entity_id, resource, window_type, window_start, counters in snapshots_data:
-                item = {
-                    "PK": {"S": schema.pk_entity(entity_id)},
-                    "SK": {"S": schema.sk_usage(resource, window_start)},
-                    "entity_id": {"S": entity_id},
-                    "resource": {"S": resource},
-                    "window": {"S": window_type},
-                    "window_start": {"S": window_start},
-                    "total_events": {"N": str(sum(counters.values()))},
-                    "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
-                    "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
-                }
-                for name, value in counters.items():
-                    item[name] = {"N": str(value)}
+        for entity_id, resource, window_type, window_start, counters in snapshots_data:
+            item = {
+                "PK": {"S": schema.pk_entity(entity_id)},
+                "SK": {"S": schema.sk_usage(resource, window_start)},
+                "entity_id": {"S": entity_id},
+                "resource": {"S": resource},
+                "window": {"S": window_type},
+                "window_start": {"S": window_start},
+                "total_events": {"N": str(sum(counters.values()))},
+                "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+                "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
+            }
+            for name, value in counters.items():
+                item[name] = {"N": str(value)}
 
-                await client.put_item(TableName=repo.table_name, Item=item)
+            client.put_item(TableName=repo.table_name, Item=item)
 
-        asyncio.get_event_loop().run_until_complete(setup())
         yield sync_limiter
 
     def test_get_usage_snapshots_sync(self, sync_limiter_with_snapshots):
@@ -519,11 +501,11 @@ class TestSyncRateLimiterListDeployed:
 
     def test_list_deployed_returns_list(self):
         """Test that list_deployed returns a list of LimiterInfo."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
 
-        from zae_limiter import LimiterInfo, SyncRateLimiter
+        from zae_limiter import LimiterInfo
 
-        # Mock the async RateLimiter.list_deployed to return test data
+        # Mock data
         mock_limiters = [
             LimiterInfo(
                 stack_name="test-app",
@@ -537,12 +519,17 @@ class TestSyncRateLimiterListDeployed:
             ),
         ]
 
+        # Mock the SyncInfrastructureDiscovery - use full path to where it's imported
+        mock_discovery = MagicMock()
+        mock_discovery.list_limiters.return_value = mock_limiters
+        mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
+        mock_discovery.__exit__ = MagicMock(return_value=False)
+
         with patch(
-            "zae_limiter.limiter.RateLimiter.list_deployed",
-            new_callable=AsyncMock,
-            return_value=mock_limiters,
+            "zae_limiter.infra.sync_discovery.SyncInfrastructureDiscovery",
+            return_value=mock_discovery,
         ):
-            # Call sync wrapper
+            # Call sync method
             result = SyncRateLimiter.list_deployed(region="us-east-1")
 
         # Verify result
@@ -552,38 +539,44 @@ class TestSyncRateLimiterListDeployed:
         assert result[0].stack_status == "CREATE_COMPLETE"
 
     def test_list_deployed_passes_parameters(self):
-        """Test that parameters are passed through to async version."""
-        from unittest.mock import AsyncMock, patch
+        """Test that parameters are passed through to discovery."""
+        from unittest.mock import MagicMock, patch
 
-        from zae_limiter import SyncRateLimiter
+        # Mock the SyncInfrastructureDiscovery
+        mock_discovery = MagicMock()
+        mock_discovery.list_limiters.return_value = []
+        mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
+        mock_discovery.__exit__ = MagicMock(return_value=False)
 
         with patch(
-            "zae_limiter.limiter.RateLimiter.list_deployed",
-            new_callable=AsyncMock,
-            return_value=[],
-        ) as mock_list:
+            "zae_limiter.infra.sync_discovery.SyncInfrastructureDiscovery",
+            return_value=mock_discovery,
+        ) as mock_class:
             # Call with specific parameters
             SyncRateLimiter.list_deployed(
                 region="eu-west-1",
                 endpoint_url="http://localhost:4566",
             )
 
-            # Verify parameters were passed
-            mock_list.assert_called_once_with(
+            # Verify parameters were passed to constructor
+            mock_class.assert_called_once_with(
                 region="eu-west-1",
                 endpoint_url="http://localhost:4566",
             )
 
     def test_list_deployed_empty_result(self):
         """Test that empty result is handled correctly."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
 
-        from zae_limiter import SyncRateLimiter
+        # Mock the SyncInfrastructureDiscovery
+        mock_discovery = MagicMock()
+        mock_discovery.list_limiters.return_value = []
+        mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
+        mock_discovery.__exit__ = MagicMock(return_value=False)
 
         with patch(
-            "zae_limiter.limiter.RateLimiter.list_deployed",
-            new_callable=AsyncMock,
-            return_value=[],
+            "zae_limiter.infra.sync_discovery.SyncInfrastructureDiscovery",
+            return_value=mock_discovery,
         ):
             result = SyncRateLimiter.list_deployed()
 
@@ -788,9 +781,12 @@ class TestSyncRateLimiterConfigCache:
 
     def test_get_cache_stats_returns_cache_stats(self, sync_limiter):
         """Test get_cache_stats() returns CacheStats object."""
+        from zae_limiter.sync_config_cache import CacheStats as SyncCacheStats
+
         stats = sync_limiter.get_cache_stats()
 
-        assert isinstance(stats, CacheStats)
+        # Use sync CacheStats type since sync limiter uses sync config cache
+        assert isinstance(stats, SyncCacheStats)
         assert stats.hits == 0
         assert stats.misses == 0
         assert stats.size == 0
@@ -798,11 +794,11 @@ class TestSyncRateLimiterConfigCache:
 
     def test_invalidate_config_cache(self, sync_limiter):
         """Test invalidate_config_cache() clears cache entries."""
-        from zae_limiter.config_cache import CacheEntry
+        from zae_limiter.sync_config_cache import CacheEntry
 
         # Manually populate the cache to verify invalidation
         entry = CacheEntry(value=[], expires_at=9999999999.0)
-        sync_limiter._limiter._config_cache._resource_defaults["gpt-4"] = entry
+        sync_limiter._config_cache._resource_defaults["gpt-4"] = entry
 
         assert sync_limiter.get_cache_stats().size == 1
 
@@ -883,31 +879,32 @@ class TestSyncRateLimiterListResourcesWithEntityConfigs:
 class TestSyncRateLimiterBucketTTL:
     """Tests for sync bucket TTL configuration (Issue #271)."""
 
-    def test_bucket_ttl_multiplier_default_is_seven(self, mock_dynamodb):
+    def test_bucket_ttl_multiplier_default_is_seven(self, sync_limiter):
         """Default bucket_ttl_refill_multiplier is 7 for SyncRateLimiter."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            limiter = SyncRateLimiter(name="test")
-            assert limiter._limiter._bucket_ttl_refill_multiplier == 7
-            limiter.close()
+        assert sync_limiter._bucket_ttl_refill_multiplier == 7
 
     def test_bucket_ttl_multiplier_custom_value(self, mock_dynamodb):
         """Custom bucket_ttl_refill_multiplier is passed through."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.sync_repository import SyncRepository
 
-        with _patch_aiobotocore_response():
-            limiter = SyncRateLimiter(name="test", bucket_ttl_refill_multiplier=14)
-            assert limiter._limiter._bucket_ttl_refill_multiplier == 14
+        repo = SyncRepository(name="test", region="us-east-1")
+        repo.create_table()
+        limiter = SyncRateLimiter(repository=repo, bucket_ttl_refill_multiplier=14)
+        try:
+            assert limiter._bucket_ttl_refill_multiplier == 14
+        finally:
             limiter.close()
 
     def test_bucket_ttl_multiplier_zero_disables(self, mock_dynamodb):
         """Setting bucket_ttl_refill_multiplier=0 disables TTL."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.sync_repository import SyncRepository
 
-        with _patch_aiobotocore_response():
-            limiter = SyncRateLimiter(name="test", bucket_ttl_refill_multiplier=0)
-            assert limiter._limiter._bucket_ttl_refill_multiplier == 0
+        repo = SyncRepository(name="test", region="us-east-1")
+        repo.create_table()
+        limiter = SyncRateLimiter(repository=repo, bucket_ttl_refill_multiplier=0)
+        try:
+            assert limiter._bucket_ttl_refill_multiplier == 0
+        finally:
             limiter.close()
 
 
@@ -937,9 +934,7 @@ class TestSyncBucketLimitSync:
             pass
 
         # Verify bucket was created with capacity=100
-        item = sync_limiter._run(
-            sync_limiter._limiter._repository._get_item(pk_entity("user-sync-1"), sk_bucket("api"))
-        )
+        item = sync_limiter._repository._get_item(pk_entity("user-sync-1"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Initial capacity should be 100 RPM"
 
@@ -947,8 +942,6 @@ class TestSyncBucketLimitSync:
         sync_limiter.set_limits("user-sync-1", [Limit.per_minute("rpm", 200)], resource="api")
 
         # Verify bucket capacity was updated immediately (no acquire needed)
-        item = sync_limiter._run(
-            sync_limiter._limiter._repository._get_item(pk_entity("user-sync-1"), sk_bucket("api"))
-        )
+        item = sync_limiter._repository._get_item(pk_entity("user-sync-1"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"
