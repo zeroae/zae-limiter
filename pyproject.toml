@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+requires = ["hatchling", "hatch-vcs", "ruff>=0.1.0"]
 build-backend = "hatchling.build"
 
 [project]

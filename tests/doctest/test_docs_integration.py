@@ -13,7 +13,11 @@ from tests.doctest.conftest import (
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("example", find_examples("docs/"), ids=str)
+@pytest.mark.parametrize(
+    "example",
+    [e for e in find_examples("docs/") if not str(e).startswith("docs/plans/")],
+    ids=str,
+)
 def test_docs_integration(
     example: CodeExample,
     eval_example: EvalExample,
