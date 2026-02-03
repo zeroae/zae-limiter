@@ -60,8 +60,8 @@ from .exceptions import (
     ZAELimiterError,
 )
 from .infra.stack_manager import StackManager
-from .lease import Lease, SyncLease
-from .limiter import OnUnavailable, RateLimiter, SyncRateLimiter
+from .lease import Lease
+from .limiter import OnUnavailable, RateLimiter
 from .models import (
     AuditAction,
     AuditEvent,
@@ -92,11 +92,9 @@ __all__ = [
     "__version__",
     # Main classes
     "RateLimiter",
-    "SyncRateLimiter",
     "Repository",
     "RepositoryProtocol",
     "Lease",
-    "SyncLease",
     "StackManager",
     # Models
     "Limit",

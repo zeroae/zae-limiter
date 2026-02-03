@@ -7,7 +7,10 @@ from unittest.mock import patch
 import pytest
 from moto import mock_aws
 
-from zae_limiter import RateLimiter, SyncRateLimiter
+from zae_limiter import RateLimiter
+
+# NOTE: SyncRateLimiter temporarily unavailable during native sync refactor
+# Will be restored in Task 6 when sync exports are updated
 
 
 @pytest.fixture
@@ -71,16 +74,18 @@ async def limiter(mock_dynamodb):
             yield limiter
 
 
-@pytest.fixture
-def sync_limiter(mock_dynamodb):
-    """Create a SyncRateLimiter with mocked DynamoDB."""
-    with _patch_aiobotocore_response():
-        # Create limiter without auto-creation
-        limiter = SyncRateLimiter(
-            name="test-rate-limits",
-            region="us-east-1",
-        )
-        # Manually create table using direct API (not CloudFormation)
-        limiter._run(limiter._limiter._repository.create_table())
-        with limiter:
-            yield limiter
+# NOTE: sync_limiter fixture temporarily removed during native sync refactor
+# Will be restored in Task 6 when sync exports are updated
+# @pytest.fixture
+# def sync_limiter(mock_dynamodb):
+#     """Create a SyncRateLimiter with mocked DynamoDB."""
+#     with _patch_aiobotocore_response():
+#         # Create limiter without auto-creation
+#         limiter = SyncRateLimiter(
+#             name="test-rate-limits",
+#             region="us-east-1",
+#         )
+#         # Manually create table using direct API (not CloudFormation)
+#         limiter._run(limiter._limiter._repository.create_table())
+#         with limiter:
+#             yield limiter

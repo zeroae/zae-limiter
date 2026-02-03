@@ -1,6 +1,5 @@
 """Lease management for rate limit acquisitions."""
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -341,28 +340,3 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus
             )
         )
     return statuses
-
-
-class SyncLease:
-    """Synchronous wrapper for Lease."""
-
-    def __init__(self, lease: Lease, loop: asyncio.AbstractEventLoop) -> None:
-        self._lease = lease
-        self._loop = loop
-
-    @property
-    def consumed(self) -> dict[str, int]:
-        """Total consumed amounts by limit name."""
-        return self._lease.consumed
-
-    def consume(self, **amounts: int) -> None:
-        """Consume additional capacity from the buckets."""
-        self._loop.run_until_complete(self._lease.consume(**amounts))
-
-    def adjust(self, **amounts: int) -> None:
-        """Adjust consumption by delta."""
-        self._loop.run_until_complete(self._lease.adjust(**amounts))
-
-    def release(self, **amounts: int) -> None:
-        """Return unused capacity to bucket."""
-        self._loop.run_until_complete(self._lease.release(**amounts))
