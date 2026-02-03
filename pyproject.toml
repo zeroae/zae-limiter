@@ -89,6 +89,12 @@ version-file = "src/zae_limiter/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/zae_limiter", "src/zae_limiter_aggregator"]
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.envs.default.scripts]
+generate-sync = "python scripts/generate_sync.py"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
