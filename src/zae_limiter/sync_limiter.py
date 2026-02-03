@@ -16,7 +16,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 if TYPE_CHECKING:
-    from .repository_protocol import RepositoryProtocol
+    from .sync_repository_protocol import SyncRepositoryProtocol
 from .bucket import calculate_available, calculate_time_until_available, try_consume
 from .exceptions import (
     IncompatibleSchemaError,
@@ -87,7 +87,7 @@ class SyncRateLimiter:
 
     def __init__(
         self,
-        repository: "RepositoryProtocol | None" = None,
+        repository: "SyncRepositoryProtocol | None" = None,
         name: str | None = None,
         region: str | None = None,
         endpoint_url: str | None = None,
@@ -104,7 +104,7 @@ class SyncRateLimiter:
 
         Args:
             repository: SyncRepository instance (new API, preferred).
-                Pass a SyncRepository or any RepositoryProtocol implementation.
+                Pass a SyncRepository or any SyncRepositoryProtocol implementation.
             name: DEPRECATED. Resource identifier (e.g., 'my-app').
                 Use SyncRepository(name=...) instead.
             region: DEPRECATED. AWS region.

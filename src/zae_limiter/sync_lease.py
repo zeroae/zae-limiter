@@ -17,7 +17,7 @@ from .models import BucketState, Limit, LimitStatus
 from .schema import calculate_bucket_ttl_seconds
 
 if TYPE_CHECKING:
-    from .repository_protocol import RepositoryProtocol
+    from .sync_repository_protocol import SyncRepositoryProtocol
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +45,7 @@ class SyncLease:
     rollback on exception.
     """
 
-    repository: "RepositoryProtocol"
+    repository: SyncRepositoryProtocol
     entries: list[LeaseEntry] = field(default_factory=list)
     _committed: bool = False
     _rolled_back: bool = False

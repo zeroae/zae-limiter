@@ -43,7 +43,7 @@ repos:
           git diff --exit-code src/zae_limiter/sync_*.py src/zae_limiter/infra/sync_*.py 2>/dev/null ||
           (echo 'Generated sync code is out of date. Run: python scripts/generate_sync.py' && exit 1)"
         language: system
-        files: ^src/zae_limiter/(repository|limiter|lease|config_cache|infra/(stack_manager|discovery))\.py$
+        files: ^src/zae_limiter/(repository_protocol|repository|limiter|lease|config_cache|infra/(stack_manager|discovery))\.py$
         pass_filenames: false
         stages: [pre-commit]
 

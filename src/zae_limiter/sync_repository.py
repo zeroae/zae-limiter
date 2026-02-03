@@ -1972,6 +1972,6 @@ class SyncRepository:
 
 
 if TYPE_CHECKING:
-    from .repository_protocol import RepositoryProtocol
+    from .sync_repository_protocol import SyncRepositoryProtocol
 
-    _: RepositoryProtocol = cast(SyncRepository, None)
+    _: SyncRepositoryProtocol = cast(SyncRepository, None)

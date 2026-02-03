@@ -21,6 +21,7 @@ SRC = ROOT / "src" / "zae_limiter"
 
 # Files to transform: (source, target)
 SOURCE_TRANSFORMS = [
+    ("repository_protocol.py", "sync_repository_protocol.py"),
     ("repository.py", "sync_repository.py"),
     ("limiter.py", "sync_limiter.py"),
     ("lease.py", "sync_lease.py"),
@@ -31,6 +32,7 @@ SOURCE_TRANSFORMS = [
 
 # Class renames
 CLASS_RENAMES = {
+    "RepositoryProtocol": "SyncRepositoryProtocol",
     "RateLimiter": "SyncRateLimiter",
     "Repository": "SyncRepository",
     "Lease": "SyncLease",
@@ -63,6 +65,7 @@ ATTRIBUTE_ACCESS_REWRITES = {
 
 # Import path rewrites (for relative imports)
 IMPORT_PATH_REWRITES = {
+    ".repository_protocol": ".sync_repository_protocol",
     ".repository": ".sync_repository",
     ".lease": ".sync_lease",
     ".config_cache": ".sync_config_cache",
@@ -72,6 +75,7 @@ IMPORT_PATH_REWRITES = {
 
 # Names to rewrite in from imports
 IMPORT_NAME_REWRITES = {
+    "RepositoryProtocol": "SyncRepositoryProtocol",
     "Repository": "SyncRepository",
     "Lease": "SyncLease",
     "ConfigCache": "SyncConfigCache",
