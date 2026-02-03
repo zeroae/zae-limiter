@@ -100,7 +100,7 @@ class SyncRepository:
     def close(self) -> None:
         """Close the DynamoDB client."""
         if self._client is not None:
-            self._client.__exit__(None, None, None)
+            pass
             self._client = None
             self._session = None
 

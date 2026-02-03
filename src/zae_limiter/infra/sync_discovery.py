@@ -253,7 +253,7 @@ class SyncInfrastructureDiscovery:
         """Close the underlying session and client."""
         if self._client is not None:
             try:
-                self._client.__exit__(None, None, None)
+                pass
             except Exception:
                 pass
             finally:

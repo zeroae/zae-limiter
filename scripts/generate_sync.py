@@ -198,6 +198,23 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
 
         return node
 
+    def visit_Expr(self, node: ast.Expr) -> ast.AST | None:  # noqa: N802
+        """Handle expression statements, removing boto3 __exit__ calls."""
+        # Visit the expression first
+        node.value = self.visit(node.value)
+
+        # Remove self._client.__exit__(None, None, None) calls
+        # boto3 sync clients don't have __exit__ - they don't need explicit cleanup
+        if (
+            isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "__exit__"
+        ):
+            # Replace with pass (we can't just remove the statement)
+            return ast.Pass()
+
+        return node
+
     def visit_AsyncWith(self, node: ast.AsyncWith) -> ast.With:  # noqa: N802
         """Convert async with to with."""
         new_node = ast.With(
