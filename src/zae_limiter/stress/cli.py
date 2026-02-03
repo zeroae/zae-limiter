@@ -348,8 +348,9 @@ def setup(
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--port", default=8089, type=int, help="Local port for Locust UI")
-def connect(name: str, region: str | None, port: int) -> None:
-    """Start Fargate master, open SSM tunnel, and block until interrupted."""
+@click.option("--destroy", is_flag=True, help="Stop Fargate on disconnect even if already running")
+def connect(name: str, region: str | None, port: int, destroy: bool) -> None:
+    """Connect to Fargate master via SSM tunnel."""
     import json
     import subprocess
     import time
@@ -484,8 +485,8 @@ def connect(name: str, region: str | None, port: int) -> None:
         click.echo("\nInterrupted")
 
     finally:
-        # Only scale down if we started the task
-        if started_by_us:
+        # Scale down if we started the task or --destroy was passed
+        if started_by_us or destroy:
             click.echo("Stopping Fargate master...")
             try:
                 scale_service(0)
@@ -493,7 +494,7 @@ def connect(name: str, region: str | None, port: int) -> None:
             except Exception as e:
                 click.echo(f"  Warning: Failed to stop service: {e}", err=True)
         else:
-            click.echo("Disconnected (Fargate task still running)")
+            click.echo("Disconnected (Fargate task still running, use --destroy to stop)")
 
 
 @stress.command()
