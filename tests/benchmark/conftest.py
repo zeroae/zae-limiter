@@ -20,15 +20,14 @@ from tests.integration.conftest import (
     unique_name_class,
 )
 from tests.unit.conftest import (
-    _patch_aiobotocore_response,
     aws_credentials,
     mock_dynamodb,
     sync_limiter,
 )
 from zae_limiter import Limit, SyncRateLimiter
+from zae_limiter.sync_repository import SyncRepository
 
 __all__ = [
-    "_patch_aiobotocore_response",
     "aws_credentials",
     "mock_dynamodb",
     "sync_limiter",
@@ -92,27 +91,19 @@ class CapacityCounter:
 
 @contextmanager
 def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, None, None]:
-    """Context manager that wraps DynamoDB client to count API calls.
+    """Context manager that wraps DynamoDB boto3 client to count API calls.
 
-    This wraps the DynamoDB client methods to count calls without
+    This wraps the sync DynamoDB client methods to count calls without
     interfering with the actual operations.
 
     Args:
         counter: The CapacityCounter to update
         limiter: The SyncRateLimiter whose repository's client to wrap
     """
-    # Get the repository's already-cached client
-    # For SyncRateLimiter, we need to access the inner async limiter's repository
-    if hasattr(limiter, "_limiter"):
-        # SyncRateLimiter
-        repo = limiter._limiter._repository
-    else:
-        # RateLimiter
-        repo = limiter._repository
+    repo = limiter._repository
 
     client = repo._client
     if client is None:
-        # Client not yet created, nothing to wrap
         yield
         return
 
@@ -124,35 +115,35 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
     original_transact = client.transact_write_items
     original_batch = client.batch_write_item
 
-    # Create counting wrappers
-    async def counting_get_item(*args: Any, **kwargs: Any) -> Any:
+    # Sync counting wrappers for boto3 client
+    def counting_get_item(*args: Any, **kwargs: Any) -> Any:
         counter.get_item += 1
-        return await original_get_item(*args, **kwargs)
+        return original_get_item(*args, **kwargs)
 
-    async def counting_batch_get(*args: Any, **kwargs: Any) -> Any:
+    def counting_batch_get(*args: Any, **kwargs: Any) -> Any:
         request_items = kwargs.get("RequestItems", {})
         total_items = sum(len(items.get("Keys", [])) for items in request_items.values())
         counter.batch_get_item.append(total_items)
-        return await original_batch_get(*args, **kwargs)
+        return original_batch_get(*args, **kwargs)
 
-    async def counting_query(*args: Any, **kwargs: Any) -> Any:
+    def counting_query(*args: Any, **kwargs: Any) -> Any:
         counter.query += 1
-        return await original_query(*args, **kwargs)
+        return original_query(*args, **kwargs)
 
-    async def counting_put_item(*args: Any, **kwargs: Any) -> Any:
+    def counting_put_item(*args: Any, **kwargs: Any) -> Any:
         counter.put_item += 1
-        return await original_put_item(*args, **kwargs)
+        return original_put_item(*args, **kwargs)
 
-    async def counting_transact(*args: Any, **kwargs: Any) -> Any:
+    def counting_transact(*args: Any, **kwargs: Any) -> Any:
         items = kwargs.get("TransactItems", [])
         counter.transact_write_items.append(len(items))
-        return await original_transact(*args, **kwargs)
+        return original_transact(*args, **kwargs)
 
-    async def counting_batch(*args: Any, **kwargs: Any) -> Any:
+    def counting_batch(*args: Any, **kwargs: Any) -> Any:
         request_items = kwargs.get("RequestItems", {})
         total_items = sum(len(items) for items in request_items.values())
         counter.batch_write_item.append(total_items)
-        return await original_batch(*args, **kwargs)
+        return original_batch(*args, **kwargs)
 
     # Apply wrappers
     client.get_item = counting_get_item
@@ -268,15 +259,19 @@ def sync_limiter_no_cache(mock_dynamodb):
     Use this fixture alongside sync_limiter to compare performance
     with and without config caching optimization.
     """
-    with _patch_aiobotocore_response():
-        limiter = SyncRateLimiter(
-            name="test-no-cache",
-            region="us-east-1",
-            config_cache_ttl=0,  # Disable config cache
-        )
-        limiter._run(limiter._limiter._repository.create_table())
-        with limiter:
-            yield limiter
+    repo = SyncRepository(
+        name="test-no-cache",
+        region="us-east-1",
+    )
+    repo.create_table()
+
+    limiter = SyncRateLimiter(
+        repository=repo,
+        config_cache_ttl=0,  # Disable config cache
+    )
+
+    with limiter:
+        yield limiter
 
 
 @pytest.fixture
