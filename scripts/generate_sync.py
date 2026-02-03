@@ -423,14 +423,15 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
 def run_ruff_on_content(content: str, target_path: Path) -> str:
     """Run ruff check --fix and format on content, return formatted content.
 
-    If ruff is not available (e.g., during hatch build before dev deps are installed),
-    returns the content unformatted.
+    Raises FileNotFoundError if ruff is not installed.
     """
     import shutil
     import tempfile
 
     if shutil.which("ruff") is None:
-        return content
+        raise FileNotFoundError(
+            "ruff is required for sync code generation. Install it with: pip install ruff"
+        )
 
     # Write to a temp file with the same path structure for correct config resolution
     with tempfile.NamedTemporaryFile(
