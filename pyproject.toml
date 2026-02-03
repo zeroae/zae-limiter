@@ -111,6 +111,12 @@ markers = [
     "doctest: marks tests that validate documentation code examples",
 ]
 
+[tool.coverage.run]
+omit = [
+    "src/zae_limiter/sync_*.py",
+    "src/zae_limiter/infra/sync_*.py",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
