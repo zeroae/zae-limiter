@@ -4,9 +4,8 @@ Usage:
     Local:  locust -f locustfile.py
     Lambda: Imported by worker handler
 
-Uses asyncio-gevent for proper asyncio/gevent integration. Each greenlet
-maintains its own event loop to avoid conflicts when running async code
-from within gevent greenlets.
+Uses gevent.spawn() to run async operations. Each greenlet spawns a child
+greenlet that runs asyncio.run() for async operations.
 """
 
 from __future__ import annotations
@@ -14,28 +13,19 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections.abc import Callable
+from typing import Any
 
-import asyncio_gevent
+import gevent
+from gevent.local import local as greenlet_local
+from locust import User, between, task
 
-# Set asyncio to use gevent's event loop - must be done before any asyncio usage
-asyncio.set_event_loop_policy(asyncio_gevent.EventLoopPolicy())
+from zae_limiter import RateLimiter, RateLimitExceeded
+from zae_limiter.stress.config import StressConfig
+from zae_limiter.stress.distribution import TrafficDistributor
 
-from gevent.local import local as greenlet_local  # noqa: E402
-from locust import User, between, task  # noqa: E402
-
-from zae_limiter import RateLimiter, RateLimitExceeded  # noqa: E402
-from zae_limiter.stress.config import StressConfig  # noqa: E402
-from zae_limiter.stress.distribution import TrafficDistributor  # noqa: E402
-
-# Greenlet-local storage for limiter and event loop
+# Greenlet-local storage for limiter
 _greenlet_state = greenlet_local()
-
-
-def _get_loop() -> asyncio.AbstractEventLoop:
-    """Get or create a greenlet-local event loop."""
-    if not hasattr(_greenlet_state, "loop") or _greenlet_state.loop.is_closed():
-        _greenlet_state.loop = asyncio.new_event_loop()
-    return _greenlet_state.loop  # type: ignore[no-any-return]
 
 
 def _get_limiter(config: StressConfig) -> RateLimiter:
@@ -48,10 +38,18 @@ def _get_limiter(config: StressConfig) -> RateLimiter:
     return _greenlet_state.limiter  # type: ignore[no-any-return]
 
 
-def _run_async(coro: object) -> object:
-    """Run an async coroutine in the greenlet-local event loop."""
-    loop = _get_loop()
-    return loop.run_until_complete(coro)  # type: ignore[arg-type]
+def _run_async(func: Callable[[], Any]) -> Any:
+    """Run an async function by spawning a greenlet that calls asyncio.run().
+
+    This works around asyncio/gevent conflicts by isolating the asyncio
+    event loop in a child greenlet.
+    """
+
+    def wrapper() -> Any:
+        return asyncio.run(func())
+
+    greenlet = gevent.spawn(wrapper)
+    return greenlet.get()
 
 
 class RateLimiterUser(User):  # type: ignore[misc]
@@ -91,7 +89,7 @@ class RateLimiterUser(User):  # type: ignore[misc]
             ):
                 pass  # Work would happen here
 
-        _run_async(acquire_async())
+        _run_async(acquire_async)
 
     def _do_available(self, entity_id: str, api: str) -> dict[str, int] | None:
         """Execute available check using async RateLimiter."""
@@ -104,7 +102,8 @@ class RateLimiterUser(User):  # type: ignore[misc]
                 resource=api,
             )
 
-        return _run_async(available_async())  # type: ignore[return-value]
+        result: dict[str, int] | None = _run_async(available_async)
+        return result
 
     @task(weight=100)  # type: ignore[misc]
     def acquire_tokens(self) -> None:
