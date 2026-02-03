@@ -58,9 +58,10 @@ ATTRIBUTE_NAME_REWRITES = {
 }
 
 # Attribute access rewrites (module.attr -> replacement)
-# Used for asyncio.Lock -> threading.Lock
+# Used for asyncio.Lock -> threading.Lock, asyncio.sleep -> time.sleep
 ATTRIBUTE_ACCESS_REWRITES = {
     ("asyncio", "Lock"): ("threading", "Lock"),
+    ("asyncio", "sleep"): ("time", "sleep"),
 }
 
 # Import path rewrites (for relative imports)
@@ -81,6 +82,8 @@ IMPORT_NAME_REWRITES = {
     "ConfigCache": "SyncConfigCache",
     "StackManager": "SyncStackManager",
     "InfrastructureDiscovery": "SyncInfrastructureDiscovery",
+    # Decorator rewrites
+    "asynccontextmanager": "contextmanager",
 }
 
 # Type annotation rewrites
@@ -160,6 +163,40 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
     def visit_Await(self, node: ast.Await) -> ast.AST:  # noqa: N802
         """Remove await, keep the expression."""
         return self.visit(node.value)
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:  # noqa: N802
+        """Handle special function call transformations."""
+        # First visit children
+        node.func = self.visit(node.func)
+        node.args = [self.visit(arg) for arg in node.args]
+        node.keywords = [self.visit(kw) for kw in node.keywords]
+
+        # Handle asyncio.wait_for(coro, timeout) -> just coro (remove wait_for)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "asyncio"
+            and node.func.attr == "wait_for"
+            and len(node.args) >= 1
+        ):
+            # Return just the first argument (the coroutine), skip timeout
+            return node.args[0]
+
+        # Handle boto3/aioboto3 client context manager pattern:
+        # session.client("dynamodb", ...)__aenter__() -> session.client("dynamodb", ...)
+        # After __aenter__ -> __enter__ rewrite, we get .__enter__() which we need to remove
+        # for boto3 sync clients (they're not context managers)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "__enter__"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Attribute)
+            and node.func.value.func.attr == "client"
+        ):
+            # Remove the .__enter__() call, return just the client creation
+            return node.func.value
+
+        return node
 
     def visit_AsyncWith(self, node: ast.AsyncWith) -> ast.With:  # noqa: N802
         """Convert async with to with."""
@@ -264,7 +301,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         return node
 
     def visit_Name(self, node: ast.Name) -> ast.Name:  # noqa: N802
-        """Rewrite class name references and module names."""
+        """Rewrite class name references, module names, and decorator names."""
         if node.id in CLASS_RENAMES:
             node.id = CLASS_RENAMES[node.id]
         if node.id in TYPE_REWRITES:
@@ -272,6 +309,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         # Also rewrite module names (e.g., aioboto3 -> boto3)
         if node.id in IMPORT_MODULE_REWRITES:
             node.id = IMPORT_MODULE_REWRITES[node.id]
+        # Rewrite decorator names (e.g., asynccontextmanager -> contextmanager)
+        if node.id in IMPORT_NAME_REWRITES:
+            node.id = IMPORT_NAME_REWRITES[node.id]
         return node
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.Attribute:  # noqa: N802

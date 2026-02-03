@@ -6,7 +6,6 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
-import asyncio
 import time
 from importlib.resources import files
 from typing import Any, cast
@@ -70,7 +69,7 @@ class SyncStackManager:
         if self.endpoint_url:
             kwargs["endpoint_url"] = self.endpoint_url
         session = self._session
-        self._client = session.client("cloudformation", **kwargs).__enter__()
+        self._client = session.client("cloudformation", **kwargs)
         return self._client
 
     def _load_template(self) -> str:
@@ -559,9 +558,9 @@ class SyncStackManager:
                             if time_since_enabled >= min_stabilization:
                                 return True
                             break
-                    asyncio.sleep(interval)
+                    time.sleep(interval)
                 except Exception:
-                    asyncio.sleep(interval)
+                    time.sleep(interval)
         return False
 
     def close(self) -> None:

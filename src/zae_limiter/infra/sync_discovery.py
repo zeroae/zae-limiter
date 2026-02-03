@@ -65,7 +65,7 @@ class SyncInfrastructureDiscovery:
         if self.endpoint_url:
             kwargs["endpoint_url"] = self.endpoint_url
         session = self._session
-        self._client = session.client("cloudformation", **kwargs).__enter__()
+        self._client = session.client("cloudformation", **kwargs)
         return self._client
 
     def list_limiters(self) -> list[LimiterInfo]:

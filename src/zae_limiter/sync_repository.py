@@ -94,7 +94,7 @@ class SyncRepository:
             self._session = boto3.Session()
             self._client = self._session.client(
                 "dynamodb", region_name=self.region, endpoint_url=self.endpoint_url
-            ).__enter__()
+            )
         return self._client
 
     def close(self) -> None:

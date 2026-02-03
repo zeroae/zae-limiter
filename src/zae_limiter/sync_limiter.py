@@ -6,11 +6,10 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
-import asyncio
 import time
 import warnings
 from collections.abc import Iterator
-from contextlib import asynccontextmanager
+from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -369,7 +368,7 @@ class SyncRateLimiter:
                 pass
         """
         try:
-            return asyncio.wait_for(self._repository.ping(), timeout=timeout)
+            return self._repository.ping()
         except (TimeoutError, Exception):
             return False
 
@@ -582,7 +581,7 @@ class SyncRateLimiter:
             end_time=end_str,
         )
 
-    @asynccontextmanager
+    @contextmanager
     def acquire(
         self,
         entity_id: str,
