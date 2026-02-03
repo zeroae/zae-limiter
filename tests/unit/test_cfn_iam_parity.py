@@ -117,42 +117,42 @@ class TestIAMRoleParity:
             f"Expected at least 5 DynamoDB operations, found: {self.repo_actions}"
         )
 
-    def test_admin_role_covers_all_repository_operations(self) -> None:
-        """AdminPolicy should have every DynamoDB action used in repository.py.
+    def test_full_access_policy_covers_all_repository_operations(self) -> None:
+        """FullAccessPolicy should have every DynamoDB action used in repository.py.
 
-        AdminPolicy is for ops teams managing config — it needs full CRUD access
+        FullAccessPolicy is for apps and ops teams — it needs full CRUD access
         to all operations the library performs.
         """
-        admin_actions = _extract_policy_actions(self.template, "AdminPolicy")
-        missing = self.repo_actions - admin_actions
+        full_actions = _extract_policy_actions(self.template, "FullAccessPolicy")
+        missing = self.repo_actions - full_actions
 
         assert not missing, (
-            f"AdminPolicy is missing DynamoDB actions used in repository.py: {missing}. "
-            f"Add them to the AdminPolicy in cfn_template.yaml."
+            f"FullAccessPolicy is missing DynamoDB actions used in repository.py: {missing}. "
+            f"Add them to the FullAccessPolicy in cfn_template.yaml."
         )
 
-    def test_app_role_covers_read_and_transact_operations(self) -> None:
-        """AppPolicy should have read + transact operations for acquire() workflow.
+    def test_acquire_only_policy_covers_read_and_transact_operations(self) -> None:
+        """AcquireOnlyPolicy should have read + transact operations for acquire() workflow.
 
-        AppPolicy is for applications running acquire(). It needs:
+        AcquireOnlyPolicy is for applications running acquire() only. It needs:
         - Read operations: GetItem, BatchGetItem, Query
         - Write: TransactWriteItems (atomic bucket updates)
 
         It intentionally excludes PutItem, DeleteItem, UpdateItem,
-        BatchWriteItem (admin-only operations).
+        BatchWriteItem (entity creation and config management).
         """
-        app_actions = _extract_policy_actions(self.template, "AppPolicy")
-        required_app_actions = {
+        acq_actions = _extract_policy_actions(self.template, "AcquireOnlyPolicy")
+        required_acq_actions = {
             "dynamodb:GetItem",
             "dynamodb:BatchGetItem",
             "dynamodb:Query",
             "dynamodb:TransactWriteItems",
         }
-        missing = required_app_actions - app_actions
+        missing = required_acq_actions - acq_actions
 
         assert not missing, (
-            f"AppPolicy is missing required DynamoDB actions: {missing}. "
-            f"Add them to the AppPolicy in cfn_template.yaml."
+            f"AcquireOnlyPolicy is missing required DynamoDB actions: {missing}. "
+            f"Add them to the AcquireOnlyPolicy in cfn_template.yaml."
         )
 
     def test_readonly_role_has_only_read_operations(self) -> None:

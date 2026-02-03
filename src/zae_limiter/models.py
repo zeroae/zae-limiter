@@ -895,14 +895,14 @@ class StackOptions:
             params["readonly_role_name"] = readonly_role
         # Generate 3 separate policy name parameters
         if self.policy_name_format and stack_name:
-            app_policy = self.get_policy_name(stack_name, "app")
-            admin_policy = self.get_policy_name(stack_name, "admin")
+            acquire_only_policy = self.get_policy_name(stack_name, "acq")
+            full_access_policy = self.get_policy_name(stack_name, "full")
             readonly_policy = self.get_policy_name(stack_name, "read")
-            assert app_policy is not None
-            assert admin_policy is not None
+            assert acquire_only_policy is not None
+            assert full_access_policy is not None
             assert readonly_policy is not None
-            params["app_policy_name"] = app_policy
-            params["admin_policy_name"] = admin_policy
+            params["acquire_only_policy_name"] = acquire_only_policy
+            params["full_access_policy_name"] = full_access_policy
             params["readonly_policy_name"] = readonly_policy
         # Audit archival parameters
         params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
