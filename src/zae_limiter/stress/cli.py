@@ -399,25 +399,34 @@ def connect(name: str, region: str | None, port: int) -> None:
 
         return task_id, runtime_id
 
+    started_by_us = False
+
     try:
-        # Start Fargate task
-        click.echo(f"Starting Fargate master: {stack_name}")
-        scale_service(1)
-
-        # Wait for task to be running
-        click.echo("  Waiting for task to start...")
-        for _ in range(60):  # 2 minute timeout
-            result = get_running_task()
-            if result:
-                task_id, runtime_id = result
-                break
-            time.sleep(2)
+        # Check if task is already running
+        result = get_running_task()
+        if result:
+            task_id, runtime_id = result
+            click.echo(f"Found running Fargate task: {task_id}")
         else:
-            click.echo("Error: Task failed to start within 2 minutes", err=True)
-            scale_service(0)
-            sys.exit(1)
+            # Start Fargate task
+            started_by_us = True
+            click.echo(f"Starting Fargate master: {stack_name}")
+            scale_service(1)
 
-        click.echo(f"  Task running: {task_id}")
+            # Wait for task to be running
+            click.echo("  Waiting for task to start...")
+            for _ in range(60):  # 2 minute timeout
+                result = get_running_task()
+                if result:
+                    task_id, runtime_id = result
+                    break
+                time.sleep(2)
+            else:
+                click.echo("Error: Task failed to start within 2 minutes", err=True)
+                scale_service(0)
+                sys.exit(1)
+
+            click.echo(f"  Task running: {task_id}")
 
         # Wait for SSM agent to be ready
         click.echo("  Waiting for SSM agent...")
@@ -475,13 +484,16 @@ def connect(name: str, region: str | None, port: int) -> None:
         click.echo("\nInterrupted")
 
     finally:
-        # Always scale down on exit
-        click.echo("Stopping Fargate master...")
-        try:
-            scale_service(0)
-            click.echo("  Fargate master stopped")
-        except Exception as e:
-            click.echo(f"  Warning: Failed to stop service: {e}", err=True)
+        # Only scale down if we started the task
+        if started_by_us:
+            click.echo("Stopping Fargate master...")
+            try:
+                scale_service(0)
+                click.echo("  Fargate master stopped")
+            except Exception as e:
+                click.echo(f"  Warning: Failed to stop service: {e}", err=True)
+        else:
+            click.echo("Disconnected (Fargate task still running)")
 
 
 @stress.command()
