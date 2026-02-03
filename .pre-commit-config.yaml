@@ -20,6 +20,7 @@ repos:
           - types-aiobotocore[dynamodb,s3]>=2.0.0
           - types-docker>=7.0.0
           - click>=8.0.0
+          - locust>=2.0.0
 
   - repo: https://github.com/aws-cloudformation/cfn-lint
     rev: v1.24.0
