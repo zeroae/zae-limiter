@@ -118,12 +118,23 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+# Generated sync files: ast.unparse doesn't preserve line breaks in strings
+"src/zae_limiter/sync_*.py" = ["E501"]
+"src/zae_limiter/infra/sync_*.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
-exclude = ["tests/"]
+# Generated sync files have type mismatches with async protocols
+# TODO: Create SyncRepositoryProtocol for proper typing (Task 7)
+exclude = '''(?x)(
+    tests/
+    | src/zae_limiter/sync_.*\.py
+    | src/zae_limiter/infra/sync_.*\.py
+)'''
 
 [[tool.mypy.overrides]]
 module = "aws_lambda_builders.*"
