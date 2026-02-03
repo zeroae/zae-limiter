@@ -147,6 +147,11 @@ module = [
 ]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "locust.*"
+ignore_missing_imports = true
+follow_untyped_imports = false
+
 [tool.coverage.run]
 omit = [
     # Generated sync files - coverage measured on async source only
@@ -154,4 +159,3 @@ omit = [
     # Stress testing module - separate test infrastructure
     "src/zae_limiter/stress/*",
 ]
-
