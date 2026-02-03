@@ -148,6 +148,7 @@ module = [
     "aioboto3",
     "aioboto3.*",
     "ulid",
+    "zae_limiter._version",
 ]
 ignore_missing_imports = true
 
