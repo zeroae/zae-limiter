@@ -47,7 +47,7 @@ jobs:
       - name: Install dependencies
         run: uv sync
       - name: Generate sync code
-        run: python scripts/generate_sync.py
+        run: uv run python scripts/generate_sync.py
       - name: Check for uncommitted changes
         run: |
           git diff --exit-code src/zae_limiter/sync_*.py src/zae_limiter/infra/sync_*.py || \
