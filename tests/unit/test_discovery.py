@@ -769,3 +769,23 @@ class TestDescribeStackAsLimiterInfo:
             result = await discovery._describe_stack_as_limiter_info("nonexistent")
 
         assert result is None
+
+
+class TestClose:
+    """Tests for close method."""
+
+    @pytest.mark.asyncio
+    async def test_close_handles_client_exit_error(self) -> None:
+        """close handles errors from client __aexit__."""
+        discovery = InfrastructureDiscovery(region="us-east-1")
+
+        mock_client = MagicMock()
+        mock_client.__aexit__ = AsyncMock(side_effect=Exception("Cleanup error"))
+        discovery._client = mock_client
+        discovery._session = MagicMock()
+
+        # Should not raise - errors are suppressed
+        await discovery.close()
+
+        assert discovery._client is None
+        assert discovery._session is None
