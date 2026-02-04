@@ -428,3 +428,43 @@ class TestMain:
             payload = json.loads(call_args[1]["Payload"])
             assert "user_classes" not in payload["config"]
             assert "locustfile" not in payload["config"]
+
+    def test_main_guard(self):
+        """The if __name__ == '__main__' guard calls main()."""
+        env = {
+            "DESIRED_WORKERS": "1",
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        # Build a mock urlopen that returns metadata JSON
+        metadata = json.dumps(
+            {
+                "Containers": [
+                    {"Networks": [{"NetworkMode": "awsvpc", "IPv4Addresses": ["10.0.0.1"]}]}
+                ]
+            }
+        ).encode()
+        mock_response = MagicMock()
+        mock_response.read.return_value = metadata
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("urllib.request.urlopen", return_value=mock_response),
+            patch("boto3.client", return_value=MagicMock()),
+            patch("time.sleep", side_effect=KeyboardInterrupt),
+            patch("signal.signal"),
+        ):
+            import runpy
+
+            with pytest.raises(KeyboardInterrupt):
+                runpy.run_module(
+                    "zae_limiter.load.orchestrator",
+                    run_name="__main__",
+                    alter_sys=True,
+                )
