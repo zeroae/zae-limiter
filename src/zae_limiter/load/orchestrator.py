@@ -126,15 +126,19 @@ def main() -> None:
     )
 
     lambda_client = boto3.client("lambda")
-    payload = json.dumps(
-        {
-            "config": {
-                "mode": "worker",
-                "master_host": master_ip,
-                "master_port": master_port,
-            }
-        }
-    ).encode()
+    payload_config: dict[str, object] = {
+        "mode": "worker",
+        "master_host": master_ip,
+        "master_port": master_port,
+    }
+    user_classes = os.environ.get("LOCUST_USER_CLASSES")
+    if user_classes:
+        payload_config["user_classes"] = user_classes
+    locustfile = os.environ.get("LOCUSTFILE")
+    if locustfile:
+        payload_config["locustfile"] = locustfile
+
+    payload = json.dumps({"config": payload_config}).encode()
 
     pool = WorkerPool(pending_timeout=pending_timeout)
     last_connected = -1
