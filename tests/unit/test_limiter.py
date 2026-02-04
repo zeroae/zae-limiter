@@ -515,6 +515,34 @@ class TestWriteOnEnter:
         assert lease._committed is True
         mock_repo.transact_write.assert_not_called()
 
+    async def test_commit_adjustments_failure_allows_rollback(self):
+        """_rollback works after _commit_adjustments fails (token leak fix)."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(consumed=15, initial_consumed=10)
+        mock_repo = self._make_mock_repo()
+        mock_repo.transact_write.side_effect = RuntimeError("network error")
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        lease._initial_committed = True
+
+        with pytest.raises(RuntimeError, match="network error"):
+            await lease._commit_adjustments()
+
+        # _committed should NOT be True after failed write
+        assert lease._committed is False
+
+        # _rollback should succeed (not blocked by _committed flag)
+        mock_repo.transact_write.side_effect = None
+        await lease._rollback()
+        assert lease._rolled_back is True
+        # Rollback writes negative initial_consumed
+        mock_repo.build_composite_adjust.assert_called_with(
+            entity_id="e1",
+            resource="gpt-4",
+            deltas={"rpm": -10000},
+        )
+
     async def test_rollback_skips_when_committed(self):
         """_rollback is no-op when already committed (line 358)."""
         from zae_limiter.lease import Lease

@@ -312,9 +312,8 @@ class Lease:
         if self._committed or self._rolled_back:
             return
 
-        self._committed = True
-
         if not self._has_adjustments:
+            self._committed = True
             return
 
         repo = self.repository
@@ -344,6 +343,8 @@ class Lease:
 
         if items:
             await repo.transact_write(items)
+
+        self._committed = True
 
     async def _rollback(self) -> None:
         """Write compensating transaction to restore consumed tokens (Issue #309).
