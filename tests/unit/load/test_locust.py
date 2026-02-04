@@ -512,3 +512,162 @@ class TestAcquireCommit:
         assert commit_call["request_type"] == "COMMIT"
         # COMMIT response_time should be much less than the user code sleep
         assert commit_call["response_time"] < user_code_seconds * 1000
+
+
+# ---------------------------------------------------------------------------
+# Available
+# ---------------------------------------------------------------------------
+
+
+class TestAvailable:
+    """Tests for the available() method."""
+
+    def test_returns_result_and_fires_event(self, session, mock_limiter, mock_event):
+        mock_limiter.available.return_value = {"rpm": 50, "tpm": 10000}
+
+        result = session.available("user-1", "gpt-4")
+
+        assert result == {"rpm": 50, "tpm": 10000}
+        mock_limiter.available.assert_called_once_with(entity_id="user-1", resource="gpt-4")
+        call_kwargs = mock_event.fire.call_args.kwargs
+        assert call_kwargs["request_type"] == "AVAILABLE"
+        assert call_kwargs["name"] == "gpt-4"
+        assert call_kwargs["exception"] is None
+
+    def test_custom_name(self, session, mock_limiter, mock_event):
+        mock_limiter.available.return_value = {}
+        session.available("user-1", "gpt-4", name="custom")
+        assert mock_event.fire.call_args.kwargs["name"] == "custom"
+
+    def test_exception_fires_with_error(self, session, mock_limiter, mock_event):
+        err = RuntimeError("dynamo error")
+        mock_limiter.available.side_effect = err
+        with pytest.raises(RuntimeError):
+            session.available("user-1", "gpt-4")
+        call_kwargs = mock_event.fire.call_args.kwargs
+        assert call_kwargs["request_type"] == "AVAILABLE"
+        assert call_kwargs["exception"] is err
+
+
+# ---------------------------------------------------------------------------
+# RateLimiterUser
+# ---------------------------------------------------------------------------
+
+
+class _MockUser:
+    """Minimal stand-in for locust.User to avoid gevent monkey-patching."""
+
+    abstract = True
+
+    def __init__(self, environment, *args, **kwargs):
+        self.environment = environment
+        self.host = getattr(environment, "host", None)
+
+
+class _MockStopTestError(Exception):
+    pass
+
+
+_mock_locust = MagicMock()
+_mock_locust.User = _MockUser
+_mock_exception = MagicMock()
+_mock_exception.StopTest = _MockStopTestError
+
+
+def _load_locust_module():
+    """Reload zae_limiter.locust with mocked locust dependencies."""
+    import importlib
+
+    with patch.dict(
+        "sys.modules",
+        {"locust": _mock_locust, "locust.exception": _mock_exception},
+    ):
+        import zae_limiter.locust as mod
+
+        importlib.reload(mod)
+        return mod
+
+
+class TestRateLimiterUser:
+    """Tests for RateLimiterUser.__init__."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_limiter(self):
+        """Reset the class-level _limiter between tests."""
+        mod = _load_locust_module()
+        mod.RateLimiterUser._limiter = None
+        yield
+        mod = _load_locust_module()
+        mod.RateLimiterUser._limiter = None
+
+    def test_stack_name_from_class_attribute(self):
+        mod = _load_locust_module()
+
+        class TestUser(mod.RateLimiterUser):
+            abstract = False
+            stack_name = "my-app"
+
+        mock_env = MagicMock(host=None)
+
+        with patch.object(mod, "SyncRateLimiter") as mock_sync:
+            user = TestUser(mock_env)
+
+        assert user.stack_name == "my-app"
+        mock_sync.assert_called_once_with(name="my-app", region="us-east-1")
+
+    def test_falls_back_to_host(self):
+        mod = _load_locust_module()
+
+        class HostUser(mod.RateLimiterUser):
+            abstract = False
+
+        mock_env = MagicMock(host="fallback-stack")
+
+        with patch.object(mod, "SyncRateLimiter") as mock_sync:
+            user = HostUser(mock_env)
+
+        assert user.stack_name == "fallback-stack"
+        mock_sync.assert_called_once_with(name="fallback-stack", region="us-east-1")
+
+    def test_raises_stop_test_without_stack_name(self):
+        mod = _load_locust_module()
+
+        class NoStackUser(mod.RateLimiterUser):
+            abstract = False
+
+        mock_env = MagicMock(host=None)
+
+        with pytest.raises(_MockStopTestError, match="stack_name"):
+            NoStackUser(mock_env)
+
+    def test_shares_limiter_across_instances(self):
+        mod = _load_locust_module()
+
+        class SharedUser(mod.RateLimiterUser):
+            abstract = False
+            stack_name = "my-app"
+
+        mock_env = MagicMock(host=None)
+
+        with patch.object(mod, "SyncRateLimiter") as mock_sync:
+            user1 = SharedUser(mock_env)
+            user2 = SharedUser(mock_env)
+
+        # SyncRateLimiter should only be created once
+        mock_sync.assert_called_once()
+        assert user1.client._limiter is user2.client._limiter
+
+    def test_custom_region(self):
+        mod = _load_locust_module()
+
+        class RegionUser(mod.RateLimiterUser):
+            abstract = False
+            stack_name = "my-app"
+            region = "eu-west-1"
+
+        mock_env = MagicMock(host=None)
+
+        with patch.object(mod, "SyncRateLimiter") as mock_sync:
+            RegionUser(mock_env)
+
+        mock_sync.assert_called_once_with(name="my-app", region="eu-west-1")
