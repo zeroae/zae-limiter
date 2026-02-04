@@ -262,10 +262,40 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    # NOTE: batch_get_buckets() is NOT part of the protocol.
-    # It is an optional optimization method available when
-    # capabilities.supports_batch_operations is True.
-    # See ADR-108 section 3 for rationale.
+    # TODO(#260): Move batch_get methods to a capability-gated protocol.
+    # Review all batch_get call sites for proper capability checks.
+
+    async def batch_get_buckets(
+        self,
+        keys: list[tuple[str, str]],
+    ) -> dict[tuple[str, str, str], "BucketState"]:
+        """
+        Batch get composite buckets in a single call.
+
+        Args:
+            keys: List of (entity_id, resource) tuples
+
+        Returns:
+            Dict mapping (entity_id, resource, limit_name) to BucketState.
+        """
+        ...
+
+    async def batch_get_entity_and_buckets(
+        self,
+        entity_id: str,
+        bucket_keys: list[tuple[str, str]],
+    ) -> tuple["Entity | None", dict[tuple[str, str, str], "BucketState"]]:
+        """
+        Fetch entity metadata and composite buckets in a single call.
+
+        Args:
+            entity_id: Entity whose metadata to include
+            bucket_keys: List of (entity_id, resource) for composite buckets
+
+        Returns:
+            Tuple of (entity_or_none, bucket_dict).
+        """
+        ...
 
     async def get_resource_buckets(
         self,
@@ -302,6 +332,63 @@ class RepositoryProtocol(Protocol):
 
         Returns:
             Transaction item dict for use with transact_write
+        """
+        ...
+
+    def build_composite_create(
+        self,
+        entity_id: str,
+        resource: str,
+        states: "list[BucketState]",
+        now_ms: int,
+        ttl_seconds: int | None = 86400,
+    ) -> dict[str, Any]:
+        """Build a PutItem for creating a new composite bucket.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            states: BucketState objects for each limit
+            now_ms: Current timestamp in milliseconds
+            ttl_seconds: TTL in seconds from now, or None to omit TTL
+        """
+        ...
+
+    def build_composite_normal(
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+        refill_amounts: dict[str, int],
+        now_ms: int,
+        expected_rf: int,
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Build an UpdateItem for the normal write path (ADR-115 path 2).
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consumed: Amount consumed per limit (millitokens)
+            refill_amounts: Refill amount per limit (millitokens)
+            now_ms: Current timestamp in milliseconds
+            expected_rf: Expected refill timestamp for optimistic lock
+            ttl_seconds: TTL behavior (None=no change, 0=remove, >0=set)
+        """
+        ...
+
+    def build_composite_retry(
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+    ) -> dict[str, Any]:
+        """Build an UpdateItem for the retry write path (ADR-115 path 3).
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consumed: Amount consumed per limit (millitokens)
         """
         ...
 

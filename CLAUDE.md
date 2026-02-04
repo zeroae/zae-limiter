@@ -587,3 +587,16 @@ Releases are fully automated via GitHub Actions (`release.yml`). No manual build
 **Version management:** Versions are automatically generated from git tags using `hatch-vcs`. No manual version updates needed. Tag format: `v{major}.{minor}.{patch}`.
 
 **Changelog:** Uses `git-cliff` with `cliff.toml` config. Parses conventional commits since the last tag.
+
+### Replying to PR Review Comments
+
+```bash
+gh api repos/{owner}/{repo}/pulls/{pr}/comments \
+  -X POST \
+  -f body="Your reply" \
+  -F in_reply_to={comment_id}
+```
+
+- Field is `in_reply_to` (not `in_reply_to_id`)
+- Use `-F` for numeric fields, `-f` for strings
+- Do NOT pass `commit_id`, `path`, or `position` when replying

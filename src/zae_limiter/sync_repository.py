@@ -1579,7 +1579,7 @@ class SyncRepository:
             if next_key:
                 query_args["ExclusiveStartKey"] = next_key
             response = client.query(**query_args)
-        else:
+        elif resource is not None:
             key_condition = "GSI2PK = :pk AND begins_with(GSI2SK, :sk_prefix)"
             expression_values = {
                 ":pk": {"S": schema.gsi2_pk_resource(resource)},
@@ -1596,6 +1596,8 @@ class SyncRepository:
             if next_key:
                 query_args["ExclusiveStartKey"] = next_key
             response = client.query(**query_args)
+        else:
+            raise ValueError("Either entity_id or resource must be provided")
         for item in response.get("Items", []):
             snapshot = self._deserialize_usage_snapshot(item)
             if snapshot is None:

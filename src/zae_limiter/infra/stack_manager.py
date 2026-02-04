@@ -572,9 +572,9 @@ class StackManager:
                 if wait:
                     # Wait for Lambda to be Active before returning
                     # This ensures the function is ready to process events
-                    waiter = lambda_client.get_waiter("function_active")
+                    active_waiter = lambda_client.get_waiter("function_active")
                     try:
-                        await waiter.wait(FunctionName=function_name)
+                        await active_waiter.wait(FunctionName=function_name)
                     except Exception as e:
                         raise StackCreationError(
                             stack_name=self.stack_name,

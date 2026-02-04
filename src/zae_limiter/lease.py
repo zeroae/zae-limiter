@@ -221,7 +221,7 @@ class Lease:
             if is_new:
                 # Create path: PutItem with attribute_not_exists
                 items.append(
-                    repo.build_composite_create(  # type: ignore[attr-defined]
+                    repo.build_composite_create(
                         entity_id=entity_id,
                         resource=resource,
                         states=[e.state for e in group_entries],
@@ -247,7 +247,7 @@ class Lease:
                     )
 
                 items.append(
-                    repo.build_composite_normal(  # type: ignore[attr-defined]
+                    repo.build_composite_normal(
                         entity_id=entity_id,
                         resource=resource,
                         consumed=consumed,
@@ -284,7 +284,7 @@ class Lease:
 
                 if consumed:
                     retry_items.append(
-                        repo.build_composite_retry(  # type: ignore[attr-defined]
+                        repo.build_composite_retry(
                             entity_id=entity_id,
                             resource=resource,
                             consumed=consumed,

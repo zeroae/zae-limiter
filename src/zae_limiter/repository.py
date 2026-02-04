@@ -2029,11 +2029,11 @@ class Repository:
 
             response = await client.query(**query_args)
 
-        else:
+        elif resource is not None:
             # Query by resource across entities (GSI2)
             key_condition = "GSI2PK = :pk AND begins_with(GSI2SK, :sk_prefix)"
             expression_values = {
-                ":pk": {"S": schema.gsi2_pk_resource(resource)},  # type: ignore
+                ":pk": {"S": schema.gsi2_pk_resource(resource)},
                 ":sk_prefix": {"S": "USAGE#"},
             }
 
@@ -2050,6 +2050,9 @@ class Repository:
                 query_args["ExclusiveStartKey"] = next_key
 
             response = await client.query(**query_args)
+
+        else:
+            raise ValueError("Either entity_id or resource must be provided")
 
         # Deserialize and filter results
         for item in response.get("Items", []):

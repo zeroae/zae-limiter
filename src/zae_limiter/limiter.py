@@ -880,12 +880,9 @@ class RateLimiter:
         if self._repository.capabilities.supports_batch_operations:
             # Composite key: one item per (entity_id, resource)
             bucket_keys = [(entity_id, resource)]
-            # batch_get_entity_and_buckets exists when supports_batch_operations is True
             result: tuple[
                 Entity | None, dict[tuple[str, str, str], BucketState]
-            ] = await self._repository.batch_get_entity_and_buckets(  # type: ignore[attr-defined]
-                entity_id, bucket_keys
-            )
+            ] = await self._repository.batch_get_entity_and_buckets(entity_id, bucket_keys)
             return result
 
         # Fallback: sequential calls
@@ -920,10 +917,9 @@ class RateLimiter:
         if self._repository.capabilities.supports_batch_operations:
             # Composite key: one item per (entity_id, resource)
             bucket_keys: list[tuple[str, str]] = [(eid, resource) for eid in entity_ids]
-            # batch_get_buckets exists when supports_batch_operations is True
-            batch_result: dict[tuple[str, str, str], BucketState] = (
-                await self._repository.batch_get_buckets(bucket_keys)  # type: ignore[attr-defined]
-            )
+            batch_result: dict[
+                tuple[str, str, str], BucketState
+            ] = await self._repository.batch_get_buckets(bucket_keys)
             return batch_result
 
         # Fallback: sequential get_buckets calls

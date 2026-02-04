@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs", "ruff>=0.9.0"]
+requires = ["hatchling", "hatch-vcs", "hatch-build-scripts", "ruff>=0.9.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -89,11 +89,8 @@ version-file = "src/zae_limiter/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/zae_limiter", "src/zae_limiter_aggregator"]
 
-[tool.hatch.build.hooks.custom]
-path = "hatch_build.py"
-
-[tool.hatch.envs.default.scripts]
-generate-sync = "python scripts/generate_sync.py"
+[[tool.hatch.build.hooks.build-scripts.scripts]]
+commands = ["python scripts/generate_sync.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -109,12 +106,6 @@ markers = [
     "monitoring: marks tests that verify CloudWatch alarms, metrics, DLQ",
     "snapshots: marks tests that verify usage snapshot creation",
     "doctest: marks tests that validate documentation code examples",
-]
-
-[tool.coverage.run]
-omit = [
-    "src/zae_limiter/sync_*.py",
-    "src/zae_limiter/infra/sync_*.py",
 ]
 
 [tool.ruff]
@@ -134,13 +125,7 @@ python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
-# Generated sync files have type mismatches with async protocols
-# TODO: Create SyncRepositoryProtocol for proper typing (Task 7)
-exclude = '''(?x)(
-    tests/
-    | src/zae_limiter/sync_.*\.py
-    | src/zae_limiter/infra/sync_.*\.py
-)'''
+exclude = ["tests/"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -152,15 +137,3 @@ module = [
 ]
 ignore_missing_imports = true
 
-[[tool.mypy.overrides]]
-module = [
-    "zae_limiter.sync_repository_protocol",
-    "zae_limiter.sync_repository",
-    "zae_limiter.sync_limiter",
-    "zae_limiter.sync_lease",
-    "zae_limiter.sync_config_cache",
-    "zae_limiter.infra.sync_stack_manager",
-    "zae_limiter.infra.sync_discovery",
-]
-# Generated sync files need fixes in Task 7; ignore for now
-ignore_errors = true

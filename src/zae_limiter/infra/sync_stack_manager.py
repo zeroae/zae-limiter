@@ -470,9 +470,9 @@ class SyncStackManager:
                         stack_name=self.stack_name, reason=f"Waiting for Lambda update failed: {e}"
                     ) from e
             if wait:
-                waiter = lambda_client.get_waiter("function_active")
+                active_waiter = lambda_client.get_waiter("function_active")
                 try:
-                    waiter.wait(FunctionName=function_name)
+                    active_waiter.wait(FunctionName=function_name)
                 except Exception as e:
                     raise StackCreationError(
                         stack_name=self.stack_name,
