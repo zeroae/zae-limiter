@@ -266,6 +266,67 @@ class TestRateLimiterLease:
             assert lease.consumed == {"tpm": 300}
 
 
+class TestLeaseEdgeCases:
+    """Tests for Lease edge cases (committed/rolled-back state, zero amounts)."""
+
+    async def test_consume_after_commit_raises(self, limiter):
+        """consume() on a committed lease raises RuntimeError."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            pass  # commit happens on exit
+
+        with pytest.raises(RuntimeError, match="no longer active"):
+            await lease.consume(tpm=50)
+
+    async def test_adjust_after_commit_raises(self, limiter):
+        """adjust() on a committed lease raises RuntimeError."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-2",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            pass
+
+        with pytest.raises(RuntimeError, match="no longer active"):
+            await lease.adjust(tpm=50)
+
+    async def test_consume_zero_amount_is_noop(self, limiter):
+        """consume() with zero amount skips processing."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-3",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1, "tpm": 100},
+        ) as lease:
+            # Consume only rpm, tpm=0 should be skipped
+            await lease.consume(rpm=1)
+            assert lease.consumed == {"rpm": 2, "tpm": 100}
+
+    async def test_adjust_zero_amount_is_noop(self, limiter):
+        """adjust() with zero amount skips processing."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-4",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1, "tpm": 100},
+        ) as lease:
+            await lease.adjust(rpm=5)  # only rpm, tpm=0 skipped
+            assert lease.consumed == {"rpm": 6, "tpm": 100}
+
+
 class TestLeaseRetryPath:
     """Tests for lease _commit retry path and helpers (ADR-115)."""
 

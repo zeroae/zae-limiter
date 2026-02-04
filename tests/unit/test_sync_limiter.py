@@ -201,6 +201,48 @@ class TestRateLimiterLease:
             assert lease.consumed == {"tpm": 300}
 
 
+class TestLeaseEdgeCases:
+    """Tests for SyncLease edge cases (committed/rolled-back state, zero amounts)."""
+
+    def test_consume_after_commit_raises(self, sync_limiter):
+        """consume() on a committed lease raises RuntimeError."""
+        limits = [Limit.per_minute("tpm", 10000)]
+        with sync_limiter.acquire(
+            entity_id="key-edge-1", resource="gpt-4", limits=limits, consume={"tpm": 100}
+        ) as lease:
+            pass
+        with pytest.raises(RuntimeError, match="no longer active"):
+            lease.consume(tpm=50)
+
+    def test_adjust_after_commit_raises(self, sync_limiter):
+        """adjust() on a committed lease raises RuntimeError."""
+        limits = [Limit.per_minute("tpm", 10000)]
+        with sync_limiter.acquire(
+            entity_id="key-edge-2", resource="gpt-4", limits=limits, consume={"tpm": 100}
+        ) as lease:
+            pass
+        with pytest.raises(RuntimeError, match="no longer active"):
+            lease.adjust(tpm=50)
+
+    def test_consume_zero_amount_is_noop(self, sync_limiter):
+        """consume() with zero amount skips processing."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000)]
+        with sync_limiter.acquire(
+            entity_id="key-edge-3", resource="gpt-4", limits=limits, consume={"rpm": 1, "tpm": 100}
+        ) as lease:
+            lease.consume(rpm=1)
+            assert lease.consumed == {"rpm": 2, "tpm": 100}
+
+    def test_adjust_zero_amount_is_noop(self, sync_limiter):
+        """adjust() with zero amount skips processing."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000)]
+        with sync_limiter.acquire(
+            entity_id="key-edge-4", resource="gpt-4", limits=limits, consume={"rpm": 1, "tpm": 100}
+        ) as lease:
+            lease.adjust(rpm=5)
+            assert lease.consumed == {"rpm": 6, "tpm": 100}
+
+
 class TestLeaseRetryPath:
     """Tests for lease _commit retry path and helpers (ADR-115)."""
 
