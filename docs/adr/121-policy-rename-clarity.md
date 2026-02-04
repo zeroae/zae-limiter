@@ -54,9 +54,10 @@ Additionally:
 - Breaking change for users referencing old policy names/ARNs
 - CloudFormation export names change (`-AppPolicyArn` → `-AcquireOnlyPolicyArn`)
 
-## Migration
+## Alternatives Considered
 
-Users must update references to:
-- Policy names: `{stack}-app` → `{stack}-acq`, `{stack}-admin` → `{stack}-full`
-- CloudFormation exports: `{stack}-AppPolicyArn` → `{stack}-AcquireOnlyPolicyArn`
-- CloudFormation exports: `{stack}-AdminPolicyArn` → `{stack}-FullAccessPolicyArn`
+### Keep old names with updated documentation
+Rejected because: Names like "AppPolicy" actively mislead users about what the policy permits, regardless of documentation.
+
+### Add a fourth policy tier for entity management
+Rejected because: The "can create entities but can't set limits" use case doesn't exist in practice.
