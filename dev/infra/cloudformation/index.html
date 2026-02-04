@@ -929,22 +929,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#application-iam-roles" class="md-nav__link">
+  <a href="#application-iam-policies" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Application IAM Roles
+        Application IAM Policies
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Application IAM Roles">
+    <nav class="md-nav" aria-label="Application IAM Policies">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#role-summary" class="md-nav__link">
+  <a href="#policy-summary" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Role Summary
+        Policy Summary
       
     </span>
   </a>
@@ -952,10 +952,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#trust-policy" class="md-nav__link">
+  <a href="#permission-matrix" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Trust Policy
+        Permission Matrix
       
     </span>
   </a>
@@ -963,10 +963,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#role-naming" class="md-nav__link">
+  <a href="#iam-roles-opt-in" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Role Naming
+        IAM Roles (Opt-In)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#policy-and-role-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Policy and Role Naming
       
     </span>
   </a>
@@ -3040,22 +3051,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#application-iam-roles" class="md-nav__link">
+  <a href="#application-iam-policies" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Application IAM Roles
+        Application IAM Policies
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Application IAM Roles">
+    <nav class="md-nav" aria-label="Application IAM Policies">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#role-summary" class="md-nav__link">
+  <a href="#policy-summary" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Role Summary
+        Policy Summary
       
     </span>
   </a>
@@ -3063,10 +3074,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#trust-policy" class="md-nav__link">
+  <a href="#permission-matrix" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Trust Policy
+        Permission Matrix
       
     </span>
   </a>
@@ -3074,10 +3085,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#role-naming" class="md-nav__link">
+  <a href="#iam-roles-opt-in" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Role Naming
+        IAM Roles (Opt-In)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#policy-and-role-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Policy and Role Naming
       
     </span>
   </a>
@@ -3266,10 +3288,10 @@
             lambda[[Lambda Aggregator]]
         end
 
-        subgraph iam[Application IAM Roles]
-            appRole[AppRole]
-            adminRole[AdminRole]
-            readonlyRole[ReadOnlyRole]
+        subgraph iam[Application IAM Policies]
+            acqPolicy[AcquireOnlyPolicy]
+            fullPolicy[FullAccessPolicy]
+            readPolicy[ReadOnlyPolicy]
         end
 
         subgraph observe[Observability]
@@ -3289,18 +3311,18 @@
     alarms -.-&gt; lambda
     alarms -.-&gt; dlq
 
-    appRole -.-&gt; table
-    adminRole -.-&gt; table
-    readonlyRole -.-&gt; table
+    acqPolicy -.-&gt; table
+    fullPolicy -.-&gt; table
+    readPolicy -.-&gt; table
 
     click table "#dynamodb-table"
     click stream "#stream-configuration"
     click s3 "#s3-audit-archive-bucket"
     click lambda "#lambda-aggregator"
     click role "#iam-permissions"
-    click appRole "#application-iam-roles"
-    click adminRole "#application-iam-roles"
-    click readonlyRole "#application-iam-roles"
+    click acqPolicy "#application-iam-policies"
+    click fullPolicy "#application-iam-policies"
+    click readPolicy "#application-iam-policies"
     click dlq "#add-dead-letter-queue"
     click alarms "#add-cloudwatch-alarms"</div>
 <h2 id="export-template">Export Template<a class="headerlink" href="#export-template" title="Permanent link">&para;</a></h2>
@@ -3580,37 +3602,114 @@
 </span><span id="__span-9-31"><a id="__codelineno-9-31" name="__codelineno-9-31" href="#__codelineno-9-31"></a><span class="w">                </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3:PutObject</span>
 </span><span id="__span-9-32"><a id="__codelineno-9-32" name="__codelineno-9-32" href="#__codelineno-9-32"></a><span class="w">              </span><span class="nt">Resource</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="s">&quot;${AuditArchiveBucket.Arn}/*&quot;</span>
 </span></code></pre></div>
-<h2 id="application-iam-roles">Application IAM Roles<a class="headerlink" href="#application-iam-roles" title="Permanent link">&para;</a></h2>
-<p>When <code>EnableIAMRoles</code> is <code>true</code> (default), the template creates three IAM roles for different access patterns. These roles allow applications, administrators, and monitoring systems to assume least-privilege access to the DynamoDB table.</p>
-<h3 id="role-summary">Role Summary<a class="headerlink" href="#role-summary" title="Permanent link">&para;</a></h3>
+<h2 id="application-iam-policies">Application IAM Policies<a class="headerlink" href="#application-iam-policies" title="Permanent link">&para;</a></h2>
+<p>The template creates three IAM managed policies by default for different access patterns. These policies can be attached to your own IAM roles, users, or federated identities.</p>
+<h3 id="policy-summary">Policy Summary<a class="headerlink" href="#policy-summary" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
-<th>Role</th>
+<th>Policy</th>
+<th>Suffix</th>
 <th>Use Case</th>
 <th>DynamoDB Permissions</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>AppRole</code></td>
+<td><code>AcquireOnlyPolicy</code></td>
+<td><code>-acq</code></td>
 <td>Applications calling <code>acquire()</code></td>
-<td>GetItem, Query, TransactWriteItems</td>
+<td>GetItem, BatchGetItem, Query, TransactWriteItems</td>
 </tr>
 <tr>
-<td><code>AdminRole</code></td>
+<td><code>FullAccessPolicy</code></td>
+<td><code>-full</code></td>
 <td>Ops teams managing config</td>
-<td>App + PutItem, DeleteItem, UpdateItem, BatchWriteItem</td>
+<td>All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable</td>
 </tr>
 <tr>
-<td><code>ReadOnlyRole</code></td>
+<td><code>ReadOnlyPolicy</code></td>
+<td><code>-read</code></td>
 <td>Monitoring and dashboards</td>
-<td>GetItem, Query, Scan, DescribeTable</td>
+<td>GetItem, BatchGetItem, Query, Scan, DescribeTable</td>
 </tr>
 </tbody>
 </table>
-<h3 id="trust-policy">Trust Policy<a class="headerlink" href="#trust-policy" title="Permanent link">&para;</a></h3>
-<p>All roles trust the same AWS account root principal, allowing any IAM entity in the account to assume the role (subject to their own permissions):</p>
+<h3 id="permission-matrix">Permission Matrix<a class="headerlink" href="#permission-matrix" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th style="text-align: center;">ReadOnly</th>
+<th style="text-align: center;">AcquireOnly</th>
+<th style="text-align: center;">FullAccess</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GetItem</code></td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>BatchGetItem</code></td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>Query</code></td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>Scan</code></td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>DescribeTable</code></td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>TransactWriteItems</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>PutItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>UpdateItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>DeleteItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+</tr>
+<tr>
+<td><code>BatchWriteItem</code></td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">--</td>
+<td style="text-align: center;">Y</td>
+</tr>
+</tbody>
+</table>
+<h3 id="iam-roles-opt-in">IAM Roles (Opt-In)<a class="headerlink" href="#iam-roles-opt-in" title="Permanent link">&para;</a></h3>
+<p>When <code>EnableIAMRoles</code> is <code>true</code> (or <code>--create-iam-roles</code> is passed), the template also creates IAM roles that attach these managed policies. All roles trust the same AWS account root principal:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">AssumeRolePolicyDocument</span><span class="p">:</span>
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">Version</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;2012-10-17&#39;</span>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">Statement</span><span class="p">:</span>
@@ -3619,19 +3718,20 @@
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">        </span><span class="nt">AWS</span><span class="p">:</span><span class="w"> </span><span class="kt">!Sub</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">arn:${AWS::Partition}:iam::${AWS::AccountId}:root</span>
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">      </span><span class="nt">Action</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sts:AssumeRole</span>
 </span></code></pre></div>
-<h3 id="role-naming">Role Naming<a class="headerlink" href="#role-naming" title="Permanent link">&para;</a></h3>
+<h3 id="policy-and-role-naming">Policy and Role Naming<a class="headerlink" href="#policy-and-role-naming" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Default: <code>${StackName}-{app,admin,readonly}-role</code></li>
-<li>With custom <code>RoleName</code>: <code>${RoleName}-{app,admin,readonly}</code></li>
+<li><strong>Policies:</strong> <code>${StackName}-{acq,full,read}</code> (e.g., <code>my-app-acq</code>)</li>
+<li><strong>Roles (when enabled):</strong> <code>${StackName}-{acq,full,read}</code> (same naming)</li>
+<li>With custom <code>PolicyNameFormat</code> / <code>RoleName</code>: format pattern applied to all</li>
 </ul>
-<p>Roles respect <code>PermissionBoundary</code> if configured.</p>
+<p>Policies and roles respect <code>PermissionBoundary</code> if configured.</p>
 <h3 id="usage-example">Usage Example<a class="headerlink" href="#usage-example" title="Permanent link">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">boto3</span>
 </span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="c1"># Assume the AppRole for rate limiting operations</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="c1"># Attach AcquireOnlyPolicy to your own role, or assume a created role</span>
 </span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">sts</span> <span class="o">=</span> <span class="n">boto3</span><span class="o">.</span><span class="n">client</span><span class="p">(</span><span class="s1">&#39;sts&#39;</span><span class="p">)</span>
 </span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="n">credentials</span> <span class="o">=</span> <span class="n">sts</span><span class="o">.</span><span class="n">assume_role</span><span class="p">(</span>
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">RoleArn</span><span class="o">=</span><span class="s1">&#39;arn:aws:iam::123456789012:role/my-app-app-role&#39;</span><span class="p">,</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">RoleArn</span><span class="o">=</span><span class="s1">&#39;arn:aws:iam::123456789012:role/my-app-acq&#39;</span><span class="p">,</span>
 </span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>    <span class="n">RoleSessionName</span><span class="o">=</span><span class="s1">&#39;my-app&#39;</span>
 </span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="p">)[</span><span class="s1">&#39;Credentials&#39;</span><span class="p">]</span>
 </span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>
@@ -3767,20 +3867,32 @@
 <td>S3 bucket ARN (when enabled)</td>
 </tr>
 <tr>
+<td><code>AcquireOnlyPolicyArn</code></td>
+<td>IAM policy ARN for acquire-only access</td>
+</tr>
+<tr>
+<td><code>FullAccessPolicyArn</code></td>
+<td>IAM policy ARN for full access</td>
+</tr>
+<tr>
+<td><code>ReadOnlyPolicyArn</code></td>
+<td>IAM policy ARN for read-only access</td>
+</tr>
+<tr>
 <td><code>AppRoleArn</code></td>
-<td>IAM role ARN for applications (when IAM roles enabled)</td>
+<td>IAM role ARN for application access (when IAM roles enabled)</td>
 </tr>
 <tr>
 <td><code>AppRoleName</code></td>
-<td>IAM role name for applications</td>
+<td>IAM role name for application access</td>
 </tr>
 <tr>
 <td><code>AdminRoleArn</code></td>
-<td>IAM role ARN for administrators</td>
+<td>IAM role ARN for admin access</td>
 </tr>
 <tr>
 <td><code>AdminRoleName</code></td>
-<td>IAM role name for administrators</td>
+<td>IAM role name for admin access</td>
 </tr>
 <tr>
 <td><code>ReadOnlyRoleArn</code></td>

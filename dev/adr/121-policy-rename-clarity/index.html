@@ -12,13 +12,9 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/infra/production/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/121-policy-rename-clarity/">
       
       
-        <link rel="prev" href="../deployment/">
-      
-      
-        <link rel="next" href="../cloudformation/">
       
       
         
@@ -29,7 +25,7 @@
     
     
       
-        <title>Production - zae-limiter</title>
+        <title>ADR-121: Rename IAM Policies for Clarity - zae-limiter</title>
       
     
     
@@ -84,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#production-deployment" class="md-skip">
+        <a href="#adr-121-rename-iam-policies-for-clarity" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +119,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Production
+              ADR-121: Rename IAM Policies for Clarity
             
           </span>
         </div>
@@ -572,20 +568,18 @@
       
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
@@ -606,7 +600,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -624,7 +618,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deployment/" class="md-nav__link">
+      <a href="../../infra/deployment/" class="md-nav__link">
         
   
   
@@ -649,37 +643,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Production
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../infra/production/" class="md-nav__link">
         
   
   
@@ -695,248 +662,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#production-checklist" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Production Checklist
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Production Checklist">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#example-production-deployment" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example Production Deployment
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#security-best-practices" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Security Best Practices
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Security Best Practices">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#encryption" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Encryption
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#iam" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        IAM
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="IAM">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#application-access-policies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Application Access Policies
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#lambda-aggregator" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Lambda Aggregator
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#permission-boundaries" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Permission Boundaries
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#iam-behavior-matrix" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        IAM Behavior Matrix
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#network" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Network
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#secrets-management" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Secrets Management
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#audit-logging" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Audit Logging
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#multi-region-considerations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Multi-Region Considerations
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Multi-Region Considerations">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#why-not-global-tables" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why Not Global Tables?
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#cross-region-pattern" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cross-Region Pattern
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#monitoring-alerting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Monitoring &amp; Alerting
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cost-estimation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cost Estimation
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next Steps
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -949,7 +674,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cloudformation/" class="md-nav__link">
+      <a href="../../infra/cloudformation/" class="md-nav__link">
         
   
   
@@ -1061,7 +786,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../auditing/" class="md-nav__link">
+      <a href="../../infra/auditing/" class="md-nav__link">
         
   
   
@@ -1670,7 +1395,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/000-adr-format-standard/" class="md-nav__link">
+      <a href="../000-adr-format-standard/" class="md-nav__link">
         
   
   
@@ -1745,7 +1470,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/001-single-table-dynamodb/" class="md-nav__link">
+      <a href="../001-single-table-dynamodb/" class="md-nav__link">
         
   
   
@@ -1773,7 +1498,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/002-integer-arithmetic-millitokens/" class="md-nav__link">
+      <a href="../002-integer-arithmetic-millitokens/" class="md-nav__link">
         
   
   
@@ -1801,7 +1526,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/003-cloudformation-infrastructure/" class="md-nav__link">
+      <a href="../003-cloudformation-infrastructure/" class="md-nav__link">
         
   
   
@@ -1829,7 +1554,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/004-declarative-stack-options/" class="md-nav__link">
+      <a href="../004-declarative-stack-options/" class="md-nav__link">
         
   
   
@@ -1857,7 +1582,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/005-exception-hierarchy/" class="md-nav__link">
+      <a href="../005-exception-hierarchy/" class="md-nav__link">
         
   
   
@@ -1885,7 +1610,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/006-flat-schema-snapshots/" class="md-nav__link">
+      <a href="../006-flat-schema-snapshots/" class="md-nav__link">
         
   
   
@@ -1913,7 +1638,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/007-input-validation/" class="md-nav__link">
+      <a href="../007-input-validation/" class="md-nav__link">
         
   
   
@@ -1941,7 +1666,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/008-security-audit-logging/" class="md-nav__link">
+      <a href="../008-security-audit-logging/" class="md-nav__link">
         
   
   
@@ -1969,7 +1694,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/009-version-migration-system/" class="md-nav__link">
+      <a href="../009-version-migration-system/" class="md-nav__link">
         
   
   
@@ -1997,7 +1722,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/010-total-consumed-counter/" class="md-nav__link">
+      <a href="../010-total-consumed-counter/" class="md-nav__link">
         
   
   
@@ -2025,7 +1750,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/011-api-cli-parity/" class="md-nav__link">
+      <a href="../011-api-cli-parity/" class="md-nav__link">
         
   
   
@@ -2053,7 +1778,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/012-cloudformation-docs-parity/" class="md-nav__link">
+      <a href="../012-cloudformation-docs-parity/" class="md-nav__link">
         
   
   
@@ -2081,7 +1806,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/013-module-documentation-parity/" class="md-nav__link">
+      <a href="../013-module-documentation-parity/" class="md-nav__link">
         
   
   
@@ -2164,7 +1889,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/100-centralized-config/" class="md-nav__link">
+      <a href="../100-centralized-config/" class="md-nav__link">
         
   
   
@@ -2192,7 +1917,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/101-flat-schema-config/" class="md-nav__link">
+      <a href="../101-flat-schema-config/" class="md-nav__link">
         
   
   
@@ -2220,7 +1945,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/102-config-hierarchy/" class="md-nav__link">
+      <a href="../102-config-hierarchy/" class="md-nav__link">
         
   
   
@@ -2248,7 +1973,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/103-config-caching/" class="md-nav__link">
+      <a href="../103-config-caching/" class="md-nav__link">
         
   
   
@@ -2276,7 +2001,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/104-stored-limits-default/" class="md-nav__link">
+      <a href="../104-stored-limits-default/" class="md-nav__link">
         
   
   
@@ -2304,7 +2029,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/105-eventual-consistency/" class="md-nav__link">
+      <a href="../105-eventual-consistency/" class="md-nav__link">
         
   
   
@@ -2332,7 +2057,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/106-audit-entity-ids-for-config/" class="md-nav__link">
+      <a href="../106-audit-entity-ids-for-config/" class="md-nav__link">
         
   
   
@@ -2360,7 +2085,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/107-iam-roles-for-application-access/" class="md-nav__link">
+      <a href="../107-iam-roles-for-application-access/" class="md-nav__link">
         
   
   
@@ -2443,7 +2168,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/108-repository-protocol/" class="md-nav__link">
+      <a href="../108-repository-protocol/" class="md-nav__link">
         
   
   
@@ -2471,7 +2196,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/109-backend-capability-matrix/" class="md-nav__link">
+      <a href="../109-backend-capability-matrix/" class="md-nav__link">
         
   
   
@@ -2499,7 +2224,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/110-deprecation-constructor/" class="md-nav__link">
+      <a href="../110-deprecation-constructor/" class="md-nav__link">
         
   
   
@@ -2582,7 +2307,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/111-flatten-all-records/" class="md-nav__link">
+      <a href="../111-flatten-all-records/" class="md-nav__link">
         
   
   
@@ -2610,7 +2335,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/112-cascade-per-entity/" class="md-nav__link">
+      <a href="../112-cascade-per-entity/" class="md-nav__link">
         
   
   
@@ -2638,7 +2363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../adr/113-lambda-packaging/" class="md-nav__link">
+      <a href="../113-lambda-packaging/" class="md-nav__link">
         
   
   
@@ -2701,22 +2426,77 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#production-checklist" class="md-nav__link">
+  <a href="#context" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Production Checklist
+        Context
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Production Checklist">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#permission-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Permission Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#example-production-deployment" class="md-nav__link">
+  <a href="#keep-old-names-with-updated-documentation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Example Production Deployment
+        Keep old names with updated documentation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#add-a-fourth-policy-tier-for-entity-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add a fourth policy tier for entity management
       
     </span>
   </a>
@@ -2725,200 +2505,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#security-best-practices" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Security Best Practices
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Security Best Practices">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#encryption" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Encryption
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#iam" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        IAM
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="IAM">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#application-access-policies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Application Access Policies
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#lambda-aggregator" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Lambda Aggregator
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#permission-boundaries" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Permission Boundaries
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#iam-behavior-matrix" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        IAM Behavior Matrix
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#network" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Network
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#secrets-management" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Secrets Management
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#audit-logging" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Audit Logging
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#multi-region-considerations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Multi-Region Considerations
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Multi-Region Considerations">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#why-not-global-tables" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why Not Global Tables?
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#cross-region-pattern" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cross-Region Pattern
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#monitoring-alerting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Monitoring &amp; Alerting
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cost-estimation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cost Estimation
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next Steps
-      
-    </span>
-  </a>
   
 </li>
       
@@ -2941,7 +2527,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/infra/production.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/121-policy-rename-clarity.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2949,376 +2535,139 @@
   
 
 
-<h1 id="production-deployment">Production Deployment<a class="headerlink" href="#production-deployment" title="Permanent link">&para;</a></h1>
-<p>This guide covers production-readiness for zae-limiter deployments.</p>
-<h2 id="production-checklist">Production Checklist<a class="headerlink" href="#production-checklist" title="Permanent link">&para;</a></h2>
-<p>Before deploying to production:</p>
-<table>
-<thead>
-<tr>
-<th>Feature</th>
-<th>CLI Flag</th>
-<th>Default</th>
-<th>Recommendation</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Point-in-Time Recovery</td>
-<td><code>--pitr-recovery-days N</code></td>
-<td>Disabled</td>
-<td>Enable (7-35 days)</td>
-</tr>
-<tr>
-<td>CloudWatch Alarms</td>
-<td><code>--enable-alarms</code></td>
-<td>Enabled</td>
-<td>Keep enabled</td>
-</tr>
-<tr>
-<td>SNS Notifications</td>
-<td><code>--alarm-sns-topic ARN</code></td>
-<td>None</td>
-<td>Configure for alerts</td>
-</tr>
-<tr>
-<td>Log Retention</td>
-<td><code>--log-retention-days N</code></td>
-<td>30</td>
-<td>90+ for compliance</td>
-</tr>
-<tr>
-<td>Audit Archival</td>
-<td><code>--enable-audit-archival</code></td>
-<td>Enabled</td>
-<td>Keep enabled for compliance</td>
-</tr>
-<tr>
-<td>Glacier Transition</td>
-<td><code>--audit-archive-glacier-days N</code></td>
-<td>90</td>
-<td>Adjust based on access patterns</td>
-</tr>
-<tr>
-<td>Permission Boundary</td>
-<td><code>--permission-boundary ARN</code></td>
-<td>None</td>
-<td>Use in restricted IAM environments</td>
-</tr>
-<tr>
-<td>X-Ray Tracing</td>
-<td><code>--enable-tracing</code></td>
-<td>Disabled</td>
-<td>Enable for debugging/performance analysis</td>
-</tr>
-<tr>
-<td>IAM Roles</td>
-<td><code>--create-iam-roles</code></td>
-<td>Disabled</td>
-<td>Create App/Admin/ReadOnly roles</td>
-</tr>
-<tr>
-<td>Skip IAM</td>
-<td><code>--no-iam</code></td>
-<td>Disabled</td>
-<td>Skip all IAM resources for restricted environments</td>
-</tr>
-<tr>
-<td>External Role</td>
-<td><code>--aggregator-role-arn ARN</code></td>
-<td>None</td>
-<td>Use existing IAM role for Lambda</td>
-</tr>
-</tbody>
-</table>
-<h3 id="example-production-deployment">Example Production Deployment<a class="headerlink" href="#example-production-deployment" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>--name<span class="w"> </span>prod-limiter<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>--region<span class="w"> </span>us-east-1<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span>--pitr-recovery-days<span class="w"> </span><span class="m">7</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span>--log-retention-days<span class="w"> </span><span class="m">90</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span>--alarm-sns-topic<span class="w"> </span>arn:aws:sns:us-east-1:123456789012:alerts<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span>--enable-audit-archival<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span>--audit-archive-glacier-days<span class="w"> </span><span class="m">90</span>
-</span></code></pre></div>
-<h2 id="security-best-practices">Security Best Practices<a class="headerlink" href="#security-best-practices" title="Permanent link">&para;</a></h2>
-<h3 id="encryption">Encryption<a class="headerlink" href="#encryption" title="Permanent link">&para;</a></h3>
+<h1 id="adr-121-rename-iam-policies-for-clarity">ADR-121: Rename IAM Policies for Clarity<a class="headerlink" href="#adr-121-rename-iam-policies-for-clarity" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Accepted
+<strong>Date:</strong> 2026-02-02
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/307">#307</a>
+<strong>Amends:</strong> ADR-117</p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>ADR-117 introduced three IAM managed policies: <code>AppPolicy</code>, <code>AdminPolicy</code>, and <code>ReadOnlyPolicy</code>. The naming implied a separation between "application" and "admin" operations, but this distinction was artificial:</p>
 <ul>
-<li>DynamoDB uses AWS-managed keys (SSE-S3) by default</li>
-<li>For customer-managed keys (CMK), use CloudFormation template customization</li>
+<li><code>AppPolicy</code> was intended for applications running <code>acquire()</code>, but couldn't create entities (<code>PutItem</code> missing)</li>
+<li><code>AdminPolicy</code> was described as "for ops team managing config"</li>
 </ul>
-<h3 id="iam">IAM<a class="headerlink" href="#iam" title="Permanent link">&para;</a></h3>
-<h4 id="application-access-policies">Application Access Policies<a class="headerlink" href="#application-access-policies" title="Permanent link">&para;</a></h4>
-<p>The stack creates three IAM managed policies by default:</p>
+<p>In practice, applications that create entities on-demand (e.g., for new users) need <code>AdminPolicy</code>, not <code>AppPolicy</code>. The middle ground of "can create entities but can't set limits" doesn't exist as a real use case.</p>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<p>Rename policies to reflect their actual purpose:</p>
 <table>
 <thead>
 <tr>
-<th>Policy</th>
-<th>Suffix</th>
-<th>Use Case</th>
-<th>When to Use</th>
+<th>Old Name</th>
+<th>New Name</th>
+<th>Default Suffix</th>
+<th>Purpose</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>AcquireOnlyPolicy</strong></td>
+<td><code>AppPolicy</code></td>
+<td><code>AcquireOnlyPolicy</code></td>
 <td><code>-acq</code></td>
-<td>Applications calling <code>acquire()</code></td>
-<td>Production workloads, Lambda functions, ECS tasks</td>
+<td>Minimal: <code>acquire()</code> path only</td>
 </tr>
 <tr>
-<td><strong>FullAccessPolicy</strong></td>
+<td><code>AdminPolicy</code></td>
+<td><code>FullAccessPolicy</code></td>
 <td><code>-full</code></td>
-<td>Ops teams managing config</td>
-<td>CLI tools, admin scripts, CI/CD pipelines</td>
+<td>All operations</td>
 </tr>
 <tr>
-<td><strong>ReadOnlyPolicy</strong></td>
+<td><code>ReadOnlyPolicy</code></td>
+<td><code>ReadOnlyPolicy</code></td>
 <td><code>-read</code></td>
-<td>Monitoring and dashboards</td>
-<td>Grafana, CloudWatch dashboards, audit tools</td>
+<td>Read-only monitoring</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Best practices:</strong></p>
-<ul>
-<li><strong>Attach AcquireOnlyPolicy for applications</strong> - Provides only the permissions needed for rate limiting</li>
-<li><strong>Attach FullAccessPolicy for config management</strong> - Separate from application credentials</li>
-<li><strong>Attach ReadOnlyPolicy for observability</strong> - Safe access for monitoring systems</li>
-<li><strong>Disable with <code>--no-iam</code></strong> - When using existing IAM policies or cross-account access</li>
-<li><strong>Create roles with <code>--create-iam-roles</code></strong> - When you want pre-built roles that attach these policies</li>
-</ul>
-<h4 id="lambda-aggregator">Lambda Aggregator<a class="headerlink" href="#lambda-aggregator" title="Permanent link">&para;</a></h4>
-<p>The Lambda aggregator uses a separate execution role with least-privilege permissions:</p>
-<ul>
-<li><code>dynamodb:GetItem</code>, <code>PutItem</code>, <code>UpdateItem</code>, <code>Query</code></li>
-<li><code>s3:PutObject</code> (when audit archival is enabled)</li>
-</ul>
-<h4 id="permission-boundaries">Permission Boundaries<a class="headerlink" href="#permission-boundaries" title="Permanent link">&para;</a></h4>
-<p>For restricted IAM environments:</p>
-<ul>
-<li>Use <code>--permission-boundary</code> to apply organizational policies to all created roles</li>
-<li>Use <code>--role-name-format</code> for organizational naming conventions</li>
-</ul>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Enterprise deployment with permission boundary</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span>--name<span class="w"> </span>prod-limiter<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span>--permission-boundary<span class="w"> </span>arn:aws:iam::123456789012:policy/ServiceBoundary<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span>--role-name-format<span class="w"> </span><span class="s2">&quot;svc-{}&quot;</span>
-</span></code></pre></div>
-<h4 id="iam-behavior-matrix">IAM Behavior Matrix<a class="headerlink" href="#iam-behavior-matrix" title="Permanent link">&para;</a></h4>
-<p>The following table shows what IAM resources are created based on flag combinations:</p>
+<p>Additionally:
+- Add <code>BatchGetItem</code> to <code>ReadOnlyPolicy</code> (it's a read operation)
+- Add <code>Scan</code> and <code>DescribeTable</code> to <code>FullAccessPolicy</code> (true full access)</p>
+<h2 id="permission-matrix">Permission Matrix<a class="headerlink" href="#permission-matrix" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Flag Combination</th>
-<th>Policies</th>
-<th>App Roles</th>
-<th>Aggr Role</th>
-<th>Lambda</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>(default)</td>
-<td>Created</td>
-<td>No</td>
-<td>Created</td>
-<td>Enabled</td>
-</tr>
-<tr>
-<td><code>--no-iam</code></td>
-<td>No</td>
-<td>No</td>
-<td>No</td>
-<td>Disabled</td>
-</tr>
-<tr>
-<td><code>--no-iam --aggregator-role-arn</code></td>
-<td>No</td>
-<td>No</td>
-<td>External</td>
-<td>Enabled</td>
-</tr>
-<tr>
-<td><code>--aggregator-role-arn</code></td>
-<td>Created</td>
-<td>No</td>
-<td>External</td>
-<td>Enabled</td>
-</tr>
-<tr>
-<td><code>--create-iam-roles</code></td>
-<td>Created</td>
-<td>Created</td>
-<td>Created</td>
-<td>Enabled</td>
-</tr>
-<tr>
-<td><code>--no-iam --create-iam-roles</code></td>
-<td>Error</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-</tr>
-</tbody>
-</table>
-<p><strong>For PowerUserAccess or similar restricted IAM environments:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Deploy without any IAM resources (aggregator disabled)</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--name<span class="w"> </span>myapp<span class="w"> </span>--no-iam
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Deploy with external Lambda role (aggregator enabled)</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--name<span class="w"> </span>myapp<span class="w"> </span>--no-iam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span>--aggregator-role-arn<span class="w"> </span>arn:aws:iam::123456789012:role/MyLambdaRole
-</span></code></pre></div>
-<h3 id="network">Network<a class="headerlink" href="#network" title="Permanent link">&para;</a></h3>
-<ul>
-<li>No VPC required; uses AWS service endpoints</li>
-<li>For VPC deployment, configure VPC endpoints for DynamoDB and Lambda</li>
-</ul>
-<h3 id="secrets-management">Secrets Management<a class="headerlink" href="#secrets-management" title="Permanent link">&para;</a></h3>
-<ul>
-<li>No secrets stored in DynamoDB</li>
-<li>Use AWS Secrets Manager or Parameter Store for API keys</li>
-<li>Rate limit entity IDs should not contain sensitive data</li>
-</ul>
-<h3 id="audit-logging">Audit Logging<a class="headerlink" href="#audit-logging" title="Permanent link">&para;</a></h3>
-<ul>
-<li>All entity and limit changes are automatically logged</li>
-<li>Track who made changes with optional <code>principal</code> parameter</li>
-<li>Events auto-expire after 90 days (configurable via <code>--audit-ttl-days</code>)</li>
-<li><strong>Expired events are archived to S3</strong> for long-term retention</li>
-<li>Archives transition to Glacier IR after 90 days (configurable via <code>--audit-archive-glacier-days</code>)</li>
-<li>For compliance requirements, see <a href="../auditing/">Audit Logging Guide</a></li>
-</ul>
-<h2 id="multi-region-considerations">Multi-Region Considerations<a class="headerlink" href="#multi-region-considerations" title="Permanent link">&para;</a></h2>
-<p>zae-limiter is designed for <strong>single-region deployment</strong>:</p>
-<table>
-<thead>
-<tr>
-<th>Scenario</th>
-<th>Approach</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Single region</td>
-<td>Standard deployment</td>
-</tr>
-<tr>
-<td>Multi-region (independent)</td>
-<td>Deploy separate stacks per region</td>
-</tr>
-<tr>
-<td>Global rate limiting</td>
-<td>Application-level coordination required</td>
-</tr>
-</tbody>
-</table>
-<h3 id="why-not-global-tables">Why Not Global Tables?<a class="headerlink" href="#why-not-global-tables" title="Permanent link">&para;</a></h3>
-<ul>
-<li>Rate limit state is time-sensitive (token buckets refill continuously)</li>
-<li>Cross-region replication lag would cause inconsistent limits</li>
-<li>Each region should enforce its own limits</li>
-</ul>
-<h3 id="cross-region-pattern">Cross-Region Pattern<a class="headerlink" href="#cross-region-pattern" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Deploy separate stacks per region</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">us_limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;prod&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">eu_limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;prod&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;eu-west-1&quot;</span><span class="p">)</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1"># Application coordinates between regions if needed</span>
-</span></code></pre></div>
-<h2 id="monitoring-alerting">Monitoring &amp; Alerting<a class="headerlink" href="#monitoring-alerting" title="Permanent link">&para;</a></h2>
-<p>The stack deploys CloudWatch alarms by default:</p>
-<table>
-<thead>
-<tr>
-<th>Alarm</th>
-<th>Trigger</th>
 <th>Action</th>
+<th style="text-align: center;">ReadOnly</th>
+<th style="text-align: center;">AcquireOnly</th>
+<th style="text-align: center;">FullAccess</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Lambda Errors</td>
-<td>&gt; 1 per 5 min</td>
-<td>Check logs, verify DynamoDB access</td>
+<td><code>GetItem</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
 </tr>
 <tr>
-<td>Lambda Duration</td>
-<td>&gt; 80% timeout</td>
-<td>Increase memory or timeout</td>
+<td><code>BatchGetItem</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
 </tr>
 <tr>
-<td>Iterator Age</td>
-<td>&gt; 30 seconds</td>
-<td>Check Lambda concurrency</td>
+<td><code>Query</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
 </tr>
 <tr>
-<td>DLQ Messages</td>
-<td>&gt;= 1</td>
-<td>Investigate failed records</td>
+<td><code>Scan</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
 </tr>
 <tr>
-<td>DynamoDB Throttles</td>
-<td>&gt; 1 per 5 min</td>
-<td>Review capacity planning</td>
+<td><code>DescribeTable</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><code>TransactWriteItems</code></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><code>PutItem</code></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><code>UpdateItem</code></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><code>DeleteItem</code></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td><code>BatchWriteItem</code></td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅</td>
 </tr>
 </tbody>
 </table>
-<p>For dashboard templates and Logs Insights queries, see <a href="../../monitoring/">Monitoring Guide</a>.</p>
-<h2 id="cost-estimation">Cost Estimation<a class="headerlink" href="#cost-estimation" title="Permanent link">&para;</a></h2>
-<p>Costs scale with request volume (us-east-1 pricing, v0.7.0+ O(1) costs):</p>
-<table>
-<thead>
-<tr>
-<th>Volume</th>
-<th>DynamoDB</th>
-<th>Lambda</th>
-<th>CloudWatch</th>
-<th>S3 Archive</th>
-<th>Total</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>10K req/day</td>
-<td>~$0.25</td>
-<td>~$0.20</td>
-<td>~$0.10</td>
-<td>~$0.01</td>
-<td>~$0.56/month</td>
-</tr>
-<tr>
-<td>100K req/day</td>
-<td>~$2.50</td>
-<td>~$2</td>
-<td>~$1</td>
-<td>~$0.10</td>
-<td>~$5.60/month</td>
-</tr>
-<tr>
-<td>1M req/day</td>
-<td>~$22</td>
-<td>~$12</td>
-<td>~$5</td>
-<td>~$1</td>
-<td>~$40/month</td>
-</tr>
-</tbody>
-</table>
-<p>S3 costs include:
-- <strong>Standard storage</strong>: First 90 days (or configured <code>--audit-archive-glacier-days</code>)
-- <strong>Glacier IR storage</strong>: After transition (~80% cheaper than Standard)
-- <strong>PUT requests</strong>: One per Lambda batch (~$0.005 per 1000 requests)</p>
-<p>For detailed capacity planning and optimization, see <a href="../../performance/">Performance Guide</a>.</p>
-<h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="../../monitoring/">Monitoring Guide</a> - Dashboards, alerts, Logs Insights</li>
-<li><a href="../auditing/">Audit Logging</a> - Compliance tracking and incident investigation</li>
-<li><a href="../../performance/">Performance Guide</a> - Capacity planning, optimization</li>
-<li><a href="../../operations/">Operations Guide</a> - Troubleshooting, recovery</li>
-</ul>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<p><strong>Positive:</strong>
+- Names set correct expectations (no false promise of "app" vs "admin" split)
+- <code>FullAccessPolicy</code> is truly full access (includes monitoring operations)
+- <code>ReadOnlyPolicy</code> includes all read operations</p>
+<p><strong>Negative:</strong>
+- Breaking change for users referencing old policy names/ARNs
+- CloudFormation export names change (<code>-AppPolicyArn</code> → <code>-AcquireOnlyPolicyArn</code>)</p>
+<h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
+<h3 id="keep-old-names-with-updated-documentation">Keep old names with updated documentation<a class="headerlink" href="#keep-old-names-with-updated-documentation" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Names like "AppPolicy" actively mislead users about what the policy permits, regardless of documentation.</p>
+<h3 id="add-a-fourth-policy-tier-for-entity-management">Add a fourth policy tier for entity management<a class="headerlink" href="#add-a-fourth-policy-tier-for-entity-management" title="Permanent link">&para;</a></h3>
+<p>Rejected because: The "can create entities but can't set limits" use case doesn't exist in practice.</p>
 
 
 
@@ -3350,44 +2699,6 @@
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../deployment/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Deployment">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                Deployment
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../cloudformation/" class="md-footer__link md-footer__link--next" aria-label="Next: CloudFormation">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                CloudFormation
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">
