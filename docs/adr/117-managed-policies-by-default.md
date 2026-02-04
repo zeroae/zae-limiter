@@ -4,7 +4,6 @@
 **Date:** 2026-01-31
 **Issue:** [#272](https://github.com/zeroae/zae-limiter/issues/272)
 **Supersedes:** ADR-107 (partial)
-**Amended by:** ADR-121 (policy naming)
 
 ## Context
 
