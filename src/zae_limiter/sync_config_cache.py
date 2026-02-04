@@ -12,6 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
+from .config_cache import CacheStats as CacheStats
+
 if TYPE_CHECKING:
     from .models import Limit
 _NO_CONFIG: object = object()
@@ -23,25 +25,6 @@ class CacheEntry:
 
     value: Any
     expires_at: float
-
-
-@dataclass
-class CacheStats:
-    """Statistics for cache performance monitoring."""
-
-    hits: int = 0
-    misses: int = 0
-    size: int = 0
-    ttl_seconds: int = 0
-
-    def as_dict(self) -> dict[str, int]:
-        """Return stats as a dictionary."""
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "size": self.size,
-            "ttl": self.ttl_seconds,
-        }
 
 
 @dataclass

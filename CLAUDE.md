@@ -53,7 +53,7 @@ hatch run generate-sync
 python scripts/generate_sync.py
 ```
 
-**Generated files (DO NOT EDIT):**
+**Generated source files (DO NOT EDIT):**
 - `sync_repository_protocol.py` ← `repository_protocol.py`
 - `sync_repository.py` ← `repository.py`
 - `sync_limiter.py` ← `limiter.py`
@@ -61,6 +61,13 @@ python scripts/generate_sync.py
 - `sync_config_cache.py` ← `config_cache.py`
 - `infra/sync_stack_manager.py` ← `infra/stack_manager.py`
 - `infra/sync_discovery.py` ← `infra/discovery.py`
+
+**Generated test files (DO NOT EDIT):**
+- `tests/unit/test_sync_limiter.py` ← `tests/unit/test_limiter.py`
+- `tests/unit/test_sync_repository.py` ← `tests/unit/test_repository.py`
+- `tests/unit/test_sync_stack_manager.py` ← `tests/unit/test_stack_manager.py`
+- `tests/unit/test_sync_discovery.py` ← `tests/unit/test_discovery.py`
+- `tests/unit/test_sync_config_cache.py` ← `tests/unit/test_config_cache.py`
 
 Pre-commit hook verifies generated code is up-to-date. CI also verifies before running tests.
 

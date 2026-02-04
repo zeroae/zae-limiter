@@ -14,7 +14,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from .limiter import OnUnavailable
+from .config_cache import CacheStats as CacheStats
+from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
@@ -43,7 +44,7 @@ from .models import (
     validate_resource,
 )
 from .schema import DEFAULT_RESOURCE
-from .sync_config_cache import CacheStats, SyncConfigCache
+from .sync_config_cache import SyncConfigCache
 from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
 

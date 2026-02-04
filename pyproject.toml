@@ -119,6 +119,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 # Generated sync files: ast.unparse doesn't preserve line breaks in strings
 "src/zae_limiter/sync_*.py" = ["E501"]
 "src/zae_limiter/infra/sync_*.py" = ["E501"]
+"tests/unit/test_sync_*.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

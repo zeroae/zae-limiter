@@ -60,6 +60,9 @@ from .exceptions import (
     ZAELimiterError,
 )
 from .infra.stack_manager import StackManager
+
+# Sync (generated from async via scripts/generate_sync.py)
+from .infra.sync_stack_manager import SyncStackManager
 from .lease import Lease
 from .limiter import OnUnavailable, RateLimiter
 from .models import (
@@ -81,8 +84,6 @@ from .models import (
 )
 from .repository import Repository
 from .repository_protocol import RepositoryProtocol
-
-# Sync (generated from async via scripts/generate_sync.py)
 from .sync_config_cache import SyncConfigCache
 from .sync_lease import SyncLease
 from .sync_limiter import SyncRateLimiter
@@ -109,6 +110,7 @@ __all__ = [
     "SyncRepositoryProtocol",
     "SyncLease",
     "SyncConfigCache",
+    "SyncStackManager",
     # Models
     "Limit",
     "LimiterInfo",
