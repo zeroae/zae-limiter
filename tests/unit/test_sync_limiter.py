@@ -1181,6 +1181,275 @@ class TestRateLimiterGetStatus:
         assert status.lambda_version is None
 
 
+class TestRateLimiterCapacityEdgeCases:
+    """Tests for edge cases in capacity calculations."""
+
+    def test_time_until_available_skips_zero_amount(self, sync_limiter):
+        """time_until_available should skip limits with zero needed amount."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000)]
+        with sync_limiter.acquire(
+            entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 100, "tpm": 100}
+        ):
+            pass
+        wait = sync_limiter.time_until_available(
+            entity_id="key-1", resource="gpt-4", limits=limits, needed={"rpm": 50, "tpm": 0}
+        )
+        assert 29 < wait < 31
+
+
+class TestListResourcesWithEntityConfigs:
+    """Tests for listing resources with entity-level custom limits."""
+
+    def test_list_resources_with_entity_configs(self, sync_limiter):
+        """Should list resources that have entity-level custom limits."""
+        sync_limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        sync_limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="claude-3")
+        resources = sync_limiter.list_resources_with_entity_configs()
+        assert "gpt-4" in resources
+        assert "claude-3" in resources
+
+    def test_list_resources_with_entity_configs_empty(self, sync_limiter):
+        """Should return empty list when no entity configs exist."""
+        resources = sync_limiter.list_resources_with_entity_configs()
+        assert resources == []
+
+
+class TestRateLimiterFetchBucketsFallback:
+    """Tests for _fetch_buckets fallback path when batch not supported."""
+
+    def test_fetch_buckets_fallback_fresh_entity(self, sync_limiter, monkeypatch):
+        """Fallback path should work for entities without existing buckets."""
+        from zae_limiter.models import BackendCapabilities
+
+        limits = [Limit.per_minute("rpm", 100)]
+        no_batch_capabilities = BackendCapabilities(
+            supports_audit_logging=True,
+            supports_usage_snapshots=True,
+            supports_infrastructure_management=True,
+            supports_change_streams=True,
+            supports_batch_operations=False,
+        )
+        monkeypatch.setattr(sync_limiter._repository, "_capabilities", no_batch_capabilities)
+        with sync_limiter.acquire(
+            entity_id="fresh-entity", resource="gpt-4", limits=limits, consume={"rpm": 1}
+        ) as lease:
+            assert lease.consumed == {"rpm": 1}
+
+
+class TestRateLimiterVersionChecking:
+    """Tests for version checking during initialization."""
+
+    def test_check_version_raises_incompatible_schema(self, mock_dynamodb):
+        """Should raise IncompatibleSchemaError when schema version is incompatible."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRateLimiter
+        from zae_limiter.exceptions import IncompatibleSchemaError
+        from zae_limiter.version import CompatibilityResult, InfrastructureVersion
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(
+                name="test-version-check", region="us-east-1", skip_version_check=False
+            )
+            limiter._repository.create_table()
+            incompatible_record = {
+                "schema_version": "99.0.0",
+                "lambda_version": "0.1.0",
+                "client_min_version": "0.0.0",
+            }
+            with (
+                patch.object(
+                    limiter._repository,
+                    "get_version_record",
+                    new=MagicMock(return_value=incompatible_record),
+                ),
+                patch(
+                    "zae_limiter.version.check_compatibility",
+                    return_value=CompatibilityResult(
+                        is_compatible=False,
+                        requires_schema_migration=True,
+                        requires_lambda_update=False,
+                        message="Major version mismatch",
+                    ),
+                ),
+                patch(
+                    "zae_limiter.version.InfrastructureVersion.from_record",
+                    return_value=InfrastructureVersion(
+                        schema_version="99.0.0",
+                        lambda_version="0.1.0",
+                        template_version=None,
+                        client_min_version="0.0.0",
+                    ),
+                ),
+            ):
+                with pytest.raises(IncompatibleSchemaError):
+                    limiter._check_and_update_version()
+            limiter.close()
+
+    def test_check_version_raises_version_mismatch_strict(self, mock_dynamodb):
+        """Should raise VersionMismatchError when strict mode is on and lambda needs update."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRateLimiter
+        from zae_limiter.exceptions import VersionMismatchError
+        from zae_limiter.version import CompatibilityResult, InfrastructureVersion
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(
+                name="test-strict-version",
+                region="us-east-1",
+                skip_version_check=False,
+                strict_version=True,
+                auto_update=False,
+            )
+            limiter._repository.create_table()
+            mismatch_record = {
+                "schema_version": "1.0.0",
+                "lambda_version": "0.0.1",
+                "client_min_version": "0.0.0",
+            }
+            with (
+                patch.object(
+                    limiter._repository,
+                    "get_version_record",
+                    new=MagicMock(return_value=mismatch_record),
+                ),
+                patch(
+                    "zae_limiter.version.check_compatibility",
+                    return_value=CompatibilityResult(
+                        is_compatible=True,
+                        requires_schema_migration=False,
+                        requires_lambda_update=True,
+                        message="Lambda version outdated",
+                    ),
+                ),
+                patch(
+                    "zae_limiter.version.InfrastructureVersion.from_record",
+                    return_value=InfrastructureVersion(
+                        schema_version="1.0.0",
+                        lambda_version="0.0.1",
+                        template_version=None,
+                        client_min_version="0.0.0",
+                    ),
+                ),
+            ):
+                with pytest.raises(VersionMismatchError):
+                    limiter._check_and_update_version()
+            limiter.close()
+
+    def test_perform_lambda_update(self, mock_dynamodb):
+        """Should deploy Lambda code and update version record."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test-lambda-update", region="us-east-1")
+            limiter._repository.create_table()
+            mock_manager = MagicMock()
+            mock_manager.__enter__ = MagicMock(return_value=mock_manager)
+            mock_manager.__exit__ = MagicMock(return_value=None)
+            mock_manager.deploy_lambda_code = MagicMock()
+            mock_set_version = MagicMock()
+            with (
+                patch(
+                    "zae_limiter.infra.sync_stack_manager.SyncStackManager",
+                    MagicMock(return_value=mock_manager),
+                ),
+                patch.object(limiter._repository, "set_version_record", mock_set_version),
+            ):
+                limiter._perform_lambda_update()
+            mock_manager.deploy_lambda_code.assert_called_once()
+            mock_set_version.assert_called_once()
+            limiter.close()
+
+
+class TestRateLimiterStackOperations:
+    """Tests for create_stack and delete_stack methods."""
+
+    def test_create_stack(self, mock_dynamodb):
+        """create_stack should delegate to SyncStackManager."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import StackOptions, SyncRateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test-create-stack", region="us-east-1")
+            mock_manager = MagicMock()
+            mock_manager.__enter__ = MagicMock(return_value=mock_manager)
+            mock_manager.__exit__ = MagicMock(return_value=None)
+            mock_manager.create_stack = MagicMock(
+                return_value={"StackId": "test-id", "StackName": "test-create-stack"}
+            )
+            with patch(
+                "zae_limiter.infra.sync_stack_manager.SyncStackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                result = limiter.create_stack(stack_options=StackOptions())
+            assert result["StackId"] == "test-id"
+            mock_manager.create_stack.assert_called_once()
+            limiter.close()
+
+    def test_delete_stack(self, mock_dynamodb):
+        """delete_stack should delegate to SyncStackManager."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test-delete-stack", region="us-east-1")
+            mock_manager = MagicMock()
+            mock_manager.__enter__ = MagicMock(return_value=mock_manager)
+            mock_manager.__exit__ = MagicMock(return_value=None)
+            mock_manager.delete_stack = MagicMock()
+            with patch(
+                "zae_limiter.infra.sync_stack_manager.SyncStackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                limiter.delete_stack()
+            mock_manager.delete_stack.assert_called_once_with("test-delete-stack")
+            limiter.close()
+
+
+class TestRateLimiterGetStatusFallbackPing:
+    """Tests for get_status fallback to ping when describe_table fails."""
+
+    def test_get_status_fallback_ping_no_get_client(self, mock_dynamodb):
+        """get_status should use ping() when repository has no _get_client."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test-fallback-ping", region="us-east-1")
+            mock_repo = MagicMock(spec=[])
+            mock_repo.ping = MagicMock(return_value=True)
+            mock_repo.region = "us-east-1"
+            mock_repo.endpoint_url = None
+            mock_repo.get_version_record = MagicMock(return_value=None)
+            original_repo = limiter._repository
+            limiter._repository = mock_repo
+            mock_manager = MagicMock()
+            mock_manager.__enter__ = MagicMock(side_effect=Exception("No stack"))
+            mock_manager.__exit__ = MagicMock(return_value=None)
+            with patch(
+                "zae_limiter.infra.sync_stack_manager.SyncStackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = limiter.get_status()
+            assert status.available is True
+            assert status.latency_ms is not None
+            mock_repo.ping.assert_called_once()
+            limiter._repository = original_repo
+            limiter.close()
+
+
 class TestSyncRateLimiterGetStatus:
     """Tests for SyncRateLimiter.get_status method."""
 

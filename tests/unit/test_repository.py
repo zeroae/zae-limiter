@@ -1,11 +1,13 @@
 """Unit tests for Repository."""
 
 import time
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from zae_limiter import AuditAction, Limit
-from zae_limiter.exceptions import InvalidIdentifierError
+from zae_limiter.exceptions import EntityExistsError, InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
 from zae_limiter.schema import (
@@ -2455,3 +2457,178 @@ class TestEntityConfigRegistry:
             with pytest.raises(ClientError) as exc_info:
                 await repo._cleanup_entity_config_registry("gpt-4")
             assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+
+
+class TestRepositoryEntityDuplicates:
+    """Tests for duplicate entity creation handling."""
+
+    @pytest.mark.asyncio
+    async def test_create_entity_raises_entity_exists_on_duplicate(self, repo):
+        """Creating an entity that already exists should raise EntityExistsError."""
+        await repo.create_entity("existing-entity", name="Original")
+
+        with pytest.raises(EntityExistsError) as exc_info:
+            await repo.create_entity("existing-entity", name="Duplicate")
+
+        assert exc_info.value.entity_id == "existing-entity"
+
+    @pytest.mark.asyncio
+    async def test_delete_entity_noop_for_nonexistent(self, repo):
+        """Deleting a nonexistent entity should be a no-op (no error)."""
+        # Should not raise
+        await repo.delete_entity("nonexistent-entity")
+
+        # Verify entity still doesn't exist
+        entity = await repo.get_entity("nonexistent-entity")
+        assert entity is None
+
+
+class TestRepositoryTableOperations:
+    """Tests for table-level operations."""
+
+    @pytest.mark.asyncio
+    async def test_delete_table_ignores_nonexistent(self, repo):
+        """delete_table should not raise when table doesn't exist."""
+        # Delete the table first
+        await repo.delete_table()
+
+        # Deleting again should not raise (ResourceNotFoundException is swallowed)
+        await repo.delete_table()
+
+
+class TestRepositoryPing:
+    """Tests for ping connectivity check."""
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_true(self, repo):
+        """ping should return True when table is reachable."""
+        result = await repo.ping()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_ping_returns_false_on_error(self, repo):
+        """ping should return False when DynamoDB is unreachable."""
+        mock_client = AsyncMock()
+        mock_client.get_item = AsyncMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "ServiceUnavailable", "Message": "down"}},
+                "GetItem",
+            )
+        )
+
+        with patch.object(repo, "_get_client", return_value=mock_client):
+            result = await repo.ping()
+
+        assert result is False
+
+
+class TestCompositeLimitConfigConvenience:
+    """Tests for convenience methods on composite limit configs."""
+
+    @pytest.mark.asyncio
+    async def test_get_system_limits_convenience(self, repo):
+        """get_system_limits should return only limits, not on_unavailable."""
+        limits = [
+            Limit.per_minute("rpm", 500),
+            Limit.per_minute("tpm", 50000),
+        ]
+        await repo.set_system_defaults(limits, on_unavailable="allow")
+
+        result = await repo.get_system_limits()
+
+        assert len(result) == 2
+        limit_map = {lim.name: lim for lim in result}
+        assert limit_map["rpm"].capacity == 500
+        assert limit_map["tpm"].capacity == 50000
+
+
+class TestRepositoryAuditPagination:
+    """Tests for audit event pagination with start_event_id."""
+
+    @pytest.mark.asyncio
+    async def test_get_audit_events_with_start_event_id(self, repo):
+        """get_audit_events with start_event_id returns events after that ID."""
+        # Create entity and multiple audit events
+        await repo.create_entity(entity_id="pagination-cursor-test")
+        for i in range(5):
+            await repo.set_limits(
+                entity_id="pagination-cursor-test",
+                limits=[Limit.per_minute(f"limit-{i}", 100 * (i + 1))],
+                principal=f"user-{i}",
+            )
+
+        # Get all events
+        all_events = await repo.get_audit_events("pagination-cursor-test", limit=10)
+        assert len(all_events) == 6  # 1 create + 5 set_limits
+
+        # Use start_event_id to skip the first few events
+        # Events are returned most recent first, so we use the event_id of the 3rd event
+        middle_event_id = all_events[2].event_id
+        remaining_events = await repo.get_audit_events(
+            "pagination-cursor-test",
+            limit=10,
+            start_event_id=middle_event_id,
+        )
+
+        # Should get events after the middle one
+        assert len(remaining_events) > 0
+        # Remaining events should not include the middle event or anything newer
+        remaining_ids = {e.event_id for e in remaining_events}
+        assert middle_event_id not in remaining_ids
+
+
+class TestRepositoryAuditResourceEntityId:
+    """Tests for audit logging entity_id for resource-level operations."""
+
+    @pytest.mark.asyncio
+    async def test_delete_resource_defaults_audit_resource_entity_id(self, repo):
+        """delete_resource_defaults should log audit with $RESOURCE:{name} entity_id."""
+        limits = [Limit.per_minute("rpm", 100)]
+        await repo.set_resource_defaults("gpt-4", limits, principal="admin")
+
+        # Delete resource defaults
+        await repo.delete_resource_defaults("gpt-4", principal="cleanup")
+
+        # Check audit events for the resource entity (ADR-106: $RESOURCE:{name})
+        events = await repo.get_audit_events("$RESOURCE:gpt-4")
+
+        # Should have set + delete events
+        assert len(events) >= 2
+
+        delete_event = events[0]  # Most recent first
+        assert delete_event.action == AuditAction.LIMITS_DELETED
+        assert delete_event.principal == "cleanup"
+
+
+class TestRepositoryDeserializationEdgeCases:
+    """Tests for edge cases in DynamoDB deserialization."""
+
+    @pytest.mark.asyncio
+    async def test_deserialize_value_unknown_type_returns_none(self, repo):
+        """_deserialize_value should return None for unknown DynamoDB types."""
+        # Pass a dict with an unrecognized DynamoDB type key
+        result = repo._deserialize_value({"UNKNOWN_TYPE": "some_value"})
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_deserialize_composite_bucket_with_total_consumed(self, repo):
+        """_deserialize_bucket should extract total_consumed_milli from composite item."""
+        now_ms = 1700000000000
+        limits = [Limit.per_minute("rpm", 100)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+
+        # Create a composite bucket
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        # Consume some tokens to set total_consumed_milli
+        consumed = {"rpm": 5000}
+        adjust_item = repo.build_composite_adjust("e1", "gpt-4", consumed)
+        if adjust_item:
+            await repo.transact_write([adjust_item])
+
+        # Get the bucket and verify total_consumed_milli is set
+        bucket = await repo.get_bucket("e1", "gpt-4", "rpm")
+        assert bucket is not None
+        assert bucket.total_consumed_milli is not None
+        assert bucket.total_consumed_milli == 5000
