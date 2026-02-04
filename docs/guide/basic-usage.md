@@ -18,9 +18,9 @@ async with limiter.acquire(
 
 **Behavior:**
 
-- On entry: Checks limits and consumes tokens
-- On success: Commits the consumption
-- On exception: Rolls back the consumption
+- On entry: Checks limits, consumes tokens, and writes consumption to DynamoDB immediately
+- On success: Commits any adjustments made during the context (no-op if none)
+- On exception: Writes a compensating transaction to restore consumed tokens
 
 Limits are resolved automatically from stored config (Entity > Resource > System). See [Configuration Hierarchy](config-hierarchy.md) for details.
 

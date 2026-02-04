@@ -57,7 +57,7 @@ async with limiter.acquire(
     response = await call_llm()
     # Reconcile actual usage (can go negative for post-hoc adjustment)
     await lease.adjust(tpm=response.usage.total_tokens - 500)
-    # On success: committed | On exception: rolled back automatically
+    # Tokens written to DynamoDB on enter | Rolled back on exception
 
 # Hierarchical entities: create project with stored limits, then API key under it
 await limiter.create_entity(entity_id="proj-1", name="Production")
