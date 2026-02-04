@@ -42,22 +42,23 @@ zae-limiter deploy \
 
 ### IAM
 
-#### Application Access Roles
+#### Application Access Policies
 
-The stack creates three IAM roles for different access patterns (enabled by default):
+The stack creates three IAM managed policies by default:
 
-| Role | Use Case | When to Use |
-|------|----------|-------------|
-| **AppRole** | Applications calling `acquire()` | Production workloads, Lambda functions, ECS tasks |
-| **AdminRole** | Ops teams managing config | CLI tools, admin scripts, CI/CD pipelines |
-| **ReadOnlyRole** | Monitoring and dashboards | Grafana, CloudWatch dashboards, audit tools |
+| Policy | Suffix | Use Case | When to Use |
+|--------|--------|----------|-------------|
+| **AcquireOnlyPolicy** | `-acq` | Applications calling `acquire()` | Production workloads, Lambda functions, ECS tasks |
+| **FullAccessPolicy** | `-full` | Ops teams managing config | CLI tools, admin scripts, CI/CD pipelines |
+| **ReadOnlyPolicy** | `-read` | Monitoring and dashboards | Grafana, CloudWatch dashboards, audit tools |
 
 **Best practices:**
 
-- **Use AppRole for applications** - Provides only the permissions needed for rate limiting
-- **Use AdminRole for config management** - Separate from application credentials
-- **Use ReadOnlyRole for observability** - Safe access for monitoring systems
-- **Disable with `--no-iam-roles`** - When using existing IAM policies or cross-account access
+- **Attach AcquireOnlyPolicy for applications** - Provides only the permissions needed for rate limiting
+- **Attach FullAccessPolicy for config management** - Separate from application credentials
+- **Attach ReadOnlyPolicy for observability** - Safe access for monitoring systems
+- **Disable with `--no-iam`** - When using existing IAM policies or cross-account access
+- **Create roles with `--create-iam-roles`** - When you want pre-built roles that attach these policies
 
 #### Lambda Aggregator
 

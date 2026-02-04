@@ -147,7 +147,7 @@ limiter = RateLimiter(
 Other `StackOptions` fields: `lambda_memory`, `usage_retention_days`, `audit_retention_days`, `enable_alarms`, `alarm_sns_topic`, `enable_audit_archival`, `audit_archive_glacier_days`, `enable_tracing`, `create_iam_roles` (default: False), `role_name_format`, `policy_name_format`, `enable_deletion_protection`, `create_iam` (default: True), `aggregator_role_arn`.
 
 **IAM Resource Defaults (ADR-117):**
-- **Managed policies** are **created by default** (`AppPolicy`, `AdminPolicy`, `ReadOnlyPolicy`)
+- **Managed policies** are **created by default** (`AcquireOnlyPolicy`, `FullAccessPolicy`, `ReadOnlyPolicy`)
 - **IAM roles** are **opt-in** (set `create_iam_roles=True` to create them)
 - Users can attach managed policies to their own roles, users, or federated identities
 - **Skip all IAM** with `create_iam=False` or `--no-iam` for restricted IAM environments
@@ -284,8 +284,8 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
 
 **IAM Managed Policy Naming (ADR-117):**
 - Pattern: `{policy_name_format}.replace("{}", f"{stack_name}-{component}")`
-- Components: `app`, `admin`, `read`
-- Default names: `{stack}-app`, `{stack}-admin`, `{stack}-read`
+- Components: `acq` (AcquireOnlyPolicy), `full` (FullAccessPolicy), `read` (ReadOnlyPolicy)
+- Default names: `{stack}-acq`, `{stack}-full`, `{stack}-read`
 - Maximum policy name length: 128 characters (IAM limit)
 - Policies are **always created** regardless of `create_iam_roles` setting
 
