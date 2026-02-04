@@ -2985,9 +2985,9 @@
 </span></code></pre></div>
 <p><strong>Behavior:</strong></p>
 <ul>
-<li>On entry: Checks limits and consumes tokens</li>
-<li>On success: Commits the consumption</li>
-<li>On exception: Rolls back the consumption</li>
+<li>On entry: Checks limits, consumes tokens, and writes consumption to DynamoDB immediately</li>
+<li>On success: Commits any adjustments made during the context (no-op if none)</li>
+<li>On exception: Writes a compensating transaction to restore consumed tokens</li>
 </ul>
 <p>Limits are resolved automatically from stored config (Entity &gt; Resource &gt; System). See <a href="../config-hierarchy/">Configuration Hierarchy</a> for details.</p>
 <h2 id="multiple-limits">Multiple Limits<a class="headerlink" href="#multiple-limits" title="Permanent link">&para;</a></h2>

@@ -3392,7 +3392,7 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </span></code></pre></div>
 <h2 id="key-design-decisions">Key Design Decisions<a class="headerlink" href="#key-design-decisions" title="Permanent link">&para;</a></h2>
 <ol>
-<li><strong>Lease commits only on success</strong>: If any exception occurs in the context, changes are rolled back</li>
+<li><strong>Write-on-enter</strong>: <code>acquire()</code> writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating transaction restores the consumed tokens</li>
 <li><strong>Bucket can go negative</strong>: <code>lease.adjust()</code> never throws, allows debt</li>
 <li><strong>Cascade is per-entity config</strong>: Set <code>cascade=True</code> on <code>create_entity()</code> to auto-cascade to parent on every <code>acquire()</code></li>
 <li><strong>Stored limits are the default (v0.5.0+)</strong>: Limits resolved from System/Resource/Entity config automatically. Pass <code>limits</code> parameter to override</li>

@@ -2638,7 +2638,7 @@
 <li><strong>Multiple Limits</strong> - Track requests per minute, tokens per minute, etc. in a single call</li>
 <li><strong>Hierarchical Entities</strong> - Two-level hierarchy (project → API keys) with cascade mode</li>
 <li><strong>Atomic Transactions</strong> - Multi-key updates via DynamoDB TransactWriteItems</li>
-<li><strong>Rollback on Exception</strong> - Automatic rollback if your code throws</li>
+<li><strong>Write-on-Enter with Rollback</strong> - Tokens consumed immediately on acquire; compensating transaction on exception</li>
 <li><strong>Stored Limits</strong> - Configure per-entity limits in DynamoDB</li>
 <li><strong>Usage Analytics</strong> - Lambda aggregator for hourly/daily usage snapshots</li>
 <li><strong>Audit Logging</strong> - Track entity and limit changes for compliance</li>
@@ -2669,7 +2669,7 @@
 </span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call_llm</span><span class="p">()</span>
 </span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>    <span class="c1"># Reconcile actual usage (can go negative for post-hoc adjustment)</span>
 </span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>    <span class="k">await</span> <span class="n">lease</span><span class="o">.</span><span class="n">adjust</span><span class="p">(</span><span class="n">tpm</span><span class="o">=</span><span class="n">response</span><span class="o">.</span><span class="n">usage</span><span class="o">.</span><span class="n">total_tokens</span> <span class="o">-</span> <span class="mi">500</span><span class="p">)</span>
-</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    <span class="c1"># On success: committed | On exception: rolled back automatically</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    <span class="c1"># Tokens written to DynamoDB on enter | Rolled back on exception</span>
 </span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>
 </span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="c1"># Hierarchical entities: project → API key</span>
 </span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;proj-1&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Production&quot;</span><span class="p">)</span>
