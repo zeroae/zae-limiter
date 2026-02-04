@@ -92,6 +92,9 @@ packages = ["src/zae_limiter", "src/zae_limiter_aggregator"]
 [[tool.hatch.build.hooks.build-scripts.scripts]]
 commands = ["python scripts/generate_sync.py"]
 
+[tool.hatch.envs.default.scripts]
+generate-sync = "python scripts/generate_sync.py"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -137,4 +140,10 @@ module = [
     "zae_limiter._version",
 ]
 ignore_missing_imports = true
+
+[tool.coverage.run]
+omit = [
+    # Generated sync files - coverage measured on async source only
+    "*/sync_*.py",
+]
 
