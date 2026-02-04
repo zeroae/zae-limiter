@@ -432,7 +432,7 @@ docs/
 
 ## Important Invariants
 
-1. **Lease commits only on success**: If any exception occurs in the context, changes are rolled back
+1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating transaction restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
 2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.

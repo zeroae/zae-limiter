@@ -280,7 +280,253 @@ class TestLeaseRetryPath:
         mock_repo.build_composite_retry.return_value = {"Update": {}}
         lease = SyncLease(repository=mock_repo, entries=[entry])
         with pytest.raises(RateLimitExceeded):
-            lease._commit()
+            lease._commit_initial()
+
+
+class TestWriteOnEnter:
+    """Tests for write-on-enter behavior (Issue #309).
+
+    Verifies _commit_initial(), _commit_adjustments(), and _rollback() paths.
+    """
+
+    def _make_entry(self, consumed=10, is_new=False, initial_consumed=0):
+        """Create a LeaseEntry with mock state."""
+        from zae_limiter.sync_lease import LeaseEntry
+
+        limit = Limit.per_minute("rpm", 100)
+        state = MagicMock()
+        state.tokens_milli = 90000
+        state.last_refill_ms = 1000
+        state.total_consumed_milli = None
+        return LeaseEntry(
+            entity_id="e1",
+            resource="gpt-4",
+            limit=limit,
+            state=state,
+            consumed=consumed,
+            _original_tokens_milli=100000,
+            _original_rf_ms=1000,
+            _is_new=is_new,
+            _initial_consumed=initial_consumed,
+        )
+
+    def _make_mock_repo(self):
+        """Create a mock repository."""
+        repo = MagicMock()
+        repo.build_composite_normal.return_value = {"Update": {}}
+        repo.build_composite_create.return_value = {"Put": {}}
+        repo.build_composite_retry.return_value = {"Update": {}}
+        repo.build_composite_adjust.return_value = {"Update": {}}
+        return repo
+
+    def test_commit_initial_empty_entries(self):
+        """_commit_initial is no-op with empty entries (lines 259-263)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[])
+        lease._commit_initial()
+        assert lease._initial_committed is True
+        mock_repo.transact_write.assert_not_called()
+
+    def test_commit_initial_non_condition_check_reraises(self):
+        """Non-condition-check exceptions propagate from _commit_initial (line 269)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry()
+        mock_repo = self._make_mock_repo()
+        mock_repo.transact_write.side_effect = RuntimeError("network error")
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        with pytest.raises(RuntimeError, match="network error"):
+            lease._commit_initial()
+
+    def test_commit_initial_create_race_retry(self):
+        """Create race falls through to retry path (lines 275-278)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(is_new=True)
+        mock_repo = self._make_mock_repo()
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        mock_repo.transact_write.side_effect = [exc_cls(), None]
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._commit_initial()
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 2
+        mock_repo.build_composite_retry.assert_called_once()
+
+    def test_retry_non_condition_check_reraises(self):
+        """Non-condition-check error in retry path propagates (line 301)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry()
+        mock_repo = self._make_mock_repo()
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        mock_repo.transact_write.side_effect = [exc_cls(), RuntimeError("retry fail")]
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        with pytest.raises(RuntimeError, match="retry fail"):
+            lease._commit_initial()
+
+    def test_commit_adjustments_skips_when_committed(self):
+        """_commit_adjustments is no-op when already committed (line 315)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=10, initial_consumed=5)
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._committed = True
+        lease._commit_adjustments()
+        mock_repo.transact_write.assert_not_called()
+
+    def test_commit_adjustments_skips_when_rolled_back(self):
+        """_commit_adjustments is no-op when already rolled back (line 315)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=10, initial_consumed=5)
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._rolled_back = True
+        lease._commit_adjustments()
+        mock_repo.transact_write.assert_not_called()
+
+    def test_commit_adjustments_writes_delta(self):
+        """_commit_adjustments writes delta when adjustments exist."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=15, initial_consumed=10)
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._commit_adjustments()
+        assert lease._committed is True
+        mock_repo.build_composite_adjust.assert_called_once_with(
+            entity_id="e1", resource="gpt-4", deltas={"rpm": 5000}
+        )
+        mock_repo.transact_write.assert_called_once()
+
+    def test_commit_adjustments_noop_when_no_change(self):
+        """_commit_adjustments skips transact_write when no adjustments."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=10, initial_consumed=10)
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._commit_adjustments()
+        assert lease._committed is True
+        mock_repo.transact_write.assert_not_called()
+
+    def test_commit_adjustments_failure_allows_rollback(self):
+        """_rollback works after _commit_adjustments fails (token leak fix)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=15, initial_consumed=10)
+        mock_repo = self._make_mock_repo()
+        mock_repo.transact_write.side_effect = RuntimeError("network error")
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._initial_committed = True
+        with pytest.raises(RuntimeError, match="network error"):
+            lease._commit_adjustments()
+        assert lease._committed is False
+        mock_repo.transact_write.side_effect = None
+        lease._rollback()
+        assert lease._rolled_back is True
+        mock_repo.build_composite_adjust.assert_called_with(
+            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}
+        )
+
+    def test_rollback_skips_when_committed(self):
+        """_rollback is no-op when already committed (line 358)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=10, initial_consumed=10)
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._committed = True
+        lease._initial_committed = True
+        lease._rollback()
+        mock_repo.transact_write.assert_not_called()
+
+    def test_rollback_skips_when_no_initial_commit(self):
+        """_rollback is no-op when _initial_committed is False (line 364)."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=10, initial_consumed=10)
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._rollback()
+        assert lease._rolled_back is True
+        mock_repo.transact_write.assert_not_called()
+
+    def test_rollback_writes_compensating_delta(self):
+        """_rollback writes negative delta to restore tokens."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=10, initial_consumed=10)
+        mock_repo = self._make_mock_repo()
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._initial_committed = True
+        lease._rollback()
+        assert lease._rolled_back is True
+        mock_repo.build_composite_adjust.assert_called_once_with(
+            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}
+        )
+        mock_repo.transact_write.assert_called_once()
+
+    def test_rollback_failure_logs_warning(self, caplog):
+        """_rollback logs warning and doesn't raise on transact_write failure (lines 394-395)."""
+        import logging
+
+        from zae_limiter.sync_lease import SyncLease
+
+        entry = self._make_entry(consumed=10, initial_consumed=10)
+        mock_repo = self._make_mock_repo()
+        mock_repo.transact_write.side_effect = RuntimeError("DynamoDB down")
+        lease = SyncLease(repository=mock_repo, entries=[entry])
+        lease._initial_committed = True
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_lease"):
+            lease._rollback()
+        assert lease._rolled_back is True
+        assert "Failed to rollback consumed tokens" in caplog.text
+
+    def test_acquire_writes_on_enter(self, sync_limiter):
+        """Tokens are consumed in DynamoDB immediately on context enter."""
+        limits = [Limit.per_minute("rpm", 100)]
+        with sync_limiter.acquire(
+            entity_id="enter-test", resource="gpt-4", limits=limits, consume={"rpm": 10}
+        ):
+            buckets = sync_limiter._repository.get_buckets(entity_id="enter-test", resource="gpt-4")
+            bucket = buckets[0]
+            assert bucket.tokens_milli <= 90000
+
+    def test_acquire_rollback_restores_on_error(self, sync_limiter):
+        """Rollback writes compensating transaction on error."""
+        limits = [Limit.per_minute("rpm", 100)]
+        try:
+            with sync_limiter.acquire(
+                entity_id="rollback-test", resource="gpt-4", limits=limits, consume={"rpm": 10}
+            ):
+                raise ValueError("boom")
+        except ValueError:
+            pass
+        available = sync_limiter.available(
+            entity_id="rollback-test", resource="gpt-4", limits=limits
+        )
+        assert available["rpm"] == 100
+
+    def test_cascade_writes_both_on_enter(self, sync_limiter):
+        """Cascade writes both child and parent buckets on enter."""
+        sync_limiter.create_entity(entity_id="proj-cascade")
+        sync_limiter.create_entity(entity_id="key-cascade", parent_id="proj-cascade", cascade=True)
+        limits = [Limit.per_minute("rpm", 100)]
+        with sync_limiter.acquire(
+            entity_id="key-cascade", resource="gpt-4", limits=limits, consume={"rpm": 5}
+        ):
+            child_available = sync_limiter.available(
+                entity_id="key-cascade", resource="gpt-4", limits=limits
+            )
+            parent_available = sync_limiter.available(
+                entity_id="proj-cascade", resource="gpt-4", limits=limits
+            )
+            assert child_available["rpm"] == 95
+            assert parent_available["rpm"] == 95
 
 
 class TestRateLimiterLeaseCounter:

@@ -640,9 +640,10 @@ class SyncRateLimiter:
                     entity_id=entity_id,
                     resource=resource,
                 ) from e
+        lease._commit_initial()
         try:
             yield lease
-            lease._commit()
+            lease._commit_adjustments()
         except Exception:
             lease._rollback()
             raise

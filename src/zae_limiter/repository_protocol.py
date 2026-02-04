@@ -392,6 +392,25 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    def build_composite_adjust(
+        self,
+        entity_id: str,
+        resource: str,
+        deltas: dict[str, int],
+    ) -> dict[str, Any]:
+        """Build an UpdateItem for the adjust write path (ADR-115 path 4).
+
+        Unconditional ADD for post-hoc correction. Can go negative by design.
+        Positive delta = consumed more (subtract tokens, add to counter).
+        Negative delta = consumed less (add tokens, subtract from counter).
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            deltas: Delta per limit (millitokens, positive=consume, negative=release)
+        """
+        ...
+
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
         """
         Execute a transactional write of multiple items.

@@ -145,6 +145,8 @@ TEST_SKIP_FUNCTIONS = {
     "test_is_available_returns_false_on_timeout",
     # Tests async client __aexit__ cleanup - sync boto3 clients don't use context managers
     "test_close_cleans_up_client",
+    # Uses asyncio.Barrier + asyncio.gather for concurrent leases - no sync equivalent
+    "test_concurrent_adjust_no_lost_tokens",
 }
 
 TEST_METHOD_NAME_REWRITES = {

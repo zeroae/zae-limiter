@@ -738,10 +738,13 @@ class RateLimiter:
                     resource=resource,
                 ) from e
 
-        # Lease acquired successfully - manage the context
+        # Write initial consumption to DynamoDB before yielding (Issue #309)
+        await lease._commit_initial()
+
+        # Lease committed - manage the context
         try:
             yield lease
-            await lease._commit()
+            await lease._commit_adjustments()
         except Exception:
             await lease._rollback()
             raise

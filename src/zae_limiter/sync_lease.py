@@ -34,6 +34,7 @@ class LeaseEntry:
     _original_rf_ms: int = 0
     _is_new: bool = False
     _has_custom_config: bool = False
+    _initial_consumed: int = 0
 
 
 @dataclass
@@ -49,6 +50,7 @@ class SyncLease:
     entries: list[LeaseEntry] = field(default_factory=list)
     _committed: bool = False
     _rolled_back: bool = False
+    _initial_committed: bool = False
     bucket_ttl_refill_multiplier: int = 7
 
     @property
@@ -59,6 +61,11 @@ class SyncLease:
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
+
+    @property
+    def _has_adjustments(self) -> bool:
+        """Whether any post-enter adjustments were made (Issue #309)."""
+        return any(entry.consumed != entry._initial_consumed for entry in self.entries)
 
     def consume(self, **amounts: int) -> None:
         """
@@ -155,17 +162,19 @@ class SyncLease:
         negated = {k: -v for k, v in amounts.items()}
         self.adjust(**negated)
 
-    def _commit(self) -> None:
-        """Persist bucket state changes using ADD-based writes (ADR-115).
+    def _commit_initial(self) -> None:
+        """Write initial consumption to DynamoDB on context enter (Issue #309).
 
-        Groups entries by (entity_id, resource) to build one composite
-        update per group. Uses Normal write path first (ADD with refill,
-        CONDITION rf=expected). On ConditionalCheckFailedException, falls
-        back to Retry path (ADD consumption only, CONDITION tk>=consumed).
+        Persists bucket state using ADD-based writes (ADR-115). Groups entries
+        by (entity_id, resource) to build one composite update per group. Uses
+        Normal write path first (ADD with refill, CONDITION rf=expected). On
+        ConditionalCheckFailedException, falls back to Retry path.
+
+        After successful write, records _initial_consumed on each entry so
+        that _commit_adjustments() can compute deltas.
         """
-        if self._committed or self._rolled_back:
+        if self._initial_committed or self._committed or self._rolled_back:
             return
-        self._committed = True
         now_ms = int(time.time() * 1000)
         repo = self.repository
         groups: dict[tuple[str, str], list[LeaseEntry]] = {}
@@ -218,6 +227,7 @@ class SyncLease:
                     )
                 )
         if not items:
+            self._initial_committed = True
             return
         try:
             repo.transact_write(items)
@@ -247,10 +257,81 @@ class SyncLease:
                         statuses = _build_retry_failure_statuses(self.entries)
                         raise RateLimitExceeded(statuses) from retry_exc
                     raise
+        self._initial_committed = True
+        for entry in self.entries:
+            entry._initial_consumed = entry.consumed
+
+    def _commit_adjustments(self) -> None:
+        """Write post-enter adjustment deltas to DynamoDB on context exit (Issue #309).
+
+        No-op if no adjust/consume/release calls were made during the context.
+        Uses build_composite_adjust() for unconditional ADD.
+        """
+        if self._committed or self._rolled_back:
+            return
+        if not self._has_adjustments:
+            self._committed = True
+            return
+        repo = self.repository
+        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            key = (entry.entity_id, entry.resource)
+            groups.setdefault(key, []).append(entry)
+        items: list[dict[str, Any]] = []
+        for (entity_id, resource), group_entries in groups.items():
+            deltas: dict[str, int] = {}
+            for entry in group_entries:
+                delta = entry.consumed - entry._initial_consumed
+                if delta != 0:
+                    deltas[entry.limit.name] = delta * 1000
+            if deltas:
+                item = repo.build_composite_adjust(
+                    entity_id=entity_id, resource=resource, deltas=deltas
+                )
+                if item:
+                    items.append(item)
+        if items:
+            repo.transact_write(items)
+        self._committed = True
 
     def _rollback(self) -> None:
-        """Rollback is implicit - we just don't commit."""
+        """Write compensating transaction to restore consumed tokens (Issue #309).
+
+        On error, the initial consumption was already written to DynamoDB by
+        _commit_initial(). This method restores those tokens by writing
+        negative deltas using build_composite_adjust().
+        """
+        if self._committed or self._rolled_back:
+            return
         self._rolled_back = True
+        if not self._initial_committed:
+            return
+        repo = self.repository
+        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
+        for entry in self.entries:
+            key = (entry.entity_id, entry.resource)
+            groups.setdefault(key, []).append(entry)
+        items: list[dict[str, Any]] = []
+        for (entity_id, resource), group_entries in groups.items():
+            deltas: dict[str, int] = {}
+            for entry in group_entries:
+                if entry._initial_consumed != 0:
+                    deltas[entry.limit.name] = -entry._initial_consumed * 1000
+            if deltas:
+                item = repo.build_composite_adjust(
+                    entity_id=entity_id, resource=resource, deltas=deltas
+                )
+                if item:
+                    items.append(item)
+        if items:
+            try:
+                repo.transact_write(items)
+            except Exception:
+                logger.warning(
+                    "Failed to rollback consumed tokens for entities: %s",
+                    list(groups.keys()),
+                    exc_info=True,
+                )
 
 
 def _is_condition_check_failure(exc: Exception) -> bool:
