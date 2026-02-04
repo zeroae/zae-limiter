@@ -1,11 +1,16 @@
 """Tests for load test Docker image builder."""
 
 import tarfile
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from zae_limiter.load.builder import (
+    _build_wheel,
     _create_build_context,
     _generate_dockerfile,
+    build_and_push_locust_image,
     get_zae_limiter_source,
 )
 
@@ -19,6 +24,204 @@ class TestGetZaeLimiterSource:
             with patch("importlib.metadata.version", return_value="0.8.0"):
                 result = get_zae_limiter_source()
                 assert result == "0.8.0"
+
+    def test_returns_wheel_in_dev_mode(self, tmp_path):
+        """Returns wheel path when in development mode."""
+        wheel = tmp_path / "dist" / "zae_limiter-0.8.0.whl"
+        wheel.parent.mkdir()
+        wheel.touch()
+
+        with (
+            patch("zae_limiter.load.builder.Path.exists", return_value=True),
+            patch("zae_limiter.load.builder._build_wheel", return_value=wheel),
+        ):
+            result = get_zae_limiter_source()
+            assert isinstance(result, Path)
+
+
+class TestBuildWheel:
+    """Tests for _build_wheel."""
+
+    def test_builds_and_returns_wheel(self, tmp_path):
+        """_build_wheel runs uv build and returns wheel path."""
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        wheel = dist_dir / "zae_limiter-0.8.0.whl"
+
+        def mock_run(*args, **kwargs):
+            wheel.touch()
+
+        with patch("subprocess.run", side_effect=mock_run):
+            result = _build_wheel(tmp_path)
+            assert result == wheel
+
+    def test_cleans_old_wheels(self, tmp_path):
+        """_build_wheel removes old wheels before building."""
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        old_wheel = dist_dir / "zae_limiter-0.7.0.whl"
+        old_wheel.touch()
+        new_wheel = dist_dir / "zae_limiter-0.8.0.whl"
+
+        def mock_run(*args, **kwargs):
+            new_wheel.touch()
+
+        with patch("subprocess.run", side_effect=mock_run):
+            _build_wheel(tmp_path)
+            assert not old_wheel.exists()
+
+    def test_raises_when_no_wheel_produced(self, tmp_path):
+        """_build_wheel raises RuntimeError if no wheel is built."""
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+
+        with (
+            patch("subprocess.run"),
+            pytest.raises(RuntimeError, match="Wheel build failed"),
+        ):
+            _build_wheel(tmp_path)
+
+
+class TestBuildAndPushLocustImage:
+    """Tests for build_and_push_locust_image."""
+
+    def test_auto_detects_source_when_none(self, tmp_path):
+        """build_and_push_locust_image calls get_zae_limiter_source when source is None."""
+        locustfile_dir = tmp_path / "locust"
+        locustfile_dir.mkdir()
+        (locustfile_dir / "locustfile.py").write_text("# locust")
+
+        mock_docker = MagicMock()
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.images.build.return_value = (MagicMock(), [])
+        mock_client.images.push.return_value = iter([{"status": "ok"}])
+
+        with (
+            patch.dict("sys.modules", {"docker": mock_docker}),
+            patch("boto3.client") as mock_boto3_client,
+            patch(
+                "zae_limiter.load.builder.get_zae_limiter_source",
+            ) as mock_source,
+        ):
+            mock_ecr = MagicMock()
+            mock_sts = MagicMock()
+
+            def client_factory(service, **kwargs):
+                if service == "ecr":
+                    return mock_ecr
+                elif service == "sts":
+                    return mock_sts
+                return MagicMock()
+
+            mock_boto3_client.side_effect = client_factory
+            mock_sts.get_caller_identity.return_value = {"Account": "123456789"}
+            mock_ecr.get_authorization_token.return_value = {
+                "authorizationData": [
+                    {
+                        "authorizationToken": "dXNlcjpwYXNz",
+                        "proxyEndpoint": "https://123.dkr.ecr.us-east-1.amazonaws.com",
+                    }
+                ]
+            }
+            mock_source.return_value = "0.8.0"
+
+            build_and_push_locust_image("test-load", "us-east-1", locustfile_dir, None)
+            mock_source.assert_called_once()
+
+    def test_builds_and_pushes(self, tmp_path):
+        """Builds Docker image and pushes to ECR."""
+        locustfile_dir = tmp_path / "locust"
+        locustfile_dir.mkdir()
+        (locustfile_dir / "locustfile.py").write_text("# locust")
+
+        mock_docker = MagicMock()
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.images.build.return_value = (MagicMock(), [])
+        mock_client.images.push.return_value = iter([{"status": "ok"}])
+
+        with (
+            patch.dict("sys.modules", {"docker": mock_docker}),
+            patch("boto3.client") as mock_boto3_client,
+        ):
+            mock_ecr = MagicMock()
+            mock_sts = MagicMock()
+
+            def client_factory(service, **kwargs):
+                if service == "ecr":
+                    return mock_ecr
+                elif service == "sts":
+                    return mock_sts
+                return MagicMock()
+
+            mock_boto3_client.side_effect = client_factory
+            mock_sts.get_caller_identity.return_value = {"Account": "123456789"}
+            mock_ecr.get_authorization_token.return_value = {
+                "authorizationData": [
+                    {
+                        "authorizationToken": "dXNlcjpwYXNz",  # base64("user:pass")
+                        "proxyEndpoint": "https://123.dkr.ecr.us-east-1.amazonaws.com",
+                    }
+                ]
+            }
+
+            result = build_and_push_locust_image("test-load", "us-east-1", locustfile_dir, "0.8.0")
+            assert "123456789.dkr.ecr.us-east-1.amazonaws.com" in result
+            mock_client.images.build.assert_called_once()
+            mock_client.images.push.assert_called_once()
+
+    def test_raises_on_push_error(self, tmp_path):
+        """Raises RuntimeError when push fails."""
+        locustfile_dir = tmp_path / "locust"
+        locustfile_dir.mkdir()
+        (locustfile_dir / "locustfile.py").write_text("# locust")
+
+        mock_docker = MagicMock()
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_client.images.build.return_value = (MagicMock(), [])
+        mock_client.images.push.return_value = iter([{"error": "access denied"}])
+
+        with (
+            patch.dict("sys.modules", {"docker": mock_docker}),
+            patch("boto3.client") as mock_boto3_client,
+        ):
+            mock_ecr = MagicMock()
+            mock_sts = MagicMock()
+
+            def client_factory(service, **kwargs):
+                if service == "ecr":
+                    return mock_ecr
+                elif service == "sts":
+                    return mock_sts
+                return MagicMock()
+
+            mock_boto3_client.side_effect = client_factory
+            mock_sts.get_caller_identity.return_value = {"Account": "123456789"}
+            mock_ecr.get_authorization_token.return_value = {
+                "authorizationData": [
+                    {
+                        "authorizationToken": "dXNlcjpwYXNz",
+                        "proxyEndpoint": "https://123.dkr.ecr.us-east-1.amazonaws.com",
+                    }
+                ]
+            }
+
+            with pytest.raises(RuntimeError, match="Push failed"):
+                build_and_push_locust_image("test-load", "us-east-1", locustfile_dir, "0.8.0")
+
+    def test_raises_when_docker_not_installed(self, tmp_path):
+        """Raises RuntimeError when docker package is missing."""
+        locustfile_dir = tmp_path / "locust"
+        locustfile_dir.mkdir()
+        (locustfile_dir / "locustfile.py").write_text("# locust")
+
+        with (
+            patch.dict("sys.modules", {"docker": None}),
+            pytest.raises(RuntimeError, match="docker package required"),
+        ):
+            build_and_push_locust_image("test-load", "us-east-1", locustfile_dir, "0.8.0")
 
 
 class TestGenerateDockerfile:
