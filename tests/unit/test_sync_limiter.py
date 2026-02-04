@@ -952,3 +952,77 @@ class TestSyncBucketLimitSync:
         )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"
+
+
+class TestSyncWriteOnEnter:
+    """Tests for sync write-on-enter behavior (Issue #309)."""
+
+    def test_acquire_writes_on_enter(self, sync_limiter):
+        """Tokens are consumed in DynamoDB immediately on context enter."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with sync_limiter.acquire(
+            entity_id="sync-enter-test",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 10},
+        ):
+            # Inside context: check DynamoDB already has consumption
+            available = sync_limiter.available(
+                entity_id="sync-enter-test",
+                resource="gpt-4",
+                limits=limits,
+            )
+            assert available["rpm"] == 90
+
+    def test_acquire_rollback_restores_on_error(self, sync_limiter):
+        """Rollback writes compensating transaction on error."""
+        limits = [Limit.per_day("rpd", 100)]
+
+        try:
+            with sync_limiter.acquire(
+                entity_id="sync-rollback-test",
+                resource="gpt-4",
+                limits=limits,
+                consume={"rpd": 10},
+            ):
+                raise ValueError("boom")
+        except ValueError:
+            pass
+
+        available = sync_limiter.available(
+            entity_id="sync-rollback-test",
+            resource="gpt-4",
+            limits=limits,
+        )
+        assert available["rpd"] == 100
+
+    def test_cascade_writes_both_on_enter(self, sync_limiter):
+        """Cascade writes both child and parent buckets on enter."""
+        sync_limiter.create_entity(entity_id="sync-proj-cascade")
+        sync_limiter.create_entity(
+            entity_id="sync-key-cascade",
+            parent_id="sync-proj-cascade",
+            cascade=True,
+        )
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        with sync_limiter.acquire(
+            entity_id="sync-key-cascade",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 5},
+        ):
+            child_available = sync_limiter.available(
+                entity_id="sync-key-cascade",
+                resource="gpt-4",
+                limits=limits,
+            )
+            parent_available = sync_limiter.available(
+                entity_id="sync-proj-cascade",
+                resource="gpt-4",
+                limits=limits,
+            )
+            assert child_available["rpm"] == 95
+            assert parent_available["rpm"] == 95

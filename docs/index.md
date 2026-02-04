@@ -32,7 +32,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 - **Multiple Limits** - Track requests per minute, tokens per minute, etc. in a single call
 - **Hierarchical Entities** - Two-level hierarchy (project → API keys) with cascade mode
 - **Atomic Transactions** - Multi-key updates via DynamoDB TransactWriteItems
-- **Rollback on Exception** - Automatic rollback if your code throws
+- **Write-on-Enter with Rollback** - Tokens consumed immediately on acquire; compensating transaction on exception
 - **Stored Limits** - Configure per-entity limits in DynamoDB
 - **Usage Analytics** - Lambda aggregator for hourly/daily usage snapshots
 - **Audit Logging** - Track entity and limit changes for compliance
@@ -65,7 +65,7 @@ async with limiter.acquire(
     response = await call_llm()
     # Reconcile actual usage (can go negative for post-hoc adjustment)
     await lease.adjust(tpm=response.usage.total_tokens - 500)
-    # On success: committed | On exception: rolled back automatically
+    # Tokens written to DynamoDB on enter | Rolled back on exception
 
 # Hierarchical entities: project → API key
 await limiter.create_entity(entity_id="proj-1", name="Production")
