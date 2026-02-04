@@ -1,8 +1,7 @@
-"""Locust load test for zae-limiter.
+"""Stress test: whale/spike/power-law traffic distribution.
 
 Usage:
-    Local:  locust -f locustfile.py --host <stack-name>
-    Lambda: Imported by worker handler (stack_name from TARGET_STACK_NAME env)
+    locust -f locustfiles/stress.py --host <stack-name>
 
 Uses the TrafficDistributor pattern with whale/spiker/baseline entities.
 For custom load patterns, subclass RateLimiterUser directly.
@@ -13,8 +12,8 @@ from __future__ import annotations
 import os
 import random
 
-from config import LoadConfig  # type: ignore[import-not-found]
-from distribution import TrafficDistributor  # type: ignore[import-not-found]
+from common.config import LoadConfig
+from common.distribution import TrafficDistributor
 from locust import between, task
 
 from zae_limiter.locust import RateLimiterUser
