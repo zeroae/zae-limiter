@@ -9,7 +9,11 @@ import zipfile
 from pathlib import Path
 
 
-def _generate_requirements(zae_limiter_source: Path | str) -> str:
+def _generate_requirements(
+    zae_limiter_source: Path | str,
+    *,
+    user_requirements: Path | None = None,
+) -> str:
     """Generate requirements.txt for Lambda."""
     reqs = [
         "locust>=2.20",
@@ -24,6 +28,13 @@ def _generate_requirements(zae_limiter_source: Path | str) -> str:
         # Version string - install from PyPI
         reqs.append(f"zae-limiter=={zae_limiter_source}")
 
+    # Merge user requirements if provided
+    if user_requirements is not None and user_requirements.exists():
+        for line in user_requirements.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                reqs.append(line)
+
     return "\n".join(reqs) + "\n"
 
 
@@ -31,6 +42,8 @@ def build_load_lambda_package(
     zae_limiter_source: Path | str,
     locustfile_dir: Path,
     output_dir: Path | None = None,
+    *,
+    locustfile: str = "locustfile.py",
 ) -> Path:
     """Build Lambda deployment package using aws-lambda-builders.
 
@@ -38,6 +51,7 @@ def build_load_lambda_package(
         zae_limiter_source: Path to wheel or version string
         locustfile_dir: Directory containing locustfile.py and supporting modules
         output_dir: Directory for output zip (default: build/)
+        locustfile: Locustfile path relative to locustfile_dir
 
     Returns:
         Path to the built zip file
@@ -63,9 +77,15 @@ def build_load_lambda_package(
         build_dir.mkdir()
         artifacts_dir.mkdir()
 
-        # Create requirements.txt
+        # Create requirements.txt (merge user requirements if present)
+        user_req_path = locustfile_dir / "requirements.txt"
         requirements = source_dir / "requirements.txt"
-        requirements.write_text(_generate_requirements(zae_limiter_source))
+        requirements.write_text(
+            _generate_requirements(
+                zae_limiter_source,
+                user_requirements=user_req_path if user_req_path.exists() else None,
+            )
+        )
 
         # Create placeholder for aws-lambda-builders
         (source_dir / "__init__.py").touch()
@@ -97,10 +117,12 @@ def build_load_lambda_package(
         if load_lambda_src.exists():
             shutil.copytree(load_lambda_src, artifacts_dir / "load_lambda")
 
-        # Copy all files from locustfile_dir
-        for f in locustfile_dir.iterdir():
-            if f.is_file():
-                shutil.copy(f, artifacts_dir / f.name)
+        # Copy all files and directories from locustfile_dir
+        for item in locustfile_dir.iterdir():
+            if item.is_file():
+                shutil.copy(item, artifacts_dir / item.name)
+            elif item.is_dir():
+                shutil.copytree(item, artifacts_dir / item.name)
 
         # Create zip
         zip_path = output_dir / "load-lambda.zip"

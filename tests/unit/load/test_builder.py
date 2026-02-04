@@ -249,6 +249,43 @@ class TestGenerateDockerfile:
 
         assert "COPY userfiles/ /mnt/" in dockerfile
 
+    def test_dockerfile_default_locustfile(self):
+        """Dockerfile CMD uses default locustfile.py path."""
+        dockerfile = _generate_dockerfile("0.8.0")
+
+        assert "-f", "/mnt/locustfile.py" in dockerfile
+
+    def test_dockerfile_with_custom_locustfile(self):
+        """Dockerfile CMD uses custom locustfile path."""
+        dockerfile = _generate_dockerfile("0.8.0", locustfile="my_locustfiles/api.py")
+
+        assert "/mnt/my_locustfiles/api.py" in dockerfile
+
+    def test_dockerfile_includes_rebalancing(self):
+        """Dockerfile CMD includes --enable-rebalancing flag."""
+        dockerfile = _generate_dockerfile("0.8.0")
+
+        assert "--enable-rebalancing" in dockerfile
+
+    def test_dockerfile_includes_class_picker(self):
+        """Dockerfile CMD includes --class-picker flag."""
+        dockerfile = _generate_dockerfile("0.8.0")
+
+        assert "--class-picker" in dockerfile
+
+    def test_dockerfile_with_user_requirements(self):
+        """Dockerfile includes pip install for user requirements.txt."""
+        dockerfile = _generate_dockerfile("0.8.0", has_user_requirements=True)
+
+        assert "COPY userfiles/requirements.txt /tmp/user-requirements.txt" in dockerfile
+        assert "pip install -r /tmp/user-requirements.txt" in dockerfile
+
+    def test_dockerfile_without_user_requirements(self):
+        """Dockerfile omits user requirements install when not present."""
+        dockerfile = _generate_dockerfile("0.8.0", has_user_requirements=False)
+
+        assert "user-requirements.txt" not in dockerfile
+
 
 class TestCreateBuildContext:
     """Tests for _create_build_context."""
@@ -269,7 +306,7 @@ class TestCreateBuildContext:
             assert "Dockerfile" in names
 
     def test_context_includes_all_files_from_dir(self, tmp_path):
-        """Build context includes all files from locustfile_dir."""
+        """Build context includes all files and subdirectories from locustfile_dir."""
         wheel = tmp_path / "zae_limiter-0.8.0.whl"
         wheel.write_bytes(b"fake wheel")
 
@@ -279,6 +316,10 @@ class TestCreateBuildContext:
         (locustfile_dir / "config.py").write_text("# config")
         (locustfile_dir / "data.json").write_text("{}")
         (locustfile_dir / "entities.csv").write_text("id,name")
+        common = locustfile_dir / "common"
+        common.mkdir()
+        (common / "__init__.py").write_text("")
+        (common / "helpers.py").write_text("# helpers")
 
         context = _create_build_context(wheel, locustfile_dir)
 
@@ -288,9 +329,11 @@ class TestCreateBuildContext:
             assert "userfiles/config.py" in names
             assert "userfiles/data.json" in names
             assert "userfiles/entities.csv" in names
+            assert "userfiles/common/__init__.py" in names
+            assert "userfiles/common/helpers.py" in names
 
-    def test_context_excludes_subdirectories(self, tmp_path):
-        """Build context only includes files, not subdirectories."""
+    def test_context_includes_subdirectories(self, tmp_path):
+        """Build context includes files and subdirectories."""
         wheel = tmp_path / "zae_limiter-0.8.0.whl"
         wheel.write_bytes(b"fake wheel")
 
@@ -306,4 +349,22 @@ class TestCreateBuildContext:
         with tarfile.open(fileobj=context, mode="r:gz") as tar:
             names = tar.getnames()
             assert "userfiles/locustfile.py" in names
-            assert not any("nested" in n for n in names)
+            assert "userfiles/subdir/nested.py" in names
+
+    def test_context_detects_user_requirements(self, tmp_path):
+        """Build context Dockerfile includes user requirements install."""
+        wheel = tmp_path / "zae_limiter-0.8.0.whl"
+        wheel.write_bytes(b"fake wheel")
+
+        locustfile_dir = tmp_path / "locust"
+        locustfile_dir.mkdir()
+        (locustfile_dir / "locustfile.py").write_text("# locust")
+        (locustfile_dir / "requirements.txt").write_text("pandas>=2.0\n")
+
+        context = _create_build_context(wheel, locustfile_dir)
+
+        with tarfile.open(fileobj=context, mode="r:gz") as tar:
+            dockerfile = tar.extractfile("Dockerfile")
+            assert dockerfile is not None
+            content = dockerfile.read().decode()
+            assert "pip install -r /tmp/user-requirements.txt" in content

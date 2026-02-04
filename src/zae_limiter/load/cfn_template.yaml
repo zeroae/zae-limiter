@@ -36,6 +36,11 @@ Parameters:
     MinValue: 60
     MaxValue: 900
 
+  Locustfile:
+    Type: String
+    Default: locustfile.py
+    Description: Locustfile path relative to project directory
+
   CreateVpcEndpoints:
     Type: String
     Default: 'false'
@@ -236,8 +241,10 @@ Resources:
             - --master
             - --master-bind-port=5557
             - --web-port=8089
+            - --enable-rebalancing
+            - --class-picker
             - -f
-            - /mnt/locustfile.py
+            - !Sub /mnt/${Locustfile}
           PortMappings:
             - ContainerPort: 5557
               Protocol: tcp
@@ -327,6 +334,7 @@ Resources:
           - !Ref WorkerSecurityGroup
       Environment:
         Variables:
+          LOCUSTFILE: !Ref Locustfile
           TARGET_STACK_NAME: !Ref TargetStackName
           TARGET_REGION: !Ref AWS::Region
           METRICS_NAMESPACE: ZaeLimiter/StressTest

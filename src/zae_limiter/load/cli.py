@@ -118,6 +118,12 @@ def load() -> None:
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     help="Directory containing locustfile.py (default: current directory)",
 )
+@click.option(
+    "-f",
+    "--locustfile",
+    default="locustfile.py",
+    help="Locustfile path relative to -C directory (default: locustfile.py)",
+)
 def deploy(
     name: str | None,
     region: str | None,
@@ -127,6 +133,7 @@ def deploy(
     lambda_timeout: int,
     create_vpc_endpoints: bool,
     locustfile_dir: Path,
+    locustfile: str,
 ) -> None:
     """Deploy load test infrastructure."""
     from .builder import build_and_push_locust_image, get_zae_limiter_source
@@ -188,6 +195,7 @@ def deploy(
         {"ParameterKey": "MaxWorkers", "ParameterValue": str(max_workers)},
         {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
         {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
+        {"ParameterKey": "Locustfile", "ParameterValue": locustfile},
         {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
         {"ParameterKey": "RoleNameFormat", "ParameterValue": role_name_format},
     ]
@@ -228,13 +236,21 @@ def deploy(
     # Build and push Docker image
     click.echo("  Building Locust image...")
     image_uri = build_and_push_locust_image(
-        stack_name, region or "us-east-1", locustfile_dir, zae_limiter_source
+        stack_name,
+        region or "us-east-1",
+        locustfile_dir,
+        zae_limiter_source,
+        locustfile=locustfile,
     )
     click.echo(f"  Locust image pushed: {image_uri}")
 
     # Build Lambda package
     click.echo("  Building Lambda package...")
-    zip_path = build_load_lambda_package(zae_limiter_source, locustfile_dir)
+    zip_path = build_load_lambda_package(
+        zae_limiter_source,
+        locustfile_dir,
+        locustfile=locustfile,
+    )
     click.echo(f"  Lambda package built: {zip_path}")
 
     # Upload Lambda code
