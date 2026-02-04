@@ -684,8 +684,10 @@ class TestWriteOnEnter:
         Two callers acquire the same entity concurrently, both call adjust()
         inside the lease, and their _commit_adjustments writes interleave.
         Because adjustments use atomic ADD (not SET), no tokens are lost.
+
+        Uses per_day limit to avoid refill drift between writes and assertion.
         """
-        limits = [Limit.per_minute("rpm", 1000)]
+        limits = [Limit.per_day("rpd", 1000)]
 
         barrier = asyncio.Barrier(2)
 
@@ -694,9 +696,9 @@ class TestWriteOnEnter:
                 entity_id="concurrent-adjust",
                 resource="gpt-4",
                 limits=limits,
-                consume={"rpm": consume},
+                consume={"rpd": consume},
             ) as lease:
-                await lease.adjust(rpm=adjust)
+                await lease.adjust(rpd=adjust)
                 # Sync so both _commit_adjustments fire close together
                 await barrier.wait()
 
@@ -711,7 +713,7 @@ class TestWriteOnEnter:
             resource="gpt-4",
             limits=limits,
         )
-        assert available["rpm"] == 950
+        assert available["rpd"] == 950
 
         # Verify consumption counter is also correct
         buckets = await limiter._repository.get_buckets(
