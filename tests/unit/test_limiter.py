@@ -678,6 +678,47 @@ class TestWriteOnEnter:
             assert child_available["rpm"] == 95
             assert parent_available["rpm"] == 95
 
+    async def test_concurrent_adjust_no_lost_tokens(self, limiter):
+        """Concurrent leases with adjust() don't lose tokens via ADD atomicity.
+
+        Two callers acquire the same entity concurrently, both call adjust()
+        inside the lease, and their _commit_adjustments writes interleave.
+        Because adjustments use atomic ADD (not SET), no tokens are lost.
+        """
+        limits = [Limit.per_minute("rpm", 1000)]
+
+        barrier = asyncio.Barrier(2)
+
+        async def caller(consume: int, adjust: int):
+            async with limiter.acquire(
+                entity_id="concurrent-adjust",
+                resource="gpt-4",
+                limits=limits,
+                consume={"rpm": consume},
+            ) as lease:
+                await lease.adjust(rpm=adjust)
+                # Sync so both _commit_adjustments fire close together
+                await barrier.wait()
+
+        await asyncio.gather(
+            caller(consume=10, adjust=20),
+            caller(consume=5, adjust=15),
+        )
+
+        # Total consumed: (10+20) + (5+15) = 50
+        available = await limiter.available(
+            entity_id="concurrent-adjust",
+            resource="gpt-4",
+            limits=limits,
+        )
+        assert available["rpm"] == 950
+
+        # Verify consumption counter is also correct
+        buckets = await limiter._repository.get_buckets(
+            entity_id="concurrent-adjust", resource="gpt-4"
+        )
+        assert buckets[0].total_consumed_milli == 50_000
+
 
 class TestRateLimiterLeaseCounter:
     """Tests for consumption counter tracking (issue #179).
