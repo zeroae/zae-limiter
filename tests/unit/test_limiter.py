@@ -623,6 +623,33 @@ class TestWriteOnEnter:
         )
         assert available["rpm"] == 100
 
+    async def test_cascade_writes_both_on_enter(self, limiter):
+        """Cascade writes both child and parent buckets on enter."""
+        await limiter.create_entity(entity_id="proj-cascade")
+        await limiter.create_entity(entity_id="key-cascade", parent_id="proj-cascade", cascade=True)
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-cascade",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 5},
+        ):
+            # Inside context: both child and parent should already be consumed
+            child_available = await limiter.available(
+                entity_id="key-cascade",
+                resource="gpt-4",
+                limits=limits,
+            )
+            parent_available = await limiter.available(
+                entity_id="proj-cascade",
+                resource="gpt-4",
+                limits=limits,
+            )
+            assert child_available["rpm"] == 95
+            assert parent_available["rpm"] == 95
+
 
 class TestRateLimiterLeaseCounter:
     """Tests for consumption counter tracking (issue #179).
