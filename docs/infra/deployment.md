@@ -10,7 +10,7 @@ zae-limiter uses CloudFormation to deploy:
 - **DynamoDB Streams** - Captures changes for usage aggregation
 - **Lambda Function** - Aggregates usage into hourly/daily snapshots and archives audit events
 - **S3 Bucket** - Archives expired audit events (when audit archival is enabled)
-- **IAM Roles** - Least-privilege access for Lambda and application access (App/Admin/ReadOnly)
+- **IAM Policies** - Least-privilege managed policies (AcquireOnly/FullAccess/ReadOnly)
 - **CloudWatch Logs** - Lambda function logs
 
 ## CLI Deployment (Recommended)
@@ -183,7 +183,7 @@ async with limiter.acquire(
 |---------|-------|-------------|
 | Infrastructure | ✓ Deploy, update, delete stacks | Connect only |
 | Rate limits | ✓ Configure at all levels | Auto-resolved |
-| Credentials | Full AWS access (or AdminRole) | DynamoDB read/write only (or AppRole) |
+| Credentials | Full AWS access (or FullAccessPolicy) | DynamoDB read/write only (or AcquireOnlyPolicy) |
 | Changes | Through CLI/IaC | None |
 
 This separation allows:
@@ -407,20 +407,31 @@ X-Ray charges based on traces recorded and retrieved. For typical usage:
 
 For high-volume deployments, consider sampling strategies or enabling tracing only for troubleshooting.
 
-## Application IAM Roles
+## Application IAM Policies
 
-The stack creates three optional IAM roles for different access patterns. These are enabled by default and provide least-privilege access for applications, administrators, and monitoring systems.
+The stack creates three managed IAM policies by default for different access patterns. These provide least-privilege access for applications, administrators, and monitoring systems.
 
-### Enabling/Disabling Roles
+### Policy Summary
+
+| Policy | Suffix | Use Case | DynamoDB Permissions |
+|--------|--------|----------|---------------------|
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems |
+| `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable |
+| `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
+
+### Enabling/Disabling IAM Resources
 
 === "CLI"
 
     ```bash
-    # Deploy with IAM roles (default)
+    # Deploy with managed policies (default)
     zae-limiter deploy --name limiter --region us-east-1
 
-    # Deploy without IAM roles (for custom IAM)
-    zae-limiter deploy --name limiter --region us-east-1 --no-iam-roles
+    # Deploy with managed policies AND IAM roles
+    zae-limiter deploy --name limiter --region us-east-1 --create-iam-roles
+
+    # Deploy without any IAM resources (for restricted environments)
+    zae-limiter deploy --name limiter --region us-east-1 --no-iam
     ```
 
 === "Programmatic"
@@ -428,32 +439,31 @@ The stack creates three optional IAM roles for different access patterns. These 
     ```python
     from zae_limiter import RateLimiter, StackOptions
 
-    # With IAM roles (default)
+    # With managed policies only (default)
     limiter = RateLimiter(
         name="limiter",
         region="us-east-1",
-        stack_options=StackOptions(),  # create_iam_roles=True by default
+        stack_options=StackOptions(),
     )
 
-    # Without IAM roles
+    # With managed policies AND IAM roles
     limiter = RateLimiter(
         name="limiter",
         region="us-east-1",
-        stack_options=StackOptions(create_iam_roles=False),
+        stack_options=StackOptions(create_iam_roles=True),
+    )
+
+    # Without any IAM resources
+    limiter = RateLimiter(
+        name="limiter",
+        region="us-east-1",
+        stack_options=StackOptions(create_iam=False),
     )
     ```
 
-### Role Summary
+### Viewing Policy ARNs
 
-| Role | Use Case | DynamoDB Permissions |
-|------|----------|---------------------|
-| `AppRole` | Applications calling `acquire()` | GetItem, Query, TransactWriteItems |
-| `AdminRole` | Ops teams managing config | App + PutItem, DeleteItem, UpdateItem, BatchWriteItem |
-| `ReadOnlyRole` | Monitoring and dashboards | GetItem, Query, Scan, DescribeTable |
-
-### Viewing Role ARNs
-
-The `status` command shows IAM role ARNs when roles are enabled:
+The `status` command shows IAM policy ARNs:
 
 ```bash
 zae-limiter status --name limiter --region us-east-1
@@ -461,20 +471,20 @@ zae-limiter status --name limiter --region us-east-1
 
 Output includes:
 ```
-IAM Roles
-  App:           arn:aws:iam::123456789012:role/limiter-app-role
-  Admin:         arn:aws:iam::123456789012:role/limiter-admin-role
-  ReadOnly:      arn:aws:iam::123456789012:role/limiter-readonly-role
+IAM Policies
+  AcquireOnly:   arn:aws:iam::123456789012:policy/limiter-acq
+  FullAccess:    arn:aws:iam::123456789012:policy/limiter-full
+  ReadOnly:      arn:aws:iam::123456789012:policy/limiter-read
 ```
 
-### Role Naming
+### Policy Naming
 
-- Default: `${StackName}-{app,admin,readonly}-role` (e.g., `limiter-app-role`)
-- With `--role-name-format`: Custom naming pattern applied to all roles
+- Default: `${StackName}-{acq,full,read}` (e.g., `limiter-acq`)
+- With `--policy-name-format`: Custom naming pattern applied to all policies
 
-Roles respect `--permission-boundary` if configured.
+Policies respect `--permission-boundary` if configured.
 
-For detailed IAM role configuration and usage examples, see [CloudFormation - Application IAM Roles](cloudformation.md#application-iam-roles).
+For detailed IAM configuration and usage examples, see [CloudFormation - Application IAM Policies](cloudformation.md#application-iam-policies).
 
 ## Next Steps
 

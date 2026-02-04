@@ -20,10 +20,10 @@ flowchart TB
             lambda[[Lambda Aggregator]]
         end
 
-        subgraph iam[Application IAM Roles]
-            appRole[AppRole]
-            adminRole[AdminRole]
-            readonlyRole[ReadOnlyRole]
+        subgraph iam[Application IAM Policies]
+            acqPolicy[AcquireOnlyPolicy]
+            fullPolicy[FullAccessPolicy]
+            readPolicy[ReadOnlyPolicy]
         end
 
         subgraph observe[Observability]
@@ -43,18 +43,18 @@ flowchart TB
     alarms -.-> lambda
     alarms -.-> dlq
 
-    appRole -.-> table
-    adminRole -.-> table
-    readonlyRole -.-> table
+    acqPolicy -.-> table
+    fullPolicy -.-> table
+    readPolicy -.-> table
 
     click table "#dynamodb-table"
     click stream "#stream-configuration"
     click s3 "#s3-audit-archive-bucket"
     click lambda "#lambda-aggregator"
     click role "#iam-permissions"
-    click appRole "#application-iam-roles"
-    click adminRole "#application-iam-roles"
-    click readonlyRole "#application-iam-roles"
+    click acqPolicy "#application-iam-policies"
+    click fullPolicy "#application-iam-policies"
+    click readPolicy "#application-iam-policies"
     click dlq "#add-dead-letter-queue"
     click alarms "#add-cloudwatch-alarms"
 ```
@@ -277,21 +277,36 @@ AggregatorRole:
               Resource: !Sub "${AuditArchiveBucket.Arn}/*"
 ```
 
-## Application IAM Roles
+## Application IAM Policies
 
-When `EnableIAMRoles` is `true` (default), the template creates three IAM roles for different access patterns. These roles allow applications, administrators, and monitoring systems to assume least-privilege access to the DynamoDB table.
+The template creates three IAM managed policies by default for different access patterns. These policies can be attached to your own IAM roles, users, or federated identities.
 
-### Role Summary
+### Policy Summary
 
-| Role | Use Case | DynamoDB Permissions |
-|------|----------|---------------------|
-| `AppRole` | Applications calling `acquire()` | GetItem, Query, TransactWriteItems |
-| `AdminRole` | Ops teams managing config | App + PutItem, DeleteItem, UpdateItem, BatchWriteItem |
-| `ReadOnlyRole` | Monitoring and dashboards | GetItem, Query, Scan, DescribeTable |
+| Policy | Suffix | Use Case | DynamoDB Permissions |
+|--------|--------|----------|---------------------|
+| `AcquireOnlyPolicy` | `-acq` | Applications calling `acquire()` | GetItem, BatchGetItem, Query, TransactWriteItems |
+| `FullAccessPolicy` | `-full` | Ops teams managing config | All of the above + PutItem, DeleteItem, UpdateItem, BatchWriteItem, Scan, DescribeTable |
+| `ReadOnlyPolicy` | `-read` | Monitoring and dashboards | GetItem, BatchGetItem, Query, Scan, DescribeTable |
 
-### Trust Policy
+### Permission Matrix
 
-All roles trust the same AWS account root principal, allowing any IAM entity in the account to assume the role (subject to their own permissions):
+| Action | ReadOnly | AcquireOnly | FullAccess |
+|--------|:--------:|:-----------:|:----------:|
+| `GetItem` | Y | Y | Y |
+| `BatchGetItem` | Y | Y | Y |
+| `Query` | Y | Y | Y |
+| `Scan` | Y | -- | Y |
+| `DescribeTable` | Y | -- | Y |
+| `TransactWriteItems` | -- | Y | Y |
+| `PutItem` | -- | -- | Y |
+| `UpdateItem` | -- | -- | Y |
+| `DeleteItem` | -- | -- | Y |
+| `BatchWriteItem` | -- | -- | Y |
+
+### IAM Roles (Opt-In)
+
+When `EnableIAMRoles` is `true` (or `--create-iam-roles` is passed), the template also creates IAM roles that attach these managed policies. All roles trust the same AWS account root principal:
 
 ```yaml
 AssumeRolePolicyDocument:
@@ -303,22 +318,23 @@ AssumeRolePolicyDocument:
       Action: sts:AssumeRole
 ```
 
-### Role Naming
+### Policy and Role Naming
 
-- Default: `${StackName}-{app,admin,readonly}-role`
-- With custom `RoleName`: `${RoleName}-{app,admin,readonly}`
+- **Policies:** `${StackName}-{acq,full,read}` (e.g., `my-app-acq`)
+- **Roles (when enabled):** `${StackName}-{acq,full,read}` (same naming)
+- With custom `PolicyNameFormat` / `RoleName`: format pattern applied to all
 
-Roles respect `PermissionBoundary` if configured.
+Policies and roles respect `PermissionBoundary` if configured.
 
 ### Usage Example
 
 ```python
 import boto3
 
-# Assume the AppRole for rate limiting operations
+# Attach AcquireOnlyPolicy to your own role, or assume a created role
 sts = boto3.client('sts')
 credentials = sts.assume_role(
-    RoleArn='arn:aws:iam::123456789012:role/my-app-app-role',
+    RoleArn='arn:aws:iam::123456789012:role/my-app-acq',
     RoleSessionName='my-app'
 )['Credentials']
 
@@ -458,10 +474,13 @@ The template exports:
 | `FunctionArn` | Lambda function ARN |
 | `AuditArchiveBucketName` | S3 bucket for audit archives (when enabled) |
 | `AuditArchiveBucketArn` | S3 bucket ARN (when enabled) |
-| `AppRoleArn` | IAM role ARN for applications (when IAM roles enabled) |
-| `AppRoleName` | IAM role name for applications |
-| `AdminRoleArn` | IAM role ARN for administrators |
-| `AdminRoleName` | IAM role name for administrators |
+| `AcquireOnlyPolicyArn` | IAM policy ARN for acquire-only access |
+| `FullAccessPolicyArn` | IAM policy ARN for full access |
+| `ReadOnlyPolicyArn` | IAM policy ARN for read-only access |
+| `AppRoleArn` | IAM role ARN for application access (when IAM roles enabled) |
+| `AppRoleName` | IAM role name for application access |
+| `AdminRoleArn` | IAM role ARN for admin access |
+| `AdminRoleName` | IAM role name for admin access |
 | `ReadOnlyRoleArn` | IAM role ARN for read-only access |
 | `ReadOnlyRoleName` | IAM role name for read-only access |
 

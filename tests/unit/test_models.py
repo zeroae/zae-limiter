@@ -530,16 +530,16 @@ class TestStackOptions:
         """Test to_parameters generates policy name params when format is set."""
         opts = StackOptions(policy_name_format="pb-{}")
         params = opts.to_parameters(stack_name="mystack")
-        assert params["app_policy_name"] == "pb-mystack-app"
-        assert params["admin_policy_name"] == "pb-mystack-admin"
+        assert params["acquire_only_policy_name"] == "pb-mystack-acq"
+        assert params["full_access_policy_name"] == "pb-mystack-full"
         assert params["readonly_policy_name"] == "pb-mystack-read"
 
     def test_to_parameters_no_policy_names_when_format_none(self):
         """Test to_parameters excludes policy names when format is None."""
         opts = StackOptions()
         params = opts.to_parameters(stack_name="mystack")
-        assert "app_policy_name" not in params
-        assert "admin_policy_name" not in params
+        assert "acquire_only_policy_name" not in params
+        assert "full_access_policy_name" not in params
         assert "readonly_policy_name" not in params
 
     # -------------------------------------------------------------------------
