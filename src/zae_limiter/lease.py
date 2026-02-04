@@ -258,8 +258,6 @@ class Lease:
 
         if not items:
             self._initial_committed = True
-            for entry in self.entries:
-                entry._initial_consumed = entry.consumed
             return
 
         try:
