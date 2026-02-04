@@ -364,7 +364,7 @@ class TestLeaseRetryPath:
 
         lease = Lease(repository=mock_repo, entries=[entry])
         with pytest.raises(RateLimitExceeded):
-            await lease._commit()
+            await lease._commit_initial()
 
 
 class TestRateLimiterLeaseCounter:
