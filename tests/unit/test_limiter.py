@@ -434,7 +434,7 @@ class TestWriteOnEnter:
     Verifies _commit_initial(), _commit_adjustments(), and _rollback() paths.
     """
 
-    def _make_entry(self, consumed=10, is_new=False, initial_consumed=0):
+    def _make_entry(self, consumed=10, is_new=False, initial_consumed=0, entity_id="e1"):
         """Create a LeaseEntry with mock state."""
         from zae_limiter.lease import LeaseEntry
 
@@ -444,7 +444,7 @@ class TestWriteOnEnter:
         state.last_refill_ms = 1000
         state.total_consumed_milli = None
         return LeaseEntry(
-            entity_id="e1",
+            entity_id=entity_id,
             resource="gpt-4",
             limit=limit,
             state=state,
@@ -670,6 +670,57 @@ class TestWriteOnEnter:
 
         assert lease._rolled_back is True
         assert "Failed to rollback consumed tokens" in caplog.text
+
+    async def test_cascade_normal_fails_retry_succeeds(self):
+        """Cascade: normal path fails (optimistic lock), retry path succeeds.
+
+        Two entries with different entity_ids (child + parent) simulate a
+        cascade scenario where the shared parent bucket causes the normal
+        transact_write to fail with TransactionCanceledException. The retry
+        path uses build_composite_retry for both entries and succeeds.
+        """
+        from zae_limiter.lease import Lease
+
+        child_entry = self._make_entry(consumed=5, entity_id="child-1")
+        parent_entry = self._make_entry(consumed=5, entity_id="parent-1")
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        # Normal path fails, retry path succeeds
+        mock_repo.transact_write.side_effect = [exc_cls(), None]
+
+        lease = Lease(repository=mock_repo, entries=[child_entry, parent_entry])
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 2
+        # Retry calls build_composite_retry for both entity groups
+        assert mock_repo.build_composite_retry.call_count == 2
+
+    async def test_cascade_both_paths_fail_raises_rate_limit_exceeded(self):
+        """Cascade: both normal and retry paths fail → RateLimitExceeded.
+
+        When both transact_write calls fail with condition check failures,
+        _commit_initial raises RateLimitExceeded with statuses for all entries.
+        """
+        from zae_limiter.lease import Lease
+
+        child_entry = self._make_entry(consumed=5, entity_id="child-1")
+        parent_entry = self._make_entry(consumed=5, entity_id="parent-1")
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        # Both normal and retry paths fail
+        mock_repo.transact_write.side_effect = [exc_cls(), exc_cls()]
+
+        lease = Lease(repository=mock_repo, entries=[child_entry, parent_entry])
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            await lease._commit_initial()
+
+        # Should have statuses for both entries
+        assert len(exc_info.value.statuses) == 2
+        entity_ids = {s.entity_id for s in exc_info.value.statuses}
+        assert entity_ids == {"child-1", "parent-1"}
 
     async def test_acquire_writes_on_enter(self, limiter):
         """Tokens are consumed in DynamoDB immediately on context enter."""
