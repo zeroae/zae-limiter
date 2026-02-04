@@ -322,3 +322,109 @@ class TestMain:
 
             with pytest.raises(KeyboardInterrupt):
                 main()
+
+    def test_forwards_user_classes_env(self):
+        """Main loop includes user_classes in Lambda payload when LOCUST_USER_CLASSES is set."""
+        mock_lambda = MagicMock()
+
+        env = {
+            "DESIRED_WORKERS": "1",
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "LOCUST_USER_CLASSES": "MyUser,OtherUser",
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
+            patch("zae_limiter.load.orchestrator.get_connected_workers", return_value=0),
+            patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
+            patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
+            patch("signal.signal"),
+        ):
+            mock_boto3.client.return_value = mock_lambda
+
+            from zae_limiter.load.orchestrator import main
+
+            with pytest.raises(KeyboardInterrupt):
+                main()
+
+            # Check that the payload contains user_classes
+            call_args = mock_lambda.invoke.call_args
+            payload = json.loads(call_args[1]["Payload"])
+            assert payload["config"]["user_classes"] == "MyUser,OtherUser"
+
+    def test_forwards_locustfile_env(self):
+        """Main loop includes locustfile in Lambda payload when LOCUSTFILE is set."""
+        mock_lambda = MagicMock()
+
+        env = {
+            "DESIRED_WORKERS": "1",
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "LOCUSTFILE": "my_locustfiles/api.py",
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
+            patch("zae_limiter.load.orchestrator.get_connected_workers", return_value=0),
+            patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
+            patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
+            patch("signal.signal"),
+        ):
+            mock_boto3.client.return_value = mock_lambda
+
+            from zae_limiter.load.orchestrator import main
+
+            with pytest.raises(KeyboardInterrupt):
+                main()
+
+            call_args = mock_lambda.invoke.call_args
+            payload = json.loads(call_args[1]["Payload"])
+            assert payload["config"]["locustfile"] == "my_locustfiles/api.py"
+
+    def test_no_extras_by_default(self):
+        """Default payload omits user_classes and locustfile."""
+        mock_lambda = MagicMock()
+
+        env = {
+            "DESIRED_WORKERS": "1",
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
+            patch("zae_limiter.load.orchestrator.get_connected_workers", return_value=0),
+            patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
+            patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
+            patch("signal.signal"),
+        ):
+            mock_boto3.client.return_value = mock_lambda
+
+            # Remove env vars that might leak from other tests
+            import os
+
+            from zae_limiter.load.orchestrator import main
+
+            os.environ.pop("LOCUST_USER_CLASSES", None)
+            os.environ.pop("LOCUSTFILE", None)
+
+            with pytest.raises(KeyboardInterrupt):
+                main()
+
+            call_args = mock_lambda.invoke.call_args
+            payload = json.loads(call_args[1]["Payload"])
+            assert "user_classes" not in payload["config"]
+            assert "locustfile" not in payload["config"]

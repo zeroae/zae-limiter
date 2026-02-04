@@ -2,8 +2,54 @@
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import os
 from typing import Any
+
+
+def _load_user_classes(config: dict[str, Any]) -> list[type]:
+    """Load Locust User classes dynamically.
+
+    Resolution order for class names:
+    1. config["user_classes"] — from orchestrator payload
+    2. LOCUST_USER_CLASSES env var — from ECS/Lambda env
+    3. Auto-discover all non-abstract User subclasses from locustfile module
+
+    Module resolution:
+    1. config["locustfile"] — from orchestrator payload
+    2. LOCUSTFILE env var — from Lambda env (set via CloudFormation)
+    3. Default: "locustfile" (standard Locust convention)
+    """
+    from locust import User
+
+    # Determine which module to import
+    locustfile = str(config.get("locustfile") or os.environ.get("LOCUSTFILE", "locustfile.py"))
+    module_path = locustfile.replace("/", ".").removesuffix(".py")
+    module = importlib.import_module(module_path)
+
+    # Determine which classes to load
+    class_names_str = config.get("user_classes") or os.environ.get("LOCUST_USER_CLASSES", "")
+
+    if class_names_str:
+        classes = []
+        for name in class_names_str.split(","):
+            name = name.strip()
+            cls = getattr(module, name, None)
+            if cls is None:
+                raise ValueError(f"User class '{name}' not found in {module_path}")
+            classes.append(cls)
+        return classes
+
+    # Auto-discover non-abstract User subclasses
+    classes = [
+        obj
+        for _name, obj in inspect.getmembers(module, inspect.isclass)
+        if issubclass(obj, User) and obj is not User and not getattr(obj, "abstract", False)
+    ]
+    if not classes:
+        raise ValueError(f"No User subclasses found in {module_path}")
+    return classes
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -45,12 +91,10 @@ def _run_headless(config: dict[str, Any]) -> dict[str, Any]:
 
     print("Starting headless Locust test...", flush=True)
 
-    # Import locustfile (copied into Lambda package)
-    from locustfile import LoadTestUser
+    user_classes = _load_user_classes(config)
+    print(f"Loaded user classes: {[cls.__name__ for cls in user_classes]}")
 
-    print(f"Loaded LoadTestUser: {LoadTestUser}")
-
-    env = Environment(user_classes=[LoadTestUser])
+    env = Environment(user_classes=user_classes)
     env.create_local_runner()
     assert env.runner is not None
 
@@ -106,7 +150,6 @@ def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any
     import uuid
 
     from locust.env import Environment
-    from locustfile import LoadTestUser
 
     master_host = config["master_host"]
     master_port = config.get("master_port", 5557)
@@ -122,9 +165,14 @@ def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any
     # Set environment variable that Locust uses for worker identification
     os.environ["LOCUST_UNIQUE_ID"] = worker_id
 
-    print(f"Starting worker {worker_id} connecting to {master_host}:{master_port}", flush=True)
+    user_classes = _load_user_classes(config)
+    print(
+        f"Starting worker {worker_id} connecting to {master_host}:{master_port}, "
+        f"classes: {[cls.__name__ for cls in user_classes]}",
+        flush=True,
+    )
 
-    env = Environment(user_classes=[LoadTestUser])
+    env = Environment(user_classes=user_classes)
     env.create_worker_runner(master_host, master_port)
     assert env.runner is not None
 

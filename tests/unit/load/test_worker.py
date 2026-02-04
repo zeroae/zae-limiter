@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import importlib
+import types
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # 'lambda' is a Python keyword, so we import via importlib
 worker_mod = importlib.import_module("zae_limiter.load.lambda.worker")
 handler = worker_mod.handler
+_load_user_classes = worker_mod._load_user_classes
+
+
+# Fake base class used as stand-in for locust.User in tests.
+# Avoids importing the real locust.User which triggers gevent monkey-patching
+# and causes RecursionError in the test process.
+class _FakeUserBase:
+    abstract = True
 
 
 class TestHandler:
@@ -144,3 +155,134 @@ class TestHandler:
             mock_worker.return_value = {}
             handler({"config": config}, mock_context)
             mock_worker.assert_called_once_with(config, mock_context)
+
+
+def _setup_fake_locust():
+    """Set up fake locust.User in sys.modules.
+
+    Returns a restore function to call in cleanup.
+    """
+    import sys
+
+    locust_mod = sys.modules.get("locust")
+    if locust_mod is None:
+        locust_mod = types.ModuleType("locust")
+        sys.modules["locust"] = locust_mod
+        created = True
+    else:
+        created = False
+    original = getattr(locust_mod, "User", None)
+    locust_mod.User = _FakeUserBase  # type: ignore[attr-defined]
+
+    def restore():
+        if created:
+            sys.modules.pop("locust", None)
+        elif original is not None:
+            locust_mod.User = original  # type: ignore[attr-defined]
+
+    return restore
+
+
+class TestLoadUserClasses:
+    """Tests for _load_user_classes dynamic class loading."""
+
+    @staticmethod
+    def _make_mock_module(**attrs):
+        """Create a mock module with given attributes."""
+        mod = types.ModuleType("fake_locustfile")
+        for k, v in attrs.items():
+            setattr(mod, k, v)
+        return mod
+
+    @staticmethod
+    def _make_user_class(name, abstract=False):
+        """Create a fake Locust User subclass using a mock base class."""
+        cls = type(name, (_FakeUserBase,), {"abstract": abstract})
+        return cls
+
+    @pytest.fixture(autouse=True)
+    def _patch_locust_user(self):
+        """Replace locust.User with _FakeUserBase to avoid gevent monkey-patching."""
+        restore = _setup_fake_locust()
+        yield
+        restore()
+
+    def test_loads_from_config(self):
+        """Loads specific class from config user_classes."""
+        my_user = self._make_user_class("MyUser")
+        mock_mod = self._make_mock_module(MyUser=my_user)
+
+        with patch.object(worker_mod.importlib, "import_module", return_value=mock_mod):
+            classes = _load_user_classes({"user_classes": "MyUser"})
+            assert classes == [my_user]
+
+    def test_loads_from_env_var(self, monkeypatch):
+        """Loads class from LOCUST_USER_CLASSES env var when config empty."""
+        my_user = self._make_user_class("MyUser")
+        mock_mod = self._make_mock_module(MyUser=my_user)
+
+        monkeypatch.setenv("LOCUST_USER_CLASSES", "MyUser")
+        with patch.object(worker_mod.importlib, "import_module", return_value=mock_mod):
+            classes = _load_user_classes({})
+            assert classes == [my_user]
+
+    def test_auto_discovers(self, monkeypatch):
+        """Auto-discovers non-abstract User subclasses from module."""
+        discovered_cls = self._make_user_class("DiscoveredUser")
+        mock_mod = self._make_mock_module(DiscoveredUser=discovered_cls)
+
+        monkeypatch.delenv("LOCUST_USER_CLASSES", raising=False)
+        with patch.object(worker_mod.importlib, "import_module", return_value=mock_mod):
+            classes = _load_user_classes({})
+            assert discovered_cls in classes
+
+    def test_config_precedence(self, monkeypatch):
+        """Config user_classes takes precedence over env var."""
+        cls_a = self._make_user_class("ClassA")
+        cls_b = self._make_user_class("ClassB")
+        mock_mod = self._make_mock_module(ClassA=cls_a, ClassB=cls_b)
+
+        monkeypatch.setenv("LOCUST_USER_CLASSES", "ClassB")
+        with patch.object(worker_mod.importlib, "import_module", return_value=mock_mod):
+            classes = _load_user_classes({"user_classes": "ClassA"})
+            assert classes == [cls_a]
+
+    def test_multiple_classes(self):
+        """Loads multiple comma-separated classes."""
+        cls_a = self._make_user_class("ClassA")
+        cls_b = self._make_user_class("ClassB")
+        mock_mod = self._make_mock_module(ClassA=cls_a, ClassB=cls_b)
+
+        with patch.object(worker_mod.importlib, "import_module", return_value=mock_mod):
+            classes = _load_user_classes({"user_classes": "ClassA,ClassB"})
+            assert classes == [cls_a, cls_b]
+
+    def test_raises_class_not_found(self):
+        """Raises ValueError when named class doesn't exist in module."""
+        mock_mod = self._make_mock_module()
+
+        with patch.object(worker_mod.importlib, "import_module", return_value=mock_mod):
+            with pytest.raises(ValueError, match="User class 'NoSuchClass' not found"):
+                _load_user_classes({"user_classes": "NoSuchClass"})
+
+    def test_raises_no_classes(self, monkeypatch):
+        """Raises ValueError when no User subclasses found during auto-discovery."""
+        mock_mod = self._make_mock_module()
+
+        monkeypatch.delenv("LOCUST_USER_CLASSES", raising=False)
+        with patch.object(worker_mod.importlib, "import_module", return_value=mock_mod):
+            with pytest.raises(ValueError, match="No User subclasses found"):
+                _load_user_classes({})
+
+    def test_custom_locustfile_module(self, monkeypatch):
+        """Derives module path from LOCUSTFILE env var."""
+        my_user = self._make_user_class("MyUser")
+        mock_mod = self._make_mock_module(MyUser=my_user)
+
+        monkeypatch.setenv("LOCUSTFILE", "my_locustfiles/api.py")
+        monkeypatch.delenv("LOCUST_USER_CLASSES", raising=False)
+        with patch.object(
+            worker_mod.importlib, "import_module", return_value=mock_mod
+        ) as mock_import:
+            _load_user_classes({})
+            mock_import.assert_called_once_with("my_locustfiles.api")
