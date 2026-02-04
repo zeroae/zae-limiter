@@ -63,13 +63,19 @@ def _get_orchestrator_path() -> Path:
     return Path(__file__).parent / "orchestrator.py"
 
 
-def _generate_dockerfile(zae_limiter_source: Path | str) -> str:
+def _generate_dockerfile(
+    zae_limiter_source: Path | str,
+    *,
+    locustfile: str = "locustfile.py",
+    has_user_requirements: bool = False,
+) -> str:
     """Generate Dockerfile based on how zae-limiter is provided.
 
     Layer ordering optimized for caching:
     1. Install stable external deps (cached even when wheel changes)
-    2. Copy and install wheel
-    3. Copy Python files last (invalidates least)
+    2. Install user requirements (cached separately)
+    3. Copy and install wheel
+    4. Copy Python files last (invalidates least)
     """
     if isinstance(zae_limiter_source, Path):
         install_cmd = """\
@@ -83,11 +89,26 @@ RUN pip install /tmp/*.whl"""
         # Version string - install from PyPI
         install_cmd = f"RUN pip install zae-limiter=={zae_limiter_source} locust gevent boto3"
 
+    user_requirements_cmd = ""
+    if has_user_requirements:
+        user_requirements_cmd = """
+# Install user dependencies (cached — only invalidated when requirements.txt changes)
+COPY userfiles/requirements.txt /tmp/user-requirements.txt
+RUN pip install -r /tmp/user-requirements.txt
+"""
+
+    locustfile_path = f"/mnt/{locustfile}"
+    cmd = (
+        '["--master", "--master-bind-port=5557",'
+        ' "--enable-rebalancing", "--class-picker",'
+        f' "-f", "{locustfile_path}"]'
+    )
+
     return f"""\
 FROM python:3.12-slim
 
 {install_cmd}
-
+{user_requirements_cmd}
 # Copy all user files (locustfile.py and supporting modules)
 COPY userfiles/ /mnt/
 
@@ -95,13 +116,15 @@ COPY userfiles/ /mnt/
 COPY orchestrator.py /mnt/orchestrator.py
 
 ENTRYPOINT ["locust"]
-CMD ["--master", "--master-bind-port=5557", "-f", "/mnt/locustfile.py"]
+CMD {cmd}
 """
 
 
 def _create_build_context(
     zae_limiter_source: Path | str,
     locustfile_dir: Path,
+    *,
+    locustfile: str = "locustfile.py",
 ) -> io.BytesIO:
     """Create Docker build context as tar archive.
 
@@ -109,10 +132,15 @@ def _create_build_context(
     with different file structures.
     """
     context = io.BytesIO()
+    has_user_requirements = (locustfile_dir / "requirements.txt").exists()
 
     with tarfile.open(fileobj=context, mode="w:gz") as tar:
         # Add Dockerfile
-        dockerfile_content = _generate_dockerfile(zae_limiter_source)
+        dockerfile_content = _generate_dockerfile(
+            zae_limiter_source,
+            locustfile=locustfile,
+            has_user_requirements=has_user_requirements,
+        )
         dockerfile_bytes = dockerfile_content.encode()
         dockerfile_info = tarfile.TarInfo(name="Dockerfile")
         dockerfile_info.size = len(dockerfile_bytes)
@@ -122,10 +150,9 @@ def _create_build_context(
         if isinstance(zae_limiter_source, Path):
             tar.add(zae_limiter_source, arcname=f"wheels/{zae_limiter_source.name}")
 
-        # Add all files from locustfile_dir to userfiles/
-        for f in locustfile_dir.iterdir():
-            if f.is_file():
-                tar.add(f, arcname=f"userfiles/{f.name}")
+        # Add all files and directories from locustfile_dir to userfiles/
+        for item in locustfile_dir.iterdir():
+            tar.add(item, arcname=f"userfiles/{item.name}")
 
         # Add orchestrator for sidecar container (always from load module)
         orchestrator_path = _get_orchestrator_path()
@@ -141,6 +168,8 @@ def build_and_push_locust_image(
     region: str,
     locustfile_dir: Path,
     zae_limiter_source: Path | str | None = None,
+    *,
+    locustfile: str = "locustfile.py",
 ) -> str:
     """Build Locust master image with zae-limiter and push to ECR.
 
@@ -149,6 +178,7 @@ def build_and_push_locust_image(
         region: AWS region
         locustfile_dir: Directory containing locustfile.py
         zae_limiter_source: Path to wheel, version string, or None to auto-detect
+        locustfile: Locustfile path relative to locustfile_dir
 
     Returns:
         ECR image URI
@@ -190,7 +220,7 @@ def build_and_push_locust_image(
     )
 
     # Build image context
-    context = _create_build_context(zae_limiter_source, locustfile_dir)
+    context = _create_build_context(zae_limiter_source, locustfile_dir, locustfile=locustfile)
 
     # Build image (this can take 15-30s due to pip install)
     import sys

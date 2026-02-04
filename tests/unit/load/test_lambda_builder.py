@@ -19,6 +19,28 @@ class TestGenerateRequirements:
         result = _generate_requirements(wheel)
         assert str(wheel) in result
 
+    def test_with_user_requirements(self, tmp_path):
+        """User requirements.txt entries are appended."""
+        user_reqs = tmp_path / "requirements.txt"
+        user_reqs.write_text("pandas>=2.0\nnumpy\n")
+        result = _generate_requirements("0.8.0", user_requirements=user_reqs)
+        assert "pandas>=2.0" in result
+        assert "numpy" in result
+
+    def test_user_requirements_skips_comments(self, tmp_path):
+        """Comments and blank lines in user requirements.txt are filtered."""
+        user_reqs = tmp_path / "requirements.txt"
+        user_reqs.write_text("# this is a comment\n\npandas>=2.0\n  # indented comment\n")
+        result = _generate_requirements("0.8.0", user_requirements=user_reqs)
+        assert "pandas>=2.0" in result
+        assert "comment" not in result
+
+    def test_user_requirements_none(self):
+        """No change in behavior when user_requirements is None."""
+        result = _generate_requirements("0.8.0", user_requirements=None)
+        lines = [line for line in result.strip().split("\n") if line]
+        assert len(lines) == 3  # locust, gevent, zae-limiter
+
 
 class TestBuildLoadLambdaPackage:
     """Tests for build_load_lambda_package."""
@@ -52,7 +74,7 @@ class TestBuildLoadLambdaPackage:
             assert zip_path.suffix == ".zip"
 
     def test_zip_includes_all_files_from_dir(self, tmp_path):
-        """Built zip includes all files from locustfile_dir."""
+        """Built zip includes all files and subdirectories from locustfile_dir."""
         from zae_limiter.load.lambda_builder import build_load_lambda_package
 
         locustfile_dir = tmp_path / "locust"
@@ -60,6 +82,10 @@ class TestBuildLoadLambdaPackage:
         (locustfile_dir / "locustfile.py").write_text("# locust code")
         (locustfile_dir / "config.py").write_text("# config")
         (locustfile_dir / "data.json").write_text("{}")
+        common = locustfile_dir / "common"
+        common.mkdir()
+        (common / "__init__.py").write_text("")
+        (common / "helpers.py").write_text("# helpers")
 
         with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_class:
             mock_builder = MagicMock()
@@ -84,6 +110,8 @@ class TestBuildLoadLambdaPackage:
                 assert "locustfile.py" in names
                 assert "config.py" in names
                 assert "data.json" in names
+                assert "common/__init__.py" in names
+                assert "common/helpers.py" in names
 
     def test_default_output_dir(self, tmp_path, monkeypatch):
         """Uses build/ as default output_dir when not provided."""
