@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -45,6 +45,8 @@ from .models import (
 )
 from .repository import Repository
 from .schema import DEFAULT_RESOURCE
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 

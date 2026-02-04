@@ -104,6 +104,10 @@ REMOVE_METHODS = {
     "invalidate_sync",
 }
 
+# Module-level assignments to remove (unused in sync code).
+# These are removed during cleanup if ruff doesn't catch them.
+REMOVE_ASSIGNMENTS = {"_T"}
+
 # Classes to skip (import from async module instead of duplicating).
 # Prevents enum identity mismatches when both modules define the same enum.
 # Maps class name -> source module for the import statement.
@@ -217,8 +221,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             and isinstance(node.value.func, ast.Attribute)
             and node.value.func.attr == "__exit__"
         ):
-            # Replace with pass (we can't just remove the statement)
-            return ast.Pass()
+            return None  # Remove the statement entirely
 
         return node
 
@@ -458,6 +461,47 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         return node
 
 
+class CleanupTransformer(ast.NodeTransformer):
+    """Post-processing pass to clean up artifacts from async-to-sync transformation.
+
+    Handles patterns like try/except/finally blocks where the try body
+    became empty (e.g., after removing __exit__ calls).
+    """
+
+    def visit_Assign(self, node: ast.Assign) -> ast.Assign | None:  # noqa: N802
+        """Remove module-level assignments that are unused in sync code."""
+        if (
+            len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in REMOVE_ASSIGNMENTS
+        ):
+            return None
+        return node
+
+    def _is_empty_body(self, body: list[ast.stmt]) -> bool:
+        """Check if a block is empty or contains only pass statements."""
+        return len(body) == 0 or all(isinstance(stmt, ast.Pass) for stmt in body)
+
+    def visit_Try(self, node: ast.Try) -> ast.AST:  # noqa: N802
+        """Collapse try blocks where the body is empty.
+
+        Pattern: try: <empty> except: ... finally: body  ->  body
+        The __aexit__ call in try was removed, leaving an empty body.
+        The finally body is what we actually want to keep.
+        """
+        self.generic_visit(node)
+
+        if self._is_empty_body(node.body) and node.finalbody:
+            # try body is empty - collapse to finally body
+            return node.finalbody  # type: ignore[return-value]
+
+        if self._is_empty_body(node.body) and not node.finalbody:
+            # try body is empty and no finally - collapse to just pass
+            return ast.Pass()
+
+        return node
+
+
 def run_ruff_on_content(content: str, target_path: Path) -> str:
     """Run ruff check --fix and format on content, return formatted content.
 
@@ -518,9 +562,13 @@ def transform_file(source_path: Path, target_path: Path) -> bool:
     ):
         tree.body = tree.body[1:]
 
-    # Transform
+    # Transform async -> sync
     transformer = AsyncToSyncTransformer(source_path.name)
     new_tree = transformer.visit(tree)
+
+    # Clean up transformation artifacts (e.g., try: pass after __exit__ removal)
+    cleanup = CleanupTransformer()
+    new_tree = cleanup.visit(new_tree)
 
     # Fix missing locations
     ast.fix_missing_locations(new_tree)

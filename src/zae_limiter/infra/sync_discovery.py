@@ -6,6 +6,7 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import logging
 from typing import Any
 
 import boto3
@@ -20,6 +21,8 @@ from .stack_manager import (
     SCHEMA_VERSION_TAG_KEY,
     VERSION_TAG_KEY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SyncInfrastructureDiscovery:

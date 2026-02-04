@@ -704,7 +704,12 @@ class StackManager:
     async def close(self) -> None:
         """Close the underlying session and client."""
         if self._client is not None:
-            self._client = None
+            try:
+                await self._client.__aexit__(None, None, None)
+            except Exception:
+                logger.debug("Best effort client cleanup failed", exc_info=True)
+            finally:
+                self._client = None
         self._session = None
 
     async def __aenter__(self) -> "StackManager":

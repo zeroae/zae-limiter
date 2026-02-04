@@ -4,6 +4,7 @@ This module provides multi-stack discovery operations across a region,
 separate from the single-stack lifecycle management in StackManager.
 """
 
+import logging
 from typing import Any
 
 import aioboto3
@@ -18,6 +19,8 @@ from .stack_manager import (
     SCHEMA_VERSION_TAG_KEY,
     VERSION_TAG_KEY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class InfrastructureDiscovery:
@@ -308,7 +311,12 @@ class InfrastructureDiscovery:
     async def close(self) -> None:
         """Close the underlying session and client."""
         if self._client is not None:
-            self._client = None
+            try:
+                await self._client.__aexit__(None, None, None)
+            except Exception:
+                logger.debug("Best effort client cleanup failed", exc_info=True)
+            finally:
+                self._client = None
         self._session = None
 
     async def __aenter__(self) -> "InfrastructureDiscovery":
