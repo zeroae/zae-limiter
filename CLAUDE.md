@@ -186,6 +186,48 @@ zae-limiter local down
 
 **Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services. See `localstack-parity.md` for keeping CLI, `docker-compose.yml`, and CI in sync.
 
+### Load Testing with Locust
+
+Distributed load testing using Fargate Spot master + Lambda workers:
+
+```bash
+# 1. Deploy load test infrastructure (one-time setup)
+# VPC: zeroae-production, Subnets: us-east-1a private, us-east-1b private
+zae-limiter load deploy --name stress-target --region us-east-1 \
+  --vpc-id vpc-09fa0359f30c6efe4 \
+  --subnet-ids "subnet-0441a9342c2d605cf,subnet-0d607c058fe28230e" \
+  -C examples/locust/ -f locustfiles/simple.py \
+  --desired-workers 10
+
+# 2. Connect to Fargate master (starts task if not running)
+zae-limiter load connect --name stress-target --region us-east-1
+# Opens SSM tunnel to http://localhost:8089 (Locust UI)
+
+# 3. Start test via curl (or use Locust UI)
+curl -X POST http://localhost:8089/swarm -d "user_count=100&spawn_rate=10"
+
+# 4. Monitor test
+curl http://localhost:8089/stats/requests | jq '{workers: .worker_count, users: .user_count, rps: .total_rps}'
+
+# 5. Stop test
+curl -X GET http://localhost:8089/stop
+
+# 6. Disconnect and stop Fargate (use --destroy to stop task)
+zae-limiter load connect --name stress-target --region us-east-1 --destroy
+```
+
+**Key parameters:**
+- `--desired-workers`: Number of Lambda workers (each runs ~50 users optimally)
+- `--lambda-timeout`: Worker timeout in minutes (default: 5, triggers proactive replacement at 80%)
+- `-C`: Directory containing locustfiles
+- `-f`: Locustfile path relative to `-C`
+
+**Architecture:**
+- Fargate Spot runs Locust master + worker orchestrator sidecar
+- Orchestrator proactively invokes Lambda replacements at 80% of timeout
+- Lambda workers connect via VPC to Fargate master
+- Lambda workers use 50-connection boto3 pool (configured via gevent monkey-patch)
+
 ## Project Structure
 
 ```
