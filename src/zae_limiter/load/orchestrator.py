@@ -397,16 +397,14 @@ def main() -> None:
                         needed += replacements_needed
                         # Mark replaced workers so we don't double-count
                         pool.mark_replaced(replacements_needed)
-                    elif expiring > replacements_needed:
+                    else:
                         # Scaling down: let excess workers expire without replacement
-                        not_replacing = expiring - replacements_needed
+                        # Don't mark_replaced - workers are still running, just won't be replaced
                         logger.info(
-                            "Scale-down: %d expiring, not replacing %d (desired=%d)",
+                            "Scale-down: %d expiring, not replacing (desired=%d)",
                             expiring,
-                            not_replacing,
                             desired_workers,
                         )
-                        pool.mark_replaced(not_replacing)
 
                 # Log state on every poll for visibility
                 if fixed_workers is not None:
