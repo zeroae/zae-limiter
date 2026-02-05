@@ -24,6 +24,7 @@ Usage::
 
 from __future__ import annotations
 
+import os
 import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,7 @@ from locust import User
 from locust.exception import StopTest
 
 from zae_limiter import SyncRateLimiter
+from zae_limiter.exceptions import RateLimitExceeded
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -86,10 +88,10 @@ class RateLimiterSession:
     ) -> Generator[Any, None, None]:
         """Acquire rate limit tokens, firing Locust events with timing.
 
-        Fires two distinct events:
+        Fires up to two distinct events:
 
         - **ACQUIRE** — entering the rate limiter (read + consume).
-        - **COMMIT** — exiting the context manager (persist adjustments).
+        - **COMMIT** — exiting the context manager (only if adjustments were made).
 
         Args:
             entity_id: Entity to acquire for.
@@ -114,7 +116,13 @@ class RateLimiterSession:
                 acquired = True
                 yield lease
                 commit_start = time.perf_counter()
-            self._fire("COMMIT", stat_name, commit_start)
+            if lease._has_adjustments:
+                self._fire("COMMIT", stat_name, commit_start)
+        except RateLimitExceeded as exc:
+            # RateLimitExceeded is expected behavior, not a failure
+            # Fire as RATE_LIMITED (success) so it's tracked but not counted as error
+            self._fire("RATE_LIMITED", stat_name, acquire_start, rate_limit_exceeded=exc)
+            raise
         except Exception as exc:
             if not acquired:
                 self._fire("ACQUIRE", stat_name, acquire_start, exception=exc)
@@ -467,13 +475,20 @@ class RateLimiterUser(User):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
 
-        # Fall back to --host if stack_name not set as class attribute
+        # Fall back to --host or TARGET_STACK_NAME env var if stack_name not set as class attribute
         if not getattr(self, "stack_name", None) and self.host:
             self.stack_name = self.host
+        if not getattr(self, "stack_name", None):
+            self.stack_name = os.environ.get("TARGET_STACK_NAME", "")
+
+        # Fall back to TARGET_REGION env var if region not customized
+        if self.region == "us-east-1":
+            self.region = os.environ.get("TARGET_REGION", "us-east-1")
 
         if not getattr(self, "stack_name", None):
             raise StopTest(
-                "You must specify stack_name. Either as a class attribute or via the --host option."
+                "You must specify stack_name. Either as a class attribute, "
+                "via the --host option, or TARGET_STACK_NAME environment variable."
             )
 
         # Lazily share a single SyncRateLimiter across all users

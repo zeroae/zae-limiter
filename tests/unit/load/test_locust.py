@@ -438,7 +438,36 @@ class TestTimingFired:
 class TestAcquireCommit:
     """Verify that acquire() fires separate ACQUIRE and COMMIT events."""
 
-    def test_happy_path_fires_acquire_and_commit(self, session, mock_event):
+    def test_no_adjustment_fires_acquire_only(self, session, mock_limiter, mock_event):
+        mock_lease = MagicMock()
+        mock_lease._has_adjustments = False
+
+        @contextmanager
+        def mock_acquire_ctx():
+            yield mock_lease
+
+        mock_limiter.acquire.return_value = mock_acquire_ctx()
+
+        with session.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        assert mock_event.fire.call_count == 1
+        acquire_call = mock_event.fire.call_args.kwargs
+
+        assert acquire_call["request_type"] == "ACQUIRE"
+        assert acquire_call["name"] == "gpt-4"
+        assert acquire_call["exception"] is None
+
+    def test_with_adjustment_fires_acquire_and_commit(self, session, mock_limiter, mock_event):
+        mock_lease = MagicMock()
+        mock_lease._has_adjustments = True
+
+        @contextmanager
+        def mock_acquire_ctx():
+            yield mock_lease
+
+        mock_limiter.acquire.return_value = mock_acquire_ctx()
+
         with session.acquire("user-1", "gpt-4", {"rpm": 1}):
             pass
 
@@ -469,10 +498,12 @@ class TestAcquireCommit:
 
     def test_commit_failure_fires_both(self, session, mock_limiter, mock_event):
         commit_err = RuntimeError("transact_write failed")
+        mock_lease = MagicMock()
+        mock_lease._has_adjustments = True
 
         @contextmanager
         def failing_exit():
-            yield MagicMock()
+            yield mock_lease
             raise commit_err
 
         mock_limiter.acquire.return_value = failing_exit()
@@ -502,8 +533,16 @@ class TestAcquireCommit:
         assert call_kwargs["request_type"] == "ACQUIRE"
         assert call_kwargs["exception"] is None
 
-    def test_commit_timing_excludes_user_code(self, session, mock_event):
+    def test_commit_timing_excludes_user_code(self, session, mock_limiter, mock_event):
         user_code_seconds = 0.05
+        mock_lease = MagicMock()
+        mock_lease._has_adjustments = True
+
+        @contextmanager
+        def mock_acquire_ctx():
+            yield mock_lease
+
+        mock_limiter.acquire.return_value = mock_acquire_ctx()
 
         with session.acquire("user-1", "gpt-4", {"rpm": 1}):
             time.sleep(user_code_seconds)
@@ -512,6 +551,41 @@ class TestAcquireCommit:
         assert commit_call["request_type"] == "COMMIT"
         # COMMIT response_time should be much less than the user code sleep
         assert commit_call["response_time"] < user_code_seconds * 1000
+
+    def test_rate_limit_exceeded_fires_as_rate_limited_not_failure(
+        self, session, mock_limiter, mock_event
+    ):
+        """RateLimitExceeded is expected behavior, not a failure."""
+        from zae_limiter.exceptions import RateLimitExceeded
+        from zae_limiter.models import Limit, LimitStatus
+
+        # Create a mock violation status
+        violation = LimitStatus(
+            entity_id="user-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            limit=Limit.per_minute("rpm", 100),
+            available=-10,
+            requested=1,
+            exceeded=True,
+            retry_after_seconds=5.0,
+        )
+        exc = RateLimitExceeded(statuses=[violation])
+        mock_limiter.acquire.side_effect = exc
+
+        with pytest.raises(RateLimitExceeded):
+            with session.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass  # pragma: no cover
+
+        assert mock_event.fire.call_count == 1
+        call_kwargs = mock_event.fire.call_args.kwargs
+        # Fires as RATE_LIMITED, not ACQUIRE
+        assert call_kwargs["request_type"] == "RATE_LIMITED"
+        assert call_kwargs["name"] == "gpt-4"
+        # No exception means Locust won't count it as a failure
+        assert call_kwargs["exception"] is None
+        # The RateLimitExceeded is passed in context for logging
+        assert call_kwargs["context"]["rate_limit_exceeded"] is exc
 
 
 # ---------------------------------------------------------------------------
