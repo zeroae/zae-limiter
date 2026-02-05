@@ -253,13 +253,13 @@ class TestGenerateDockerfile:
         """Dockerfile CMD uses default locustfile.py path."""
         dockerfile = _generate_dockerfile("0.8.0")
 
-        assert "-f", "/mnt/locustfile.py" in dockerfile
+        assert "ENV LOCUSTFILE=locustfile.py" in dockerfile
 
     def test_dockerfile_with_custom_locustfile(self):
-        """Dockerfile CMD uses custom locustfile path."""
+        """Dockerfile sets custom LOCUSTFILE env var."""
         dockerfile = _generate_dockerfile("0.8.0", locustfile="my_locustfiles/api.py")
 
-        assert "/mnt/my_locustfiles/api.py" in dockerfile
+        assert "ENV LOCUSTFILE=my_locustfiles/api.py" in dockerfile
 
     def test_dockerfile_includes_rebalancing(self):
         """Dockerfile CMD includes --enable-rebalancing flag."""

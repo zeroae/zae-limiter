@@ -76,6 +76,9 @@ def _generate_dockerfile(
     2. Install user requirements (cached separately)
     3. Copy and install wheel
     4. Copy Python files last (invalidates least)
+
+    The LOCUSTFILE env var can be overridden at runtime via ECS task definition
+    or container environment to select different locustfiles without rebuilding.
     """
     if isinstance(zae_limiter_source, Path):
         install_cmd = """\
@@ -97,26 +100,26 @@ COPY userfiles/requirements.txt /tmp/user-requirements.txt
 RUN pip install -r /tmp/user-requirements.txt
 """
 
-    locustfile_path = f"/mnt/{locustfile}"
-    cmd = (
-        '["--master", "--master-bind-port=5557",'
-        ' "--enable-rebalancing", "--class-picker",'
-        f' "-f", "{locustfile_path}"]'
-    )
-
     return f"""\
 FROM python:3.12-slim
 
 {install_cmd}
 {user_requirements_cmd}
-# Copy all user files (locustfile.py and supporting modules)
+# Copy all user files (locustfiles and supporting modules)
 COPY userfiles/ /mnt/
 
 # Copy orchestrator for sidecar container
 COPY orchestrator.py /mnt/orchestrator.py
 
-ENTRYPOINT ["locust"]
-CMD {cmd}
+# Add /mnt to PYTHONPATH so locustfiles can import sibling packages (e.g., common/)
+ENV PYTHONPATH=/mnt
+
+# Default locustfile (can be overridden at runtime via LOCUSTFILE env var)
+ENV LOCUSTFILE={locustfile}
+
+# Use shell form to enable variable substitution
+ENTRYPOINT ["sh", "-c", "locust --master --master-bind-port=5557 \\
+    --enable-rebalancing --class-picker -f /mnt/$LOCUSTFILE"]
 """
 
 
@@ -212,11 +215,12 @@ def build_and_push_locust_image(
     # Initialize Docker client
     client = docker.from_env()
 
-    # Login to ECR
+    # Login to ECR (reauth=True forces credential refresh)
     client.login(
         username=username,
         password=password,
         registry=registry,
+        reauth=True,
     )
 
     # Build image context
