@@ -99,7 +99,33 @@ def load() -> None:
 @click.option("--region", default=None, help="AWS region")
 @click.option("--vpc-id", default=None, help="VPC ID for load test resources")
 @click.option("--subnet-ids", default=None, help="Comma-separated private subnet IDs")
-@click.option("--max-workers", default=100, type=int, help="Maximum Lambda worker concurrency")
+@click.option(
+    "--max-workers", default=100, type=int, help="Maximum Lambda workers (auto-scaling cap)"
+)
+@click.option(
+    "--desired-workers",
+    default=None,
+    type=int,
+    help="Fixed number of workers (disables auto-scaling)",
+)
+@click.option(
+    "--users-per-worker",
+    default=20,
+    type=int,
+    help="Max users per Lambda worker for auto-scaling (default: 20)",
+)
+@click.option(
+    "--rps-per-worker",
+    default=50,
+    type=int,
+    help="Max RPS per Lambda worker for auto-scaling (default: 50)",
+)
+@click.option(
+    "--min-workers",
+    default=1,
+    type=int,
+    help="Minimum workers to maintain (default: 1)",
+)
 @click.option(
     "--lambda-timeout",
     default=5,
@@ -130,6 +156,10 @@ def deploy(
     vpc_id: str | None,
     subnet_ids: str | None,
     max_workers: int,
+    desired_workers: int | None,
+    users_per_worker: int,
+    rps_per_worker: int,
+    min_workers: int,
     lambda_timeout: int,
     create_vpc_endpoints: bool,
     locustfile_dir: Path,
@@ -193,6 +223,13 @@ def deploy(
         {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
         {"ParameterKey": "PrivateSubnetIds", "ParameterValue": ",".join(subnet_list)},
         {"ParameterKey": "MaxWorkers", "ParameterValue": str(max_workers)},
+        {
+            "ParameterKey": "DesiredWorkers",
+            "ParameterValue": str(desired_workers) if desired_workers else "",
+        },
+        {"ParameterKey": "UsersPerWorker", "ParameterValue": str(users_per_worker)},
+        {"ParameterKey": "RpsPerWorker", "ParameterValue": str(rps_per_worker)},
+        {"ParameterKey": "MinWorkers", "ParameterValue": str(min_workers)},
         {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
         {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
         {"ParameterKey": "Locustfile", "ParameterValue": locustfile},
@@ -259,13 +296,12 @@ def deploy(
     with open(zip_path, "rb") as f:
         zip_bytes = f.read()
 
-    for func_suffix in ["worker", "setup"]:
-        func_name = f"{stack_name}-{func_suffix}"
-        lambda_client.update_function_code(
-            FunctionName=func_name,
-            ZipFile=zip_bytes,
-        )
-        click.echo(f"  Lambda code uploaded: {func_name}")
+    func_name = f"{stack_name}-worker"
+    lambda_client.update_function_code(
+        FunctionName=func_name,
+        ZipFile=zip_bytes,
+    )
+    click.echo(f"  Lambda code uploaded: {func_name}")
 
     click.echo(f"\nStack ready: {stack_name}")
 
