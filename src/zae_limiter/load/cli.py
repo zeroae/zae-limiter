@@ -558,17 +558,25 @@ def connect(
     stack_name = f"{name}-load"
     ecs = boto3.client("ecs", region_name=region)
     service_name = f"{stack_name}-master"
+    task_definition = f"{stack_name}-master"
 
-    def scale_service(count: int) -> None:
-        ecs.update_service(cluster=stack_name, service=service_name, desiredCount=count)
+    # Build overrides from CLI options
+    overrides = _build_task_overrides(
+        standalone=standalone,
+        locustfile=locustfile,
+        max_workers=max_workers,
+        desired_workers=desired_workers,
+        min_workers=min_workers,
+        users_per_worker=users_per_worker,
+        rps_per_worker=rps_per_worker,
+        startup_lead_time=startup_lead_time,
+    )
+    has_overrides = bool(overrides)
 
-    def get_running_task(require_ssm: bool = False) -> tuple[str, str] | None:
-        """Get (task_id, runtime_id) for the running task, or None.
-
-        Args:
-            require_ssm: If True, also check that ExecuteCommandAgent is running.
-        """
-        tasks = ecs.list_tasks(cluster=stack_name, serviceName=service_name)
+    def get_running_task(require_ssm: bool = False) -> tuple[str, str, str] | None:
+        """Get (task_arn, task_id, runtime_id) for the running task, or None."""
+        # Check for tasks (not associated with service)
+        tasks = ecs.list_tasks(cluster=stack_name)
         if not tasks["taskArns"]:
             return None
 
@@ -578,7 +586,6 @@ def connect(
         task_details = ecs.describe_tasks(cluster=stack_name, tasks=[task_arn])
         task = task_details["tasks"][0]
 
-        # Check if task is running and has runtime ID
         if task.get("lastStatus") != "RUNNING":
             return None
 
@@ -588,7 +595,6 @@ def connect(
         for container in task.get("containers", []):
             if container.get("name") == "locust-master":
                 runtime_id = container.get("runtimeId")
-                # Check managed agents for SSM readiness
                 for agent in container.get("managedAgents", []):
                     if agent.get("name") == "ExecuteCommandAgent":
                         ssm_ready = agent.get("lastStatus") == "RUNNING"
@@ -598,53 +604,102 @@ def connect(
         if require_ssm and not ssm_ready:
             return None
 
-        return task_id, runtime_id
+        return task_arn, task_id, runtime_id
 
+    def start_task() -> str:
+        """Start a new task with run_task(). Returns task ARN."""
+        network_config = _get_service_network_config(ecs, stack_name, service_name)
+
+        run_kwargs: dict[str, object] = {
+            "cluster": stack_name,
+            "taskDefinition": task_definition,
+            "networkConfiguration": network_config,
+            "enableExecuteCommand": True,
+            "count": 1,
+        }
+        if overrides:
+            run_kwargs["overrides"] = overrides
+
+        response = ecs.run_task(**run_kwargs)
+        return cast(str, response["tasks"][0]["taskArn"])
+
+    def stop_task(task_arn: str) -> None:
+        """Stop a task."""
+        ecs.stop_task(cluster=stack_name, task=task_arn)
+
+    task_arn: str | None = None
     started_by_us = False
 
     try:
         # Check if task is already running
         result = get_running_task()
         if result:
-            task_id, runtime_id = result
-            click.echo(f"Found running Fargate task: {task_id}")
+            existing_task_arn, task_id, runtime_id = result
+
+            if has_overrides and not force:
+                click.echo(f"Found running Fargate task: {task_id}")
+                click.echo("Warning: Task already running. Use --force to restart with new config.")
+                click.echo("Connecting to existing task (overrides ignored)...")
+                task_arn = existing_task_arn
+            elif has_overrides and force:
+                click.echo(f"Stopping existing task: {task_id}")
+                stop_task(existing_task_arn)
+                time.sleep(2)
+
+                click.echo(f"Starting new Fargate task with overrides: {stack_name}")
+                task_arn = start_task()
+                started_by_us = True
+
+                click.echo("  Waiting for task to start...")
+                for _ in range(60):
+                    result = get_running_task()
+                    if result:
+                        task_arn, task_id, runtime_id = result
+                        break
+                    time.sleep(2)
+                else:
+                    click.echo("Error: Task failed to start within 2 minutes", err=True)
+                    sys.exit(1)
+
+                click.echo(f"  Task running: {task_id}")
+            else:
+                click.echo(f"Found running Fargate task: {task_id}")
+                task_arn = existing_task_arn
         else:
-            # Start Fargate task
             started_by_us = True
             click.echo(f"Starting Fargate master: {stack_name}")
-            scale_service(1)
+            task_arn = start_task()
 
-            # Wait for task to be running
             click.echo("  Waiting for task to start...")
-            for _ in range(60):  # 2 minute timeout
+            for _ in range(60):
                 result = get_running_task()
                 if result:
-                    task_id, runtime_id = result
+                    task_arn, task_id, runtime_id = result
                     break
                 time.sleep(2)
             else:
                 click.echo("Error: Task failed to start within 2 minutes", err=True)
-                scale_service(0)
+                if task_arn:
+                    stop_task(task_arn)
                 sys.exit(1)
 
             click.echo(f"  Task running: {task_id}")
 
-        # Wait for SSM agent to be ready
         click.echo("  Waiting for SSM agent...")
-        for _ in range(30):  # 1 minute timeout
+        for _ in range(30):
             result = get_running_task(require_ssm=True)
             if result:
                 break
             time.sleep(2)
         else:
             click.echo("Error: SSM agent failed to start", err=True)
-            scale_service(0)
+            if started_by_us and task_arn:
+                stop_task(task_arn)
             sys.exit(1)
 
         click.echo("  SSM agent ready")
-        time.sleep(3)  # Give SSM agent a moment to fully initialize
+        time.sleep(3)
 
-        # Build SSM target
         ssm_target = f"ecs:{stack_name}_{task_id}_{runtime_id}"
         params = json.dumps(
             {
@@ -656,7 +711,6 @@ def connect(
 
         click.echo(f"  Connecting to http://localhost:{port} ...")
 
-        # Start SSM tunnel with retries
         region_args = ["--region", region] if region else []
         ssm_cmd = [
             "aws",
@@ -685,15 +739,14 @@ def connect(
         click.echo("\nInterrupted")
 
     finally:
-        # Scale down if we started the task or --destroy was passed
-        if started_by_us or destroy:
-            click.echo("Stopping Fargate master...")
+        if (started_by_us or destroy) and task_arn:
+            click.echo("Stopping Fargate task...")
             try:
-                scale_service(0)
-                click.echo("  Fargate master stopped")
+                stop_task(task_arn)
+                click.echo("  Fargate task stopped")
             except Exception as e:
-                click.echo(f"  Warning: Failed to stop service: {e}", err=True)
-        else:
+                click.echo(f"  Warning: Failed to stop task: {e}", err=True)
+        elif task_arn:
             click.echo("Disconnected (Fargate task still running, use --destroy to stop)")
 
 

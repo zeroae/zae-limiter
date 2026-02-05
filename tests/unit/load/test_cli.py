@@ -920,8 +920,8 @@ class TestConnectCommand:
             )
             assert "Interrupted" in result.output
 
-    def test_scale_down_exception_in_finally(self, runner):
-        """Connect handles exceptions when stopping service in finally."""
+    def test_stop_task_exception_in_finally(self, runner):
+        """Connect handles exceptions when stopping task in finally."""
         with (
             patch("boto3.client") as mock_client,
             patch("subprocess.run") as mock_subprocess_run,
@@ -936,14 +936,14 @@ class TestConnectCommand:
             mock_ecs.describe_tasks.return_value = self._make_task_response()
             mock_subprocess_run.return_value = MagicMock(returncode=0)
 
-            # Make the scale-down fail
-            mock_ecs.update_service.side_effect = Exception("cannot scale")
+            # Make stop_task fail
+            mock_ecs.stop_task.side_effect = Exception("cannot stop task")
 
             result = runner.invoke(
                 load,
                 ["connect", "--name", "my-app", "--destroy"],
             )
-            assert "Warning" in result.output or "cannot scale" in result.output
+            assert "Warning" in result.output or "cannot stop" in result.output.lower()
 
     def test_no_destroy_keeps_task_running(self, runner):
         """Connect without --destroy keeps task running after disconnect."""
@@ -970,7 +970,7 @@ class TestConnectCommand:
             assert "still running" in result.output.lower()
 
     def test_starts_fargate_and_connects(self, runner):
-        """Connect scales up service and starts SSM tunnel."""
+        """Connect starts task with run_task and SSM tunnel."""
         with (
             patch("boto3.client") as mock_client,
             patch("subprocess.run") as mock_subprocess_run,
@@ -1004,6 +1004,22 @@ class TestConnectCommand:
                     }
                 ]
             }
+            mock_ecs.describe_services.return_value = {
+                "services": [
+                    {
+                        "networkConfiguration": {
+                            "awsvpcConfiguration": {
+                                "subnets": ["subnet-a"],
+                                "securityGroups": ["sg-123"],
+                                "assignPublicIp": "DISABLED",
+                            }
+                        }
+                    }
+                ]
+            }
+            mock_ecs.run_task.return_value = {
+                "tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/task-id"}]
+            }
 
             mock_subprocess_run.return_value = MagicMock(returncode=0)
 
@@ -1012,12 +1028,179 @@ class TestConnectCommand:
                 ["connect", "--name", "my-app", "--destroy"],
             )
             assert result.exit_code == 0, result.output
-            # Should have started the service
-            mock_ecs.update_service.assert_any_call(
-                cluster="my-app-load",
-                service="my-app-load-master",
-                desiredCount=1,
+            # Should have called run_task
+            mock_ecs.run_task.assert_called_once()
+
+    def test_uses_run_task_with_overrides(self, runner):
+        """Connect uses run_task with overrides instead of service scaling."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("subprocess.run") as mock_subprocess_run,
+            patch("time.sleep"),
+        ):
+            mock_ecs = MagicMock()
+            mock_client.return_value = mock_ecs
+
+            # No tasks running initially
+            mock_ecs.list_tasks.side_effect = [
+                {"taskArns": []},  # initial check
+                {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]},  # after run_task
+                {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]},  # ssm check
+            ]
+            mock_ecs.describe_tasks.return_value = self._make_task_response()
+            mock_ecs.describe_services.return_value = {
+                "services": [
+                    {
+                        "networkConfiguration": {
+                            "awsvpcConfiguration": {
+                                "subnets": ["subnet-a"],
+                                "securityGroups": ["sg-123"],
+                                "assignPublicIp": "DISABLED",
+                            }
+                        }
+                    }
+                ]
+            }
+            mock_ecs.run_task.return_value = {
+                "tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/task-id"}]
+            }
+            mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+            result = runner.invoke(
+                load,
+                ["connect", "--name", "my-app", "--max-workers", "50", "--destroy"],
             )
+            assert result.exit_code == 0, result.output
+
+            # Should have called run_task, not update_service for scaling up
+            mock_ecs.run_task.assert_called_once()
+            call_kwargs = mock_ecs.run_task.call_args[1]
+            assert call_kwargs["cluster"] == "my-app-load"
+            assert "overrides" in call_kwargs
+
+            # Should use stop_task on cleanup, not update_service
+            mock_ecs.stop_task.assert_called()
+
+    def test_force_restarts_running_task(self, runner):
+        """Connect --force stops existing task and starts new one."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("subprocess.run") as mock_subprocess_run,
+            patch("time.sleep"),
+        ):
+            mock_ecs = MagicMock()
+            mock_client.return_value = mock_ecs
+
+            # Task already running
+            mock_ecs.list_tasks.side_effect = [
+                {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/old-task"]},  # initial
+                {"taskArns": []},  # after stop
+                {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/new-task"]},  # after run
+                {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/new-task"]},  # ssm
+            ]
+            mock_ecs.describe_tasks.return_value = self._make_task_response()
+            mock_ecs.describe_services.return_value = {
+                "services": [
+                    {
+                        "networkConfiguration": {
+                            "awsvpcConfiguration": {
+                                "subnets": ["subnet-a"],
+                                "securityGroups": ["sg-123"],
+                                "assignPublicIp": "DISABLED",
+                            }
+                        }
+                    }
+                ]
+            }
+            mock_ecs.run_task.return_value = {
+                "tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/new-task"}]
+            }
+            mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+            result = runner.invoke(
+                load,
+                ["connect", "--name", "my-app", "--max-workers", "50", "--force", "--destroy"],
+            )
+            assert result.exit_code == 0, result.output
+
+            # Should have stopped the old task
+            mock_ecs.stop_task.assert_any_call(
+                cluster="my-app-load",
+                task="arn:aws:ecs:us-east-1:123:task/cluster/old-task",
+            )
+
+    def test_warns_when_task_running_with_overrides_no_force(self, runner):
+        """Connect warns when task exists and overrides provided without --force."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("subprocess.run") as mock_subprocess_run,
+            patch("time.sleep"),
+        ):
+            mock_ecs = MagicMock()
+            mock_client.return_value = mock_ecs
+
+            # Task already running
+            mock_ecs.list_tasks.return_value = {
+                "taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]
+            }
+            mock_ecs.describe_tasks.return_value = self._make_task_response()
+            mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+            result = runner.invoke(
+                load,
+                ["connect", "--name", "my-app", "--max-workers", "50", "--destroy"],
+            )
+            assert result.exit_code == 0, result.output
+            assert "already running" in result.output.lower()
+            assert "--force" in result.output
+
+    def test_standalone_mode_overrides_command(self, runner):
+        """Connect --standalone overrides master command."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("subprocess.run") as mock_subprocess_run,
+            patch("time.sleep"),
+        ):
+            mock_ecs = MagicMock()
+            mock_client.return_value = mock_ecs
+
+            mock_ecs.list_tasks.side_effect = [
+                {"taskArns": []},
+                {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]},
+                {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]},
+            ]
+            mock_ecs.describe_tasks.return_value = self._make_task_response()
+            mock_ecs.describe_services.return_value = {
+                "services": [
+                    {
+                        "networkConfiguration": {
+                            "awsvpcConfiguration": {
+                                "subnets": ["subnet-a"],
+                                "securityGroups": ["sg-123"],
+                                "assignPublicIp": "DISABLED",
+                            }
+                        }
+                    }
+                ]
+            }
+            mock_ecs.run_task.return_value = {
+                "tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/task-id"}]
+            }
+            mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+            result = runner.invoke(
+                load,
+                ["connect", "--name", "my-app", "--standalone", "--destroy"],
+            )
+            assert result.exit_code == 0, result.output
+
+            # Verify overrides include standalone command
+            call_kwargs = mock_ecs.run_task.call_args[1]
+            overrides = call_kwargs["overrides"]
+            master = next(
+                c for c in overrides["containerOverrides"] if c["name"] == "locust-master"
+            )
+            assert "command" in master
 
 
 class TestBuildTaskOverrides:
