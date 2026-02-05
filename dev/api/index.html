@@ -2734,7 +2734,7 @@
 <td>Async rate limiter client</td>
 </tr>
 <tr>
-<td><a href="limiter/#zae_limiter.limiter.SyncRateLimiter"><code>SyncRateLimiter</code></a></td>
+<td><a href="limiter/#zae_limiter.sync_limiter.SyncRateLimiter"><code>SyncRateLimiter</code></a></td>
 <td>Synchronous rate limiter client</td>
 </tr>
 <tr>
@@ -2834,23 +2834,30 @@
 <h2 id="module-structure">Module Structure<a class="headerlink" href="#module-structure" title="Permanent link">&para;</a></h2>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>zae_limiter/
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>├── __init__.py            # Public API exports
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>├── limiter.py             # RateLimiter, SyncRateLimiter
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>├── models.py              # Limit, Entity, LimitStatus, BucketState, StackOptions, ...
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, ...
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>├── repository.py          # Repository (DynamoDB operations)
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>├── repository_protocol.py # RepositoryProtocol (backend abstraction)
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>├── lease.py               # Lease, SyncLease context managers
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>├── config_cache.py        # Client-side config caching with TTL
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>├── bucket.py              # Token bucket algorithm
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>├── schema.py              # DynamoDB key builders
-</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>├── naming.py              # Resource name validation
-</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>├── local.py               # LocalStack management commands
-</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>├── cli.py                 # CLI commands
-</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>└── infra/
-</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>    ├── stack_manager.py   # StackManager (CloudFormation operations)
-</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>    ├── lambda_builder.py  # Lambda deployment package builder
-</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>    ├── discovery.py       # Multi-stack discovery and listing
-</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>    └── cfn_template.yaml  # CloudFormation template
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>├── limiter.py             # RateLimiter (async)
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>├── sync_limiter.py        # Generated: SyncRateLimiter
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>├── models.py              # Limit, Entity, LimitStatus, BucketState, StackOptions, ...
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, ...
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>├── repository.py          # Repository (async DynamoDB operations)
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>├── sync_repository.py     # Generated: SyncRepository
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>├── repository_protocol.py # RepositoryProtocol (backend abstraction)
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>├── sync_repository_protocol.py  # Generated: SyncRepositoryProtocol
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>├── lease.py               # Lease (async context manager)
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>├── sync_lease.py          # Generated: SyncLease
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>├── config_cache.py        # Client-side config caching with TTL (async)
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>├── sync_config_cache.py   # Generated: SyncConfigCache
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>├── bucket.py              # Token bucket algorithm
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>├── schema.py              # DynamoDB key builders
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>├── naming.py              # Resource name validation
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>├── local.py               # LocalStack management commands
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>├── cli.py                 # CLI commands
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>└── infra/
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>    ├── stack_manager.py   # StackManager (async CloudFormation operations)
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>    ├── sync_stack_manager.py    # Generated: SyncStackManager
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>    ├── discovery.py       # Multi-stack discovery and listing (async)
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>    ├── sync_discovery.py  # Generated: SyncInfrastructureDiscovery
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>    ├── lambda_builder.py  # Lambda deployment package builder
+</span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>    └── cfn_template.yaml  # CloudFormation template
 </span></code></pre></div>
 <h2 id="public-exports">Public Exports<a class="headerlink" href="#public-exports" title="Permanent link">&para;</a></h2>
 <p>The following are exported from <code>zae_limiter</code>:</p>
