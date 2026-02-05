@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770216379509,
+  "lastUpdate": 1770252750193,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -6942,6 +6942,135 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.006027534114997292",
             "extra": "mean: 1.1088149629999862 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d99b7daeeac00539ff0add9f30268cf7ecdafc9d",
+          "message": "♻️ refactor(repository): native sync implementation via AST transformation (#308)\n\n## Summary\n\n- Replace event-loop-wrapper `SyncRateLimiter` with native sync code\ngenerated via AST transformation from async sources\n- Add `scripts/generate_sync.py` AST transformer (unasync pattern used\nby httpx, httpcore) producing 7 sync modules and 5 sync test files\n- Integrate generation into build (Hatch), pre-commit, and CI\n(`verify-sync` job) to keep generated code in sync\n- Auto-generate sync unit tests from async test sources, plus add\ntargeted sync-coverage tests\n- Enable Gevent/Eventlet compatibility by using native boto3 (blocking\nI/O becomes cooperative via monkey-patching)\n\n## AST Transformer\n\n`scripts/generate_sync.py` performs source-to-source transformation:\n\n| Transformation | Example |\n|----------------|---------|\n| `async def` / `await` | Stripped to plain `def` / direct calls |\n| `async with` / `async for` | Converted to `with` / `for` |\n| `aioboto3` | Replaced with `boto3` |\n| `aiohttp` session methods | Replaced with sync equivalents |\n| Class/module renaming | `Repository` → `SyncRepository`, `RateLimiter`\n→ `SyncRateLimiter` |\n| Import rewriting | Async imports → sync counterparts |\n| Enum identity preservation | `OnUnavailable.ALLOW` kept as-is (shared\nmodel) |\n| Protocol generation | `RepositoryProtocol` → `SyncRepositoryProtocol`\n|\n\n## Generated Source Files (do not edit)\n\n| Generated File | Source |\n|----------------|--------|\n| `sync_repository_protocol.py` | `repository_protocol.py` |\n| `sync_repository.py` | `repository.py` |\n| `sync_limiter.py` | `limiter.py` |\n| `sync_lease.py` | `lease.py` |\n| `sync_config_cache.py` | `config_cache.py` |\n| `infra/sync_stack_manager.py` | `infra/stack_manager.py` |\n| `infra/sync_discovery.py` | `infra/discovery.py` |\n\n## Generated Test Files (do not edit)\n\n| Generated Test | Source |\n|----------------|--------|\n| `test_sync_limiter.py` | `test_limiter.py` |\n| `test_sync_repository.py` | `test_repository.py` |\n| `test_sync_stack_manager.py` | `test_stack_manager.py` |\n| `test_sync_discovery.py` | `test_discovery.py` |\n| `test_sync_config_cache.py` | `test_config_cache.py` |\n\n## Build & CI Integration\n\n- **Hatch build hook** runs `generate_sync.py` before wheel/sdist\npackaging\n- **Pre-commit hook** verifies generated code matches current async\nsource\n- **CI `verify-sync` job** blocks PRs with stale generated code\n- **Coverage exclusion** for generated sync files (coverage measured on\nasync source)\n- `ruff` added as build dependency for post-generation formatting\n\n## Other Changes\n\n- **ADR-121** documents the architectural decision for native sync via\nunasync\n- **CLAUDE.md** updated with sync generation workflow and file listings\n- **API docs** updated to reference `sync_limiter` module\n- **Async source cleanup** in `limiter.py` (removed old wrapper class,\n~600 lines)\n- **Benchmark fixtures** updated for native `SyncRateLimiter`\n- Minor fixes to `discovery.py`, `stack_manager.py`, `lease.py`,\n`repository.py` for generator compatibility\n\n## Test plan\n\n- [ ] All unit tests pass (`uv run pytest tests/unit/ -v`)\n- [ ] mypy passes (`uv run mypy src/zae_limiter`)\n- [ ] CI `verify-sync` job passes (generated code is up-to-date)\n- [ ] Import test: `from zae_limiter import SyncRateLimiter,\nSyncRepository, SyncLease`\n- [ ] Regeneration is idempotent: `hatch run generate-sync` produces no\ndiff\n- [ ] Pre-commit hook catches stale generated code\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-02-04T19:35:41-05:00",
+          "tree_id": "a45e15a25b093de555bb01e72ceb8e6ac351794f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d99b7daeeac00539ff0add9f30268cf7ecdafc9d"
+        },
+        "date": 1770252749579,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 18.059613048951086,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012410471538474062",
+            "extra": "mean: 55.372172000001996 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.936990518928877,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007322904274436981",
+            "extra": "mean: 50.15802154545668 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 29.218387197495694,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006011569327111855",
+            "extra": "mean: 34.2250238947381 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 35.32215211196499,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031887013088141495",
+            "extra": "mean: 28.310845750003466 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 26.714761123902246,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005904215546828846",
+            "extra": "mean: 37.432488928575125 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 230.30861129190038,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005198508858499886",
+            "extra": "mean: 4.34200004242381 msec\nrounds: 165"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.432114127528223,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0026151617955776545",
+            "extra": "mean: 37.832766428566956 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.014254451067874,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006001624510118753",
+            "extra": "mean: 39.977205875000976 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.00771908424122,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005612054653505973",
+            "extra": "mean: 38.4501230869541 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 16.190062819625044,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004407686738945036",
+            "extra": "mean: 61.76628288235138 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 26.51848350233657,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005280670714943335",
+            "extra": "mean: 37.70954699999678 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9182764237838172,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016887166194482052",
+            "extra": "mean: 521.3013034000028 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9054039925174884,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004284723619309212",
+            "extra": "mean: 524.8230841999884 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9297146517280614,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003237401005604359",
+            "extra": "mean: 1.0755988390000084 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8951137255182232,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010445899648162903",
+            "extra": "mean: 1.1171764788000018 sec\nrounds: 5"
           }
         ]
       }
