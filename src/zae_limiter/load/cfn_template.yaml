@@ -48,6 +48,13 @@ Parameters:
     MinValue: 0
     MaxValue: 1000
 
+  StartupLeadTime:
+    Type: Number
+    Default: 20
+    Description: Seconds to predict ahead for proactive scaling
+    MinValue: 0
+    MaxValue: 120
+
   LambdaTimeout:
     Type: Number
     Default: 300
@@ -297,6 +304,8 @@ Resources:
               Value: !Ref MinWorkers
             - Name: MAX_WORKERS
               Value: !Ref MaxWorkers
+            - Name: STARTUP_LEAD_TIME
+              Value: !Ref StartupLeadTime
             - Name: WORKER_FUNCTION_NAME
               Value: !Sub ${AWS::StackName}-worker
             - Name: MASTER_PORT
