@@ -2,10 +2,44 @@
 
 from __future__ import annotations
 
-import importlib
-import inspect
-import os
-from typing import Any
+# IMPORTANT: Import gevent FIRST to ensure monkey-patching happens
+# before any other libraries (boto3, urllib3) initialize SSL contexts.
+# Without this, we get RecursionError in ssl.py when locust is imported later.
+import gevent.monkey
+
+gevent.monkey.patch_all()
+
+import importlib  # noqa: E402
+import inspect  # noqa: E402
+import os  # noqa: E402
+from typing import Any  # noqa: E402
+
+_boto3_pool_configured = False
+
+
+def _configure_boto3_pool(max_connections: int = 50) -> None:
+    """Configure boto3 to use larger connection pool for DynamoDB.
+
+    Must be called before any boto3 clients are created.
+    Only applies the patch once per Lambda container.
+    """
+    global _boto3_pool_configured
+    if _boto3_pool_configured:
+        return
+
+    import boto3
+    from botocore.config import Config
+
+    default_config = Config(max_pool_connections=max_connections)
+    original_client = boto3.Session.client
+
+    def patched_client(self: Any, service_name: str, **kwargs: Any) -> Any:
+        if service_name == "dynamodb" and "config" not in kwargs:
+            kwargs["config"] = default_config
+        return original_client(self, service_name, **kwargs)  # type: ignore[call-overload]
+
+    boto3.Session.client = patched_client  # type: ignore[assignment]
+    _boto3_pool_configured = True
 
 
 def _load_user_classes(config: dict[str, Any]) -> list[type]:
@@ -66,6 +100,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     Returns:
         Test results or worker status
     """
+    # Configure boto3 connection pool for concurrent Locust users (default boto3 is 10)
+    # Do this before SyncRateLimiter is created
+    _configure_boto3_pool(max_connections=50)
+
     config = event.get("config", {})
     mode = config.get("mode", "headless")
 
@@ -81,13 +119,32 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if mode == "worker":
         return _run_as_worker(config, context)
     else:
-        return _run_headless(config)
+        return _run_headless(config, context)
 
 
-def _run_headless(config: dict[str, Any]) -> dict[str, Any]:
-    """Run self-contained Locust test, return stats."""
+def _run_headless(
+    config: dict[str, Any], context: Any = None, shutdown_buffer_pct: float = 0.10
+) -> dict[str, Any]:
+    """Run self-contained Locust test, return stats.
+
+    Args:
+        config: Test configuration
+        context: Lambda context (for remaining time check)
+        shutdown_buffer_pct: Quit when this fraction of time remains (default 10%)
+    """
     import gevent
     from locust.env import Environment
+
+    # Calculate shutdown buffer as percentage of initial timeout
+    shutdown_buffer_ms = 30_000  # fallback if no context
+    if context and hasattr(context, "get_remaining_time_in_millis"):
+        initial_remaining_ms = context.get_remaining_time_in_millis()
+        shutdown_buffer_ms = int(initial_remaining_ms * shutdown_buffer_pct)
+        print(
+            f"Lambda timeout: {initial_remaining_ms}ms, "
+            f"shutdown buffer: {shutdown_buffer_ms}ms ({shutdown_buffer_pct:.0%})",
+            flush=True,
+        )
 
     print("Starting headless Locust test...", flush=True)
 
@@ -113,10 +170,27 @@ def _run_headless(config: dict[str, Any]) -> dict[str, Any]:
     env.runner.start(user_count, spawn_rate=spawn_rate)
     print(f"Started. Runner state: {env.runner.state}", flush=True)
 
-    # Let gevent run and process greenlets
+    # Run with periodic timeout checks
     print(f"Running for {duration}s...", flush=True)
-    gevent.sleep(duration)
-    print(f"Duration elapsed. Runner state: {env.runner.state}", flush=True)
+    elapsed = 0
+    check_interval = 5  # Check every 5 seconds
+    while elapsed < duration:
+        # Check if Lambda is about to timeout
+        if context and hasattr(context, "get_remaining_time_in_millis"):
+            remaining_ms = context.get_remaining_time_in_millis()
+            if remaining_ms < shutdown_buffer_ms:
+                print(
+                    f"Lambda timeout approaching ({remaining_ms}ms remaining), "
+                    f"stopping early after {elapsed}s",
+                    flush=True,
+                )
+                break
+
+        sleep_time = min(check_interval, duration - elapsed)
+        gevent.sleep(sleep_time)
+        elapsed += sleep_time
+
+    print(f"Run complete after {elapsed}s. Runner state: {env.runner.state}", flush=True)
 
     # Stop the test
     env.runner.quit()
@@ -145,11 +219,25 @@ def _run_headless(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Connect to Fargate master as distributed worker."""
+def _run_as_worker(
+    config: dict[str, Any], context: Any = None, shutdown_buffer_pct: float = 0.10
+) -> dict[str, Any]:
+    """Connect to Fargate master as distributed worker.
+
+    Args:
+        config: Worker configuration (master_host, master_port, etc.)
+        context: Lambda context (for remaining time check)
+        shutdown_buffer_pct: Quit when this fraction of time remains (default 10%)
+    """
     import uuid
 
     from locust.env import Environment
+
+    # Calculate shutdown buffer as percentage of initial timeout
+    shutdown_buffer_ms = 30_000  # fallback if no context
+    if context and hasattr(context, "get_remaining_time_in_millis"):
+        initial_remaining_ms = context.get_remaining_time_in_millis()
+        shutdown_buffer_ms = int(initial_remaining_ms * shutdown_buffer_pct)
 
     master_host = config["master_host"]
     master_port = config.get("master_port", 5557)
@@ -168,7 +256,8 @@ def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any
     user_classes = _load_user_classes(config)
     print(
         f"Starting worker {worker_id} connecting to {master_host}:{master_port}, "
-        f"classes: {[cls.__name__ for cls in user_classes]}",
+        f"classes: {[cls.__name__ for cls in user_classes]}, "
+        f"shutdown_buffer: {shutdown_buffer_ms}ms",
         flush=True,
     )
 
@@ -177,6 +266,27 @@ def _run_as_worker(config: dict[str, Any], context: Any = None) -> dict[str, Any
     assert env.runner is not None
 
     # Worker runs until master signals stop or Lambda times out
-    env.runner.greenlet.join()
+    # Periodically check remaining time to quit gracefully before timeout
+    check_interval = 5  # Check every 5 seconds
+    while True:
+        # Check if Lambda is about to timeout
+        if context and hasattr(context, "get_remaining_time_in_millis"):
+            remaining_ms = context.get_remaining_time_in_millis()
+            if remaining_ms < shutdown_buffer_ms:
+                print(
+                    f"Lambda timeout approaching ({remaining_ms}ms remaining), "
+                    f"worker {worker_id} quitting gracefully",
+                    flush=True,
+                )
+                env.runner.quit()
+                break
+
+        # Wait for greenlet group to finish or check again after timeout
+        # Group.join(timeout) waits for all greenlets or until timeout
+        env.runner.greenlet.join(timeout=check_interval)
+
+        # If group is empty (all greenlets finished), runner has stopped
+        if len(env.runner.greenlet) == 0:
+            break
 
     return {"status": "worker_completed", "worker_id": worker_id}
