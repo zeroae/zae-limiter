@@ -88,6 +88,89 @@ def _select_subnets(region: str | None, vpc_id: str) -> str:
     return ",".join(selected)
 
 
+def _build_task_overrides(
+    standalone: bool,
+    locustfile: str | None,
+    max_workers: int | None,
+    desired_workers: int | None,
+    min_workers: int | None,
+    users_per_worker: int | None,
+    rps_per_worker: int | None,
+    startup_lead_time: int | None,
+) -> dict[str, object]:
+    """Build container overrides dict for run_task().
+
+    Args:
+        standalone: Run Locust in single-process mode (no workers).
+        locustfile: Override locustfile path.
+        max_workers: Override max Lambda workers.
+        desired_workers: Override fixed worker count.
+        min_workers: Override minimum workers.
+        users_per_worker: Override auto-scaling ratio.
+        rps_per_worker: Override auto-scaling ratio.
+        startup_lead_time: Override predictive scaling lookahead.
+
+    Returns:
+        Dict suitable for run_task(overrides=...), or empty dict if no overrides.
+    """
+    master_env: list[dict[str, str]] = []
+    orchestrator_env: list[dict[str, str]] = []
+    master_command: list[str] | None = None
+
+    # Locustfile override applies to both containers
+    if locustfile:
+        master_env.append({"name": "LOCUSTFILE", "value": locustfile})
+        orchestrator_env.append({"name": "LOCUSTFILE", "value": locustfile})
+
+    # Scaling parameters apply to orchestrator
+    if max_workers is not None:
+        orchestrator_env.append({"name": "MAX_WORKERS", "value": str(max_workers)})
+    if desired_workers is not None:
+        orchestrator_env.append({"name": "DESIRED_WORKERS", "value": str(desired_workers)})
+    if min_workers is not None:
+        orchestrator_env.append({"name": "MIN_WORKERS", "value": str(min_workers)})
+    if users_per_worker is not None:
+        orchestrator_env.append({"name": "USERS_PER_WORKER", "value": str(users_per_worker)})
+    if rps_per_worker is not None:
+        orchestrator_env.append({"name": "RPS_PER_WORKER", "value": str(rps_per_worker)})
+    if startup_lead_time is not None:
+        orchestrator_env.append({"name": "STARTUP_LEAD_TIME", "value": str(startup_lead_time)})
+
+    # Standalone mode: override master command to run without --master
+    if standalone:
+        locustfile_path = locustfile or "$LOCUSTFILE"
+        master_command = ["sh", "-c", f"locust -f /mnt/{locustfile_path}"]
+        # Make orchestrator idle (no workers)
+        orchestrator_env.append({"name": "DESIRED_WORKERS", "value": "0"})
+        orchestrator_env.append({"name": "MIN_WORKERS", "value": "0"})
+
+    # Build overrides dict only if we have overrides
+    if not master_env and not orchestrator_env and not master_command:
+        return {}
+
+    container_overrides = []
+
+    # Master container
+    master_override: dict[str, object] = {"name": "locust-master"}
+    if master_env:
+        master_override["environment"] = master_env
+    if master_command:
+        master_override["command"] = master_command
+    if master_env or master_command:
+        container_overrides.append(master_override)
+
+    # Orchestrator container
+    if orchestrator_env:
+        container_overrides.append(
+            {
+                "name": "worker-orchestrator",
+                "environment": orchestrator_env,
+            }
+        )
+
+    return {"containerOverrides": container_overrides}
+
+
 @click.group()
 def load() -> None:
     """Load testing commands for zae-limiter."""

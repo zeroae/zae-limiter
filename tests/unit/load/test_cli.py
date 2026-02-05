@@ -1018,3 +1018,107 @@ class TestConnectCommand:
                 service="my-app-load-master",
                 desiredCount=1,
             )
+
+
+class TestBuildTaskOverrides:
+    """Tests for _build_task_overrides helper."""
+
+    def test_empty_overrides_returns_empty_dict(self):
+        from zae_limiter.load.cli import _build_task_overrides
+
+        result = _build_task_overrides(
+            standalone=False,
+            locustfile=None,
+            max_workers=None,
+            desired_workers=None,
+            min_workers=None,
+            users_per_worker=None,
+            rps_per_worker=None,
+            startup_lead_time=None,
+        )
+        assert result == {}
+
+    def test_scaling_params_override_orchestrator_env(self):
+        from zae_limiter.load.cli import _build_task_overrides
+
+        result = _build_task_overrides(
+            standalone=False,
+            locustfile=None,
+            max_workers=50,
+            desired_workers=10,
+            min_workers=2,
+            users_per_worker=25,
+            rps_per_worker=100,
+            startup_lead_time=30,
+        )
+
+        orchestrator = next(
+            c for c in result["containerOverrides"] if c["name"] == "worker-orchestrator"
+        )
+        env_dict = {e["name"]: e["value"] for e in orchestrator["environment"]}
+
+        assert env_dict["MAX_WORKERS"] == "50"
+        assert env_dict["DESIRED_WORKERS"] == "10"
+        assert env_dict["MIN_WORKERS"] == "2"
+        assert env_dict["USERS_PER_WORKER"] == "25"
+        assert env_dict["RPS_PER_WORKER"] == "100"
+        assert env_dict["STARTUP_LEAD_TIME"] == "30"
+
+    def test_locustfile_overrides_both_containers(self):
+        from zae_limiter.load.cli import _build_task_overrides
+
+        result = _build_task_overrides(
+            standalone=False,
+            locustfile="locustfiles/llm_production.py",
+            max_workers=None,
+            desired_workers=None,
+            min_workers=None,
+            users_per_worker=None,
+            rps_per_worker=None,
+            startup_lead_time=None,
+        )
+
+        for container_name in ["locust-master", "worker-orchestrator"]:
+            container = next(c for c in result["containerOverrides"] if c["name"] == container_name)
+            env_dict = {e["name"]: e["value"] for e in container["environment"]}
+            assert env_dict["LOCUSTFILE"] == "locustfiles/llm_production.py"
+
+    def test_standalone_mode_overrides_master_command(self):
+        from zae_limiter.load.cli import _build_task_overrides
+
+        result = _build_task_overrides(
+            standalone=True,
+            locustfile="simple.py",
+            max_workers=None,
+            desired_workers=None,
+            min_workers=None,
+            users_per_worker=None,
+            rps_per_worker=None,
+            startup_lead_time=None,
+        )
+
+        master = next(c for c in result["containerOverrides"] if c["name"] == "locust-master")
+        assert "command" in master
+        assert "--master" not in " ".join(master["command"])
+        assert "simple.py" in " ".join(master["command"])
+
+    def test_standalone_mode_sets_orchestrator_idle(self):
+        from zae_limiter.load.cli import _build_task_overrides
+
+        result = _build_task_overrides(
+            standalone=True,
+            locustfile=None,
+            max_workers=None,
+            desired_workers=None,
+            min_workers=None,
+            users_per_worker=None,
+            rps_per_worker=None,
+            startup_lead_time=None,
+        )
+
+        orchestrator = next(
+            c for c in result["containerOverrides"] if c["name"] == "worker-orchestrator"
+        )
+        env_dict = {e["name"]: e["value"] for e in orchestrator["environment"]}
+        assert env_dict["DESIRED_WORKERS"] == "0"
+        assert env_dict["MIN_WORKERS"] == "0"
