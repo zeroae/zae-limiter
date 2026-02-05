@@ -1122,3 +1122,39 @@ class TestBuildTaskOverrides:
         env_dict = {e["name"]: e["value"] for e in orchestrator["environment"]}
         assert env_dict["DESIRED_WORKERS"] == "0"
         assert env_dict["MIN_WORKERS"] == "0"
+
+
+class TestGetServiceNetworkConfig:
+    """Tests for _get_service_network_config helper."""
+
+    def test_extracts_network_config_from_service(self):
+        from zae_limiter.load.cli import _get_service_network_config
+
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = {
+            "services": [
+                {
+                    "networkConfiguration": {
+                        "awsvpcConfiguration": {
+                            "subnets": ["subnet-a", "subnet-b"],
+                            "securityGroups": ["sg-123"],
+                            "assignPublicIp": "DISABLED",
+                        }
+                    }
+                }
+            ]
+        }
+
+        result = _get_service_network_config(mock_ecs, "my-cluster", "my-service")
+
+        assert result == {
+            "awsvpcConfiguration": {
+                "subnets": ["subnet-a", "subnet-b"],
+                "securityGroups": ["sg-123"],
+                "assignPublicIp": "DISABLED",
+            }
+        }
+        mock_ecs.describe_services.assert_called_once_with(
+            cluster="my-cluster",
+            services=["my-service"],
+        )

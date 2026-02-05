@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import boto3
 import click
@@ -169,6 +170,22 @@ def _build_task_overrides(
         )
 
     return {"containerOverrides": container_overrides}
+
+
+def _get_service_network_config(ecs_client: Any, cluster: str, service: str) -> dict[str, object]:
+    """Get network configuration from an ECS service.
+
+    Args:
+        ecs_client: boto3 ECS client.
+        cluster: ECS cluster name.
+        service: ECS service name.
+
+    Returns:
+        Network configuration dict suitable for run_task().
+    """
+    response = ecs_client.describe_services(cluster=cluster, services=[service])
+    service_config = response["services"][0]
+    return cast(dict[str, object], service_config["networkConfiguration"])
 
 
 @click.group()
