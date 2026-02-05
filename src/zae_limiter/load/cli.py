@@ -519,7 +519,37 @@ def setup(
 @click.option("--region", default=None, help="AWS region")
 @click.option("--port", default=8089, type=int, help="Local port for Locust UI")
 @click.option("--destroy", is_flag=True, help="Stop Fargate on disconnect even if already running")
-def connect(name: str, region: str | None, port: int, destroy: bool) -> None:
+@click.option("--force", is_flag=True, help="Stop existing task and restart with new config")
+@click.option("--standalone", is_flag=True, help="Run Locust without workers (single-process mode)")
+@click.option(
+    "-f",
+    "--locustfile",
+    default=None,
+    help="Override locustfile path (relative to -C directory used in deploy)",
+)
+@click.option("--max-workers", type=int, default=None, help="Override max Lambda workers")
+@click.option("--desired-workers", type=int, default=None, help="Override fixed worker count")
+@click.option("--min-workers", type=int, default=None, help="Override minimum workers")
+@click.option("--users-per-worker", type=int, default=None, help="Override users per worker ratio")
+@click.option("--rps-per-worker", type=int, default=None, help="Override RPS per worker ratio")
+@click.option(
+    "--startup-lead-time", type=int, default=None, help="Override predictive scaling lookahead"
+)
+def connect(
+    name: str,
+    region: str | None,
+    port: int,
+    destroy: bool,
+    force: bool,
+    standalone: bool,
+    locustfile: str | None,
+    max_workers: int | None,
+    desired_workers: int | None,
+    min_workers: int | None,
+    users_per_worker: int | None,
+    rps_per_worker: int | None,
+    startup_lead_time: int | None,
+) -> None:
     """Connect to Fargate master via SSM tunnel."""
     import json
     import subprocess
