@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -1341,3 +1342,12 @@ class TestGetServiceNetworkConfig:
             cluster="my-cluster",
             services=["my-service"],
         )
+
+    def test_raises_error_when_service_not_found(self):
+        from zae_limiter.load.cli import _get_service_network_config
+
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = {"services": []}
+
+        with pytest.raises(click.ClickException, match="Service not found"):
+            _get_service_network_config(mock_ecs, "my-cluster", "nonexistent-service")
