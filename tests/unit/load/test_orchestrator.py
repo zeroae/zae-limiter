@@ -8,7 +8,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from zae_limiter.load.orchestrator import WorkerPool, get_connected_workers, get_task_ip
+from zae_limiter.load.orchestrator import (
+    LocustStats,
+    ScalingConfig,
+    WorkerPool,
+    calculate_desired_workers,
+    get_connected_workers,
+    get_locust_stats,
+    get_task_ip,
+)
 
 
 class TestWorkerPool:
@@ -60,11 +68,81 @@ class TestWorkerPool:
         pool.connected(actual_count=3, previous_count=0)
         assert pool.pending_count == 0
 
-    def test_connected_decrease_ignored(self):
+    def test_connected_decrease_preserves_pending(self):
+        """Disconnections don't affect pending count."""
         pool = WorkerPool()
         pool.add_pending(5)
         pool.connected(actual_count=1, previous_count=3)
         assert pool.pending_count == 5
+
+    def test_connected_moves_to_active(self):
+        """When workers connect, they move from pending to active."""
+        pool = WorkerPool()
+        pool.add_pending(3)
+        assert pool.pending_count == 3
+        assert pool.active_count == 0
+
+        pool.connected(actual_count=2, previous_count=0)
+        assert pool.pending_count == 1
+        assert pool.active_count == 2
+
+    def test_connected_decrease_preserves_active(self):
+        """When workers disconnect, active is NOT modified.
+
+        Workers are only removed from active via mark_replaced().
+        This ensures replacement workers' timestamps aren't accidentally
+        removed when old workers disconnect after being replaced.
+        """
+        pool = WorkerPool()
+        pool.add_pending(3)
+        pool.connected(actual_count=3, previous_count=0)
+        assert pool.active_count == 3
+
+        # Disconnections don't remove from active
+        pool.connected(actual_count=1, previous_count=3)
+        assert pool.active_count == 3  # Still 3, not removed
+
+    def test_count_expiring_soon_none_expiring(self):
+        """No workers expiring when all are fresh."""
+        pool = WorkerPool(lambda_timeout=300, replacement_pct=0.8)
+        pool.add_pending(2)
+        pool.connected(actual_count=2, previous_count=0)
+        assert pool.count_expiring_soon() == 0
+
+    def test_count_expiring_soon_with_old_workers(self):
+        """Workers past replacement threshold are counted as expiring."""
+        pool = WorkerPool(lambda_timeout=1.0, replacement_pct=0.5)
+        pool.add_pending(2)
+        pool.connected(actual_count=2, previous_count=0)
+        # Wait past 50% of 1s timeout
+        time.sleep(0.6)
+        assert pool.count_expiring_soon() == 2
+
+    def test_mark_replaced_removes_oldest(self):
+        """mark_replaced removes oldest active workers."""
+        pool = WorkerPool()
+        pool.add_pending(3)
+        pool.connected(actual_count=3, previous_count=0)
+        assert pool.active_count == 3
+
+        pool.mark_replaced(2)
+        assert pool.active_count == 1
+
+    def test_connected_adopts_untracked_workers(self):
+        """Workers connected without going through pending are adopted."""
+        pool = WorkerPool()
+        # No pending workers, but 2 are connected (e.g., orchestrator restart)
+        pool.connected(actual_count=2, previous_count=0)
+        assert pool.active_count == 2  # Adopted the untracked workers
+
+    def test_connected_adopts_partial_untracked(self):
+        """Only untracked workers are adopted, pending ones go through normal flow."""
+        pool = WorkerPool()
+        pool.add_pending(1)  # 1 pending
+        # 3 connected: 1 from pending, 2 untracked
+        pool.connected(actual_count=3, previous_count=0)
+        assert pool.pending_count == 0  # Pending moved to active
+        assert pool.active_count == 3  # 1 from pending + 2 adopted
 
 
 class TestGetTaskIp:
@@ -149,20 +227,165 @@ class TestGetConnectedWorkers:
             assert get_connected_workers() == 0
 
 
+class TestGetLocustStats:
+    """Tests for get_locust_stats."""
+
+    def test_returns_stats_from_api(self):
+        stats_data = {
+            "user_count": 100,
+            "total_rps": 50.5,
+            "worker_count": 5,
+            "state": "running",
+        }
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(stats_data).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            stats = get_locust_stats()
+            assert stats is not None
+            assert stats.user_count == 100
+            assert stats.total_rps == 50.5
+            assert stats.worker_count == 5
+            assert stats.state == "running"
+
+    def test_returns_none_on_error(self):
+        with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError):
+            assert get_locust_stats() is None
+
+    def test_handles_missing_fields(self):
+        stats_data = {}
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(stats_data).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            stats = get_locust_stats()
+            assert stats is not None
+            assert stats.user_count == 0
+            assert stats.total_rps == 0.0
+            assert stats.worker_count == 0
+
+
+class TestScalingConfig:
+    """Tests for ScalingConfig."""
+
+    def test_default_values(self):
+        config = ScalingConfig()
+        assert config.users_per_worker == 20
+        assert config.rps_per_worker == 50
+        assert config.min_workers == 1
+        assert config.max_workers is None
+
+    def test_from_env(self):
+        env = {
+            "USERS_PER_WORKER": "10",
+            "RPS_PER_WORKER": "25",
+            "MIN_WORKERS": "2",
+            "MAX_WORKERS": "100",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            config = ScalingConfig.from_env()
+            assert config.users_per_worker == 10
+            assert config.rps_per_worker == 25
+            assert config.min_workers == 2
+            assert config.max_workers == 100
+
+    def test_from_env_defaults(self):
+        with patch.dict("os.environ", {}, clear=False):
+            # Clear any potentially set env vars
+            import os
+
+            os.environ.pop("USERS_PER_WORKER", None)
+            os.environ.pop("RPS_PER_WORKER", None)
+            os.environ.pop("MIN_WORKERS", None)
+            os.environ.pop("MAX_WORKERS", None)
+
+            config = ScalingConfig.from_env()
+            assert config.users_per_worker == 20
+            assert config.rps_per_worker == 50
+            assert config.min_workers == 1
+            assert config.max_workers is None
+
+
+class TestCalculateDesiredWorkers:
+    """Tests for calculate_desired_workers auto-scaling logic."""
+
+    def test_returns_min_when_stats_none(self):
+        config = ScalingConfig(min_workers=3)
+        assert calculate_desired_workers(None, config) == 3
+
+    def test_returns_min_when_test_stopped(self):
+        config = ScalingConfig(min_workers=2)
+        stats = LocustStats(user_count=100, total_rps=50, worker_count=5, state="stopped")
+        assert calculate_desired_workers(stats, config) == 2
+
+    def test_returns_min_when_test_ready(self):
+        config = ScalingConfig(min_workers=2)
+        stats = LocustStats(user_count=0, total_rps=0, worker_count=0, state="ready")
+        assert calculate_desired_workers(stats, config) == 2
+
+    def test_scales_by_users(self):
+        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=1)
+        # 100 users / 20 per worker = 5 workers
+        stats = LocustStats(user_count=100, total_rps=10, worker_count=3, state="running")
+        assert calculate_desired_workers(stats, config) == 5
+
+    def test_scales_by_rps(self):
+        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=1)
+        # 200 RPS / 50 per worker = 4 workers (higher than users-based)
+        stats = LocustStats(user_count=20, total_rps=200, worker_count=2, state="running")
+        assert calculate_desired_workers(stats, config) == 4
+
+    def test_takes_max_of_users_and_rps(self):
+        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=1)
+        # users: 60/20 = 3, rps: 300/50 = 6 -> takes 6
+        stats = LocustStats(user_count=60, total_rps=300, worker_count=3, state="running")
+        assert calculate_desired_workers(stats, config) == 6
+
+    def test_respects_min_workers(self):
+        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=5)
+        # Only needs 1 worker for 10 users, but min is 5
+        stats = LocustStats(user_count=10, total_rps=5, worker_count=1, state="running")
+        assert calculate_desired_workers(stats, config) == 5
+
+    def test_respects_max_workers(self):
+        config = ScalingConfig(
+            users_per_worker=20, rps_per_worker=50, min_workers=1, max_workers=10
+        )
+        # Needs 50 workers for 1000 users, but max is 10
+        stats = LocustStats(user_count=1000, total_rps=100, worker_count=5, state="running")
+        assert calculate_desired_workers(stats, config) == 10
+
+    def test_spawning_state_triggers_scaling(self):
+        config = ScalingConfig(users_per_worker=20, min_workers=1)
+        # During spawning, start scaling based on target
+        stats = LocustStats(user_count=50, total_rps=10, worker_count=1, state="spawning")
+        assert calculate_desired_workers(stats, config) == 3  # ceil(50/20)
+
+    def test_rounds_up_workers(self):
+        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=1)
+        # 21 users should need 2 workers (ceil(21/20) = 2)
+        stats = LocustStats(user_count=21, total_rps=1, worker_count=1, state="running")
+        assert calculate_desired_workers(stats, config) == 2
+
+
 class TestMain:
     """Tests for the main orchestration loop."""
 
     def test_invokes_workers_when_needed(self):
-        """Main loop invokes Lambda workers to fill gap."""
+        """Main loop invokes Lambda workers to fill gap (fixed mode)."""
         mock_lambda = MagicMock()
         call_count = 0
 
-        def fake_get_connected():
+        def fake_get_stats():
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
-                return 0
-            return 3  # workers connected
+                return LocustStats(user_count=0, total_rps=0, worker_count=0, state="ready")
+            return LocustStats(user_count=0, total_rps=0, worker_count=3, state="ready")
 
         env = {
             "DESIRED_WORKERS": "3",
@@ -177,8 +400,8 @@ class TestMain:
             patch.dict("os.environ", env, clear=False),
             patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
             patch(
-                "zae_limiter.load.orchestrator.get_connected_workers",
-                side_effect=fake_get_connected,
+                "zae_limiter.load.orchestrator.get_locust_stats",
+                side_effect=fake_get_stats,
             ),
             patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
             patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
@@ -208,13 +431,17 @@ class TestMain:
         def capture_signal(signum, handler):
             signal_handlers[signum] = handler
 
+        def fake_get_stats():
+            # Fire SIGTERM handler, then return stats
+            signal_handlers[15](15, None)
+            return LocustStats(user_count=0, total_rps=0, worker_count=1, state="ready")
+
         with (
             patch.dict("os.environ", env, clear=False),
             patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
             patch(
-                "zae_limiter.load.orchestrator.get_connected_workers",
-                side_effect=lambda: signal_handlers[15](15, None)
-                or 1,  # fire SIGTERM handler  # noqa: E501
+                "zae_limiter.load.orchestrator.get_locust_stats",
+                side_effect=fake_get_stats,
             ),
             patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
             patch("time.sleep"),
@@ -228,13 +455,10 @@ class TestMain:
     def test_logs_expired_pending(self):
         """Main loop logs warning when pending invocations expire."""
         mock_lambda = MagicMock()
-        call_count = 0
 
-        def fake_get_connected():
-            nonlocal call_count
-            call_count += 1
-            # Always return 0 — workers never connect, so pending will expire
-            return 0
+        def fake_get_stats():
+            # Always return 0 workers — workers never connect, so pending will expire
+            return LocustStats(user_count=0, total_rps=0, worker_count=0, state="ready")
 
         env = {
             "DESIRED_WORKERS": "2",
@@ -249,8 +473,8 @@ class TestMain:
             patch.dict("os.environ", env, clear=False),
             patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
             patch(
-                "zae_limiter.load.orchestrator.get_connected_workers",
-                side_effect=fake_get_connected,
+                "zae_limiter.load.orchestrator.get_locust_stats",
+                side_effect=fake_get_stats,
             ),
             patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
             patch("time.sleep", side_effect=[None, None, KeyboardInterrupt]),
@@ -264,7 +488,7 @@ class TestMain:
                 main()
 
     def test_master_not_ready_branch(self):
-        """Main loop handles master not ready (connected < 0)."""
+        """Main loop handles master not ready (stats is None)."""
         mock_lambda = MagicMock()
 
         env = {
@@ -279,7 +503,7 @@ class TestMain:
         with (
             patch.dict("os.environ", env, clear=False),
             patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
-            patch("zae_limiter.load.orchestrator.get_connected_workers", return_value=-1),
+            patch("zae_limiter.load.orchestrator.get_locust_stats", return_value=None),
             patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
             patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
             patch("signal.signal"),
@@ -309,7 +533,7 @@ class TestMain:
             patch.dict("os.environ", env, clear=False),
             patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
             patch(
-                "zae_limiter.load.orchestrator.get_connected_workers",
+                "zae_limiter.load.orchestrator.get_locust_stats",
                 side_effect=[RuntimeError("connection error"), KeyboardInterrupt],
             ),
             patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
@@ -327,6 +551,9 @@ class TestMain:
         """Main loop includes user_classes in Lambda payload when LOCUST_USER_CLASSES is set."""
         mock_lambda = MagicMock()
 
+        def fake_get_stats():
+            return LocustStats(user_count=0, total_rps=0, worker_count=0, state="ready")
+
         env = {
             "DESIRED_WORKERS": "1",
             "WORKER_FUNCTION_NAME": "test-worker",
@@ -340,7 +567,7 @@ class TestMain:
         with (
             patch.dict("os.environ", env, clear=False),
             patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
-            patch("zae_limiter.load.orchestrator.get_connected_workers", return_value=0),
+            patch("zae_limiter.load.orchestrator.get_locust_stats", side_effect=fake_get_stats),
             patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
             patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
             patch("signal.signal"),
@@ -361,6 +588,9 @@ class TestMain:
         """Main loop includes locustfile in Lambda payload when LOCUSTFILE is set."""
         mock_lambda = MagicMock()
 
+        def fake_get_stats():
+            return LocustStats(user_count=0, total_rps=0, worker_count=0, state="ready")
+
         env = {
             "DESIRED_WORKERS": "1",
             "WORKER_FUNCTION_NAME": "test-worker",
@@ -374,7 +604,7 @@ class TestMain:
         with (
             patch.dict("os.environ", env, clear=False),
             patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
-            patch("zae_limiter.load.orchestrator.get_connected_workers", return_value=0),
+            patch("zae_limiter.load.orchestrator.get_locust_stats", side_effect=fake_get_stats),
             patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
             patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
             patch("signal.signal"),
@@ -394,6 +624,9 @@ class TestMain:
         """Default payload omits user_classes and locustfile."""
         mock_lambda = MagicMock()
 
+        def fake_get_stats():
+            return LocustStats(user_count=0, total_rps=0, worker_count=0, state="ready")
+
         env = {
             "DESIRED_WORKERS": "1",
             "WORKER_FUNCTION_NAME": "test-worker",
@@ -406,7 +639,7 @@ class TestMain:
         with (
             patch.dict("os.environ", env, clear=False),
             patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
-            patch("zae_limiter.load.orchestrator.get_connected_workers", return_value=0),
+            patch("zae_limiter.load.orchestrator.get_locust_stats", side_effect=fake_get_stats),
             patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
             patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
             patch("signal.signal"),
@@ -428,6 +661,150 @@ class TestMain:
             payload = json.loads(call_args[1]["Payload"])
             assert "user_classes" not in payload["config"]
             assert "locustfile" not in payload["config"]
+
+    def test_auto_scaling_mode(self):
+        """Main loop auto-scales based on user count and RPS."""
+        mock_lambda = MagicMock()
+        call_count = 0
+
+        def fake_get_stats():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First poll: 40 users running, need 2 workers (40/20)
+                return LocustStats(user_count=40, total_rps=10, worker_count=0, state="running")
+            # Second poll: workers connected
+            return LocustStats(user_count=40, total_rps=10, worker_count=2, state="running")
+
+        env = {
+            # No DESIRED_WORKERS = auto-scaling mode
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "USERS_PER_WORKER": "20",
+            "RPS_PER_WORKER": "50",
+            "MIN_WORKERS": "1",
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
+            patch("zae_limiter.load.orchestrator.get_locust_stats", side_effect=fake_get_stats),
+            patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
+            patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
+            patch("signal.signal"),
+        ):
+            mock_boto3.client.return_value = mock_lambda
+
+            # Remove DESIRED_WORKERS if set from other tests
+            import os
+
+            os.environ.pop("DESIRED_WORKERS", None)
+
+            from zae_limiter.load.orchestrator import main
+
+            with pytest.raises(KeyboardInterrupt):
+                main()
+
+            # Should have invoked 2 workers (40 users / 20 per worker)
+            assert mock_lambda.invoke.call_count == 2
+
+    def test_auto_scaling_by_rps(self):
+        """Main loop scales by RPS when RPS demands more workers than users."""
+        mock_lambda = MagicMock()
+        call_count = 0
+
+        def fake_get_stats():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # 20 users = 1 worker, but 200 RPS = 4 workers (200/50)
+                return LocustStats(user_count=20, total_rps=200, worker_count=0, state="running")
+            return LocustStats(user_count=20, total_rps=200, worker_count=4, state="running")
+
+        env = {
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "USERS_PER_WORKER": "20",
+            "RPS_PER_WORKER": "50",
+            "MIN_WORKERS": "1",
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
+            patch("zae_limiter.load.orchestrator.get_locust_stats", side_effect=fake_get_stats),
+            patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
+            patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
+            patch("signal.signal"),
+        ):
+            mock_boto3.client.return_value = mock_lambda
+
+            import os
+
+            os.environ.pop("DESIRED_WORKERS", None)
+
+            from zae_limiter.load.orchestrator import main
+
+            with pytest.raises(KeyboardInterrupt):
+                main()
+
+            # Should have invoked 4 workers (200 RPS / 50 per worker)
+            assert mock_lambda.invoke.call_count == 4
+
+    def test_auto_scaling_scale_down(self):
+        """Workers are NOT replaced when scaling down (users decrease)."""
+        mock_lambda = MagicMock()
+        call_count = 0
+
+        def fake_get_stats():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First poll: 100 users = need 5 workers, but we have 10 connected
+                # Orchestrator should NOT invoke replacements for expiring workers
+                return LocustStats(user_count=100, total_rps=10, worker_count=10, state="running")
+            # Subsequent polls: same state
+            return LocustStats(user_count=100, total_rps=10, worker_count=10, state="running")
+
+        env = {
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "USERS_PER_WORKER": "20",  # 100 users / 20 = 5 workers needed
+            "RPS_PER_WORKER": "50",
+            "MIN_WORKERS": "1",
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("zae_limiter.load.orchestrator.get_task_ip", return_value="10.0.0.1"),
+            patch("zae_limiter.load.orchestrator.get_locust_stats", side_effect=fake_get_stats),
+            patch("zae_limiter.load.orchestrator.boto3") as mock_boto3,
+            patch("time.sleep", side_effect=[None, KeyboardInterrupt]),
+            patch("signal.signal"),
+        ):
+            mock_boto3.client.return_value = mock_lambda
+
+            import os
+
+            os.environ.pop("DESIRED_WORKERS", None)
+
+            from zae_limiter.load.orchestrator import main
+
+            with pytest.raises(KeyboardInterrupt):
+                main()
+
+            # Should NOT invoke any workers - we have 10 but only need 5
+            # Let excess workers expire naturally
+            assert mock_lambda.invoke.call_count == 0
 
     def test_main_guard(self):
         """The if __name__ == '__main__' guard calls main()."""

@@ -23,9 +23,28 @@ Parameters:
     MaxValue: 1000
 
   DesiredWorkers:
+    Type: String
+    Default: ''
+    Description: Fixed number of workers (empty = auto-scaling mode)
+
+  UsersPerWorker:
     Type: Number
-    Default: 10
-    Description: Number of Lambda workers to maintain via orchestrator sidecar
+    Default: 20
+    Description: Max users per Lambda worker for auto-scaling
+    MinValue: 1
+    MaxValue: 1000
+
+  RpsPerWorker:
+    Type: Number
+    Default: 50
+    Description: Max RPS per Lambda worker for auto-scaling
+    MinValue: 1
+    MaxValue: 1000
+
+  MinWorkers:
+    Type: Number
+    Default: 1
+    Description: Minimum workers to maintain (auto-scaling mode)
     MinValue: 0
     MaxValue: 1000
 
@@ -237,14 +256,7 @@ Resources:
         - Name: locust-master
           Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LocustRepository}:latest
           Essential: true
-          Command:
-            - --master
-            - --master-bind-port=5557
-            - --web-port=8089
-            - --enable-rebalancing
-            - --class-picker
-            - -f
-            - !Sub /mnt/${Locustfile}
+          # Command is not specified - uses Dockerfile ENTRYPOINT which reads LOCUSTFILE env var
           PortMappings:
             - ContainerPort: 5557
               Protocol: tcp
@@ -253,6 +265,8 @@ Resources:
             - ContainerPort: 8089
               Protocol: tcp
           Environment:
+            - Name: LOCUSTFILE
+              Value: !Ref Locustfile
             - Name: TARGET_STACK_NAME
               Value: !Ref TargetStackName
             - Name: TARGET_REGION
@@ -271,8 +285,18 @@ Resources:
             - /mnt/orchestrator.py
           Command: []
           Environment:
+            - Name: LOCUSTFILE
+              Value: !Ref Locustfile
             - Name: DESIRED_WORKERS
               Value: !Ref DesiredWorkers
+            - Name: USERS_PER_WORKER
+              Value: !Ref UsersPerWorker
+            - Name: RPS_PER_WORKER
+              Value: !Ref RpsPerWorker
+            - Name: MIN_WORKERS
+              Value: !Ref MinWorkers
+            - Name: MAX_WORKERS
+              Value: !Ref MaxWorkers
             - Name: WORKER_FUNCTION_NAME
               Value: !Sub ${AWS::StackName}-worker
             - Name: MASTER_PORT
