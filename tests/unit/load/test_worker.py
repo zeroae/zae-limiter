@@ -140,12 +140,12 @@ class TestHandler:
             handler({}, None)
 
     def test_headless_receives_config(self):
-        """Handler passes config dict to _run_headless."""
+        """Handler passes config dict and context to _run_headless."""
         config = {"users": 20, "duration_seconds": 120}
         with patch.object(worker_mod, "_run_headless") as mock_headless:
             mock_headless.return_value = {}
             handler({"config": config}, None)
-            mock_headless.assert_called_once_with(config)
+            mock_headless.assert_called_once_with(config, None)
 
     def test_worker_receives_config_and_context(self):
         """Handler passes config and context to _run_as_worker."""
