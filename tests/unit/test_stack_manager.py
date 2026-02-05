@@ -392,6 +392,35 @@ class TestCreateStackErrors:
                 await manager.create_stack()
 
     @pytest.mark.asyncio
+    async def test_already_exists_waiter_failure_still_raises(self) -> None:
+        """create_stack still raises StackAlreadyExistsError when waiter fails."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.describe_stacks = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}},
+                    "DescribeStacks",
+                )
+            )
+            mock_client.create_stack = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "AlreadyExistsException", "Message": "Stack exists"}},
+                    "CreateStack",
+                )
+            )
+
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock(side_effect=Exception("Waiter timed out"))
+            mock_client.get_waiter.return_value = mock_waiter
+
+            mock_get_client.return_value = mock_client
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+
+            with pytest.raises(StackAlreadyExistsError):
+                await manager.create_stack()
+
+    @pytest.mark.asyncio
     async def test_raises_creation_error_on_client_error(self) -> None:
         """create_stack raises StackCreationError on other ClientErrors."""
         with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:

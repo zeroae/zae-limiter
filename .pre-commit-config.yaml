@@ -13,10 +13,12 @@ repos:
     hooks:
       - id: mypy
         files: ^src/zae_limiter/
+        args: ["--config-file=pyproject.toml"]
         additional_dependencies:
           - aioboto3>=12.0.0
           - boto3-stubs[dynamodb,s3,lambda,cloudformation,sts]>=1.34.0
           - types-aiobotocore[dynamodb,s3]>=2.0.0
+          - types-docker>=7.0.0
           - click>=8.0.0
 
   - repo: https://github.com/aws-cloudformation/cfn-lint
@@ -32,6 +34,17 @@ repos:
         entry: bash -c 'if grep -n "arn:aws:" "$@" 2>/dev/null; then echo "Use ${AWS::Partition} instead of hardcoded aws partition"; exit 1; fi'
         language: system
         files: cfn_template\.yaml$
+        stages: [pre-commit]
+
+      - id: verify-sync-generated
+        name: Verify generated sync code is up-to-date
+        entry: >-
+          bash -c "python scripts/generate_sync.py &&
+          git diff --exit-code src/zae_limiter/sync_*.py src/zae_limiter/infra/sync_*.py tests/unit/test_sync_*.py 2>/dev/null ||
+          (echo 'Generated sync code is out of date. Run: python scripts/generate_sync.py' && exit 1)"
+        language: system
+        files: ^(src/zae_limiter/(repository_protocol|repository|limiter|lease|config_cache|infra/(stack_manager|discovery))\.py|tests/unit/test_(limiter|repository|stack_manager|discovery|config_cache)\.py)$
+        pass_filenames: false
         stages: [pre-commit]
 
   # Pre-push hooks (run before git push)

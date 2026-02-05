@@ -254,8 +254,8 @@ def doctest_env(moto_env, monkeypatch):
     from zae_limiter import Limit
     from zae_limiter.exceptions import EntityExistsError
     from zae_limiter.limiter import RateLimiter as _RateLimiter
-    from zae_limiter.limiter import SyncRateLimiter as _SyncRateLimiter
     from zae_limiter.repository import Repository
+    from zae_limiter.sync_limiter import SyncRateLimiter as _SyncRateLimiter
 
     _created_tables: set[str] = set()
 

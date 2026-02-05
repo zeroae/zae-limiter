@@ -266,6 +266,67 @@ class TestRateLimiterLease:
             assert lease.consumed == {"tpm": 300}
 
 
+class TestLeaseEdgeCases:
+    """Tests for Lease edge cases (committed/rolled-back state, zero amounts)."""
+
+    async def test_consume_after_commit_raises(self, limiter):
+        """consume() on a committed lease raises RuntimeError."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            pass  # commit happens on exit
+
+        with pytest.raises(RuntimeError, match="no longer active"):
+            await lease.consume(tpm=50)
+
+    async def test_adjust_after_commit_raises(self, limiter):
+        """adjust() on a committed lease raises RuntimeError."""
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-2",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            pass
+
+        with pytest.raises(RuntimeError, match="no longer active"):
+            await lease.adjust(tpm=50)
+
+    async def test_consume_zero_amount_is_noop(self, limiter):
+        """consume() with zero amount skips processing."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-3",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1, "tpm": 100},
+        ) as lease:
+            # Consume only rpm, tpm=0 should be skipped
+            await lease.consume(rpm=1)
+            assert lease.consumed == {"rpm": 2, "tpm": 100}
+
+    async def test_adjust_zero_amount_is_noop(self, limiter):
+        """adjust() with zero amount skips processing."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-4",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1, "tpm": 100},
+        ) as lease:
+            await lease.adjust(rpm=5)  # only rpm, tpm=0 skipped
+            assert lease.consumed == {"rpm": 6, "tpm": 100}
+
+
 class TestLeaseRetryPath:
     """Tests for lease _commit retry path and helpers (ADR-115)."""
 
@@ -373,7 +434,7 @@ class TestWriteOnEnter:
     Verifies _commit_initial(), _commit_adjustments(), and _rollback() paths.
     """
 
-    def _make_entry(self, consumed=10, is_new=False, initial_consumed=0):
+    def _make_entry(self, consumed=10, is_new=False, initial_consumed=0, entity_id="e1"):
         """Create a LeaseEntry with mock state."""
         from zae_limiter.lease import LeaseEntry
 
@@ -383,7 +444,7 @@ class TestWriteOnEnter:
         state.last_refill_ms = 1000
         state.total_consumed_milli = None
         return LeaseEntry(
-            entity_id="e1",
+            entity_id=entity_id,
             resource="gpt-4",
             limit=limit,
             state=state,
@@ -610,6 +671,57 @@ class TestWriteOnEnter:
         assert lease._rolled_back is True
         assert "Failed to rollback consumed tokens" in caplog.text
 
+    async def test_cascade_normal_fails_retry_succeeds(self):
+        """Cascade: normal path fails (optimistic lock), retry path succeeds.
+
+        Two entries with different entity_ids (child + parent) simulate a
+        cascade scenario where the shared parent bucket causes the normal
+        transact_write to fail with TransactionCanceledException. The retry
+        path uses build_composite_retry for both entries and succeeds.
+        """
+        from zae_limiter.lease import Lease
+
+        child_entry = self._make_entry(consumed=5, entity_id="child-1")
+        parent_entry = self._make_entry(consumed=5, entity_id="parent-1")
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        # Normal path fails, retry path succeeds
+        mock_repo.transact_write.side_effect = [exc_cls(), None]
+
+        lease = Lease(repository=mock_repo, entries=[child_entry, parent_entry])
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 2
+        # Retry calls build_composite_retry for both entity groups
+        assert mock_repo.build_composite_retry.call_count == 2
+
+    async def test_cascade_both_paths_fail_raises_rate_limit_exceeded(self):
+        """Cascade: both normal and retry paths fail → RateLimitExceeded.
+
+        When both transact_write calls fail with condition check failures,
+        _commit_initial raises RateLimitExceeded with statuses for all entries.
+        """
+        from zae_limiter.lease import Lease
+
+        child_entry = self._make_entry(consumed=5, entity_id="child-1")
+        parent_entry = self._make_entry(consumed=5, entity_id="parent-1")
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        # Both normal and retry paths fail
+        mock_repo.transact_write.side_effect = [exc_cls(), exc_cls()]
+
+        lease = Lease(repository=mock_repo, entries=[child_entry, parent_entry])
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            await lease._commit_initial()
+
+        # Should have statuses for both entries
+        assert len(exc_info.value.statuses) == 2
+        entity_ids = {s.entity_id for s in exc_info.value.statuses}
+        assert entity_ids == {"child-1", "parent-1"}
+
     async def test_acquire_writes_on_enter(self, limiter):
         """Tokens are consumed in DynamoDB immediately on context enter."""
         limits = [Limit.per_minute("rpm", 100)]
@@ -684,8 +796,10 @@ class TestWriteOnEnter:
         Two callers acquire the same entity concurrently, both call adjust()
         inside the lease, and their _commit_adjustments writes interleave.
         Because adjustments use atomic ADD (not SET), no tokens are lost.
+
+        Uses per_day limit to avoid refill drift between writes and assertion.
         """
-        limits = [Limit.per_minute("rpm", 1000)]
+        limits = [Limit.per_day("rpd", 1000)]
 
         barrier = asyncio.Barrier(2)
 
@@ -694,9 +808,9 @@ class TestWriteOnEnter:
                 entity_id="concurrent-adjust",
                 resource="gpt-4",
                 limits=limits,
-                consume={"rpm": consume},
+                consume={"rpd": consume},
             ) as lease:
-                await lease.adjust(rpm=adjust)
+                await lease.adjust(rpd=adjust)
                 # Sync so both _commit_adjustments fire close together
                 await barrier.wait()
 
@@ -711,7 +825,7 @@ class TestWriteOnEnter:
             resource="gpt-4",
             limits=limits,
         )
-        assert available["rpm"] == 950
+        assert available["rpd"] == 950
 
         # Verify consumption counter is also correct
         buckets = await limiter._repository.get_buckets(
@@ -1986,6 +2100,406 @@ class TestRateLimiterGetStatus:
 
             await limiter.close()
 
+    @pytest.mark.asyncio
+    async def test_get_status_logs_when_stack_manager_fails(self, mock_dynamodb):
+        """get_status should log and continue when StackManager raises."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-stack-fail",
+                region="us-east-1",
+            )
+            await limiter._repository.create_table()
+
+            # Mock StackManager to raise on __aenter__
+            mock_manager = MagicMock()
+            mock_manager.__aenter__ = AsyncMock(side_effect=Exception("CFN unavailable"))
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_status()
+
+            # Stack status should be None but DynamoDB should still work
+            assert status.stack_status is None
+            assert status.available is True
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_get_status_logs_when_version_record_fails(self, limiter):
+        """get_status should log and continue when version record retrieval fails."""
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(
+            limiter._repository,
+            "get_version_record",
+            new=AsyncMock(side_effect=Exception("DynamoDB error")),
+        ):
+            status = await limiter.get_status()
+
+        # Should still be available, but version info should be None
+        assert status.available is True
+        assert status.schema_version is None
+        assert status.lambda_version is None
+
+
+class TestRateLimiterCapacityEdgeCases:
+    """Tests for edge cases in capacity calculations."""
+
+    async def test_time_until_available_skips_zero_amount(self, limiter):
+        """time_until_available should skip limits with zero needed amount."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+        ]
+
+        # Consume all rpm capacity
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100, "tpm": 100},
+        ):
+            pass
+
+        # Wait time for rpm=50, tpm=0 should only be based on rpm
+        wait = await limiter.time_until_available(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            needed={"rpm": 50, "tpm": 0},
+        )
+        # Should wait for rpm only (50 tokens at 100/min = 30 seconds)
+        assert 29 < wait < 31
+
+
+class TestListResourcesWithEntityConfigs:
+    """Tests for listing resources with entity-level custom limits."""
+
+    async def test_list_resources_with_entity_configs(self, limiter):
+        """Should list resources that have entity-level custom limits."""
+        # Set entity limits for two resources
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="claude-3")
+
+        resources = await limiter.list_resources_with_entity_configs()
+
+        assert "gpt-4" in resources
+        assert "claude-3" in resources
+
+    async def test_list_resources_with_entity_configs_empty(self, limiter):
+        """Should return empty list when no entity configs exist."""
+        resources = await limiter.list_resources_with_entity_configs()
+        assert resources == []
+
+
+class TestRateLimiterFetchBucketsFallback:
+    """Tests for _fetch_buckets fallback path when batch not supported."""
+
+    async def test_fetch_buckets_fallback_fresh_entity(self, limiter, monkeypatch):
+        """Fallback path should work for entities without existing buckets."""
+        from zae_limiter.models import BackendCapabilities
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Override capabilities to disable batch operations
+        no_batch_capabilities = BackendCapabilities(
+            supports_audit_logging=True,
+            supports_usage_snapshots=True,
+            supports_infrastructure_management=True,
+            supports_change_streams=True,
+            supports_batch_operations=False,
+        )
+        monkeypatch.setattr(limiter._repository, "_capabilities", no_batch_capabilities)
+
+        # Acquire should still work (uses sequential get_buckets fallback)
+        async with limiter.acquire(
+            entity_id="fresh-entity",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            assert lease.consumed == {"rpm": 1}
+
+
+class TestRateLimiterVersionChecking:
+    """Tests for version checking during initialization."""
+
+    @pytest.mark.asyncio
+    async def test_check_version_raises_incompatible_schema(self, mock_dynamodb):
+        """Should raise IncompatibleSchemaError when schema version is incompatible."""
+        from unittest.mock import AsyncMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+        from zae_limiter.exceptions import IncompatibleSchemaError
+        from zae_limiter.version import CompatibilityResult, InfrastructureVersion
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-version-check",
+                region="us-east-1",
+                skip_version_check=False,
+            )
+            await limiter._repository.create_table()
+
+            # Mock version record with incompatible schema
+            incompatible_record = {
+                "schema_version": "99.0.0",
+                "lambda_version": "0.1.0",
+                "client_min_version": "0.0.0",
+            }
+
+            with (
+                patch.object(
+                    limiter._repository,
+                    "get_version_record",
+                    new=AsyncMock(return_value=incompatible_record),
+                ),
+                patch(
+                    "zae_limiter.version.check_compatibility",
+                    return_value=CompatibilityResult(
+                        is_compatible=False,
+                        requires_schema_migration=True,
+                        requires_lambda_update=False,
+                        message="Major version mismatch",
+                    ),
+                ),
+                patch(
+                    "zae_limiter.version.InfrastructureVersion.from_record",
+                    return_value=InfrastructureVersion(
+                        schema_version="99.0.0",
+                        lambda_version="0.1.0",
+                        template_version=None,
+                        client_min_version="0.0.0",
+                    ),
+                ),
+            ):
+                with pytest.raises(IncompatibleSchemaError):
+                    await limiter._check_and_update_version()
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_check_version_raises_version_mismatch_strict(self, mock_dynamodb):
+        """Should raise VersionMismatchError when strict mode is on and lambda needs update."""
+        from unittest.mock import AsyncMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+        from zae_limiter.exceptions import VersionMismatchError
+        from zae_limiter.version import CompatibilityResult, InfrastructureVersion
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-strict-version",
+                region="us-east-1",
+                skip_version_check=False,
+                strict_version=True,
+                auto_update=False,
+            )
+            await limiter._repository.create_table()
+
+            mismatch_record = {
+                "schema_version": "1.0.0",
+                "lambda_version": "0.0.1",
+                "client_min_version": "0.0.0",
+            }
+
+            with (
+                patch.object(
+                    limiter._repository,
+                    "get_version_record",
+                    new=AsyncMock(return_value=mismatch_record),
+                ),
+                patch(
+                    "zae_limiter.version.check_compatibility",
+                    return_value=CompatibilityResult(
+                        is_compatible=True,
+                        requires_schema_migration=False,
+                        requires_lambda_update=True,
+                        message="Lambda version outdated",
+                    ),
+                ),
+                patch(
+                    "zae_limiter.version.InfrastructureVersion.from_record",
+                    return_value=InfrastructureVersion(
+                        schema_version="1.0.0",
+                        lambda_version="0.0.1",
+                        template_version=None,
+                        client_min_version="0.0.0",
+                    ),
+                ),
+            ):
+                with pytest.raises(VersionMismatchError):
+                    await limiter._check_and_update_version()
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_perform_lambda_update(self, mock_dynamodb):
+        """Should deploy Lambda code and update version record."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-lambda-update",
+                region="us-east-1",
+            )
+            await limiter._repository.create_table()
+
+            # Mock StackManager
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+            mock_manager.deploy_lambda_code = AsyncMock()
+
+            # Mock set_version_record
+            mock_set_version = AsyncMock()
+
+            with (
+                patch(
+                    "zae_limiter.infra.stack_manager.StackManager",
+                    MagicMock(return_value=mock_manager),
+                ),
+                patch.object(
+                    limiter._repository,
+                    "set_version_record",
+                    mock_set_version,
+                ),
+            ):
+                await limiter._perform_lambda_update()
+
+            # Verify Lambda code was deployed
+            mock_manager.deploy_lambda_code.assert_called_once()
+            # Verify version record was updated
+            mock_set_version.assert_called_once()
+
+            await limiter.close()
+
+
+class TestRateLimiterStackOperations:
+    """Tests for create_stack and delete_stack methods."""
+
+    @pytest.mark.asyncio
+    async def test_create_stack(self, mock_dynamodb):
+        """create_stack should delegate to StackManager."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter, StackOptions
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-create-stack",
+                region="us-east-1",
+            )
+
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+            mock_manager.create_stack = AsyncMock(
+                return_value={"StackId": "test-id", "StackName": "test-create-stack"}
+            )
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                result = await limiter.create_stack(stack_options=StackOptions())
+
+            assert result["StackId"] == "test-id"
+            mock_manager.create_stack.assert_called_once()
+
+            await limiter.close()
+
+    @pytest.mark.asyncio
+    async def test_delete_stack(self, mock_dynamodb):
+        """delete_stack should delegate to StackManager."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-delete-stack",
+                region="us-east-1",
+            )
+
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+            mock_manager.delete_stack = AsyncMock()
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                await limiter.delete_stack()
+
+            mock_manager.delete_stack.assert_called_once_with("test-delete-stack")
+
+            await limiter.close()
+
+
+class TestRateLimiterGetStatusFallbackPing:
+    """Tests for get_status fallback to ping when describe_table fails."""
+
+    @pytest.mark.asyncio
+    async def test_get_status_fallback_ping_no_get_client(self, mock_dynamodb):
+        """get_status should use ping() when repository has no _get_client."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import RateLimiter
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(
+                name="test-fallback-ping",
+                region="us-east-1",
+            )
+
+            # Create a mock repository without _get_client
+            mock_repo = MagicMock(spec=[])
+            mock_repo.ping = AsyncMock(return_value=True)
+            mock_repo.region = "us-east-1"
+            mock_repo.endpoint_url = None
+            mock_repo.get_version_record = AsyncMock(return_value=None)
+
+            # Remove _get_client attribute to trigger the fallback path
+            original_repo = limiter._repository
+            limiter._repository = mock_repo
+
+            # Mock StackManager to avoid CloudFormation calls
+            mock_manager = MagicMock()
+            mock_manager.__aenter__ = AsyncMock(side_effect=Exception("No stack"))
+            mock_manager.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                MagicMock(return_value=mock_manager),
+            ):
+                status = await limiter.get_status()
+
+            assert status.available is True
+            assert status.latency_ms is not None
+            mock_repo.ping.assert_called_once()
+
+            # Restore original repo for cleanup
+            limiter._repository = original_repo
+            await limiter.close()
+
 
 class TestSyncRateLimiterGetStatus:
     """Tests for SyncRateLimiter.get_status method."""
@@ -1998,7 +2512,7 @@ class TestSyncRateLimiterGetStatus:
 
         assert isinstance(status, Status)
         assert status.available is True
-        assert status.name == sync_limiter._limiter.name
+        assert status.name == sync_limiter.name
 
     def test_sync_get_status_includes_all_fields(self, sync_limiter):
         """SyncRateLimiter.get_status should include all status fields."""
