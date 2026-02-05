@@ -203,6 +203,19 @@ zae-limiter load deploy --name stress-target --region us-east-1 \
 zae-limiter load connect --name stress-target --region us-east-1
 # Opens SSM tunnel to http://localhost:8089 (Locust UI)
 
+# 2b. Connect with runtime overrides (no redeploy needed)
+zae-limiter load connect --name stress-target --region us-east-1 \
+  --max-workers 50 \
+  -f locustfiles/llm_production.py
+
+# 2c. Standalone mode (no Lambda workers, single-process Locust)
+zae-limiter load connect --name stress-target --region us-east-1 \
+  --standalone -f locustfiles/simple.py
+
+# 2d. Force restart with new config (when task already running)
+zae-limiter load connect --name stress-target --region us-east-1 \
+  --max-workers 100 --force
+
 # 3. Start test via curl (or use Locust UI)
 curl -X POST http://localhost:8089/swarm -d "user_count=100&spawn_rate=10"
 
@@ -215,6 +228,13 @@ curl -X GET http://localhost:8089/stop
 # 6. Disconnect and stop Fargate (use --destroy to stop task)
 zae-limiter load connect --name stress-target --region us-east-1 --destroy
 ```
+
+**Connect runtime overrides:**
+- `--max-workers`, `--desired-workers`, `--min-workers`: Scaling parameters
+- `--users-per-worker`, `--rps-per-worker`, `--startup-lead-time`: Auto-scaling tuning
+- `-f, --locustfile`: Switch locustfile without redeploy
+- `--standalone`: Run Locust in single-process mode (no Lambda workers)
+- `--force`: Stop existing task and restart with new config
 
 **Key parameters:**
 - `--desired-workers`: Number of Lambda workers (each runs ~50 users optimally)
