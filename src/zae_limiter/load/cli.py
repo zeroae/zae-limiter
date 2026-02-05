@@ -127,6 +127,12 @@ def load() -> None:
     help="Minimum workers to maintain (default: 1)",
 )
 @click.option(
+    "--startup-lead-time",
+    default=20,
+    type=int,
+    help="Seconds to predict ahead for proactive scaling (default: 20)",
+)
+@click.option(
     "--lambda-timeout",
     default=5,
     type=int,
@@ -160,6 +166,7 @@ def deploy(
     users_per_worker: int,
     rps_per_worker: int,
     min_workers: int,
+    startup_lead_time: int,
     lambda_timeout: int,
     create_vpc_endpoints: bool,
     locustfile_dir: Path,
@@ -230,6 +237,7 @@ def deploy(
         {"ParameterKey": "UsersPerWorker", "ParameterValue": str(users_per_worker)},
         {"ParameterKey": "RpsPerWorker", "ParameterValue": str(rps_per_worker)},
         {"ParameterKey": "MinWorkers", "ParameterValue": str(min_workers)},
+        {"ParameterKey": "StartupLeadTime", "ParameterValue": str(startup_lead_time)},
         {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
         {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
         {"ParameterKey": "Locustfile", "ParameterValue": locustfile},

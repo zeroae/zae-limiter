@@ -127,6 +127,7 @@ class ScalingConfig:
     rps_per_worker: int = 50
     min_workers: int = 1
     max_workers: int | None = None  # None = unlimited
+    startup_lead_time: float = 20.0  # Seconds to predict ahead for proactive scaling
 
     @classmethod
     def from_env(cls) -> ScalingConfig:
@@ -137,17 +138,28 @@ class ScalingConfig:
             rps_per_worker=int(os.environ.get("RPS_PER_WORKER", "50")),
             min_workers=int(os.environ.get("MIN_WORKERS", "1")),
             max_workers=int(max_workers_str) if max_workers_str else None,
+            startup_lead_time=float(os.environ.get("STARTUP_LEAD_TIME", "20")),
         )
 
 
 def calculate_desired_workers(
     stats: LocustStats | None,
     config: ScalingConfig,
+    prev_stats: LocustStats | None = None,
+    time_delta: float = 5.0,
 ) -> int:
-    """Calculate desired worker count based on current load.
+    """Calculate desired worker count based on current load with predictive scaling.
 
     Formula:
-        desired = max(ceil(users / users_per_worker), ceil(rps / rps_per_worker))
+        # Current need
+        current = max(ceil(users / users_per_worker), ceil(rps / rps_per_worker))
+
+        # Predict future need (startup_lead_time seconds ahead)
+        predicted_users = users + (user_rate * startup_lead_time)
+        predicted = max(ceil(predicted_users / users_per_worker), ...)
+
+        # Take the higher to proactively scale
+        desired = max(current, predicted)
         result = clamp(desired, min_workers, max_workers)
 
     When test is not running (state != "running"), maintains min_workers.
@@ -155,6 +167,8 @@ def calculate_desired_workers(
     Args:
         stats: Current Locust stats, or None if master not ready.
         config: Scaling configuration parameters.
+        prev_stats: Previous stats for rate calculation.
+        time_delta: Time between prev_stats and stats in seconds.
 
     Returns:
         Number of workers to maintain.
@@ -163,18 +177,34 @@ def calculate_desired_workers(
         # Master not ready or test not running - maintain minimum
         return config.min_workers
 
-    # Calculate workers needed for users
+    # Calculate workers needed for current users
     workers_for_users = (
         math.ceil(stats.user_count / config.users_per_worker) if stats.user_count > 0 else 0
     )
 
-    # Calculate workers needed for RPS
+    # Calculate workers needed for current RPS
     workers_for_rps = (
         math.ceil(stats.total_rps / config.rps_per_worker) if stats.total_rps > 0 else 0
     )
 
-    # Take the higher of the two
-    desired = max(workers_for_users, workers_for_rps)
+    # Current desired
+    current_desired = max(workers_for_users, workers_for_rps)
+
+    # Predictive scaling: estimate need in startup_lead_time seconds
+    predicted_desired = current_desired
+    if prev_stats is not None and time_delta > 0 and config.startup_lead_time > 0:
+        # Calculate rate of change
+        user_rate = (stats.user_count - prev_stats.user_count) / time_delta
+
+        # Only predict for increasing load (don't proactively scale down)
+        if user_rate > 0:
+            # Predict users in startup_lead_time seconds
+            predicted_users = stats.user_count + (user_rate * config.startup_lead_time)
+            predicted_workers = math.ceil(predicted_users / config.users_per_worker)
+            predicted_desired = max(predicted_desired, predicted_workers)
+
+    # Take the higher of current and predicted
+    desired = max(current_desired, predicted_desired)
 
     # Apply bounds
     desired = max(desired, config.min_workers)
@@ -328,6 +358,8 @@ def main() -> None:
         replacement_pct=replacement_pct,
     )
     last_connected = -1
+    prev_stats: LocustStats | None = None
+    last_stats_time = time.time()
     shutdown = False
 
     def handle_signal(signum: int, frame: object) -> None:
@@ -344,11 +376,17 @@ def main() -> None:
             stats = get_locust_stats()
             connected = stats.worker_count if stats else -1
 
+            # Calculate time since last stats for rate calculation
+            now = time.time()
+            time_delta = now - last_stats_time
+
             # Calculate desired workers (auto-scaling or fixed)
             if fixed_workers is not None:
                 desired_workers = fixed_workers
             else:
-                desired_workers = calculate_desired_workers(stats, scaling_config)
+                desired_workers = calculate_desired_workers(
+                    stats, scaling_config, prev_stats, time_delta
+                )
 
             # Expire old pending invocations
             expired = pool.expire_old()
@@ -397,14 +435,16 @@ def main() -> None:
                         needed += replacements_needed
                         # Mark replaced workers so we don't double-count
                         pool.mark_replaced(replacements_needed)
-                    else:
+                    elif expiring > replacements_needed:
                         # Scaling down: let excess workers expire without replacement
-                        # Don't mark_replaced - workers are still running, just won't be replaced
+                        not_replacing = expiring - replacements_needed
                         logger.info(
-                            "Scale-down: %d expiring, not replacing (desired=%d)",
+                            "Scale-down: %d expiring, not replacing %d (desired=%d)",
                             expiring,
+                            not_replacing,
                             desired_workers,
                         )
+                        pool.mark_replaced(not_replacing)
 
                 # Log state on every poll for visibility
                 if fixed_workers is not None:
@@ -446,6 +486,8 @@ def main() -> None:
                 logger.info("Invoked %d new Lambda workers", needed)
 
             last_connected = connected
+            prev_stats = stats
+            last_stats_time = now
             time.sleep(poll_interval)
 
         except Exception:
