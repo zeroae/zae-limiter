@@ -182,9 +182,15 @@ def _get_service_network_config(ecs_client: Any, cluster: str, service: str) -> 
 
     Returns:
         Network configuration dict suitable for run_task().
+
+    Raises:
+        click.ClickException: If service is not found.
     """
     response = ecs_client.describe_services(cluster=cluster, services=[service])
-    service_config = response["services"][0]
+    services = response.get("services", [])
+    if not services:
+        raise click.ClickException(f"Service not found: {service} in cluster {cluster}")
+    service_config = services[0]
     return cast(dict[str, object], service_config["networkConfiguration"])
 
 
@@ -575,8 +581,8 @@ def connect(
 
     def get_running_task(require_ssm: bool = False) -> tuple[str, str, str] | None:
         """Get (task_arn, task_id, runtime_id) for the running task, or None."""
-        # Check for tasks (not associated with service)
-        tasks = ecs.list_tasks(cluster=stack_name)
+        # Filter by task definition family (run_task tasks aren't service-associated)
+        tasks = ecs.list_tasks(cluster=stack_name, family=task_definition)
         if not tasks["taskArns"]:
             return None
 
@@ -644,10 +650,20 @@ def connect(
             elif has_overrides and force:
                 click.echo(f"Stopping existing task: {task_id}")
                 stop_task(existing_task_arn)
-                time.sleep(2)
+
+                # Wait for old task to stop before starting new one
+                click.echo("  Waiting for old task to stop...")
+                for _ in range(30):
+                    time.sleep(2)
+                    if not get_running_task():
+                        break
+                else:
+                    click.echo(
+                        "Warning: Old task still running, starting new task anyway", err=True
+                    )
 
                 click.echo(f"Starting new Fargate task with overrides: {stack_name}")
-                task_arn = start_task()
+                new_task_arn = start_task()
                 started_by_us = True
 
                 click.echo("  Waiting for task to start...")
@@ -655,7 +671,9 @@ def connect(
                     result = get_running_task()
                     if result:
                         task_arn, task_id, runtime_id = result
-                        break
+                        # Verify we got the new task, not the old one still stopping
+                        if task_arn == new_task_arn:
+                            break
                     time.sleep(2)
                 else:
                     click.echo("Error: Task failed to start within 2 minutes", err=True)
