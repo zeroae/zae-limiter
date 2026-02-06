@@ -27,6 +27,7 @@ SCHEMA_VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}schema-version"
 MANAGED_BY_TAG_KEY = "ManagedBy"
 MANAGED_BY_TAG_VALUE = "zae-limiter"
 NAME_TAG_KEY = f"{VERSION_TAG_PREFIX}name"
+TYPE_TAG_KEY = f"{VERSION_TAG_PREFIX}type"
 
 
 class SyncStackManager:
@@ -183,6 +184,7 @@ class SyncStackManager:
             tag_dict.update(user_tags)
         tag_dict[MANAGED_BY_TAG_KEY] = MANAGED_BY_TAG_VALUE
         tag_dict[NAME_TAG_KEY] = user_name
+        tag_dict[TYPE_TAG_KEY] = "limiter"
         for tag in self._get_version_tags():
             tag_dict[tag["Key"]] = tag["Value"]
         return [{"Key": k, "Value": v} for k, v in tag_dict.items()]

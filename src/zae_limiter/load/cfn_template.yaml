@@ -62,6 +62,13 @@ Parameters:
     MinValue: 60
     MaxValue: 900
 
+  LambdaMemory:
+    Type: Number
+    Default: 1769
+    Description: Lambda worker memory in MB (CPU scales proportionally; 1769 MB = 1 vCPU)
+    MinValue: 128
+    MaxValue: 10240
+
   Locustfile:
     Type: String
     Default: locustfile.py
@@ -274,8 +281,8 @@ Resources:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: !Sub ${AWS::StackName}-master
-      Cpu: '512'
-      Memory: '1024'
+      Cpu: '1024'
+      Memory: '2048'
       NetworkMode: awsvpc
       RequiresCompatibilities:
         - FARGATE
@@ -380,7 +387,7 @@ Resources:
       Runtime: python3.12
       Handler: load_lambda.worker.handler
       Timeout: !Ref LambdaTimeout
-      MemorySize: 256
+      MemorySize: !Ref LambdaMemory
       Role: !GetAtt LambdaWorkerRole.Arn
       ReservedConcurrentExecutions: !Ref MaxWorkers
       VpcConfig:

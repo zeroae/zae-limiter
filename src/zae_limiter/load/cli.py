@@ -20,13 +20,11 @@ def _select_name(region: str | None) -> str:
 
     async def list_targets() -> list[str]:
         async with InfrastructureDiscovery(region=region) as discovery:
-            limiters = await discovery.list_limiters()
-            # Exclude load stacks, only include healthy stacks
+            limiters = await discovery.list_limiters(stack_type="limiter")
             return [
                 info.stack_name
                 for info in limiters
-                if not info.stack_name.endswith("-load")
-                and info.stack_status in ("CREATE_COMPLETE", "UPDATE_COMPLETE")
+                if info.stack_status in ("CREATE_COMPLETE", "UPDATE_COMPLETE")
             ]
 
     targets = asyncio.run(list_targets())
@@ -268,6 +266,12 @@ def load() -> None:
     help="Lambda worker timeout in minutes (default: 5)",
 )
 @click.option(
+    "--lambda-memory",
+    default=1769,
+    type=int,
+    help="Lambda worker memory in MB (CPU scales with memory; 1769 MB = 1 vCPU, default: 1769)",
+)
+@click.option(
     "--create-vpc-endpoints",
     is_flag=True,
     help="Create VPC endpoints for SSM (not needed if VPC has NAT gateway)",
@@ -297,6 +301,7 @@ def deploy(
     min_workers: int,
     startup_lead_time: int,
     lambda_timeout: int,
+    lambda_memory: int,
     create_vpc_endpoints: bool,
     locustfile_dir: Path,
     locustfile: str,
@@ -374,11 +379,18 @@ def deploy(
         {"ParameterKey": "MinWorkers", "ParameterValue": str(min_workers)},
         {"ParameterKey": "StartupLeadTime", "ParameterValue": str(startup_lead_time)},
         {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
+        {"ParameterKey": "LambdaMemory", "ParameterValue": str(lambda_memory)},
         {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
         {"ParameterKey": "PrivateRouteTableIds", "ParameterValue": route_table_ids},
         {"ParameterKey": "Locustfile", "ParameterValue": locustfile},
         {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
         {"ParameterKey": "RoleNameFormat", "ParameterValue": role_name_format},
+    ]
+
+    stack_tags: Any = [
+        {"Key": "ManagedBy", "Value": "zae-limiter"},
+        {"Key": "zae-limiter:name", "Value": name},
+        {"Key": "zae-limiter:type", "Value": "load-test"},
     ]
 
     try:
@@ -387,6 +399,7 @@ def deploy(
             TemplateBody=template_body,
             Parameters=stack_params,  # type: ignore[arg-type]
             Capabilities=["CAPABILITY_NAMED_IAM"],
+            Tags=stack_tags,
         )
         click.echo("  CloudFormation stack creation started")
 
@@ -404,6 +417,7 @@ def deploy(
                 TemplateBody=template_body,
                 Parameters=stack_params,  # type: ignore[arg-type]
                 Capabilities=["CAPABILITY_NAMED_IAM"],
+                Tags=stack_tags,
             )
             update_waiter = cfn.get_waiter("stack_update_complete")
             update_waiter.wait(StackName=stack_name)
@@ -451,106 +465,6 @@ def deploy(
 
 
 @load.command()
-@click.option("--name", "-n", required=True, help="zae-limiter stack name")
-@click.option("--region", default=None, help="AWS region")
-@click.option("--endpoint-url", default=None, help="AWS endpoint URL (for LocalStack)")
-@click.option(
-    "--custom-limits", default=300, type=int, help="Number of entities with custom limits"
-)
-@click.option("--apis", default=8, type=int, help="Number of APIs to configure")
-def setup(
-    name: str,
-    region: str | None,
-    endpoint_url: str | None,
-    custom_limits: int,
-    apis: int,
-) -> None:
-    """Setup test entities and limits."""
-    import asyncio
-
-    from zae_limiter import Limit, RateLimiter
-
-    click.echo("Setting up test data...")
-
-    async def run_setup() -> None:
-        limiter = RateLimiter(
-            name=name,
-            region=region or "us-east-1",
-            endpoint_url=endpoint_url,
-        )
-
-        async with limiter:
-            # System defaults
-            await limiter.set_system_defaults(
-                limits=[
-                    Limit.per_minute("rpm", 1000),
-                    Limit.per_minute("tpm", 100_000),
-                ]
-            )
-            click.echo("  System defaults configured")
-
-            # Resource defaults
-            api_configs = {
-                "api-0": {"rpm": 500, "tpm": 50_000},
-                "api-1": {"rpm": 2000, "tpm": 200_000},
-                "api-2": {"rpm": 1000, "tpm": 100_000},
-                "api-3": {"rpm": 1500, "tpm": 150_000},
-                "api-4": {"rpm": 800, "tpm": 80_000},
-                "api-5": {"rpm": 1200, "tpm": 120_000},
-                "api-6": {"rpm": 600, "tpm": 60_000},
-                "api-7": {"rpm": 1800, "tpm": 180_000},
-            }
-
-            for api_name, limits in list(api_configs.items())[:apis]:
-                await limiter.set_resource_defaults(
-                    resource=api_name,
-                    limits=[
-                        Limit.per_minute("rpm", limits["rpm"]),
-                        Limit.per_minute("tpm", limits["tpm"]),
-                    ],
-                )
-            click.echo(f"  {apis} API resource configs")
-
-            # Whale entity
-            await limiter.create_entity("entity-whale", name="Whale Entity")
-            await limiter.set_limits(
-                entity_id="entity-whale",
-                limits=[
-                    Limit.per_minute("rpm", 10_000),
-                    Limit.per_minute("tpm", 1_000_000),
-                ],
-            )
-
-            # Spike entity
-            await limiter.create_entity("entity-spiker", name="Spike Entity")
-            await limiter.set_limits(
-                entity_id="entity-spiker",
-                limits=[
-                    Limit.per_minute("rpm", 5_000),
-                    Limit.per_minute("tpm", 500_000),
-                ],
-            )
-            click.echo("  Whale and spike entities created")
-
-            # Custom limit entities
-            for i in range(custom_limits):
-                entity_id = f"entity-{i:05d}"
-                await limiter.create_entity(entity_id, name=f"Custom Entity {i}")
-                multiplier = 1 + (i % 5) * 0.5
-                await limiter.set_limits(
-                    entity_id=entity_id,
-                    limits=[
-                        Limit.per_minute("rpm", int(1000 * multiplier)),
-                        Limit.per_minute("tpm", int(100_000 * multiplier)),
-                    ],
-                )
-            click.echo(f"  {custom_limits} entities with custom limits")
-
-    asyncio.run(run_setup())
-    click.echo("\nReady for testing")
-
-
-@load.command()
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--port", default=8089, type=int, help="Local port for Locust UI")
@@ -579,7 +493,7 @@ def setup(
     "--pool-connections",
     type=int,
     default=None,
-    help="Override boto3 connection pool size (default: 200)",
+    help="Override boto3 connection pool size (default: 1000)",
 )
 def connect(
     name: str,
@@ -807,6 +721,9 @@ def connect(
             click.echo("Stopping Fargate task...")
             try:
                 stop_task(task_arn)
+                click.echo("  Waiting for task to stop...")
+                waiter = ecs.get_waiter("tasks_stopped")
+                waiter.wait(cluster=stack_name, tasks=[task_arn])
                 click.echo("  Fargate task stopped")
             except Exception as e:
                 click.echo(f"  Warning: Failed to stop task: {e}", err=True)
@@ -842,3 +759,179 @@ def teardown(name: str, region: str | None, yes: bool) -> None:
     click.echo("  Waiting for stack deletion...")
     waiter.wait(StackName=stack_name)
     click.echo("  Stack deleted")
+
+
+@load.command("list")
+@click.option("--region", default=None, help="AWS region")
+def list_cmd(region: str | None) -> None:
+    """List deployed load test stacks."""
+    import asyncio
+    from datetime import datetime
+
+    from zae_limiter.infra.discovery import InfrastructureDiscovery
+
+    async def _list() -> None:
+        async with InfrastructureDiscovery(region=region) as discovery:
+            limiters = await discovery.list_limiters(stack_type="load-test")
+
+        if not limiters:
+            click.echo()
+            click.echo("No load test stacks found.")
+            click.echo(f"  Region: {region or 'default'}")
+            click.echo()
+            click.echo("Deploy a load test with:")
+            click.echo("  zae-limiter load deploy --name my-app")
+            return
+
+        click.echo()
+        region_display = region or "default"
+        click.echo(f"Load Test Stacks ({region_display})")
+        click.echo()
+
+        headers = ["Name", "Target", "Status", "Created"]
+        rows: list[list[str]] = []
+        for limiter in limiters:
+            try:
+                created = datetime.fromisoformat(limiter.creation_time)
+                created_display = created.strftime("%Y-%m-%d")
+            except Exception:
+                created_display = "unknown"
+
+            # Target is the user_name (limiter stack name)
+            rows.append(
+                [
+                    limiter.stack_name,
+                    limiter.user_name,
+                    limiter.stack_status,
+                    created_display,
+                ]
+            )
+
+        from zae_limiter.visualization import TableRenderer
+
+        renderer = TableRenderer()
+        click.echo(renderer.render(headers, rows))
+
+        click.echo()
+        click.echo(f"Total: {len(limiters)} stack(s)")
+
+    asyncio.run(_list())
+
+
+@load.command()
+@click.option("--name", "-n", required=True, help="zae-limiter name")
+@click.option("--region", default=None, help="AWS region")
+@click.option("--users", default=20, type=int, help="Number of simulated users (default: 20)")
+@click.option("--duration", default=60, type=int, help="Test duration in seconds (default: 60)")
+@click.option("--spawn-rate", default=10, type=int, help="User spawn rate per second (default: 10)")
+@click.option(
+    "-f",
+    "--locustfile",
+    default=None,
+    help="Override locustfile path (e.g. locustfiles/max_rps.py)",
+)
+def benchmark(
+    name: str,
+    region: str | None,
+    users: int,
+    duration: int,
+    spawn_rate: int,
+    locustfile: str | None,
+) -> None:
+    """Run a single Lambda worker in headless mode to measure per-worker capacity."""
+    import json
+
+    stack_name = f"{name}-load"
+    func_name = f"{stack_name}-worker"
+
+    from botocore.config import Config
+
+    lambda_client = boto3.client("lambda", region_name=region)
+
+    # Get current function configuration
+    try:
+        func_config = lambda_client.get_function_configuration(FunctionName=func_name)
+    except lambda_client.exceptions.ResourceNotFoundException:
+        click.echo(f"Error: Lambda function not found: {func_name}", err=True)
+        click.echo("Deploy first with: zae-limiter load deploy --name ...", err=True)
+        sys.exit(1)
+
+    memory_mb = func_config["MemorySize"]
+    timeout_seconds = func_config["Timeout"]
+
+    # Recreate client with read timeout matching Lambda timeout + buffer
+    # Default boto3 read timeout (60s) is too short for synchronous invocations
+    lambda_client = boto3.client(
+        "lambda",
+        region_name=region,
+        config=Config(read_timeout=timeout_seconds + 30),
+    )
+    vcpu_estimate = memory_mb / 1769
+
+    # Warn if duration exceeds available time (with 10% buffer)
+    effective_timeout = int(timeout_seconds * 0.9)
+    if duration > effective_timeout:
+        click.echo(
+            f"Warning: duration ({duration}s) exceeds Lambda effective timeout "
+            f"({effective_timeout}s with 10% buffer). Test will stop early.",
+            err=True,
+        )
+
+    click.echo(f"\nLambda Benchmark: {func_name}")
+    click.echo(f"  Memory: {memory_mb} MB (~{vcpu_estimate:.2f} vCPU)")
+    click.echo(f"  Timeout: {timeout_seconds}s")
+    if locustfile:
+        click.echo(f"  Locustfile: {locustfile}")
+    click.echo(f"  Users: {users}, Duration: {duration}s, Spawn Rate: {spawn_rate}/s")
+    click.echo()
+
+    # Invoke Lambda synchronously in headless mode
+    config: dict[str, object] = {
+        "mode": "headless",
+        "users": users,
+        "duration_seconds": duration,
+        "spawn_rate": spawn_rate,
+    }
+    if locustfile:
+        config["locustfile"] = locustfile
+    payload = {"config": config}
+
+    click.echo("Invoking Lambda (this may take a while)...")
+    response = lambda_client.invoke(
+        FunctionName=func_name,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(payload),
+    )
+
+    # Parse response
+    response_payload = json.loads(response["Payload"].read())
+
+    if "errorMessage" in response_payload:
+        click.echo("\nError: Lambda execution failed:", err=True)
+        click.echo(f"  {response_payload['errorMessage']}", err=True)
+        if "stackTrace" in response_payload:
+            for line in response_payload["stackTrace"]:
+                click.echo(f"  {line}", err=True)
+        sys.exit(1)
+
+    # Display results
+    total_reqs = response_payload.get("total_requests", 0)
+    total_fails = response_payload.get("total_failures", 0)
+    fail_rate = response_payload.get("failure_rate", 0)
+    rps = response_payload.get("requests_per_second", 0)
+    p50 = response_payload.get("p50", 0)
+    p95 = response_payload.get("p95", 0)
+    p99 = response_payload.get("p99", 0)
+    avg_rt = response_payload.get("avg_response_time", 0)
+    min_rt = response_payload.get("min_response_time", 0)
+    max_rt = response_payload.get("max_response_time", 0)
+
+    click.echo("\nResults:")
+    click.echo(f"  Requests: {total_reqs:,}")
+    click.echo(f"  RPS: {rps:.1f}")
+    click.echo(f"  Failures: {total_fails:,} ({fail_rate:.1%})")
+    click.echo(f"  Avg: {avg_rt:.0f}ms")
+    click.echo(f"  Min: {min_rt:.0f}ms / Max: {max_rt:.0f}ms")
+    click.echo(f"  p50: {p50:.0f}ms")
+    click.echo(f"  p95: {p95:.0f}ms")
+    click.echo(f"  p99: {p99:.0f}ms")

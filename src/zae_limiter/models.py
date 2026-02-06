@@ -568,6 +568,9 @@ class LimiterInfo:
     lambda_version: str | None = None
     schema_version: str | None = None
 
+    # Stack type (e.g., "limiter", "load-test")
+    stack_type: str | None = None
+
     @property
     def is_healthy(self) -> bool:
         """Stack is in a stable, operational state."""
