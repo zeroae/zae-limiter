@@ -6,11 +6,7 @@ on:
       - main
       - 'release/v*'
       - 'release/[0-9]*'
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'scripts/**'
-      - 'pyproject.toml'
+    # No paths filter - run on all pushes to ensure workflow_run always triggers
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
@@ -30,10 +26,9 @@ permissions:
   contents: write
   pull-requests: write
 
-# Share concurrency group with docs to prevent gh-pages race conditions
 concurrency:
-  group: docs-${{ github.ref }}
-  cancel-in-progress: false
+  group: ci-tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify-sync:
@@ -206,6 +201,9 @@ jobs:
   benchmark-moto:
     needs: verify-sync
     runs-on: ubuntu-latest
+    concurrency:
+      group: gh-pages-write-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
         with:
@@ -233,6 +231,9 @@ jobs:
     needs: verify-sync
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: gh-pages-write-${{ github.ref }}
+      cancel-in-progress: false
     services:
       localstack:
         image: localstack/localstack:4

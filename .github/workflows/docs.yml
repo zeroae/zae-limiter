@@ -13,6 +13,14 @@ on:
       - main
       - 'release/v*'
       - 'release/[0-9]*'
+  workflow_run:
+    workflows: ["Tests"]
+    types:
+      - completed
+    branches:
+      - main
+      - 'release/v*'
+      - 'release/[0-9]*'
 
 permissions:
   contents: write
@@ -25,6 +33,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -68,12 +77,17 @@ jobs:
         run: uv run mkdocs build --strict
 
   deploy:
-    if: github.event_name == 'push'
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
-    needs: build
+    concurrency:
+      group: gh-pages-write-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v7
