@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 _boto3_pool_configured = False
 
 
-def _configure_boto3_pool(max_connections: int = 200) -> None:
+def _configure_boto3_pool(max_connections: int = 1000) -> None:
     """Configure boto3 to use a larger connection pool for DynamoDB.
 
     Locust spawns many concurrent users sharing a single SyncRateLimiter.

@@ -98,9 +98,9 @@ zae-limiter load connect --name my-limiter --region us-east-1 --destroy
 | `--standalone` | Single-process mode (no Lambda workers) | off |
 | `--force` | Stop existing task and restart with new config | off |
 | `--destroy` | Stop Fargate task on disconnect | off |
-| `--cpu` | Task CPU units (256, 512, 1024, 2048, 4096) | 512 |
-| `--memory` | Task memory in MB | 1024 |
-| `--pool-connections` | boto3 connection pool size | 200 |
+| `--cpu` | Task CPU units (256, 512, 1024, 2048, 4096) | 1024 |
+| `--memory` | Task memory in MB | 2048 |
+| `--pool-connections` | boto3 connection pool size | 1000 |
 | `-f` | Override locustfile | from deploy |
 | `--desired-workers` | Fixed Lambda worker count | from deploy |
 | `--max-workers` | Lambda worker cap | from deploy |

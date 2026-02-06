@@ -1042,7 +1042,7 @@ def list_limiters(region: str | None, endpoint_url: str | None) -> None:
             async with InfrastructureDiscovery(
                 region=region, endpoint_url=endpoint_url
             ) as discovery:
-                limiters = await discovery.list_limiters()
+                limiters = await discovery.list_limiters(stack_type="limiter")
 
             if not limiters:
                 click.echo()
