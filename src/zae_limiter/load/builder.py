@@ -212,18 +212,9 @@ def build_and_push_locust_image(
     auth = ecr.get_authorization_token()
     token = auth["authorizationData"][0]["authorizationToken"]
     username, password = base64.b64decode(token).decode().split(":")
-    registry = auth["authorizationData"][0]["proxyEndpoint"]
 
     # Initialize Docker client
     client = docker.from_env()
-
-    # Login to ECR (reauth=True forces credential refresh)
-    client.login(
-        username=username,
-        password=password,
-        registry=registry,
-        reauth=True,
-    )
 
     # Build image context
     context = _create_build_context(zae_limiter_source, locustfile_dir, locustfile=locustfile)
@@ -245,7 +236,8 @@ def build_and_push_locust_image(
     # Push to ECR
     print("  Pushing to ECR...", file=sys.stderr)
     sys.stderr.flush()
-    for line in client.images.push(image_uri, stream=True, decode=True):
+    auth_config = {"username": username, "password": password}
+    for line in client.images.push(image_uri, stream=True, decode=True, auth_config=auth_config):
         if "error" in line:
             raise RuntimeError(f"Push failed: {line['error']}")
     print("  Push complete", file=sys.stderr)
