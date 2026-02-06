@@ -19,6 +19,7 @@ from .stack_manager import (
     MANAGED_BY_TAG_VALUE,
     NAME_TAG_KEY,
     SCHEMA_VERSION_TAG_KEY,
+    TYPE_TAG_KEY,
     VERSION_TAG_KEY,
 )
 
@@ -71,7 +72,7 @@ class SyncInfrastructureDiscovery:
         self._client = session.client("cloudformation", **kwargs)
         return self._client
 
-    def list_limiters(self) -> list[LimiterInfo]:
+    def list_limiters(self, stack_type: str | None = None) -> list[LimiterInfo]:
         """
         List all zae-limiter stacks in the region.
 
@@ -85,6 +86,10 @@ class SyncInfrastructureDiscovery:
 
         Results are de-duplicated by stack name.
 
+        Args:
+            stack_type: Filter by stack type tag (e.g., ``"limiter"``,
+                ``"load-test"``). ``None`` returns all types.
+
         Returns:
             List of LimiterInfo objects, sorted by user name.
             Excludes DELETE_COMPLETE stacks.
@@ -97,6 +102,10 @@ class SyncInfrastructureDiscovery:
             by_stack_name[limiter.stack_name] = limiter
         for limiter in tagged_limiters:
             by_stack_name[limiter.stack_name] = limiter
+        if stack_type is not None:
+            by_stack_name = {
+                name: info for name, info in by_stack_name.items() if info.stack_type == stack_type
+            }
         limiters = sorted(by_stack_name.values(), key=lambda x: x.user_name)
         return limiters
 
@@ -195,6 +204,7 @@ class SyncInfrastructureDiscovery:
                         version=tag_dict.get(VERSION_TAG_KEY),
                         lambda_version=tag_dict.get(LAMBDA_VERSION_TAG_KEY),
                         schema_version=tag_dict.get(SCHEMA_VERSION_TAG_KEY),
+                        stack_type=tag_dict.get(TYPE_TAG_KEY, "limiter"),
                     )
                 )
             next_token = response.get("NextToken")
@@ -246,6 +256,7 @@ class SyncInfrastructureDiscovery:
                 version=tag_dict.get(VERSION_TAG_KEY),
                 lambda_version=tag_dict.get(LAMBDA_VERSION_TAG_KEY),
                 schema_version=tag_dict.get(SCHEMA_VERSION_TAG_KEY),
+                stack_type=tag_dict.get(TYPE_TAG_KEY, "limiter"),
             )
         except Exception:
             return None
