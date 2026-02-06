@@ -117,7 +117,12 @@ class TestCascadeOverheadBenchmarks:
 
     @pytest.fixture
     def hierarchy_limiter(self, sync_limiter):
-        """Setup parent-child hierarchy for cascade tests."""
+        """Setup parent-child hierarchy for cascade tests.
+
+        Creates:
+        - cascade-parent: No parent, cascade=False (baseline entity)
+        - cascade-child: Has parent, cascade=True (cascade-enabled entity)
+        """
         sync_limiter.create_entity("cascade-parent", name="Parent")
         sync_limiter.create_entity(
             "cascade-child",
@@ -130,13 +135,14 @@ class TestCascadeOverheadBenchmarks:
     def test_acquire_without_cascade(self, benchmark, hierarchy_limiter):
         """Baseline: acquire without cascade.
 
-        Only consumes from child entity, no parent lookup.
+        Uses an entity with no parent, so cascade never triggers.
+        Measures single-entity acquire overhead.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
             with hierarchy_limiter.acquire(
-                entity_id="cascade-child",
+                entity_id="cascade-parent",
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -148,6 +154,7 @@ class TestCascadeOverheadBenchmarks:
     def test_acquire_with_cascade(self, benchmark, hierarchy_limiter):
         """Cascade enabled: measure overhead of parent lookup + dual consume.
 
+        Uses an entity with cascade=True and a parent.
         Compare with test_acquire_without_cascade to measure cascade overhead.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
