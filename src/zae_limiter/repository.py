@@ -1007,6 +1007,21 @@ class Repository:
         else:
             await client.transact_write_items(TransactItems=items)
 
+    async def write_each(self, items: list[dict[str, Any]]) -> None:
+        """Write items independently, 1 WCU each."""
+        if not items:
+            return
+
+        client = await self._get_client()
+
+        for item in items:
+            if "Put" in item:
+                await client.put_item(**item["Put"])
+            elif "Update" in item:
+                await client.update_item(**item["Update"])
+            elif "Delete" in item:
+                await client.delete_item(**item["Delete"])
+
     # -------------------------------------------------------------------------
     # Limit config operations
     # -------------------------------------------------------------------------

@@ -341,7 +341,7 @@ class Lease:
                     items.append(item)
 
         if items:
-            await repo.transact_write(items)
+            await repo.write_each(items)
 
         self._committed = True
 
@@ -388,7 +388,7 @@ class Lease:
 
         if items:
             try:
-                await repo.transact_write(items)
+                await repo.write_each(items)
             except Exception:
                 logger.warning(
                     "Failed to rollback consumed tokens for entities: %s",

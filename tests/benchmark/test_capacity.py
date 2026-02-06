@@ -429,3 +429,81 @@ class TestCapacityConsumption:
         )
         assert capacity_counter.put_item == 0, "Cascade should not use PutItem"
         assert capacity_counter.update_item == 0, "Cascade should not use UpdateItem"
+
+    def test_adjust_uses_write_each(self, sync_limiter, capacity_counter):
+        """Verify: adjust() uses write_each (independent UpdateItem calls).
+
+        Single entity: acquire + adjust → 1 UpdateItem (write_each dispatches)
+        Cascade: acquire + adjust → 2 UpdateItem, 0 TransactWriteItems
+
+        write_each avoids TransactWriteItems for unconditional ADD adjustments,
+        saving WCU cost (1 WCU per item vs 2 WCU per item in transactions).
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # --- Single entity: adjust dispatches 1 UpdateItem ---
+        with sync_limiter.acquire(
+            entity_id="adjust-single",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            pass  # pre-warm bucket
+
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="adjust-single",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ) as lease:
+                lease.adjust(rpm=5)
+
+        # Initial commit uses single-item API (UpdateItem for existing bucket)
+        # Adjustment uses write_each → UpdateItem
+        assert capacity_counter.update_item == 2, (
+            "Should have 2 UpdateItem calls (initial commit + adjustment)"
+        )
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Adjustment should not use TransactWriteItems"
+        )
+
+        # --- Cascade: adjust dispatches 2 independent UpdateItem calls ---
+        sync_limiter.create_entity("adjust-parent", name="Parent")
+        sync_limiter.create_entity(
+            "adjust-child", name="Child", parent_id="adjust-parent", cascade=True
+        )
+
+        # Pre-warm buckets
+        with sync_limiter.acquire(
+            entity_id="adjust-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="adjust-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ) as lease:
+                lease.adjust(rpm=5)
+
+        # Initial commit: TransactWriteItems with 2 items (child + parent, atomic)
+        # Adjustment: write_each → 2 independent UpdateItem calls
+        assert capacity_counter.update_item == 2, (
+            "Adjustment should dispatch 2 independent UpdateItem calls"
+        )
+        assert len(capacity_counter.transact_write_items) == 1, (
+            "Only initial commit should use TransactWriteItems"
+        )
+        assert capacity_counter.transact_write_items[0] == 2, (
+            "Initial commit should write 2 items (child + parent)"
+        )

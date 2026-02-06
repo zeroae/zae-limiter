@@ -373,6 +373,19 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def write_each(self, items: list[dict[str, Any]]) -> None:
+        """
+        Write items independently without cross-item atomicity.
+
+        Each item is dispatched as a single PutItem, UpdateItem, or DeleteItem
+        call (1 WCU each). Use for unconditional writes (e.g., ADD adjustments)
+        where partial success is acceptable.
+
+        Args:
+            items: List of items to write independently
+        """
+        ...
+
     def set_limits(
         self,
         entity_id: str,

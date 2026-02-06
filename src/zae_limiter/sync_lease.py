@@ -291,7 +291,7 @@ class SyncLease:
                 if item:
                     items.append(item)
         if items:
-            repo.transact_write(items)
+            repo.write_each(items)
         self._committed = True
 
     def _rollback(self) -> None:
@@ -325,7 +325,7 @@ class SyncLease:
                     items.append(item)
         if items:
             try:
-                repo.transact_write(items)
+                repo.write_each(items)
             except Exception:
                 logger.warning(
                     "Failed to rollback consumed tokens for entities: %s",

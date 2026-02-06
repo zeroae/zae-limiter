@@ -810,6 +810,19 @@ class SyncRepository:
         else:
             client.transact_write_items(TransactItems=items)
 
+    def write_each(self, items: list[dict[str, Any]]) -> None:
+        """Write items independently, 1 WCU each."""
+        if not items:
+            return
+        client = self._get_client()
+        for item in items:
+            if "Put" in item:
+                client.put_item(**item["Put"])
+            elif "Update" in item:
+                client.update_item(**item["Update"])
+            elif "Delete" in item:
+                client.delete_item(**item["Delete"])
+
     def set_limits(
         self,
         entity_id: str,
