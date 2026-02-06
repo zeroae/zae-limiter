@@ -988,12 +988,24 @@ class Repository:
         }
 
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
-        """Execute a transactional write."""
+        """Execute a write, using single-item API when possible to halve WCU cost."""
         if not items:
             return
 
         client = await self._get_client()
-        await client.transact_write_items(TransactItems=items)
+
+        if len(items) == 1:
+            item = items[0]
+            if "Put" in item:
+                await client.put_item(**item["Put"])
+            elif "Update" in item:
+                await client.update_item(**item["Update"])
+            elif "Delete" in item:
+                await client.delete_item(**item["Delete"])
+            else:
+                await client.transact_write_items(TransactItems=items)
+        else:
+            await client.transact_write_items(TransactItems=items)
 
     # -------------------------------------------------------------------------
     # Limit config operations
