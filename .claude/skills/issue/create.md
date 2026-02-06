@@ -4,9 +4,9 @@ Create a new GitHub issue following ZeroAE conventions.
 
 ## Process
 
-1. **Gather Context**: Analyze conversation for problem, solution, files discussed
+1. **Mine Conversation**: Systematically extract details (see [Conversation Mining](#conversation-mining))
 2. **Infer or Ask**: Use inference first, batch questions if multiple fields ambiguous
-3. **Build Issue Body**: Use template from [templates.md](templates.md)
+3. **Build Issue Body**: Use template from [templates.md](templates.md), enriched with mined details
 4. **Confirm and Create**: Show preview, then create
 
 ```bash
@@ -80,6 +80,42 @@ How would you like to make it objective?
 - Flag ALL subjective criteria in a single question (batch them)
 - Provide 2-3 concrete alternatives based on context
 - Only proceed to create after user confirms objective rewrites
+
+## Conversation Mining
+
+Before building the issue body, scan the full conversation and extract every item in the checklist below. Each category maps to a section or detail in the issue body. **If a category was discussed but is missing from your draft, the draft is incomplete.**
+
+### Extraction Checklist
+
+| Category | What to Look For | Where It Goes |
+|----------|------------------|---------------|
+| **Correctness / Safety** | "why this is safe", "never over-admits", "invariant", "guarantee" | Dedicated subsection in Proposed Solution |
+| **Concrete API / Schema** | Code snippets, expressions, attribute names, wire format | Code blocks in Proposed Solution |
+| **Decision Tree / Flow** | "if X then Y", branching logic, happy path vs fallback | Diagram (code block or mermaid) in Proposed Solution |
+| **Cost / Performance** | RCU, WCU, round trips, latency — both happy AND worst case | Tables in Problem or Proposed Solution |
+| **Edge Cases** | "what if", first-time, missing data, race conditions | Listed in Proposed Solution or Acceptance Criteria |
+| **Invariants / Assumptions** | "X is immutable", "Y never changes", "Z defaults to false" | Called out where they justify design decisions |
+| **User Decisions** | User explicitly said "yes", "not a big deal", "let's do X" | Woven into design decisions, not lost |
+| **Self-Correcting Behaviors** | "falls back to", "eventually", "self-correcting" | Noted alongside fallback costs |
+| **Alternatives Rejected** | "we considered", "rejected because", user chose A over B | Alternatives Considered section |
+| **Dependencies / Prerequisites** | "depends on", "after #X", "requires" | Dependencies section |
+
+### Process
+
+1. **First pass**: Read the full conversation and tag each substantive message with the categories above
+2. **Second pass**: For each category that has content, draft the corresponding section
+3. **Completeness check**: Verify every tagged item appears in the draft. If a discussed topic is missing, add it
+4. **User decisions are authoritative**: When the user made an explicit decision ("yes, we should do that", "not a big deal"), that decision MUST appear in the issue body — these are the most important details to preserve
+
+### Common Gaps to Watch For
+
+These are the details most often lost when summarizing a design conversation:
+
+- **Why something is safe** (not just what it does) — correctness arguments are critical for reviewers
+- **Worst-case costs** — drafts tend to only include happy-path numbers
+- **Concrete syntax** — the actual UpdateExpression, ConditionExpression, SQL, etc. discussed
+- **Edge cases and their handling** — "what happens on first call", "what if the item doesn't exist"
+- **Assumptions that make the design work** — "cascade is immutable" is load-bearing context
 
 ## Context Inference
 

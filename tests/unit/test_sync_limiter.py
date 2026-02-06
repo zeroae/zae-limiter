@@ -442,7 +442,7 @@ class TestWriteOnEnter:
         mock_repo.build_composite_adjust.assert_called_once_with(
             entity_id="e1", resource="gpt-4", deltas={"rpm": 5000}
         )
-        mock_repo.transact_write.assert_called_once()
+        mock_repo.write_each.assert_called_once()
 
     def test_commit_adjustments_noop_when_no_change(self):
         """_commit_adjustments skips transact_write when no adjustments."""
@@ -461,13 +461,13 @@ class TestWriteOnEnter:
 
         entry = self._make_entry(consumed=15, initial_consumed=10)
         mock_repo = self._make_mock_repo()
-        mock_repo.transact_write.side_effect = RuntimeError("network error")
+        mock_repo.write_each.side_effect = RuntimeError("network error")
         lease = SyncLease(repository=mock_repo, entries=[entry])
         lease._initial_committed = True
         with pytest.raises(RuntimeError, match="network error"):
             lease._commit_adjustments()
         assert lease._committed is False
-        mock_repo.transact_write.side_effect = None
+        mock_repo.write_each.side_effect = None
         lease._rollback()
         assert lease._rolled_back is True
         mock_repo.build_composite_adjust.assert_called_with(
@@ -510,17 +510,17 @@ class TestWriteOnEnter:
         mock_repo.build_composite_adjust.assert_called_once_with(
             entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}
         )
-        mock_repo.transact_write.assert_called_once()
+        mock_repo.write_each.assert_called_once()
 
     def test_rollback_failure_logs_warning(self, caplog):
-        """_rollback logs warning and doesn't raise on transact_write failure (lines 394-395)."""
+        """_rollback logs warning and doesn't raise on write_each failure (lines 394-395)."""
         import logging
 
         from zae_limiter.sync_lease import SyncLease
 
         entry = self._make_entry(consumed=10, initial_consumed=10)
         mock_repo = self._make_mock_repo()
-        mock_repo.transact_write.side_effect = RuntimeError("DynamoDB down")
+        mock_repo.write_each.side_effect = RuntimeError("DynamoDB down")
         lease = SyncLease(repository=mock_repo, entries=[entry])
         lease._initial_committed = True
         with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_lease"):

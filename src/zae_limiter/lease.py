@@ -306,7 +306,8 @@ class Lease:
         """Write post-enter adjustment deltas to DynamoDB on context exit (Issue #309).
 
         No-op if no adjust/consume/release calls were made during the context.
-        Uses build_composite_adjust() for unconditional ADD.
+        Uses build_composite_adjust() for unconditional ADD, dispatched via
+        write_each() (independent single-item writes, 1 WCU each).
         """
         if self._committed or self._rolled_back:
             return
@@ -341,16 +342,17 @@ class Lease:
                     items.append(item)
 
         if items:
-            await repo.transact_write(items)
+            await repo.write_each(items)
 
         self._committed = True
 
     async def _rollback(self) -> None:
-        """Write compensating transaction to restore consumed tokens (Issue #309).
+        """Write compensating deltas to restore consumed tokens (Issue #309).
 
         On error, the initial consumption was already written to DynamoDB by
         _commit_initial(). This method restores those tokens by writing
-        negative deltas using build_composite_adjust().
+        negative deltas using build_composite_adjust() via write_each()
+        (independent single-item writes, 1 WCU each).
         """
         if self._committed or self._rolled_back:
             return
@@ -388,7 +390,7 @@ class Lease:
 
         if items:
             try:
-                await repo.transact_write(items)
+                await repo.write_each(items)
             except Exception:
                 logger.warning(
                     "Failed to rollback consumed tokens for entities: %s",

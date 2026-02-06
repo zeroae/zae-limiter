@@ -28,13 +28,13 @@ class TestCapacityConsumption:
     """
 
     def test_acquire_single_limit_capacity(self, sync_limiter, capacity_counter):
-        """Verify: acquire() with single limit uses BatchGetItem for bucket reads.
+        """Verify: acquire() with single limit uses single-item API (issue #313).
 
         Expected calls (with META folded into BatchGetItem - issue #116):
         - 1 GetItem (version check)
         - 4 Query (three-tier limit resolution: entity, resource, system + parent check)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
-        - 1 TransactWriteItems with 1 item
+        - 1 PutItem (single-item optimization, halves WCU cost vs TransactWriteItems)
 
         Note: Query operations will be reduced by config caching (issue #130).
         """
@@ -55,8 +55,11 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[0] == 2, (
             "BatchGetItem should fetch 1 bucket + 1 META"
         )
-        assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
-        assert capacity_counter.transact_write_items[0] == 1, "Transaction should write 1 item"
+        # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
+        assert capacity_counter.put_item == 1, "Should use PutItem for single-item write"
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Should not use TransactWriteItems for single-item write"
+        )
 
     @pytest.mark.parametrize("num_limits", [2, 3, 5])
     def test_acquire_multiple_limits_capacity(self, sync_limiter, capacity_counter, num_limits):
@@ -89,9 +92,10 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[0] == 2, (
             "BatchGetItem should fetch 1 composite bucket + 1 META"
         )
-        assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
-        assert capacity_counter.transact_write_items[0] == 1, (
-            "Transaction should write 1 composite bucket item"
+        # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
+        assert capacity_counter.put_item == 1, "Should use PutItem for single composite bucket"
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Should not use TransactWriteItems for single-item write"
         )
 
     def test_acquire_with_cascade_capacity(self, sync_limiter, capacity_counter):
@@ -144,13 +148,13 @@ class TestCapacityConsumption:
         )
 
     def test_acquire_with_stored_limits_capacity(self, sync_limiter, capacity_counter):
-        """Verify: acquire(use_stored_limits=True) uses BatchGetItem for bucket reads.
+        """Verify: acquire(use_stored_limits=True) uses single-item API (issue #313).
 
         Expected calls (with META folded into BatchGetItem - issue #116, composite limits ADR-114):
         - GetItem for version lookup
         - GetItem for limit resolution (entity #CONFIG, resource #CONFIG, system #CONFIG)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
-        - 1 TransactWriteItems with 1 item = 1 WCU
+        - 1 PutItem (single-item optimization, halves WCU cost)
 
         Note: With composite limits (ADR-114), limit resolution uses GetItem on
         #CONFIG records instead of Query operations.
@@ -177,6 +181,11 @@ class TestCapacityConsumption:
         assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
         assert capacity_counter.batch_get_item[0] == 2, (
             "BatchGetItem should fetch 1 bucket + 1 META"
+        )
+        # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
+        assert capacity_counter.put_item == 1, "Should use PutItem for single-item write"
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Should not use TransactWriteItems for single-item write"
         )
         # GetItem calls for limit resolution (composite limits use GetItem, not Query)
         assert capacity_counter.get_item >= 3, "Should have GetItem calls for config resolution"
@@ -215,9 +224,7 @@ class TestCapacityConsumption:
 
         # Verify read-only operation
         assert capacity_counter.get_item >= 1, "Should have GetItem calls for entity/version/bucket"
-        assert len(capacity_counter.transact_write_items) == 0, "Should have no transactions"
-        assert capacity_counter.put_item == 0, "Should have no puts"
-        assert sum(capacity_counter.batch_write_item) == 0, "Should have no batch writes"
+        assert capacity_counter.total_wcus == 0, "available() should have no writes"
 
     @pytest.mark.parametrize("num_limits", [1, 2, 3])
     def test_available_check_multiple_limits_capacity(
@@ -355,3 +362,148 @@ class TestCapacityConsumption:
         # Verify each batch is at most 25 items
         for batch_size in capacity_counter.batch_write_item:
             assert batch_size <= 25, "Each batch should have at most 25 items"
+
+    def test_single_entity_uses_single_item_api(self, sync_limiter, capacity_counter):
+        """Verify: single-item optimization uses correct API per path (issue #313).
+
+        - Non-cascade (1 item) → PutItem or UpdateItem (1 WCU)
+        - Cascade (2 items) → TransactWriteItems (2x WCU for atomicity)
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # --- Non-cascade: first acquire creates bucket via PutItem ---
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="single-api-test",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        assert capacity_counter.put_item == 1, "First acquire should use PutItem"
+        assert capacity_counter.update_item == 0, "First acquire should not use UpdateItem"
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Single-item should not use TransactWriteItems"
+        )
+
+        # --- Non-cascade: second acquire updates bucket via UpdateItem ---
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="single-api-test",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        assert capacity_counter.update_item == 1, "Second acquire should use UpdateItem"
+        assert capacity_counter.put_item == 0, "Second acquire should not use PutItem"
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Single-item should not use TransactWriteItems"
+        )
+
+        # --- Cascade: 2 items → must use TransactWriteItems ---
+        sync_limiter.create_entity("single-api-parent", name="Parent")
+        sync_limiter.create_entity(
+            "single-api-child", name="Child", parent_id="single-api-parent", cascade=True
+        )
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="single-api-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        assert len(capacity_counter.transact_write_items) == 1, (
+            "Cascade should use TransactWriteItems"
+        )
+        assert capacity_counter.transact_write_items[0] == 2, (
+            "Cascade should write 2 items (child + parent)"
+        )
+        assert capacity_counter.put_item == 0, "Cascade should not use PutItem"
+        assert capacity_counter.update_item == 0, "Cascade should not use UpdateItem"
+
+    def test_adjust_uses_write_each(self, sync_limiter, capacity_counter):
+        """Verify: adjust() uses write_each (independent UpdateItem calls).
+
+        Single entity: acquire + adjust → 1 UpdateItem (write_each dispatches)
+        Cascade: acquire + adjust → 2 UpdateItem, 0 TransactWriteItems
+
+        write_each avoids TransactWriteItems for unconditional ADD adjustments,
+        saving WCU cost (1 WCU per item vs 2 WCU per item in transactions).
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # --- Single entity: adjust dispatches 1 UpdateItem ---
+        with sync_limiter.acquire(
+            entity_id="adjust-single",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ) as lease:
+            pass  # pre-warm bucket
+
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="adjust-single",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ) as lease:
+                lease.adjust(rpm=5)
+
+        # Initial commit uses single-item API (UpdateItem for existing bucket)
+        # Adjustment uses write_each → UpdateItem
+        assert capacity_counter.update_item == 2, (
+            "Should have 2 UpdateItem calls (initial commit + adjustment)"
+        )
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Adjustment should not use TransactWriteItems"
+        )
+
+        # --- Cascade: adjust dispatches 2 independent UpdateItem calls ---
+        sync_limiter.create_entity("adjust-parent", name="Parent")
+        sync_limiter.create_entity(
+            "adjust-child", name="Child", parent_id="adjust-parent", cascade=True
+        )
+
+        # Pre-warm buckets
+        with sync_limiter.acquire(
+            entity_id="adjust-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="adjust-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ) as lease:
+                lease.adjust(rpm=5)
+
+        # Initial commit: TransactWriteItems with 2 items (child + parent, atomic)
+        # Adjustment: write_each → 2 independent UpdateItem calls
+        assert capacity_counter.update_item == 2, (
+            "Adjustment should dispatch 2 independent UpdateItem calls"
+        )
+        assert len(capacity_counter.transact_write_items) == 1, (
+            "Only initial commit should use TransactWriteItems"
+        )
+        assert capacity_counter.transact_write_items[0] == 2, (
+            "Initial commit should write 2 items (child + parent)"
+        )

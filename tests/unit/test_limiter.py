@@ -561,7 +561,7 @@ class TestWriteOnEnter:
             resource="gpt-4",
             deltas={"rpm": 5000},  # (15-10) * 1000
         )
-        mock_repo.transact_write.assert_called_once()
+        mock_repo.write_each.assert_called_once()
 
     async def test_commit_adjustments_noop_when_no_change(self):
         """_commit_adjustments skips transact_write when no adjustments."""
@@ -582,7 +582,7 @@ class TestWriteOnEnter:
 
         entry = self._make_entry(consumed=15, initial_consumed=10)
         mock_repo = self._make_mock_repo()
-        mock_repo.transact_write.side_effect = RuntimeError("network error")
+        mock_repo.write_each.side_effect = RuntimeError("network error")
 
         lease = Lease(repository=mock_repo, entries=[entry])
         lease._initial_committed = True
@@ -594,7 +594,7 @@ class TestWriteOnEnter:
         assert lease._committed is False
 
         # _rollback should succeed (not blocked by _committed flag)
-        mock_repo.transact_write.side_effect = None
+        mock_repo.write_each.side_effect = None
         await lease._rollback()
         assert lease._rolled_back is True
         # Rollback writes negative initial_consumed
@@ -650,17 +650,17 @@ class TestWriteOnEnter:
             resource="gpt-4",
             deltas={"rpm": -10000},  # -10 * 1000
         )
-        mock_repo.transact_write.assert_called_once()
+        mock_repo.write_each.assert_called_once()
 
     async def test_rollback_failure_logs_warning(self, caplog):
-        """_rollback logs warning and doesn't raise on transact_write failure (lines 394-395)."""
+        """_rollback logs warning and doesn't raise on write_each failure (lines 394-395)."""
         import logging
 
         from zae_limiter.lease import Lease
 
         entry = self._make_entry(consumed=10, initial_consumed=10)
         mock_repo = self._make_mock_repo()
-        mock_repo.transact_write.side_effect = RuntimeError("DynamoDB down")
+        mock_repo.write_each.side_effect = RuntimeError("DynamoDB down")
 
         lease = Lease(repository=mock_repo, entries=[entry])
         lease._initial_committed = True

@@ -54,6 +54,8 @@ class CapacityCounter:
         batch_get_item: List of item counts per BatchGetItem call (issue #133)
         query: Number of Query calls (RCUs depend on data returned)
         put_item: Number of PutItem calls (1 WCU each)
+        update_item: Number of UpdateItem calls (1 WCU each, issue #313)
+        delete_item: Number of DeleteItem calls (1 WCU each, issue #313)
         transact_write_items: List of item counts per TransactWriteItems call
         batch_write_item: List of item counts per BatchWriteItem call
     """
@@ -62,6 +64,8 @@ class CapacityCounter:
     batch_get_item: list[int] = field(default_factory=list)
     query: int = 0
     put_item: int = 0
+    update_item: int = 0
+    delete_item: int = 0
     transact_write_items: list[int] = field(default_factory=list)
     batch_write_item: list[int] = field(default_factory=list)
 
@@ -77,7 +81,13 @@ class CapacityCounter:
     @property
     def total_wcus(self) -> int:
         """Estimate total WCUs consumed."""
-        return self.put_item + sum(self.transact_write_items) + sum(self.batch_write_item)
+        return (
+            self.put_item
+            + self.update_item
+            + self.delete_item
+            + sum(self.transact_write_items)
+            + sum(self.batch_write_item)
+        )
 
     def reset(self) -> None:
         """Reset all counters to zero."""
@@ -85,6 +95,8 @@ class CapacityCounter:
         self.batch_get_item.clear()
         self.query = 0
         self.put_item = 0
+        self.update_item = 0
+        self.delete_item = 0
         self.transact_write_items.clear()
         self.batch_write_item.clear()
 
@@ -112,6 +124,8 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
     original_batch_get = client.batch_get_item
     original_query = client.query
     original_put_item = client.put_item
+    original_update_item = client.update_item
+    original_delete_item = client.delete_item
     original_transact = client.transact_write_items
     original_batch = client.batch_write_item
 
@@ -134,6 +148,14 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
         counter.put_item += 1
         return original_put_item(*args, **kwargs)
 
+    def counting_update_item(*args: Any, **kwargs: Any) -> Any:
+        counter.update_item += 1
+        return original_update_item(*args, **kwargs)
+
+    def counting_delete_item(*args: Any, **kwargs: Any) -> Any:
+        counter.delete_item += 1
+        return original_delete_item(*args, **kwargs)
+
     def counting_transact(*args: Any, **kwargs: Any) -> Any:
         items = kwargs.get("TransactItems", [])
         counter.transact_write_items.append(len(items))
@@ -150,6 +172,8 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
     client.batch_get_item = counting_batch_get
     client.query = counting_query
     client.put_item = counting_put_item
+    client.update_item = counting_update_item
+    client.delete_item = counting_delete_item
     client.transact_write_items = counting_transact
     client.batch_write_item = counting_batch
 
@@ -161,6 +185,8 @@ def _counting_client(counter: CapacityCounter, limiter: Any) -> Generator[None, 
         client.batch_get_item = original_batch_get
         client.query = original_query
         client.put_item = original_put_item
+        client.update_item = original_update_item
+        client.delete_item = original_delete_item
         client.transact_write_items = original_transact
         client.batch_write_item = original_batch
 

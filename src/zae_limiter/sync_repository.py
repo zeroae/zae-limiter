@@ -793,11 +793,40 @@ class SyncRepository:
         }
 
     def transact_write(self, items: list[dict[str, Any]]) -> None:
-        """Execute a transactional write."""
+        """Execute a write, using single-item API when possible to halve WCU cost."""
         if not items:
             return
         client = self._get_client()
-        client.transact_write_items(TransactItems=items)
+        if len(items) == 1:
+            item = items[0]
+            if "Put" in item:
+                client.put_item(**item["Put"])
+            elif "Update" in item:
+                client.update_item(**item["Update"])
+            elif "Delete" in item:
+                client.delete_item(**item["Delete"])
+            else:
+                client.transact_write_items(TransactItems=items)
+        else:
+            client.transact_write_items(TransactItems=items)
+
+    def write_each(self, items: list[dict[str, Any]]) -> None:
+        """Write items independently without cross-item atomicity (1 WCU each).
+
+        Each item is dispatched as a single PutItem, UpdateItem, or DeleteItem
+        call. Use for unconditional writes (e.g., ADD adjustments) where partial
+        success is acceptable.
+        """
+        if not items:
+            return
+        client = self._get_client()
+        for item in items:
+            if "Put" in item:
+                client.put_item(**item["Put"])
+            elif "Update" in item:
+                client.update_item(**item["Update"])
+            elif "Delete" in item:
+                client.delete_item(**item["Delete"])
 
     def set_limits(
         self,

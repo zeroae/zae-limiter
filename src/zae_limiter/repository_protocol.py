@@ -413,15 +413,31 @@ class RepositoryProtocol(Protocol):
 
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
         """
-        Execute a transactional write of multiple items.
+        Execute a write of one or more items.
 
-        All items succeed or fail together (atomic).
+        Single-item batches use the corresponding single-item API (PutItem,
+        UpdateItem, or DeleteItem) to halve WCU cost. Multi-item batches use
+        TransactWriteItems for atomicity.
 
         Args:
             items: List of transaction items from build_bucket_put_item
 
         Raises:
-            TransactionCanceledException: If transaction fails
+            TransactionCanceledException: If multi-item transaction fails
+            ConditionalCheckFailedException: If single-item condition fails
+        """
+        ...
+
+    async def write_each(self, items: list[dict[str, Any]]) -> None:
+        """
+        Write items independently without cross-item atomicity.
+
+        Each item is dispatched as a single PutItem, UpdateItem, or DeleteItem
+        call (1 WCU each). Use for unconditional writes (e.g., ADD adjustments)
+        where partial success is acceptable.
+
+        Args:
+            items: List of items to write independently
         """
         ...
 

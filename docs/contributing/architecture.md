@@ -60,41 +60,37 @@ entity and parent buckets are fetched together, reducing latency from
 
 ### Item Structure
 
-Most record types use a nested `data` map for business attributes:
+All records use **flat schema** (v0.6.0+, top-level attributes, no nested `data.M`).
+See [ADR-111](../adr/111-flatten-all-records.md).
 
 ```{.python .lint-only}
-# Entity and Audit records use nested data.M:
+# Entity record (FLAT structure):
 {
     "PK": "ENTITY#user-1",
     "SK": "#META",
     "entity_id": "user-1",
-    "data": {                    # Nested map
-        "name": "User One",
-        "parent_id": null,
-        "metadata": {...}
-    }
+    "name": "User One",
+    "parent_id": null,
+    "metadata": {...}
 }
 ```
 
-**Bucket records use a HYBRID schema:** Most fields are in `data.M`, but
-`total_consumed_milli` is stored as a flat top-level attribute:
+**Bucket records** (composite, one item per entity+resource):
 
 ```python
-# Bucket record (HYBRID structure):
+# Bucket record (FLAT structure, ADR-114/115):
 {
     "PK": "ENTITY#user-1",
-    "SK": "#BUCKET#gpt-4#tpm",
+    "SK": "#BUCKET#gpt-4",
     "entity_id": "user-1",
-    "data": {
-        "M": {
-            "resource": "gpt-4",
-            "limit_name": "tpm",
-            "tokens_milli": 9500000,
-            "last_refill_ms": 1704067200000,
-            # ... other bucket fields
-        }
-    },
-    "total_consumed_milli": 500000,  # FLAT - net consumption counter
+    "resource": "gpt-4",
+    "b_tpm_tk": 9500000,            # tokens_milli for tpm limit
+    "b_tpm_cp": 10000000,           # capacity_milli for tpm limit
+    "b_tpm_tc": 500000,             # total_consumed_milli for tpm
+    "b_rpm_tk": 95000,              # tokens_milli for rpm limit
+    "b_rpm_cp": 100000,             # capacity_milli for rpm limit
+    "b_rpm_tc": 5000,               # total_consumed_milli for rpm
+    "rf": 1704067200000,            # last_refill_ms (shared across limits)
     "GSI2PK": "RESOURCE#gpt-4",
     "ttl": 1234567890
 }
@@ -295,20 +291,54 @@ When `burst > capacity`, users can consume up to `burst` tokens immediately, the
 | Negative allowed | Estimate-then-reconcile pattern; operations with unknown cost |
 | Fraction over decimal | Exact representation of rates like 100/minute |
 
-## Atomicity
+## Atomicity and Write Paths
 
-### TransactWriteItems
+### Write Path Overview
 
-Multi-entity updates (like cascade mode) use DynamoDB transactions:
+The `acquire()` context manager uses three distinct write paths, each with different
+atomicity and cost characteristics:
+
+| Write Path | Method | API Used | WCU Cost | Atomicity |
+|------------|--------|----------|----------|-----------|
+| Initial consumption | `_commit_initial()` | `transact_write()` | 2 WCU (transaction) or 1 WCU (single item) | Cross-item atomic |
+| Post-enter adjustments | `_commit_adjustments()` | `write_each()` | 1 WCU per item | Independent per item |
+| Rollback (on exception) | `_rollback()` | `write_each()` | 1 WCU per item | Independent per item |
+
+### TransactWriteItems (Initial Consumption)
+
+The initial consumption write (`_commit_initial()`) uses `transact_write()`, which
+selects the DynamoDB API based on item count:
+
+- **Single item**: Uses PutItem/UpdateItem (1 WCU) -- non-cascade case
+- **Multiple items**: Uses TransactWriteItems (2 WCU per item) -- cascade case
 
 ```python
-# Single atomic operation:
-# 1. Consume from child entity
-# 2. Consume from parent entity
+# Cascade: atomic multi-entity write
+# 1. Consume from child entity bucket
+# 2. Consume from parent entity bucket
 # Both succeed or both fail
 ```
 
 Transaction limits: max 100 items per transaction.
+
+### Independent Writes (Adjustments and Rollbacks)
+
+Adjustments (`_commit_adjustments()`) and rollbacks (`_rollback()`) use `write_each()`,
+which dispatches each item independently as a single PutItem, UpdateItem, or DeleteItem
+call (1 WCU each). This is safe because:
+
+- These operations produce **unconditional ADD** expressions (no condition checks)
+- Partial success is acceptable -- each item's delta is self-contained
+- No cross-item invariant needs to hold between adjustment writes
+
+```python
+# write_each: each item written independently
+# Item 1: ADD child bucket delta    (1 WCU)
+# Item 2: ADD parent bucket delta   (1 WCU)
+# No transaction overhead
+```
+
+This halves the WCU cost compared to using TransactWriteItems for these paths.
 
 ### Optimistic Locking
 
@@ -355,11 +385,12 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 
 ## Key Design Decisions
 
-1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating transaction restores the consumed tokens
+1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens
 2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override
-5. **Transactions are atomic**: Multi-entity updates succeed or fail together
+5. **Initial writes are atomic**: Multi-entity initial consumption uses `transact_write()` for cross-item atomicity
+6. **Adjustments and rollbacks use independent writes**: `write_each()` dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead for unconditional ADD operations
 
 ## Next Steps
 

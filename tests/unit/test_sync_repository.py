@@ -329,6 +329,59 @@ class TestRepositoryTransactions:
         """transact_write should handle empty items list."""
         repo.transact_write([])
 
+    def test_transact_write_single_delete(self, repo):
+        """transact_write dispatches single Delete item via delete_item API."""
+        repo.create_entity("tw-delete-test")
+        delete_item = {
+            "Delete": {
+                "TableName": repo.table_name,
+                "Key": {"PK": {"S": "ENTITY#tw-delete-test"}, "SK": {"S": "#META"}},
+            }
+        }
+        repo.transact_write([delete_item])
+        entity = repo.get_entity("tw-delete-test")
+        assert entity is None
+
+    def test_transact_write_single_unknown_type_falls_through(self, repo):
+        """transact_write falls through to transact_write_items for unknown item types."""
+        repo.create_entity("tw-condcheck-test")
+        condition_item = {
+            "ConditionCheck": {
+                "TableName": repo.table_name,
+                "Key": {"PK": {"S": "ENTITY#tw-condcheck-test"}, "SK": {"S": "#META"}},
+                "ConditionExpression": "attribute_exists(PK)",
+            }
+        }
+        repo.transact_write([condition_item])
+
+    def test_write_each_empty_items_list(self, repo):
+        """write_each should handle empty items list."""
+        repo.write_each([])
+
+    def test_write_each_dispatches_each_item_independently(self, repo):
+        """write_each dispatches Put, Update, and Delete as independent calls."""
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        repo.create_entity("we-test")
+        state = BucketState.from_limit("we-test", "api", limit, now_ms)
+        put_item = repo.build_bucket_put_item(state)
+        repo.write_each([put_item])
+        buckets = repo.get_buckets("we-test", "api")
+        assert len(buckets) == 1
+        adjust_item = repo.build_composite_adjust(
+            entity_id="we-test", resource="api", deltas={"rpm": -5000}
+        )
+        repo.write_each([adjust_item])
+        delete_item = {
+            "Delete": {
+                "TableName": repo.table_name,
+                "Key": {"PK": {"S": "ENTITY#we-test"}, "SK": {"S": "#META"}},
+            }
+        }
+        repo.write_each([delete_item])
+        entity = repo.get_entity("we-test")
+        assert entity is None
+
     def test_build_bucket_put_item_structure(self, repo):
         """build_bucket_put_item should create composite DynamoDB structure (ADR-114)."""
         limit = Limit.per_minute("rpm", 100)
