@@ -42,6 +42,38 @@ if TYPE_CHECKING:
     from zae_limiter.limiter import OnUnavailable
 
 
+_boto3_pool_configured = False
+
+
+def _configure_boto3_pool(max_connections: int = 200) -> None:
+    """Configure boto3 to use a larger connection pool for DynamoDB.
+
+    Locust spawns many concurrent users sharing a single SyncRateLimiter.
+    The default boto3 pool (10 connections) gets saturated, causing
+    "Connection pool is full, discarding connection" warnings.
+
+    Pool size can be overridden via BOTO3_MAX_POOL env var.
+    """
+    global _boto3_pool_configured
+    if _boto3_pool_configured:
+        return
+
+    import boto3
+    from botocore.config import Config
+
+    max_connections = int(os.environ.get("BOTO3_MAX_POOL", str(max_connections)))
+    default_config = Config(max_pool_connections=max_connections)
+    original_client = boto3.Session.client
+
+    def patched_client(self: Any, service_name: str, **kwargs: Any) -> Any:
+        if service_name == "dynamodb" and "config" not in kwargs:
+            kwargs["config"] = default_config
+        return original_client(self, service_name, **kwargs)  # type: ignore[call-overload]
+
+    boto3.Session.client = patched_client  # type: ignore[assignment]
+    _boto3_pool_configured = True
+
+
 class RateLimiterSession:
     """Instrumented wrapper around SyncRateLimiter.
 
@@ -493,6 +525,7 @@ class RateLimiterUser(User):
 
         # Lazily share a single SyncRateLimiter across all users
         if RateLimiterUser._limiter is None:
+            _configure_boto3_pool()
             RateLimiterUser._limiter = SyncRateLimiter(
                 name=self.stack_name,
                 region=self.region,

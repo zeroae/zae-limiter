@@ -1,27 +1,27 @@
-"""Simple scenario: single resource, single limit, many anonymous entities.
+"""Max throughput scenario: no wait between requests.
 
 Usage:
-    locust -f locustfiles/simple.py --host <stack-name>
+    locust -f locustfiles/max_rps.py --host <stack-name>
 
-Each Locust user simulates a unique API consumer hitting a single
-resource ("api") with a single rate limit (RPM). System-level defaults
-define the limit so entities need no individual configuration.
+Same as simple.py but with zero wait time. Each user fires acquire()
+back-to-back as fast as possible to find the maximum RPS and lowest
+latency the system can sustain.
 """
 
 from __future__ import annotations
 
 import uuid
 
-from locust import between, task
+from locust import constant, task
 
 from zae_limiter import Limit
 from zae_limiter.locust import RateLimiterUser
 
 
-class SimpleUser(RateLimiterUser):
-    """Many anonymous API consumers sharing a system-level rate limit."""
+class MaxRpsUser(RateLimiterUser):
+    """Fire acquires as fast as possible with no inter-request delay."""
 
-    wait_time = between(0.1, 1.0)  # type: ignore[no-untyped-call]
+    wait_time = constant(0)  # type: ignore[no-untyped-call]
 
     _defaults_configured: bool = False
 
@@ -29,11 +29,11 @@ class SimpleUser(RateLimiterUser):
         """Assign a unique entity ID and configure system defaults once."""
         self.entity_id = f"user-{uuid.uuid4().hex[:8]}"
 
-        if not SimpleUser._defaults_configured:
+        if not MaxRpsUser._defaults_configured:
             self.client.set_system_defaults(
                 limits=[Limit.per_minute("rpm", 1_000_000)],
             )
-            SimpleUser._defaults_configured = True
+            MaxRpsUser._defaults_configured = True
 
     @task
     def acquire(self) -> None:
@@ -43,4 +43,4 @@ class SimpleUser(RateLimiterUser):
             resource="api",
             consume={"rpm": 1},
         ):
-            pass  # Simulated work happens here
+            pass

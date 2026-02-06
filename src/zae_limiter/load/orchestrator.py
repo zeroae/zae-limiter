@@ -227,12 +227,18 @@ class WorkerPool:
         pending_timeout: float = 30.0,
         lambda_timeout: float = 300.0,
         replacement_pct: float = 0.8,
+        adoption_age: float | None = None,
+        startup_lead_time: float = 20.0,
     ):
         self.pending_timeout = pending_timeout
         self.lambda_timeout = lambda_timeout
         self.replacement_pct = replacement_pct  # Start replacement at this % of timeout
+        # Age to assign adopted workers at startup (default: assume they're about to expire)
+        self.adoption_age = adoption_age if adoption_age is not None else lambda_timeout * 0.8
+        self.startup_lead_time = startup_lead_time  # Age for workers adopted after startup
         self.pending: list[float] = []  # Timestamps of pending invocations
         self.active: list[float] = []  # Timestamps of active worker invocations
+        self._first_poll = True  # Only apply adoption_age on first poll
 
     def add_pending(self, count: int = 1) -> None:
         """Record new pending invocations."""
@@ -268,9 +274,18 @@ class WorkerPool:
         # connected before orchestrator started or after a restart.
         untracked = actual_count - len(self.active) - len(self.pending)
         if untracked > 0:
-            # Use current time as conservative estimate (may trigger early replacement)
             now = time.time()
-            self.active.extend([now] * untracked)
+            if self._first_poll:
+                # First poll: assume pre-existing workers are near expiration
+                # This triggers proactive replacement within startup_lead_time seconds
+                adopted_start = now - self.adoption_age
+            else:
+                # Subsequent polls: workers we missed tracking just started
+                # Assume they're startup_lead_time seconds into their lifecycle
+                adopted_start = now - self.startup_lead_time
+            self.active.extend([adopted_start] * untracked)
+
+        self._first_poll = False
 
         # Don't remove from active on disconnections - old workers being
         # replaced were already removed via mark_replaced(). Removing here
@@ -356,6 +371,8 @@ def main() -> None:
         pending_timeout=pending_timeout,
         lambda_timeout=lambda_timeout,
         replacement_pct=replacement_pct,
+        adoption_age=lambda_timeout - scaling_config.startup_lead_time,
+        startup_lead_time=scaling_config.startup_lead_time,
     )
     last_connected = -1
     prev_stats: LocustStats | None = None

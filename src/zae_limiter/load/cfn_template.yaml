@@ -67,6 +67,11 @@ Parameters:
     Default: locustfile.py
     Description: Locustfile path relative to project directory
 
+  PrivateRouteTableIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: Private route table IDs for DynamoDB gateway endpoint (optional)
+
   CreateVpcEndpoints:
     Type: String
     Default: 'false'
@@ -91,6 +96,10 @@ Conditions:
   HasPermissionBoundary: !Not
     - !Equals
       - !Ref PermissionBoundary
+      - ''
+  HasPrivateRouteTables: !Not
+    - !Equals
+      - !Join ['', !Ref PrivateRouteTableIds]
       - ''
   ShouldCreateVpcEndpoints: !Equals
     - !Ref CreateVpcEndpoints
@@ -197,6 +206,19 @@ Resources:
       SecurityGroupIds:
         - !Ref VpcEndpointSecurityGroup
       PrivateDnsEnabled: true
+
+  # ===========================================================================
+  # VPC Gateway Endpoint for DynamoDB - Optional, free (no per-hour charge)
+  # ===========================================================================
+
+  DynamoDbEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: HasPrivateRouteTables
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
+      VpcId: !Ref VpcId
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref PrivateRouteTableIds
 
   # ===========================================================================
   # ECR Repository
@@ -452,6 +474,9 @@ Resources:
             Principal:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !ImportValue
+            Fn::Sub: ${TargetStackName}-AdminPolicyArn
       Policies:
         - PolicyName: EcsExec
           PolicyDocument:
