@@ -415,6 +415,51 @@ class TestRepositoryTransactions:
         await repo.transact_write([])
 
     @pytest.mark.asyncio
+    async def test_write_each_empty_items_list(self, repo):
+        """write_each should handle empty items list."""
+        await repo.write_each([])
+
+    @pytest.mark.asyncio
+    async def test_write_each_dispatches_each_item_independently(self, repo):
+        """write_each dispatches Put, Update, and Delete as independent calls."""
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+
+        # Create entity and bucket via Put
+        await repo.create_entity("we-test")
+        state = BucketState.from_limit("we-test", "api", limit, now_ms)
+        put_item = repo.build_bucket_put_item(state)
+        await repo.write_each([put_item])
+
+        # Verify bucket was written
+        buckets = await repo.get_buckets("we-test", "api")
+        assert len(buckets) == 1
+
+        # Update via write_each
+        adjust_item = repo.build_composite_adjust(
+            entity_id="we-test",
+            resource="api",
+            deltas={"rpm": -5000},
+        )
+        await repo.write_each([adjust_item])
+
+        # Delete entity via write_each
+        delete_item = {
+            "Delete": {
+                "TableName": repo.table_name,
+                "Key": {
+                    "PK": {"S": "ENTITY#we-test"},
+                    "SK": {"S": "#META"},
+                },
+            }
+        }
+        await repo.write_each([delete_item])
+
+        # Verify entity deleted
+        entity = await repo.get_entity("we-test")
+        assert entity is None
+
+    @pytest.mark.asyncio
     async def test_build_bucket_put_item_structure(self, repo):
         """build_bucket_put_item should create composite DynamoDB structure (ADR-114)."""
         limit = Limit.per_minute("rpm", 100)
