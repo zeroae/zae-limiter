@@ -2638,7 +2638,7 @@
 <li><strong>Multiple Limits</strong> - Track requests per minute, tokens per minute, etc. in a single call</li>
 <li><strong>Hierarchical Entities</strong> - Two-level hierarchy (project → API keys) with cascade mode</li>
 <li><strong>Atomic Transactions</strong> - Multi-key updates via DynamoDB TransactWriteItems</li>
-<li><strong>Write-on-Enter with Rollback</strong> - Tokens consumed immediately on acquire; compensating transaction on exception</li>
+<li><strong>Write-on-Enter with Rollback</strong> - Tokens consumed immediately on acquire; compensating writes on exception</li>
 <li><strong>Stored Limits</strong> - Configure per-entity limits in DynamoDB</li>
 <li><strong>Usage Analytics</strong> - Lambda aggregator for hourly/daily usage snapshots</li>
 <li><strong>Audit Logging</strong> - Track entity and limit changes for compliance</li>

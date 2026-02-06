@@ -3718,13 +3718,25 @@
 <td><code>acquire()</code> with cascade</td>
 <td>2</td>
 <td>4</td>
-<td>Entity + parent bucket reads and writes</td>
+<td>Entity + parent bucket reads and writes (TransactWriteItems, 2 WCU per item)</td>
 </tr>
 <tr>
 <td><code>acquire()</code> retry (contention)</td>
 <td>0</td>
 <td>1</td>
 <td>ADD-based writes don't require re-read</td>
+</tr>
+<tr>
+<td><code>acquire()</code> with adjustments</td>
+<td>0</td>
+<td>+1 per entity</td>
+<td>Independent writes via <code>write_each()</code> (1 WCU each)</td>
+</tr>
+<tr>
+<td><code>acquire()</code> rollback (on exception)</td>
+<td>0</td>
+<td>+1 per entity</td>
+<td>Independent compensating writes (1 WCU each)</td>
 </tr>
 <tr>
 <td><code>acquire(limits=None)</code> with config cache miss</td>
@@ -3992,15 +4004,16 @@ the DynamoDB cost is identical—all limits are stored in a single item.</p>
 </span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>  <span class="c1"># Initial consumption (1 request)</span>
 </span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">rpm_limit</span><span class="p">,</span> <span class="n">tpm_limit</span><span class="p">],</span>
 </span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="c1"># 2 GetItems + 1 TransactWrite (2 items)</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="c1"># 1 BatchGetItem + 1 UpdateItem (1 WCU, single composite bucket)</span>
 </span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">call_llm</span><span class="p">()</span>
 </span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="k">await</span> <span class="n">lease</span><span class="o">.</span><span class="n">adjust</span><span class="p">(</span><span class="n">tpm</span><span class="o">=</span><span class="n">response</span><span class="o">.</span><span class="n">usage</span><span class="o">.</span><span class="n">total_tokens</span><span class="p">)</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="c1"># Inefficient: Separate acquisitions</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;entity-id&quot;</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">rpm_limit</span><span class="p">]):</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;entity-id&quot;</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">100</span><span class="p">},</span> <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">tpm_limit</span><span class="p">]):</span>
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>        <span class="c1"># 2 GetItems + 2 TransactWrites (doubles write cost!)</span>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>        <span class="k">pass</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="c1"># Adjustment: +1 UpdateItem via write_each (1 WCU)</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="c1"># Inefficient: Separate acquisitions</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;entity-id&quot;</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">rpm_limit</span><span class="p">]):</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;entity-id&quot;</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">100</span><span class="p">},</span> <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">tpm_limit</span><span class="p">]):</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>        <span class="c1"># 2 reads + 2 writes (doubles cost!)</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>        <span class="k">pass</span>
 </span></code></pre></div>
 <h4 id="cascade-optimization">Cascade Optimization<a class="headerlink" href="#cascade-optimization" title="Permanent link">&para;</a></h4>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Entity without cascade (default) — saves 1 GetEntity + parent bucket operations</span>
@@ -4160,25 +4173,32 @@ network round-trips take &lt;1ms instead of 8-14ms. For a typical LLM API call, 
 overhead is ~4% (20ms / 500ms) vs ~7% when calling from external networks.</p>
 </div>
 <h3 id="latency-breakdown">Latency Breakdown<a class="headerlink" href="#latency-breakdown" title="Permanent link">&para;</a></h3>
-<p>Typical <code>acquire()</code> latency breakdown for a single limit:</p>
+<p>Typical <code>acquire()</code> latency breakdown for a single limit (non-cascade):</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>acquire() latency breakdown (external client):
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>├── Network to AWS               ~8-10ms   (internet latency)
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>├── DynamoDB GetItem             ~3-5ms    (server-side processing)
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>├── Network back                 ~8-10ms
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>├── TransactWriteItems           ~5-10ms   (server-side)
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>├── UpdateItem                   ~3-5ms    (single-item API, 1 WCU)
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>└── Network back                 ~8-10ms
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>                                 ─────────
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>                         Total:  ~35-45ms
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>                         Total:  ~30-40ms
 </span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>
 </span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>acquire() latency breakdown (in-region):
 </span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>├── Network to DynamoDB          ~0.5-1ms  (VPC internal)
 </span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>├── DynamoDB GetItem             ~3-5ms
 </span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>├── Network back                 ~0.5-1ms
-</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>├── TransactWriteItems           ~5-10ms
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>├── UpdateItem                   ~3-5ms    (single-item API, 1 WCU)
 </span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>└── Network back                 ~0.5-1ms
 </span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>                                 ─────────
-</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>                         Total:  ~15-20ms
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>                         Total:  ~10-15ms
 </span></code></pre></div>
+<div class="admonition note">
+<p class="admonition-title">Single-item vs Transaction writes</p>
+<p>Non-cascade <code>acquire()</code> writes a single composite bucket item, so <code>transact_write()</code>
+dispatches it as a plain UpdateItem (1 WCU). Cascade mode with 2 items uses
+TransactWriteItems (2 WCU per item). Adjustments and rollbacks always use
+independent single-item writes via <code>write_each()</code> (1 WCU each).</p>
+</div>
 <h3 id="environment-selection">Environment Selection<a class="headerlink" href="#environment-selection" title="Permanent link">&para;</a></h3>
 <table>
 <thead>

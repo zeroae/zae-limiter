@@ -1394,6 +1394,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.write_each" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;write_each
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.set_limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1927,6 +1938,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;transact_write
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.write_each" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;write_each
       
     </span>
   </a>
@@ -3816,6 +3838,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.write_each" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;write_each
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.set_limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4349,6 +4382,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;transact_write
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.write_each" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;write_each
       
     </span>
   </a>
@@ -6066,7 +6110,34 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Execute a transactional write.</p>
+        <p>Execute a write, using single-item API when possible to halve WCU cost.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository.Repository.write_each" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">write_each</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.write_each" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">write_each</span><span class="p">(</span><span class="n">items</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Write items independently without cross-item atomicity (1 WCU each).</p>
+<p>Each item is dispatched as a single PutItem, UpdateItem, or DeleteItem
+call. Use for unconditional writes (e.g., ADD adjustments) where partial
+success is acceptable.</p>
 
 
     </div>
@@ -9572,8 +9643,10 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Execute a transactional write of multiple items.</p>
-<p>All items succeed or fail together (atomic).</p>
+        <p>Execute a write of one or more items.</p>
+<p>Single-item batches use the corresponding single-item API (PutItem,
+UpdateItem, or DeleteItem) to halve WCU cost. Multi-item batches use
+TransactWriteItems for atomicity.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -9622,8 +9695,76 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If transaction fails</p>
+                <p>If multi-item transaction fails</p>
               </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ConditionalCheckFailedException">ConditionalCheckFailedException</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If single-item condition fails</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.write_each" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">write_each</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.write_each" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">write_each</span><span class="p">(</span><span class="n">items</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Write items independently without cross-item atomicity.</p>
+<p>Each item is dispatched as a single PutItem, UpdateItem, or DeleteItem
+call (1 WCU each). Use for unconditional writes (e.g., ADD adjustments)
+where partial success is acceptable.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>items</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of items to write independently</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
             </td>
           </tr>
       </tbody>

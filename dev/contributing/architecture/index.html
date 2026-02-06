@@ -1545,22 +1545,44 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#atomicity" class="md-nav__link">
+  <a href="#atomicity-and-write-paths" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Atomicity
+        Atomicity and Write Paths
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Atomicity">
+    <nav class="md-nav" aria-label="Atomicity and Write Paths">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#transactwriteitems" class="md-nav__link">
+  <a href="#write-path-overview" class="md-nav__link">
     <span class="md-ellipsis">
       
-        TransactWriteItems
+        Write Path Overview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#transactwriteitems-initial-consumption" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TransactWriteItems (Initial Consumption)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#independent-writes-adjustments-and-rollbacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Independent Writes (Adjustments and Rollbacks)
       
     </span>
   </a>
@@ -2883,22 +2905,44 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#atomicity" class="md-nav__link">
+  <a href="#atomicity-and-write-paths" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Atomicity
+        Atomicity and Write Paths
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Atomicity">
+    <nav class="md-nav" aria-label="Atomicity and Write Paths">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#transactwriteitems" class="md-nav__link">
+  <a href="#write-path-overview" class="md-nav__link">
     <span class="md-ellipsis">
       
-        TransactWriteItems
+        Write Path Overview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#transactwriteitems-initial-consumption" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TransactWriteItems (Initial Consumption)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#independent-writes-adjustments-and-rollbacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Independent Writes (Adjustments and Rollbacks)
       
     </span>
   </a>
@@ -3127,39 +3171,35 @@ single DynamoDB round trip (see <a href="https://github.com/zeroae/zae-limiter/i
 entity and parent buckets are fetched together, reducing latency from
 2×N round trips to 1.</p>
 <h3 id="item-structure">Item Structure<a class="headerlink" href="#item-structure" title="Permanent link">&para;</a></h3>
-<p>Most record types use a nested <code>data</code> map for business attributes:</p>
-<div class="language-python lint-only highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Entity and Audit records use nested data.M:</span>
+<p>All records use <strong>flat schema</strong> (v0.6.0+, top-level attributes, no nested <code>data.M</code>).
+See <a href="../../adr/111-flatten-all-records/">ADR-111</a>.</p>
+<div class="language-python lint-only highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Entity record (FLAT structure):</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="p">{</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#user-1&quot;</span><span class="p">,</span>
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">,</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="s2">&quot;entity_id&quot;</span><span class="p">:</span> <span class="s2">&quot;user-1&quot;</span><span class="p">,</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="p">{</span>                    <span class="c1"># Nested map</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>        <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;User One&quot;</span><span class="p">,</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>        <span class="s2">&quot;parent_id&quot;</span><span class="p">:</span> <span class="n">null</span><span class="p">,</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        <span class="s2">&quot;metadata&quot;</span><span class="p">:</span> <span class="p">{</span><span class="o">...</span><span class="p">}</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    <span class="p">}</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="p">}</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;User One&quot;</span><span class="p">,</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="s2">&quot;parent_id&quot;</span><span class="p">:</span> <span class="n">null</span><span class="p">,</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="s2">&quot;metadata&quot;</span><span class="p">:</span> <span class="p">{</span><span class="o">...</span><span class="p">}</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="p">}</span>
 </span></code></pre></div>
-<p><strong>Bucket records use a HYBRID schema:</strong> Most fields are in <code>data.M</code>, but
-<code>total_consumed_milli</code> is stored as a flat top-level attribute:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Bucket record (HYBRID structure):</span>
+<p><strong>Bucket records</strong> (composite, one item per entity+resource):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Bucket record (FLAT structure, ADR-114/115):</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="p">{</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#user-1&quot;</span><span class="p">,</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#BUCKET#gpt-4#tpm&quot;</span><span class="p">,</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#BUCKET#gpt-4&quot;</span><span class="p">,</span>
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="s2">&quot;entity_id&quot;</span><span class="p">:</span> <span class="s2">&quot;user-1&quot;</span><span class="p">,</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="p">{</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="s2">&quot;M&quot;</span><span class="p">:</span> <span class="p">{</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>            <span class="s2">&quot;resource&quot;</span><span class="p">:</span> <span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>            <span class="s2">&quot;limit_name&quot;</span><span class="p">:</span> <span class="s2">&quot;tpm&quot;</span><span class="p">,</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>            <span class="s2">&quot;tokens_milli&quot;</span><span class="p">:</span> <span class="mi">9500000</span><span class="p">,</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>            <span class="s2">&quot;last_refill_ms&quot;</span><span class="p">:</span> <span class="mi">1704067200000</span><span class="p">,</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>            <span class="c1"># ... other bucket fields</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="p">}</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="p">},</span>
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>    <span class="s2">&quot;total_consumed_milli&quot;</span><span class="p">:</span> <span class="mi">500000</span><span class="p">,</span>  <span class="c1"># FLAT - net consumption counter</span>
-</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>    <span class="s2">&quot;GSI2PK&quot;</span><span class="p">:</span> <span class="s2">&quot;RESOURCE#gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>    <span class="s2">&quot;ttl&quot;</span><span class="p">:</span> <span class="mi">1234567890</span>
-</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="p">}</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="s2">&quot;resource&quot;</span><span class="p">:</span> <span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="s2">&quot;b_tpm_tk&quot;</span><span class="p">:</span> <span class="mi">9500000</span><span class="p">,</span>            <span class="c1"># tokens_milli for tpm limit</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="s2">&quot;b_tpm_cp&quot;</span><span class="p">:</span> <span class="mi">10000000</span><span class="p">,</span>           <span class="c1"># capacity_milli for tpm limit</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="s2">&quot;b_tpm_tc&quot;</span><span class="p">:</span> <span class="mi">500000</span><span class="p">,</span>             <span class="c1"># total_consumed_milli for tpm</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="s2">&quot;b_rpm_tk&quot;</span><span class="p">:</span> <span class="mi">95000</span><span class="p">,</span>              <span class="c1"># tokens_milli for rpm limit</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="s2">&quot;b_rpm_cp&quot;</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>             <span class="c1"># capacity_milli for rpm limit</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="s2">&quot;b_rpm_tc&quot;</span><span class="p">:</span> <span class="mi">5000</span><span class="p">,</span>               <span class="c1"># total_consumed_milli for rpm</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>    <span class="s2">&quot;rf&quot;</span><span class="p">:</span> <span class="mi">1704067200000</span><span class="p">,</span>            <span class="c1"># last_refill_ms (shared across limits)</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="s2">&quot;GSI2PK&quot;</span><span class="p">:</span> <span class="s2">&quot;RESOURCE#gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>    <span class="s2">&quot;ttl&quot;</span><span class="p">:</span> <span class="mi">1234567890</span>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>The <code>total_consumed_milli</code> counter tracks net consumption (increases on consume,
 decreases on release) and is used by the aggregator Lambda to accurately calculate
@@ -3345,58 +3385,116 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </tr>
 </tbody>
 </table>
-<h2 id="atomicity">Atomicity<a class="headerlink" href="#atomicity" title="Permanent link">&para;</a></h2>
-<h3 id="transactwriteitems">TransactWriteItems<a class="headerlink" href="#transactwriteitems" title="Permanent link">&para;</a></h3>
-<p>Multi-entity updates (like cascade mode) use DynamoDB transactions:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Single atomic operation:</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1"># 1. Consume from child entity</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="c1"># 2. Consume from parent entity</span>
+<h2 id="atomicity-and-write-paths">Atomicity and Write Paths<a class="headerlink" href="#atomicity-and-write-paths" title="Permanent link">&para;</a></h2>
+<h3 id="write-path-overview">Write Path Overview<a class="headerlink" href="#write-path-overview" title="Permanent link">&para;</a></h3>
+<p>The <code>acquire()</code> context manager uses three distinct write paths, each with different
+atomicity and cost characteristics:</p>
+<table>
+<thead>
+<tr>
+<th>Write Path</th>
+<th>Method</th>
+<th>API Used</th>
+<th>WCU Cost</th>
+<th>Atomicity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Initial consumption</td>
+<td><code>_commit_initial()</code></td>
+<td><code>transact_write()</code></td>
+<td>2 WCU (transaction) or 1 WCU (single item)</td>
+<td>Cross-item atomic</td>
+</tr>
+<tr>
+<td>Post-enter adjustments</td>
+<td><code>_commit_adjustments()</code></td>
+<td><code>write_each()</code></td>
+<td>1 WCU per item</td>
+<td>Independent per item</td>
+</tr>
+<tr>
+<td>Rollback (on exception)</td>
+<td><code>_rollback()</code></td>
+<td><code>write_each()</code></td>
+<td>1 WCU per item</td>
+<td>Independent per item</td>
+</tr>
+</tbody>
+</table>
+<h3 id="transactwriteitems-initial-consumption">TransactWriteItems (Initial Consumption)<a class="headerlink" href="#transactwriteitems-initial-consumption" title="Permanent link">&para;</a></h3>
+<p>The initial consumption write (<code>_commit_initial()</code>) uses <code>transact_write()</code>, which
+selects the DynamoDB API based on item count:</p>
+<ul>
+<li><strong>Single item</strong>: Uses PutItem/UpdateItem (1 WCU) -- non-cascade case</li>
+<li><strong>Multiple items</strong>: Uses TransactWriteItems (2 WCU per item) -- cascade case</li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Cascade: atomic multi-entity write</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1"># 1. Consume from child entity bucket</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="c1"># 2. Consume from parent entity bucket</span>
 </span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># Both succeed or both fail</span>
 </span></code></pre></div>
 <p>Transaction limits: max 100 items per transaction.</p>
+<h3 id="independent-writes-adjustments-and-rollbacks">Independent Writes (Adjustments and Rollbacks)<a class="headerlink" href="#independent-writes-adjustments-and-rollbacks" title="Permanent link">&para;</a></h3>
+<p>Adjustments (<code>_commit_adjustments()</code>) and rollbacks (<code>_rollback()</code>) use <code>write_each()</code>,
+which dispatches each item independently as a single PutItem, UpdateItem, or DeleteItem
+call (1 WCU each). This is safe because:</p>
+<ul>
+<li>These operations produce <strong>unconditional ADD</strong> expressions (no condition checks)</li>
+<li>Partial success is acceptable -- each item's delta is self-contained</li>
+<li>No cross-item invariant needs to hold between adjustment writes</li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># write_each: each item written independently</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="c1"># Item 1: ADD child bucket delta    (1 WCU)</span>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="c1"># Item 2: ADD parent bucket delta   (1 WCU)</span>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="c1"># No transaction overhead</span>
+</span></code></pre></div>
+<p>This halves the WCU cost compared to using TransactWriteItems for these paths.</p>
 <h3 id="optimistic-locking">Optimistic Locking<a class="headerlink" href="#optimistic-locking" title="Permanent link">&para;</a></h3>
 <p>Entity metadata uses version numbers for optimistic locking:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># Read entity with version 5</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="c1"># Update fails if version changed</span>
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="n">condition_expression</span><span class="o">=</span><span class="s2">&quot;version = :expected_version&quot;</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># Read entity with version 5</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="c1"># Update fails if version changed</span>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="n">condition_expression</span><span class="o">=</span><span class="s2">&quot;version = :expected_version&quot;</span>
 </span></code></pre></div>
 <h2 id="project-structure">Project Structure<a class="headerlink" href="#project-structure" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>src/zae_limiter/
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>├── __init__.py            # Public API exports
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>├── models.py              # Limit, Entity, LimitStatus, BucketState, StackOptions, ...
-</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
-</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>├── naming.py              # Resource name validation
-</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>├── bucket.py              # Token bucket math (integer arithmetic)
-</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>├── schema.py              # DynamoDB key builders
-</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>├── repository_protocol.py # RepositoryProtocol for backend abstraction
-</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>├── repository.py          # DynamoDB operations
-</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>├── config_cache.py        # Client-side config caching with TTL
-</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>├── lease.py               # Lease context manager
-</span><span id="__span-17-12"><a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a>├── limiter.py             # RateLimiter, SyncRateLimiter
-</span><span id="__span-17-13"><a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a>├── local.py               # LocalStack management commands
-</span><span id="__span-17-14"><a id="__codelineno-17-14" name="__codelineno-17-14" href="#__codelineno-17-14"></a>├── cli.py                 # CLI commands (deploy, delete, status, list, local, ...)
-</span><span id="__span-17-15"><a id="__codelineno-17-15" name="__codelineno-17-15" href="#__codelineno-17-15"></a>├── version.py             # Version tracking and compatibility
-</span><span id="__span-17-16"><a id="__codelineno-17-16" name="__codelineno-17-16" href="#__codelineno-17-16"></a>├── migrations/            # Schema migration framework
-</span><span id="__span-17-17"><a id="__codelineno-17-17" name="__codelineno-17-17" href="#__codelineno-17-17"></a>├── visualization/         # Usage snapshot formatting and display
-</span><span id="__span-17-18"><a id="__codelineno-17-18" name="__codelineno-17-18" href="#__codelineno-17-18"></a>└── infra/
-</span><span id="__span-17-19"><a id="__codelineno-17-19" name="__codelineno-17-19" href="#__codelineno-17-19"></a>    ├── stack_manager.py    # CloudFormation stack operations
-</span><span id="__span-17-20"><a id="__codelineno-17-20" name="__codelineno-17-20" href="#__codelineno-17-20"></a>    ├── lambda_builder.py   # Lambda deployment package builder
-</span><span id="__span-17-21"><a id="__codelineno-17-21" name="__codelineno-17-21" href="#__codelineno-17-21"></a>    ├── discovery.py        # Multi-stack discovery and listing
-</span><span id="__span-17-22"><a id="__codelineno-17-22" name="__codelineno-17-22" href="#__codelineno-17-22"></a>    └── cfn_template.yaml   # CloudFormation template
-</span><span id="__span-17-23"><a id="__codelineno-17-23" name="__codelineno-17-23" href="#__codelineno-17-23"></a>
-</span><span id="__span-17-24"><a id="__codelineno-17-24" name="__codelineno-17-24" href="#__codelineno-17-24"></a>src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
-</span><span id="__span-17-25"><a id="__codelineno-17-25" name="__codelineno-17-25" href="#__codelineno-17-25"></a>├── __init__.py               # Re-exports handler, processor types
-</span><span id="__span-17-26"><a id="__codelineno-17-26" name="__codelineno-17-26" href="#__codelineno-17-26"></a>├── handler.py                # Lambda entry point
-</span><span id="__span-17-27"><a id="__codelineno-17-27" name="__codelineno-17-27" href="#__codelineno-17-27"></a>├── processor.py              # Stream processing logic for usage snapshots
-</span><span id="__span-17-28"><a id="__codelineno-17-28" name="__codelineno-17-28" href="#__codelineno-17-28"></a>└── archiver.py               # S3 audit archival (gzip JSONL)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>src/zae_limiter/
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>├── __init__.py            # Public API exports
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>├── models.py              # Limit, Entity, LimitStatus, BucketState, StackOptions, ...
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>├── naming.py              # Resource name validation
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>├── bucket.py              # Token bucket math (integer arithmetic)
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>├── schema.py              # DynamoDB key builders
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>├── repository_protocol.py # RepositoryProtocol for backend abstraction
+</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a>├── repository.py          # DynamoDB operations
+</span><span id="__span-18-10"><a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a>├── config_cache.py        # Client-side config caching with TTL
+</span><span id="__span-18-11"><a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a>├── lease.py               # Lease context manager
+</span><span id="__span-18-12"><a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a>├── limiter.py             # RateLimiter, SyncRateLimiter
+</span><span id="__span-18-13"><a id="__codelineno-18-13" name="__codelineno-18-13" href="#__codelineno-18-13"></a>├── local.py               # LocalStack management commands
+</span><span id="__span-18-14"><a id="__codelineno-18-14" name="__codelineno-18-14" href="#__codelineno-18-14"></a>├── cli.py                 # CLI commands (deploy, delete, status, list, local, ...)
+</span><span id="__span-18-15"><a id="__codelineno-18-15" name="__codelineno-18-15" href="#__codelineno-18-15"></a>├── version.py             # Version tracking and compatibility
+</span><span id="__span-18-16"><a id="__codelineno-18-16" name="__codelineno-18-16" href="#__codelineno-18-16"></a>├── migrations/            # Schema migration framework
+</span><span id="__span-18-17"><a id="__codelineno-18-17" name="__codelineno-18-17" href="#__codelineno-18-17"></a>├── visualization/         # Usage snapshot formatting and display
+</span><span id="__span-18-18"><a id="__codelineno-18-18" name="__codelineno-18-18" href="#__codelineno-18-18"></a>└── infra/
+</span><span id="__span-18-19"><a id="__codelineno-18-19" name="__codelineno-18-19" href="#__codelineno-18-19"></a>    ├── stack_manager.py    # CloudFormation stack operations
+</span><span id="__span-18-20"><a id="__codelineno-18-20" name="__codelineno-18-20" href="#__codelineno-18-20"></a>    ├── lambda_builder.py   # Lambda deployment package builder
+</span><span id="__span-18-21"><a id="__codelineno-18-21" name="__codelineno-18-21" href="#__codelineno-18-21"></a>    ├── discovery.py        # Multi-stack discovery and listing
+</span><span id="__span-18-22"><a id="__codelineno-18-22" name="__codelineno-18-22" href="#__codelineno-18-22"></a>    └── cfn_template.yaml   # CloudFormation template
+</span><span id="__span-18-23"><a id="__codelineno-18-23" name="__codelineno-18-23" href="#__codelineno-18-23"></a>
+</span><span id="__span-18-24"><a id="__codelineno-18-24" name="__codelineno-18-24" href="#__codelineno-18-24"></a>src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
+</span><span id="__span-18-25"><a id="__codelineno-18-25" name="__codelineno-18-25" href="#__codelineno-18-25"></a>├── __init__.py               # Re-exports handler, processor types
+</span><span id="__span-18-26"><a id="__codelineno-18-26" name="__codelineno-18-26" href="#__codelineno-18-26"></a>├── handler.py                # Lambda entry point
+</span><span id="__span-18-27"><a id="__codelineno-18-27" name="__codelineno-18-27" href="#__codelineno-18-27"></a>├── processor.py              # Stream processing logic for usage snapshots
+</span><span id="__span-18-28"><a id="__codelineno-18-28" name="__codelineno-18-28" href="#__codelineno-18-28"></a>└── archiver.py               # S3 audit archival (gzip JSONL)
 </span></code></pre></div>
 <h2 id="key-design-decisions">Key Design Decisions<a class="headerlink" href="#key-design-decisions" title="Permanent link">&para;</a></h2>
 <ol>
-<li><strong>Write-on-enter</strong>: <code>acquire()</code> writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating transaction restores the consumed tokens</li>
+<li><strong>Write-on-enter</strong>: <code>acquire()</code> writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens</li>
 <li><strong>Bucket can go negative</strong>: <code>lease.adjust()</code> never throws, allows debt</li>
 <li><strong>Cascade is per-entity config</strong>: Set <code>cascade=True</code> on <code>create_entity()</code> to auto-cascade to parent on every <code>acquire()</code></li>
 <li><strong>Stored limits are the default (v0.5.0+)</strong>: Limits resolved from System/Resource/Entity config automatically. Pass <code>limits</code> parameter to override</li>
-<li><strong>Transactions are atomic</strong>: Multi-entity updates succeed or fail together</li>
+<li><strong>Initial writes are atomic</strong>: Multi-entity initial consumption uses <code>transact_write()</code> for cross-item atomicity</li>
+<li><strong>Adjustments and rollbacks use independent writes</strong>: <code>write_each()</code> dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead for unconditional ADD operations</li>
 </ol>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
