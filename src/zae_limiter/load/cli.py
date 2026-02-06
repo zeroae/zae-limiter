@@ -89,6 +89,15 @@ def _select_subnets(region: str | None, vpc_id: str) -> str:
     return ",".join(selected)
 
 
+def _discover_route_tables(ec2: Any, subnet_ids: list[str]) -> str:
+    """Discover route table IDs associated with the given subnets."""
+    response = ec2.describe_route_tables(
+        Filters=[{"Name": "association.subnet-id", "Values": subnet_ids}]
+    )
+    rt_ids = {rt["RouteTableId"] for rt in response["RouteTables"]}
+    return ",".join(sorted(rt_ids))
+
+
 def _build_task_overrides(
     standalone: bool,
     locustfile: str | None,
@@ -98,6 +107,9 @@ def _build_task_overrides(
     users_per_worker: int | None,
     rps_per_worker: int | None,
     startup_lead_time: int | None,
+    cpu: int | None = None,
+    memory: int | None = None,
+    pool_connections: int | None = None,
 ) -> dict[str, object]:
     """Build container overrides dict for run_task().
 
@@ -110,13 +122,15 @@ def _build_task_overrides(
         users_per_worker: Override auto-scaling ratio.
         rps_per_worker: Override auto-scaling ratio.
         startup_lead_time: Override predictive scaling lookahead.
+        cpu: Override task CPU units (e.g. 1024 for 1 vCPU).
+        memory: Override task memory in MB.
+        pool_connections: Override boto3 connection pool size.
 
     Returns:
         Dict suitable for run_task(overrides=...), or empty dict if no overrides.
     """
     master_env: list[dict[str, str]] = []
     orchestrator_env: list[dict[str, str]] = []
-    master_command: list[str] | None = None
 
     # Locustfile override applies to both containers
     if locustfile:
@@ -137,28 +151,28 @@ def _build_task_overrides(
     if startup_lead_time is not None:
         orchestrator_env.append({"name": "STARTUP_LEAD_TIME", "value": str(startup_lead_time)})
 
-    # Standalone mode: override master command to run without --master
+    # Connection pool override
+    if pool_connections is not None:
+        master_env.append({"name": "BOTO3_MAX_POOL", "value": str(pool_connections)})
+
+    # Standalone mode: clear master args to run without --master
     if standalone:
-        locustfile_path = locustfile or "$LOCUSTFILE"
-        master_command = ["sh", "-c", f"locust -f /mnt/{locustfile_path}"]
+        master_env.append({"name": "LOCUST_MASTER_ARGS", "value": ""})
         # Make orchestrator idle (no workers)
         orchestrator_env.append({"name": "DESIRED_WORKERS", "value": "0"})
         orchestrator_env.append({"name": "MIN_WORKERS", "value": "0"})
 
     # Build overrides dict only if we have overrides
-    if not master_env and not orchestrator_env and not master_command:
+    if not master_env and not orchestrator_env and not cpu and not memory:
         return {}
+
+    result: dict[str, object] = {}
 
     container_overrides = []
 
     # Master container
-    master_override: dict[str, object] = {"name": "locust-master"}
     if master_env:
-        master_override["environment"] = master_env
-    if master_command:
-        master_override["command"] = master_command
-    if master_env or master_command:
-        container_overrides.append(master_override)
+        container_overrides.append({"name": "locust-master", "environment": master_env})
 
     # Orchestrator container
     if orchestrator_env:
@@ -169,7 +183,16 @@ def _build_task_overrides(
             }
         )
 
-    return {"containerOverrides": container_overrides}
+    if container_overrides:
+        result["containerOverrides"] = container_overrides
+
+    # Task-level CPU/memory overrides
+    if cpu is not None:
+        result["cpu"] = str(cpu)
+    if memory is not None:
+        result["memory"] = str(memory)
+
+    return result
 
 
 def _get_service_network_config(ecs_client: Any, cluster: str, service: str) -> dict[str, object]:
@@ -330,6 +353,12 @@ def deploy(
 
     subnet_list = [s.strip() for s in subnet_ids.split(",")]
 
+    # Auto-discover route tables for DynamoDB gateway endpoint
+    ec2 = boto3.client("ec2", region_name=region)
+    route_table_ids = _discover_route_tables(ec2, subnet_list)
+    if route_table_ids:
+        click.echo(f"  Route tables for DynamoDB endpoint: {route_table_ids}")
+
     # Build parameters list
     stack_params = [
         {"ParameterKey": "TargetStackName", "ParameterValue": name},
@@ -346,6 +375,7 @@ def deploy(
         {"ParameterKey": "StartupLeadTime", "ParameterValue": str(startup_lead_time)},
         {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
         {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
+        {"ParameterKey": "PrivateRouteTableIds", "ParameterValue": route_table_ids},
         {"ParameterKey": "Locustfile", "ParameterValue": locustfile},
         {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
         {"ParameterKey": "RoleNameFormat", "ParameterValue": role_name_format},
@@ -541,6 +571,16 @@ def setup(
 @click.option(
     "--startup-lead-time", type=int, default=None, help="Override predictive scaling lookahead"
 )
+@click.option(
+    "--cpu", type=int, default=None, help="Override task CPU units (256, 512, 1024, 2048, 4096)"
+)
+@click.option("--memory", type=int, default=None, help="Override task memory in MB")
+@click.option(
+    "--pool-connections",
+    type=int,
+    default=None,
+    help="Override boto3 connection pool size (default: 200)",
+)
 def connect(
     name: str,
     region: str | None,
@@ -555,6 +595,9 @@ def connect(
     users_per_worker: int | None,
     rps_per_worker: int | None,
     startup_lead_time: int | None,
+    cpu: int | None,
+    memory: int | None,
+    pool_connections: int | None,
 ) -> None:
     """Connect to Fargate master via SSM tunnel."""
     import json
@@ -576,6 +619,9 @@ def connect(
         users_per_worker=users_per_worker,
         rps_per_worker=rps_per_worker,
         startup_lead_time=startup_lead_time,
+        cpu=cpu,
+        memory=memory,
+        pool_connections=pool_connections,
     )
     has_overrides = bool(overrides)
 

@@ -117,9 +117,11 @@ ENV PYTHONPATH=/mnt
 # Default locustfile (can be overridden at runtime via LOCUSTFILE env var)
 ENV LOCUSTFILE={locustfile}
 
+# Master mode args (set to empty string for standalone mode via env override)
+ENV LOCUST_MASTER_ARGS="--master --master-bind-port=5557 --enable-rebalancing --class-picker"
+
 # Use shell form to enable variable substitution
-ENTRYPOINT ["sh", "-c", "locust --master --master-bind-port=5557 \\
-    --enable-rebalancing --class-picker -f /mnt/$LOCUSTFILE"]
+ENTRYPOINT ["sh", "-c", "locust $LOCUST_MASTER_ARGS -f /mnt/$LOCUSTFILE"]
 """
 
 
