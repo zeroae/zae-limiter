@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770368756940,
+  "lastUpdate": 1770370572465,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -7200,6 +7200,135 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.012716105027140767",
             "extra": "mean: 1.1031045644000188 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a109addc2186644de369078cef773b2facbc9fb6",
+          "message": "🐛 fix(ci): docs workflow cancelling tests (#321)\n\n## Summary\n\nFixes concurrency group conflict where docs.yml was cancelling\nci-tests.yml, and ensures docs are only deployed after tests pass\nsuccessfully on push to main.\n\n## Changes\n\n### Concurrency Groups (Issue #314)\n\nChanged from a shared `docs-$ref` group to separate groups:\n\n| Workflow/Job | Old Group | New Group | Cancel-in-Progress |\n|--------------|-----------|-----------|-------------------|\n| ci-tests.yml (workflow) | `docs-$ref` | `ci-tests-$ref` | `true` |\n| docs.yml (workflow) | `docs-$ref` | `docs-$ref` | `true` |\n| Benchmark jobs | (none) | `gh-pages-write-$ref` | `false` |\n| Docs deploy job | (none) | `gh-pages-write-$ref` | `false` |\n\n### Workflow Triggers\n\n**ci-tests.yml:**\n- Removed `paths` filter from push trigger to ensure workflow_run always\nfires\n\n**docs.yml:**\n- Added `workflow_run` trigger to wait for Tests workflow completion\n- Deploy job now runs on `workflow_run` success or tag push (not all\npushes)\n- Build job skips on `workflow_run` events\n\n### Coordination\n\nJobs that write to gh-pages branch (benchmark-moto,\nbenchmark-localstack, docs deploy) now use job-level\n`gh-pages-write-$ref` concurrency group with `cancel-in-progress: false`\nto prevent race conditions.\n\n## Test plan\n\n- [x] Push to main triggers Tests workflow without cancellation\n- [x] Docs deploy waits for Tests workflow completion\n- [x] PRs can still build docs without waiting for tests\n- [x] Tag pushes deploy docs immediately\n- [x] Benchmark jobs coordinate with docs deployment\n\nCloses #314\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-02-06T04:20:25-05:00",
+          "tree_id": "9b7fa3722b76dbfe3372716f55f1644d5de9eb08",
+          "url": "https://github.com/zeroae/zae-limiter/commit/a109addc2186644de369078cef773b2facbc9fb6"
+        },
+        "date": 1770370571833,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.929132359028518,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012429634781981079",
+            "extra": "mean: 43.612640214283665 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.22409321656478,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010859800821102761",
+            "extra": "mean: 49.44597462500511 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 32.17401284820209,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005441224275042659",
+            "extra": "mean: 31.080984666663387 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 35.027698576667795,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0070364850786303725",
+            "extra": "mean: 28.548835368422044 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 27.708170767631533,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032298940082634785",
+            "extra": "mean: 36.09043730769092 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 218.7445786270838,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006952199374569703",
+            "extra": "mean: 4.571541869866417 msec\nrounds: 146"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 29.663027239321593,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0029947593593047037",
+            "extra": "mean: 33.7120008666678 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 27.76099216134098,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004082110922542172",
+            "extra": "mean: 36.021767312501396 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 28.137314380049137,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004346424819333953",
+            "extra": "mean: 35.53999456000156 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 16.926202699396057,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007384214948406051",
+            "extra": "mean: 59.07999672222294 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 29.321649390488634,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004317108967395354",
+            "extra": "mean: 34.104493464285824 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9237928092967362,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009761906859124709",
+            "extra": "mean: 519.8064963999741 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9255743997388741,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011967339960582044",
+            "extra": "mean: 519.3255581999892 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9366760397496321,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005071581123877724",
+            "extra": "mean: 1.0676049749999947 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9079236622912469,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007952634253371331",
+            "extra": "mean: 1.1014141844000278 sec\nrounds: 5"
           }
         ]
       }
