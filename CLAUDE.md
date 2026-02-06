@@ -439,6 +439,14 @@ docs/
 5. **Transactions are atomic**: Multi-entity updates succeed or fail together
 6. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources x limits) must stay within this limit
 
+## DynamoDB Pricing Reference
+
+On-demand pricing (us-east-1, post-Nov 2023 50% reduction):
+- Write Request Units: **$0.625/M** ($1.25/M for transactional writes)
+- Read Request Units: **$0.125/M** ($0.25/M for transactional reads)
+
+Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the project's advertised cost).
+
 ## DynamoDB Access Patterns
 
 | Pattern | Query |
