@@ -415,6 +415,44 @@ class TestRepositoryTransactions:
         await repo.transact_write([])
 
     @pytest.mark.asyncio
+    async def test_transact_write_single_delete(self, repo):
+        """transact_write dispatches single Delete item via delete_item API."""
+        await repo.create_entity("tw-delete-test")
+
+        delete_item = {
+            "Delete": {
+                "TableName": repo.table_name,
+                "Key": {
+                    "PK": {"S": "ENTITY#tw-delete-test"},
+                    "SK": {"S": "#META"},
+                },
+            }
+        }
+        await repo.transact_write([delete_item])
+
+        entity = await repo.get_entity("tw-delete-test")
+        assert entity is None
+
+    @pytest.mark.asyncio
+    async def test_transact_write_single_unknown_type_falls_through(self, repo):
+        """transact_write falls through to transact_write_items for unknown item types."""
+        # ConditionCheck is a valid TransactWriteItems type but not handled by
+        # the single-item optimization — it should fall through to transact_write_items.
+        await repo.create_entity("tw-condcheck-test")
+
+        condition_item = {
+            "ConditionCheck": {
+                "TableName": repo.table_name,
+                "Key": {
+                    "PK": {"S": "ENTITY#tw-condcheck-test"},
+                    "SK": {"S": "#META"},
+                },
+                "ConditionExpression": "attribute_exists(PK)",
+            }
+        }
+        await repo.transact_write([condition_item])
+
+    @pytest.mark.asyncio
     async def test_write_each_empty_items_list(self, repo):
         """write_each should handle empty items list."""
         await repo.write_each([])

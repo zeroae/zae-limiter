@@ -329,6 +329,31 @@ class TestRepositoryTransactions:
         """transact_write should handle empty items list."""
         repo.transact_write([])
 
+    def test_transact_write_single_delete(self, repo):
+        """transact_write dispatches single Delete item via delete_item API."""
+        repo.create_entity("tw-delete-test")
+        delete_item = {
+            "Delete": {
+                "TableName": repo.table_name,
+                "Key": {"PK": {"S": "ENTITY#tw-delete-test"}, "SK": {"S": "#META"}},
+            }
+        }
+        repo.transact_write([delete_item])
+        entity = repo.get_entity("tw-delete-test")
+        assert entity is None
+
+    def test_transact_write_single_unknown_type_falls_through(self, repo):
+        """transact_write falls through to transact_write_items for unknown item types."""
+        repo.create_entity("tw-condcheck-test")
+        condition_item = {
+            "ConditionCheck": {
+                "TableName": repo.table_name,
+                "Key": {"PK": {"S": "ENTITY#tw-condcheck-test"}, "SK": {"S": "#META"}},
+                "ConditionExpression": "attribute_exists(PK)",
+            }
+        }
+        repo.transact_write([condition_item])
+
     def test_write_each_empty_items_list(self, repo):
         """write_each should handle empty items list."""
         repo.write_each([])
