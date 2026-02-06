@@ -9,12 +9,12 @@ The `acquire()` context manager MUST write initial token consumption to DynamoDB
 ```python
 # CORRECT: write on enter
 lease = await self._do_acquire(...)        # READ: fetch buckets, try_consume locally
-await lease._commit_initial()              # WRITE: persist consumption to DynamoDB
+await lease._commit_initial()              # WRITE: persist consumption via transact_write()
 try:
     yield lease                            # User code runs here
-    await lease._commit_adjustments()      # WRITE: adjustment deltas (no-op if none)
+    await lease._commit_adjustments()      # WRITE: adjustment deltas via write_each() (no-op if none)
 except Exception:
-    await lease._rollback()                # WRITE: compensating transaction
+    await lease._rollback()                # WRITE: compensating deltas via write_each()
     raise
 ```
 
@@ -40,7 +40,8 @@ With write-on-exit, there is a window between enter and exit where:
 ## Key Invariants
 
 1. `RateLimitExceeded` is raised BEFORE any DynamoDB write (no partial writes on rejection)
-2. `_commit_initial()` writes all consumption (child + parent if cascade) atomically
+2. `_commit_initial()` writes all consumption (child + parent if cascade) atomically via `transact_write()`
 3. `_commit_adjustments()` is a no-op when no `adjust()`, `consume()`, or `release()` calls were made
-4. `_rollback()` writes a compensating transaction restoring only what `_commit_initial()` wrote
-5. Rollback failure is logged but does not mask the original exception
+4. `_commit_adjustments()` and `_rollback()` use `write_each()` (independent single-item writes, 1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
+5. `_rollback()` restores only what `_commit_initial()` wrote
+6. Rollback failure is logged but does not mask the original exception

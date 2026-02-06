@@ -811,7 +811,12 @@ class SyncRepository:
             client.transact_write_items(TransactItems=items)
 
     def write_each(self, items: list[dict[str, Any]]) -> None:
-        """Write items independently, 1 WCU each."""
+        """Write items independently without cross-item atomicity (1 WCU each).
+
+        Each item is dispatched as a single PutItem, UpdateItem, or DeleteItem
+        call. Use for unconditional writes (e.g., ADD adjustments) where partial
+        success is acceptable.
+        """
         if not items:
             return
         client = self._get_client()

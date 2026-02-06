@@ -32,7 +32,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 - **Multiple Limits** - Track requests per minute, tokens per minute, etc. in a single call
 - **Hierarchical Entities** - Two-level hierarchy (project → API keys) with cascade mode
 - **Atomic Transactions** - Multi-key updates via DynamoDB TransactWriteItems
-- **Write-on-Enter with Rollback** - Tokens consumed immediately on acquire; compensating transaction on exception
+- **Write-on-Enter with Rollback** - Tokens consumed immediately on acquire; compensating writes on exception
 - **Stored Limits** - Configure per-entity limits in DynamoDB
 - **Usage Analytics** - Lambda aggregator for hourly/daily usage snapshots
 - **Audit Logging** - Track entity and limit changes for compliance

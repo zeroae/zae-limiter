@@ -11,8 +11,10 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | Operation | RCUs | WCUs | Notes |
 |-----------|------|------|-------|
 | `acquire()` | 1 | 1 | O(1) regardless of limit count (composite bucket items) |
-| `acquire()` with cascade | 2 | 4 | Entity + parent bucket reads and writes |
+| `acquire()` with cascade | 2 | 4 | Entity + parent bucket reads and writes (TransactWriteItems, 2 WCU per item) |
 | `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
+| `acquire()` with adjustments | 0 | +1 per entity | Independent writes via `write_each()` (1 WCU each) |
+| `acquire()` rollback (on exception) | 0 | +1 per entity | Independent compensating writes (1 WCU each) |
 | `acquire(limits=None)` with config cache miss | +3 | 0 | +3 GetItem operations for config hierarchy |
 | `available()` | 1 | 0 | Read-only, single composite bucket item |
 | `get_limits()` | 1 | 0 | Query operation |
@@ -171,14 +173,15 @@ async with limiter.acquire(
     {"rpm": 1},  # Initial consumption (1 request)
     limits=[rpm_limit, tpm_limit],
 ) as lease:
-    # 2 GetItems + 1 TransactWrite (2 items)
+    # 1 BatchGetItem + 1 UpdateItem (1 WCU, single composite bucket)
     response = await call_llm()
     await lease.adjust(tpm=response.usage.total_tokens)
+    # Adjustment: +1 UpdateItem via write_each (1 WCU)
 
 # Inefficient: Separate acquisitions
 async with limiter.acquire("entity-id", "llm-api", {"rpm": 1}, limits=[rpm_limit]):
     async with limiter.acquire("entity-id", "llm-api", {"tpm": 100}, limits=[tpm_limit]):
-        # 2 GetItems + 2 TransactWrites (doubles write cost!)
+        # 2 reads + 2 writes (doubles cost!)
         pass
 ```
 
@@ -325,27 +328,33 @@ Latencies vary by environment and depend on network conditions, DynamoDB utiliza
 
 ### Latency Breakdown
 
-Typical `acquire()` latency breakdown for a single limit:
+Typical `acquire()` latency breakdown for a single limit (non-cascade):
 
 ```
 acquire() latency breakdown (external client):
 ├── Network to AWS               ~8-10ms   (internet latency)
 ├── DynamoDB GetItem             ~3-5ms    (server-side processing)
 ├── Network back                 ~8-10ms
-├── TransactWriteItems           ~5-10ms   (server-side)
+├── UpdateItem                   ~3-5ms    (single-item API, 1 WCU)
 └── Network back                 ~8-10ms
                                  ─────────
-                         Total:  ~35-45ms
+                         Total:  ~30-40ms
 
 acquire() latency breakdown (in-region):
 ├── Network to DynamoDB          ~0.5-1ms  (VPC internal)
 ├── DynamoDB GetItem             ~3-5ms
 ├── Network back                 ~0.5-1ms
-├── TransactWriteItems           ~5-10ms
+├── UpdateItem                   ~3-5ms    (single-item API, 1 WCU)
 └── Network back                 ~0.5-1ms
                                  ─────────
-                         Total:  ~15-20ms
+                         Total:  ~10-15ms
 ```
+
+!!! note "Single-item vs Transaction writes"
+    Non-cascade `acquire()` writes a single composite bucket item, so `transact_write()`
+    dispatches it as a plain UpdateItem (1 WCU). Cascade mode with 2 items uses
+    TransactWriteItems (2 WCU per item). Adjustments and rollbacks always use
+    independent single-item writes via `write_each()` (1 WCU each).
 
 ### Environment Selection
 

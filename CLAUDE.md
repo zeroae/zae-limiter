@@ -350,7 +350,8 @@ Primary mitigation: cascade defaults to `False`.
 - GSI1: Parent -> Children lookups
 - GSI2: Resource aggregation (capacity tracking)
 - GSI3: Entity config queries (sparse - only entity configs indexed)
-- Uses TransactWriteItems for atomicity
+- Uses TransactWriteItems for atomic multi-entity writes (initial consumption)
+- Uses independent single-item writes (`write_each`) for adjustments and rollbacks (1 WCU each)
 
 ### Exception Design
 - `RateLimitExceeded` includes **ALL** limit statuses
@@ -432,12 +433,13 @@ docs/
 
 ## Important Invariants
 
-1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating transaction restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
+1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
 2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
-5. **Transactions are atomic**: Multi-entity updates succeed or fail together
-6. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources x limits) must stay within this limit
+5. **Initial writes are atomic**: Multi-entity initial consumption (via `_commit_initial`) uses `transact_write` for cross-item atomicity
+6. **Adjustments and rollbacks use independent writes**: `_commit_adjustments()` and `_rollback()` use `write_each()` (1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
+7. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources x limits) must stay within this limit
 
 ## DynamoDB Pricing Reference
 

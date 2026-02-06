@@ -20,7 +20,7 @@ async with limiter.acquire(
 
 - On entry: Checks limits, consumes tokens, and writes consumption to DynamoDB immediately
 - On success: Commits any adjustments made during the context (no-op if none)
-- On exception: Writes a compensating transaction to restore consumed tokens
+- On exception: Writes compensating deltas to restore consumed tokens (independent writes, 1 WCU each)
 
 Limits are resolved automatically from stored config (Entity > Resource > System). See [Configuration Hierarchy](config-hierarchy.md) for details.
 
