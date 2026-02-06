@@ -10,12 +10,14 @@ with the actual token count after the "LLM call" completes.
 
 from __future__ import annotations
 
+import os
 import random
 import uuid
 
-from locust import between, task
+from locust import between, events, task
+from locust.runners import WorkerRunner
 
-from zae_limiter import Limit
+from zae_limiter import Limit, SyncRateLimiter
 from zae_limiter.locust import RateLimiterUser
 
 MODELS = [
@@ -44,22 +46,46 @@ MODEL_LIMITS: dict[str, list[Limit]] = {
 TPM_ESTIMATE = 800
 TPM_ACTUAL_RANGE = (200, 2000)
 
+_created_entities: set[str] = set()
+
+
+def _make_limiter(environment: object) -> SyncRateLimiter:
+    host = getattr(environment, "host", None)
+    stack_name = host or os.environ.get("TARGET_STACK_NAME", "")
+    region = os.environ.get("TARGET_REGION", "us-east-1")
+    return SyncRateLimiter(name=stack_name, region=region)
+
+
+@events.test_start.add_listener
+def on_test_start(environment, **kwargs):
+    """Set resource defaults once (master or standalone only)."""
+    if isinstance(environment.runner, WorkerRunner):
+        return
+    limiter = _make_limiter(environment)
+    for model, limits in MODEL_LIMITS.items():
+        limiter.set_resource_defaults(model, limits)
+
+
+@events.test_stop.add_listener
+def on_test_stop(environment, **kwargs):
+    """Clean up entities created by this process."""
+    if not _created_entities:
+        return
+    limiter = _make_limiter(environment)
+    for entity_id in _created_entities:
+        limiter.delete_entity(entity_id)
+    _created_entities.clear()
+
 
 class LLMGatewayUser(RateLimiterUser):
     """Simulates an LLM gateway user sending requests across multiple models."""
 
     wait_time = between(0.5, 2.0)  # type: ignore[no-untyped-call]
 
-    _defaults_configured: bool = False
-
     def on_start(self) -> None:
-        """Assign a unique entity ID and configure per-model resource limits."""
+        """Assign a unique entity ID."""
         self.entity_id = f"apikey-{uuid.uuid4().hex[:8]}"
-
-        if not LLMGatewayUser._defaults_configured:
-            for model, limits in MODEL_LIMITS.items():
-                self.client.set_resource_defaults(resource=model, limits=limits)
-            LLMGatewayUser._defaults_configured = True
+        _created_entities.add(self.entity_id)
 
     @task
     def call_model(self) -> None:
