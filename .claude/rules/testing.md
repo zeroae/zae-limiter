@@ -82,15 +82,20 @@ zae-limiter local down
 
 Benchmarks detect performance regressions. Files in `tests/benchmark/` track latency, throughput, and DynamoDB capacity.
 
+**Important:** xdist must be disabled for benchmark timing to work. Override `addopts` from pyproject.toml:
+
 ```bash
+# Run benchmarks (disable xdist with -o "addopts=")
+uv run pytest tests/benchmark/ -o "addopts=" -v --benchmark-only
+
 # 1. Baseline before optimization
-uv run pytest tests/benchmark/test_operations.py -v --benchmark-json=baseline.json
+uv run pytest tests/benchmark/test_operations.py -o "addopts=" -v --benchmark-json=baseline.json
 
 # 2. Make changes, then compare
-uv run pytest tests/benchmark/test_operations.py -v --benchmark-compare=baseline.json
+uv run pytest tests/benchmark/test_operations.py -o "addopts=" -v --benchmark-compare=baseline.json
 
 # 3. Export results for JSON
-uv run pytest tests/benchmark/ -v --benchmark-json=benchmark.json
+uv run pytest tests/benchmark/ -o "addopts=" -v --benchmark-json=benchmark.json
 ```
 
 | Type | File | Backend | Use Case |

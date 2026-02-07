@@ -13,6 +13,8 @@ Skip benchmarks in regular test runs:
     pytest -m "not benchmark" -v
 """
 
+from dataclasses import replace
+
 import pytest
 
 from zae_limiter import Limit
@@ -423,6 +425,64 @@ class TestOptimizationComparison:
                 entity_id="cmp-cache-child",
                 resource="api",
                 limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="batch-config-resolution")
+    def test_config_resolution_sequential(self, benchmark, sync_limiter_no_cache):
+        """Baseline: 4 sequential GetItem calls for config resolution (#298).
+
+        With batch operations disabled, _resolve_limits falls back to
+        4 sequential GetItem calls (entity, entity_default, resource, system).
+        Each iteration uses a unique entity ID to force cache misses.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Setup stored limits at resource level (resolved on cache miss)
+        sync_limiter_no_cache.set_resource_defaults("batch-cmp-resource", limits)
+
+        # Disable batch operations to force sequential path
+        sync_limiter_no_cache._repository._capabilities = replace(
+            sync_limiter_no_cache._repository._capabilities,
+            supports_batch_operations=False,
+        )
+
+        counter = [0]
+
+        def operation():
+            counter[0] += 1
+            with sync_limiter_no_cache.acquire(
+                entity_id=f"seq-entity-{counter[0]}",
+                resource="batch-cmp-resource",
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="batch-config-resolution")
+    def test_config_resolution_batched(self, benchmark, sync_limiter_no_cache):
+        """Optimized: 1 BatchGetItem call for config resolution (#298).
+
+        With batch operations enabled (default), _resolve_limits uses
+        a single BatchGetItem to fetch all 4 config levels at once.
+        Each iteration uses a unique entity ID to force cache misses.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Setup stored limits at resource level (resolved on cache miss)
+        sync_limiter_no_cache.set_resource_defaults("batch-cmp-resource", limits)
+
+        counter = [0]
+
+        def operation():
+            counter[0] += 1
+            with sync_limiter_no_cache.acquire(
+                entity_id=f"batch-entity-{counter[0]}",
+                resource="batch-cmp-resource",
                 consume={"rpm": 1},
             ):
                 pass
