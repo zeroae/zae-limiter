@@ -191,6 +191,16 @@ zae-limiter local down
 Distributed load testing using Fargate Spot master + Lambda workers:
 
 ```bash
+# 0. Deploy the limiter stack first (required before load deploy)
+# The load stack needs AcquireOnlyPolicyArn and FullAccessPolicyArn outputs,
+# so the limiter stack MUST be deployed with IAM policies (not --no-iam).
+# See .claude/rules/aws-testing.md for IAM flag details.
+zae-limiter deploy --name stress-target --region us-east-1 \
+  --permission-boundary "arn:aws:iam::aws:policy/PowerUserAccess" \
+  --role-name-format "PowerUserPB-{}" \
+  --policy-name-format "PowerUserPB-{}" \
+  --no-aggregator
+
 # 1. Deploy load test infrastructure (one-time setup)
 # VPC: zeroae-production, Subnets: us-east-1a private, us-east-1b private
 zae-limiter load deploy --name stress-target --region us-east-1 \

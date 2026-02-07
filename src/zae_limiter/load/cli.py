@@ -402,7 +402,20 @@ def deploy(
     ec2 = boto3.client("ec2", region_name=region)
     route_table_ids = _discover_route_tables(ec2, subnet_list)
     if route_table_ids:
-        click.echo(f"  Route tables for DynamoDB endpoint: {route_table_ids}")
+        # Check if a DynamoDB gateway endpoint already exists for this VPC
+        existing = ec2.describe_vpc_endpoints(
+            Filters=[
+                {"Name": "vpc-id", "Values": [vpc_id]},
+                {"Name": "service-name", "Values": [f"com.amazonaws.{region}.dynamodb"]},
+                {"Name": "vpc-endpoint-state", "Values": ["available"]},
+            ]
+        )
+        if existing["VpcEndpoints"]:
+            ep_id = existing["VpcEndpoints"][0]["VpcEndpointId"]
+            click.echo(f"  DynamoDB endpoint already exists: {ep_id}")
+            route_table_ids = ""
+        else:
+            click.echo(f"  Route tables for DynamoDB endpoint: {route_table_ids}")
 
     # Build parameters list
     stack_params = [
