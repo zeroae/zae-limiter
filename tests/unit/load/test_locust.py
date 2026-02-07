@@ -624,6 +624,41 @@ class TestAvailable:
 
 
 # ---------------------------------------------------------------------------
+# _configure_boto3_pool
+# ---------------------------------------------------------------------------
+
+
+class TestConfigureBoto3Pool:
+    """Tests for the _configure_boto3_pool guard."""
+
+    def test_second_call_is_noop(self):
+        with patch.dict("sys.modules", {"locust": MagicMock(), "locust.exception": MagicMock()}):
+            import importlib
+
+            import zae_limiter.locust as mod
+
+            importlib.reload(mod)
+
+            # Reset state
+            mod._boto3_pool_configured = False
+
+            with patch.object(mod, "boto3", create=True) as mock_boto3:
+                mock_boto3.Session.client = MagicMock()
+                mod._configure_boto3_pool()
+                assert mod._boto3_pool_configured is True
+
+                # Second call should be a no-op (won't touch boto3 again)
+                mock_boto3.Session.client = MagicMock()
+                original_client = mock_boto3.Session.client
+                mod._configure_boto3_pool()
+                # client should not have been reassigned
+                assert mock_boto3.Session.client is original_client
+
+            # Reset for other tests
+            mod._boto3_pool_configured = False
+
+
+# ---------------------------------------------------------------------------
 # RateLimiterUser
 # ---------------------------------------------------------------------------
 
