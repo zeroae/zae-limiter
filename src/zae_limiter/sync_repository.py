@@ -15,6 +15,7 @@ from ulid import ULID
 
 from . import schema
 from .exceptions import EntityExistsError
+from .limiter import OnUnavailable as OnUnavailable
 from .models import (
     AuditAction,
     AuditEvent,
@@ -22,6 +23,7 @@ from .models import (
     BucketState,
     Entity,
     Limit,
+    OnUnavailableAction,
     StackOptions,
     UsageSnapshot,
     UsageSummary,
@@ -496,7 +498,7 @@ class SyncRepository:
 
     def batch_get_configs(
         self, keys: list[tuple[str, str]]
-    ) -> dict[tuple[str, str], tuple[list[Limit], str | None]]:
+    ) -> dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]:
         """
         Batch get config items in a single DynamoDB call.
 
@@ -519,7 +521,7 @@ class SyncRepository:
         if not keys:
             return {}
         client = self._get_client()
-        result: dict[tuple[str, str], tuple[list[Limit], str | None]] = {}
+        result: dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]] = {}
         unique_keys = list(set(keys))
         for i in range(0, len(unique_keys), 100):
             chunk = unique_keys[i : i + 100]
@@ -534,7 +536,10 @@ class SyncRepository:
                 if pk and sk:
                     limits = self._deserialize_composite_limits(item)
                     ou_attr = item.get("on_unavailable", {})
-                    on_unavailable: str | None = ou_attr.get("S") if ou_attr else None
+                    ou_str = ou_attr.get("S") if ou_attr else None
+                    on_unavailable: OnUnavailableAction | None = (
+                        cast(OnUnavailableAction, ou_str) if ou_str else None
+                    )
                     result[pk, sk] = (limits, on_unavailable)
         return result
 
@@ -1265,7 +1270,10 @@ class SyncRepository:
         return sorted(resources_set)
 
     def set_system_defaults(
-        self, limits: list[Limit], on_unavailable: str | None = None, principal: str | None = None
+        self,
+        limits: list[Limit],
+        on_unavailable: OnUnavailableAction | None = None,
+        principal: str | None = None,
     ) -> None:
         """
         Store system-wide default limits and config (composite format, ADR-114).
@@ -1298,7 +1306,7 @@ class SyncRepository:
             },
         )
 
-    def get_system_defaults(self) -> tuple[list[Limit], str | None]:
+    def get_system_defaults(self) -> tuple[list[Limit], OnUnavailableAction | None]:
         """
         Get system-wide default limits and config (composite format, ADR-114).
 
@@ -1319,7 +1327,11 @@ class SyncRepository:
             return ([], None)
         limits = self._deserialize_composite_limits(item)
         on_unavailable_attr = item.get("on_unavailable", {})
-        on_unavailable: str | None = on_unavailable_attr.get("S") if on_unavailable_attr else None
+        on_unavailable: OnUnavailableAction | None = (
+            cast(OnUnavailableAction, on_unavailable_attr.get("S"))
+            if on_unavailable_attr and on_unavailable_attr.get("S")
+            else None
+        )
         return (limits, on_unavailable)
 
     def delete_system_defaults(self, principal: str | None = None) -> None:

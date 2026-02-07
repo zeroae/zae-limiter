@@ -11,10 +11,13 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+#: Config source levels returned by :meth:`ConfigCache.resolve_limits`.
+ConfigSource = Literal["entity", "entity_default", "resource", "system"]
 
 if TYPE_CHECKING:
-    from .models import Limit
+    from .models import Limit, OnUnavailableAction
 
 # Sentinel value to distinguish "no config exists" from "not yet cached"
 _NO_CONFIG: object = object()
@@ -104,8 +107,8 @@ class ConfigCache:
 
     async def get_system_defaults(
         self,
-        fetch_fn: Callable[[], Awaitable[tuple[list["Limit"], str | None]]],
-    ) -> tuple[list["Limit"], str | None]:
+        fetch_fn: Callable[[], Awaitable[tuple[list["Limit"], "OnUnavailableAction | None"]]],
+    ) -> tuple[list["Limit"], "OnUnavailableAction | None"]:
         """
         Get system defaults, using cache if valid.
 
@@ -122,7 +125,8 @@ class ConfigCache:
             # Check cache
             if self._system_defaults is not None and not self._is_expired(self._system_defaults):
                 self._hits += 1
-                return cast(tuple[list["Limit"], str | None], self._system_defaults.value)
+                result: tuple[list[Limit], OnUnavailableAction | None] = self._system_defaults.value
+                return result
 
             # Cache miss - fetch and store
             self._misses += 1
@@ -132,8 +136,8 @@ class ConfigCache:
 
     def get_system_defaults_sync(
         self,
-        fetch_fn: Callable[[], tuple[list["Limit"], str | None]],
-    ) -> tuple[list["Limit"], str | None]:
+        fetch_fn: Callable[[], tuple[list["Limit"], "OnUnavailableAction | None"]],
+    ) -> tuple[list["Limit"], "OnUnavailableAction | None"]:
         """
         Get system defaults synchronously, using cache if valid.
 
@@ -150,7 +154,8 @@ class ConfigCache:
             # Check cache
             if self._system_defaults is not None and not self._is_expired(self._system_defaults):
                 self._hits += 1
-                return cast(tuple[list["Limit"], str | None], self._system_defaults.value)
+                result: tuple[list[Limit], OnUnavailableAction | None] = self._system_defaults.value
+                return result
 
             # Cache miss - fetch and store
             self._misses += 1
@@ -366,9 +371,9 @@ class ConfigCache:
         resource: str,
         batch_fetch_fn: Callable[
             [list[tuple[str, str]]],
-            Awaitable["dict[tuple[str, str], tuple[list[Limit], str | None]]"],
+            Awaitable["dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]"],
         ],
-    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+    ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """
         Resolve limits using batched config fetch with cache awareness.
 
@@ -385,7 +390,7 @@ class ConfigCache:
         Returns:
             Tuple of (limits, on_unavailable, config_source) where:
             - limits: Resolved limits or None if nothing found
-            - on_unavailable: on_unavailable string from system config (if fetched)
+            - on_unavailable: on_unavailable value from system config (if fetched)
             - config_source: "entity", "entity_default", "resource", "system", or None
         """
         if not self._enabled:
@@ -400,9 +405,9 @@ class ConfigCache:
         resource: str,
         batch_fetch_fn: Callable[
             [list[tuple[str, str]]],
-            Awaitable["dict[tuple[str, str], tuple[list[Limit], str | None]]"],
+            Awaitable["dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]"],
         ],
-    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+    ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """Async inner implementation for batched config resolution."""
         from . import schema
 
@@ -412,7 +417,7 @@ class ConfigCache:
 
         # Phase 2: Batch fetch misses
         fetched_results: dict[str, Any] = {}
-        on_unavailable: str | None = None
+        on_unavailable: OnUnavailableAction | None = None
 
         if miss_keys:
             fetch_keys = [(pk, sk) for _, pk, sk in miss_keys]
@@ -430,9 +435,9 @@ class ConfigCache:
         resource: str,
         schema: Any,
     ) -> tuple[
-        list[tuple[str, str, str]],
+        list[tuple[ConfigSource, str, str]],
         dict[str, Any],
-        list[tuple[str, str, str]],
+        list[tuple[ConfigSource, str, str]],
     ]:
         """Build config levels and check cache for each, returning misses.
 
@@ -440,7 +445,7 @@ class ConfigCache:
             (levels, cached_results, miss_keys)
         """
         include_entity_default = resource != "_default_"
-        levels: list[tuple[str, str, str]] = [
+        levels: list[tuple[ConfigSource, str, str]] = [
             ("entity", schema.pk_entity(entity_id), schema.sk_config(resource)),
         ]
         if include_entity_default:
@@ -455,7 +460,7 @@ class ConfigCache:
         )
 
         cached_results: dict[str, Any] = {}
-        miss_keys: list[tuple[str, str, str]] = []
+        miss_keys: list[tuple[ConfigSource, str, str]] = []
 
         for slot_type, pk, sk in levels:
             is_cached, value = self._check_cache_slot(
@@ -472,18 +477,18 @@ class ConfigCache:
 
     def _process_fetched_items(
         self,
-        miss_keys: list[tuple[str, str, str]],
-        items: "dict[tuple[str, str], tuple[list[Limit], str | None]]",
+        miss_keys: list[tuple[ConfigSource, str, str]],
+        items: "dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]",
         entity_id: str,
         resource: str,
-    ) -> tuple[dict[str, Any], str | None]:
+    ) -> "tuple[dict[str, Any], OnUnavailableAction | None]":
         """Process fetched items: populate cache and return results.
 
         Returns:
             (fetched_results, on_unavailable)
         """
         fetched_results: dict[str, Any] = {}
-        on_unavailable: str | None = None
+        on_unavailable: OnUnavailableAction | None = None
 
         for slot_type, pk, sk in miss_keys:
             entry = items.get((pk, sk))
@@ -529,11 +534,11 @@ class ConfigCache:
 
     def _evaluate_hierarchy(
         self,
-        levels: list[tuple[str, str, str]],
+        levels: list[tuple[ConfigSource, str, str]],
         cached_results: dict[str, Any],
         fetched_results: dict[str, Any],
-        on_unavailable: str | None,
-    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+        on_unavailable: "OnUnavailableAction | None",
+    ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """Evaluate config hierarchy from cached + fetched results.
 
         Returns:
@@ -568,9 +573,9 @@ class ConfigCache:
         resource: str,
         batch_fetch_fn: Callable[
             [list[tuple[str, str]]],
-            Awaitable["dict[tuple[str, str], tuple[list[Limit], str | None]]"],
+            Awaitable["dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]"],
         ],
-    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+    ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """Resolve limits without caching (TTL=0): batch fetch all 4 levels."""
         from . import schema
 
@@ -581,11 +586,11 @@ class ConfigCache:
 
     def _evaluate_uncached(
         self,
-        levels: list[tuple[str, str, str]],
-        items: "dict[tuple[str, str], tuple[list[Limit], str | None]]",
-    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+        levels: list[tuple[ConfigSource, str, str]],
+        items: "dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]",
+    ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """Evaluate hierarchy from batch results without caching."""
-        on_unavailable: str | None = None
+        on_unavailable: OnUnavailableAction | None = None
 
         # Extract on_unavailable from system entry if present
         for slot_type, pk, sk in levels:

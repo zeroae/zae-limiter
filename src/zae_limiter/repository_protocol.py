@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         BucketState,
         Entity,
         Limit,
+        OnUnavailableAction,
         UsageSnapshot,
         UsageSummary,
     )
@@ -268,7 +269,7 @@ class RepositoryProtocol(Protocol):
     async def batch_get_configs(
         self,
         keys: list[tuple[str, str]],
-    ) -> "dict[tuple[str, str], tuple[list[Limit], str | None]]":
+    ) -> "dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]":
         """
         Batch get config items in a single DynamoDB call.
 
@@ -613,7 +614,7 @@ class RepositoryProtocol(Protocol):
     async def set_system_defaults(
         self,
         limits: "list[Limit]",
-        on_unavailable: str | None = None,
+        on_unavailable: "OnUnavailableAction | None" = None,
         principal: str | None = None,
     ) -> None:
         """
@@ -628,7 +629,7 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def get_system_defaults(self) -> "tuple[list[Limit], str | None]":
+    async def get_system_defaults(self) -> "tuple[list[Limit], OnUnavailableAction | None]":
         """
         Get system-wide default limits and config.
 

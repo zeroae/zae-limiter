@@ -10,7 +10,7 @@ import threading
 import time
 from unittest.mock import MagicMock, Mock
 
-from zae_limiter.models import Limit
+from zae_limiter.models import Limit, OnUnavailableAction
 from zae_limiter.sync_config_cache import _NO_CONFIG, CacheStats, SyncConfigCache
 
 
@@ -310,14 +310,14 @@ class TestConfigCacheThreadSafety:
         call_count = 0
         lock = threading.Lock()
 
-        def fetch_fn() -> tuple[list[Limit], str | None]:
+        def fetch_fn() -> tuple[list[Limit], OnUnavailableAction | None]:
             nonlocal call_count
             with lock:
                 call_count += 1
             time.sleep(0.01)
             return ([Limit.per_minute("tpm", 10000)], "allow")
 
-        results: list[tuple[list[Limit], str | None]] = []
+        results: list[tuple[list[Limit], OnUnavailableAction | None]] = []
 
         def worker() -> None:
             for _ in range(10):

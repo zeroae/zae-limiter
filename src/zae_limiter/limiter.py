@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -18,7 +18,7 @@ from .bucket import (
     calculate_time_until_available,
     try_consume,
 )
-from .config_cache import CacheStats, ConfigCache
+from .config_cache import CacheStats, ConfigCache, ConfigSource
 from .exceptions import (
     IncompatibleSchemaError,
     RateLimiterUnavailable,
@@ -35,6 +35,7 @@ from .models import (
     Limit,
     LimiterInfo,
     LimitStatus,
+    OnUnavailableAction,
     ResourceCapacity,
     StackOptions,
     Status,
@@ -939,7 +940,7 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         limits_override: list[Limit] | None,
-    ) -> tuple[list[Limit], str]:
+    ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
 
@@ -1054,11 +1055,11 @@ class RateLimiter:
             return on_unavailable_param
 
         # Try System config (with caching)
-        _, on_unavailable_str = await self._config_cache.get_system_defaults(
+        _, on_unavailable_action = await self._config_cache.get_system_defaults(
             self._repository.get_system_defaults,
         )
-        if on_unavailable_str is not None:
-            return OnUnavailable(on_unavailable_str)
+        if on_unavailable_action is not None:
+            return OnUnavailable(on_unavailable_action)
 
         # Fall back to constructor default
         return self.on_unavailable
@@ -1370,9 +1371,11 @@ class RateLimiter:
             principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
-        on_unavailable_str = on_unavailable.value if on_unavailable else None
+        on_unavailable_action: OnUnavailableAction | None = (
+            on_unavailable.value if on_unavailable else None
+        )
         await self._repository.set_system_defaults(
-            limits, on_unavailable=on_unavailable_str, principal=principal
+            limits, on_unavailable=on_unavailable_action, principal=principal
         )
 
     async def get_system_defaults(self) -> tuple[list[Limit], OnUnavailable | None]:
@@ -1383,10 +1386,8 @@ class RateLimiter:
             Tuple of (limits, on_unavailable). on_unavailable may be None if not set.
         """
         await self._ensure_initialized()
-        limits, on_unavailable_str = await self._repository.get_system_defaults()
-        on_unavailable = None
-        if on_unavailable_str:
-            on_unavailable = OnUnavailable(on_unavailable_str)
+        limits, on_unavailable_action = await self._repository.get_system_defaults()
+        on_unavailable = OnUnavailable(on_unavailable_action) if on_unavailable_action else None
         return limits, on_unavailable
 
     async def delete_system_defaults(

@@ -16,6 +16,7 @@ from .models import (
     BucketState,
     Entity,
     Limit,
+    OnUnavailableAction,
     StackOptions,
     UsageSnapshot,
     UsageSummary,
@@ -630,7 +631,7 @@ class Repository:
     async def batch_get_configs(
         self,
         keys: list[tuple[str, str]],
-    ) -> dict[tuple[str, str], tuple[list[Limit], str | None]]:
+    ) -> dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]:
         """
         Batch get config items in a single DynamoDB call.
 
@@ -654,7 +655,7 @@ class Repository:
             return {}
 
         client = await self._get_client()
-        result: dict[tuple[str, str], tuple[list[Limit], str | None]] = {}
+        result: dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]] = {}
 
         # Deduplicate keys
         unique_keys = list(set(keys))
@@ -688,7 +689,10 @@ class Repository:
                 if pk and sk:
                     limits = self._deserialize_composite_limits(item)
                     ou_attr = item.get("on_unavailable", {})
-                    on_unavailable: str | None = ou_attr.get("S") if ou_attr else None
+                    ou_str = ou_attr.get("S") if ou_attr else None
+                    on_unavailable: OnUnavailableAction | None = (
+                        cast(OnUnavailableAction, ou_str) if ou_str else None
+                    )
                     result[(pk, sk)] = (limits, on_unavailable)
 
         return result
@@ -1633,7 +1637,7 @@ class Repository:
     async def set_system_defaults(
         self,
         limits: list[Limit],
-        on_unavailable: str | None = None,
+        on_unavailable: OnUnavailableAction | None = None,
         principal: str | None = None,
     ) -> None:
         """
@@ -1677,7 +1681,7 @@ class Repository:
             },
         )
 
-    async def get_system_defaults(self) -> tuple[list[Limit], str | None]:
+    async def get_system_defaults(self) -> tuple[list[Limit], OnUnavailableAction | None]:
         """
         Get system-wide default limits and config (composite format, ADR-114).
 
@@ -1708,7 +1712,11 @@ class Repository:
 
         # Extract on_unavailable
         on_unavailable_attr = item.get("on_unavailable", {})
-        on_unavailable: str | None = on_unavailable_attr.get("S") if on_unavailable_attr else None
+        on_unavailable: OnUnavailableAction | None = (
+            cast(OnUnavailableAction, on_unavailable_attr.get("S"))
+            if on_unavailable_attr and on_unavailable_attr.get("S")
+            else None
+        )
 
         return limits, on_unavailable
 

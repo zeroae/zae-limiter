@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from zae_limiter.config_cache import _NO_CONFIG, CacheStats, ConfigCache
-from zae_limiter.models import Limit
+from zae_limiter.models import Limit, OnUnavailableAction
 
 
 class TestCacheStats:
@@ -428,14 +428,14 @@ class TestConfigCacheThreadSafety:
         call_count = 0
         lock = threading.Lock()
 
-        def fetch_fn() -> tuple[list[Limit], str | None]:
+        def fetch_fn() -> tuple[list[Limit], OnUnavailableAction | None]:
             nonlocal call_count
             with lock:
                 call_count += 1
             time.sleep(0.01)  # Simulate slow fetch
             return [Limit.per_minute("tpm", 10000)], "allow"
 
-        results: list[tuple[list[Limit], str | None]] = []
+        results: list[tuple[list[Limit], OnUnavailableAction | None]] = []
 
         def worker() -> None:
             for _ in range(10):
@@ -471,13 +471,13 @@ class TestConfigCacheAsyncSafety:
         cache = ConfigCache(ttl_seconds=60)
         call_count = 0
 
-        async def fetch_fn() -> tuple[list[Limit], str | None]:
+        async def fetch_fn() -> tuple[list[Limit], OnUnavailableAction | None]:
             nonlocal call_count
             call_count += 1
             await asyncio.sleep(0.01)  # Simulate slow fetch
             return [Limit.per_minute("tpm", 10000)], "allow"
 
-        async def worker() -> list[tuple[list[Limit], str | None]]:
+        async def worker() -> list[tuple[list[Limit], OnUnavailableAction | None]]:
             results = []
             for _ in range(10):
                 result = await cache.get_system_defaults(fetch_fn)

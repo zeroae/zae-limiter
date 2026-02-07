@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import click
 
@@ -2525,7 +2525,12 @@ def system_set_defaults(
             sys.exit(1)
 
         try:
-            await repo.set_system_defaults(parsed_limits, on_unavailable=on_unavailable)
+            from .models import OnUnavailableAction
+
+            on_unavailable_action: OnUnavailableAction | None = (
+                cast(OnUnavailableAction, on_unavailable) if on_unavailable else None
+            )
+            await repo.set_system_defaults(parsed_limits, on_unavailable=on_unavailable_action)
             n_limits = len(parsed_limits)
             click.echo(f"Set {n_limits} system-wide default(s):")
             for limit in parsed_limits:
