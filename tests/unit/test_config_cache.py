@@ -765,3 +765,49 @@ class TestConfigCacheResolveLimits:
         assert limits is not None
         assert limits[0].capacity == 200
         assert source == "entity_default"
+
+    @pytest.mark.asyncio
+    async def test_check_cache_slot_unknown_type(self) -> None:
+        """_check_cache_slot returns (False, None) for unknown slot types."""
+        cache = ConfigCache(ttl_seconds=60)
+        is_cached, value = cache._check_cache_slot("unknown")
+        assert is_cached is False
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_empty_limits_entity_negative_cached(self) -> None:
+        """When entity config exists but has empty limits, negative cache is stored."""
+        from zae_limiter import schema
+
+        cache = ConfigCache(ttl_seconds=60)
+
+        system_limits = [Limit.per_minute("rpm", 1000)]
+
+        async def batch_fn(keys):
+            result: dict = {}
+            for pk, sk in keys:
+                if pk == schema.pk_entity("user-1") and sk == schema.sk_config("gpt-4"):
+                    result[(pk, sk)] = ([], None)  # Entity exists but empty limits
+                elif pk == schema.pk_entity("user-1") and sk == schema.sk_config("_default_"):
+                    result[(pk, sk)] = ([], None)  # Entity default exists but empty limits
+                elif pk == schema.pk_system() and sk == schema.sk_config():
+                    result[(pk, sk)] = (system_limits, None)
+            return result
+
+        limits, _, source = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert limits is not None
+        assert source == "system"  # Falls through to system since entity limits are empty
+
+    @pytest.mark.asyncio
+    async def test_uncached_nothing_found(self) -> None:
+        """_evaluate_uncached returns None when no items have limits."""
+        cache = ConfigCache(ttl_seconds=0)  # Disabled cache -> uncached path
+
+        async def batch_fn(keys):
+            return {}
+
+        limits, on_unavailable, source = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert limits is None
+        assert source is None
