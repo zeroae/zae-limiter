@@ -4573,13 +4573,18 @@ class TestSpeculativeAcquire:
 
         limiter._speculative_writes = True
 
+        inner_reached = False
         with pytest.raises(ValueError):
             async with limiter.acquire("entity-1", "gpt-4", {"rpm": 10}):
+                inner_reached = True
                 raise ValueError("test error")
+        assert inner_reached, "inner block should have executed before raising"
 
         # Tokens should be restored after rollback — verify we can still acquire
+        rollback_verified = False
         async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
-            pass
+            rollback_verified = True
+        assert rollback_verified, "post-rollback acquire should succeed"
 
     async def test_speculative_cascade_both_succeed(self, limiter):
         """Speculative cascade succeeds for both child and parent."""
