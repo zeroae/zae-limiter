@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.gevent
+
 # 'lambda' is a Python keyword, so we import via importlib
 worker_mod = importlib.import_module("zae_limiter.load.lambda.worker")
 handler = worker_mod.handler

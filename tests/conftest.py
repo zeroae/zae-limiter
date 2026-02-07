@@ -13,6 +13,30 @@ def pytest_addoption(parser):
     )
 
 
+def pytest_ignore_collect(collection_path, config):
+    """Skip gevent-marked test files when xdist is active.
+
+    Gevent monkey-patching at import time is incompatible with xdist workers.
+    This hook prevents collection (and therefore import) of these files.
+    Run with -n 0 to include them.
+    """
+    if not collection_path.suffix == ".py":
+        return None
+    try:
+        numprocesses = config.getoption("numprocesses")
+    except (ValueError, AttributeError):
+        return None
+    if not numprocesses:
+        return None
+    try:
+        source = collection_path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if "pytestmark = pytest.mark.gevent" in source:
+        return True
+    return None
+
+
 def pytest_collection_modifyitems(config, items):
     """Skip AWS tests unless --run-aws flag is provided."""
     if not config.getoption("--run-aws"):

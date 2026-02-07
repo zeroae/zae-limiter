@@ -115,6 +115,7 @@ markers = [
     "monitoring: marks tests that verify CloudWatch alarms, metrics, DLQ",
     "snapshots: marks tests that verify usage snapshot creation",
     "doctest: marks tests that validate documentation code examples",
+    "gevent: marks tests that trigger gevent monkey-patching (incompatible with xdist)",
 ]
 
 [tool.ruff]
