@@ -112,6 +112,26 @@ class TestLimit:
         with pytest.raises(AttributeError):
             limit.capacity = 200
 
+    def test_from_bucket_state(self):
+        """Test reconstructing Limit from BucketState."""
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=50_000,
+            last_refill_ms=1000,
+            capacity_milli=100_000,
+            burst_milli=150_000,
+            refill_amount_milli=100_000,
+            refill_period_ms=60_000,
+        )
+        limit = Limit.from_bucket_state(state)
+        assert limit.name == "rpm"
+        assert limit.capacity == 100
+        assert limit.burst == 150
+        assert limit.refill_amount == 100
+        assert limit.refill_period_seconds == 60
+
 
 class TestEntity:
     """Tests for Entity model."""

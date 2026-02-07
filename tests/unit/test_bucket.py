@@ -8,6 +8,7 @@ from zae_limiter.bucket import (
     force_consume,
     refill_bucket,
     try_consume,
+    would_refill_satisfy,
 )
 from zae_limiter.models import BucketState
 
@@ -224,3 +225,100 @@ class TestCalculateAvailable:
         # 30 seconds later, refill 50k
         available = calculate_available(state, now_ms=30_000)
         assert available == -50_000  # still 50k debt
+
+
+class TestWouldRefillSatisfy:
+    """Tests for would_refill_satisfy function."""
+
+    def _make_bucket(
+        self,
+        limit_name: str = "rpm",
+        tokens_milli: int = 0,
+        last_refill_ms: int = 0,
+        capacity_milli: int = 100_000,
+        burst_milli: int = 100_000,
+        refill_amount_milli: int = 100_000,
+        refill_period_ms: int = 60_000,
+    ) -> BucketState:
+        return BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name=limit_name,
+            tokens_milli=tokens_milli,
+            last_refill_ms=last_refill_ms,
+            capacity_milli=capacity_milli,
+            burst_milli=burst_milli,
+            refill_amount_milli=refill_amount_milli,
+            refill_period_ms=refill_period_ms,
+        )
+
+    def test_refill_would_satisfy_single_limit(self):
+        """After enough time, refill provides sufficient tokens."""
+        # Bucket at 0 tokens, 30s has elapsed → 50 tokens refilled (100/min)
+        bucket = self._make_bucket(tokens_milli=0, last_refill_ms=0)
+        would_help, statuses = would_refill_satisfy([bucket], {"rpm": 10}, now_ms=30_000)
+        assert would_help is True
+        assert len(statuses) == 1
+        assert not statuses[0].exceeded
+
+    def test_refill_would_not_satisfy_exhausted_bucket(self):
+        """Even after refill, not enough tokens for the request."""
+        # Bucket at 0, 1s elapsed → ~1.67 tokens refilled, need 100
+        bucket = self._make_bucket(tokens_milli=0, last_refill_ms=0)
+        would_help, statuses = would_refill_satisfy([bucket], {"rpm": 100}, now_ms=1_000)
+        assert would_help is False
+        assert len(statuses) == 1
+        assert statuses[0].exceeded
+        assert statuses[0].retry_after_seconds > 0
+
+    def test_multi_limit_all_pass(self):
+        """Multiple limits all pass after refill."""
+        rpm_bucket = self._make_bucket(limit_name="rpm", tokens_milli=0, last_refill_ms=0)
+        tpm_bucket = self._make_bucket(
+            limit_name="tpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=200_000_000,
+            burst_milli=200_000_000,
+            refill_amount_milli=200_000_000,
+            refill_period_ms=60_000,
+        )
+        would_help, statuses = would_refill_satisfy(
+            [rpm_bucket, tpm_bucket], {"rpm": 1, "tpm": 100}, now_ms=30_000
+        )
+        assert would_help is True
+        assert len(statuses) == 2
+
+    def test_multi_limit_one_fails(self):
+        """One limit passes but another still fails."""
+        rpm_bucket = self._make_bucket(limit_name="rpm", tokens_milli=50_000, last_refill_ms=0)
+        tpm_bucket = self._make_bucket(
+            limit_name="tpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1_000,
+            burst_milli=1_000,
+            refill_amount_milli=1_000,
+            refill_period_ms=60_000,
+        )
+        # rpm has plenty, tpm has 1/min capacity, need 100 → fails
+        would_help, statuses = would_refill_satisfy(
+            [rpm_bucket, tpm_bucket], {"rpm": 1, "tpm": 100}, now_ms=1_000
+        )
+        assert would_help is False
+
+    def test_skips_limits_not_in_consume(self):
+        """Limits not in consume dict are ignored."""
+        bucket = self._make_bucket(limit_name="rpm", tokens_milli=50_000)
+        would_help, statuses = would_refill_satisfy([bucket], {"tpm": 100}, now_ms=1_000)
+        # No statuses for rpm since tpm isn't in the bucket
+        assert would_help is True
+        assert len(statuses) == 0
+
+    def test_statuses_have_correct_retry_after(self):
+        """LimitStatus objects include accurate retry_after_seconds."""
+        bucket = self._make_bucket(tokens_milli=0, last_refill_ms=0)
+        would_help, statuses = would_refill_satisfy([bucket], {"rpm": 100}, now_ms=0)
+        assert would_help is False
+        assert statuses[0].retry_after_seconds > 0
+        assert statuses[0].limit.name == "rpm"
