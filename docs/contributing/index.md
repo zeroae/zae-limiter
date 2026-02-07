@@ -8,6 +8,7 @@ Thank you for your interest in contributing to zae-limiter!
 git clone https://github.com/zeroae/zae-limiter.git
 cd zae-limiter
 uv sync --all-extras
+uv tool install hatch  # Required for sync code generation
 pytest
 ```
 

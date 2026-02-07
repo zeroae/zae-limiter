@@ -19,6 +19,7 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 ```bash
 # Setup (one-time)
 uv sync --all-extras
+uv tool install hatch  # Install hatch for sync code generation
 pre-commit install  # Install git hooks for linting
 
 # Deploy infrastructure (CloudFormation)

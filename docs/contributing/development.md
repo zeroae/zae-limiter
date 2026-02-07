@@ -16,6 +16,7 @@ This guide covers setting up a local development environment for zae-limiter.
 git clone --recurse-submodules https://github.com/zeroae/zae-limiter.git
 cd zae-limiter
 uv sync --all-extras
+uv tool install hatch  # Required for sync code generation
 ```
 
 ### Using conda
@@ -26,6 +27,7 @@ cd zae-limiter
 conda create -n zae-limiter python=3.12
 conda activate zae-limiter
 pip install -e ".[dev]"
+pip install hatch  # Required for sync code generation
 ```
 
 !!! tip "Already cloned?"
