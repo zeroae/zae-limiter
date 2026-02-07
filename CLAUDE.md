@@ -196,11 +196,11 @@ Distributed load testing using Fargate Spot master + Lambda workers:
 zae-limiter load deploy --name stress-target --region us-east-1 \
   --vpc-id vpc-09fa0359f30c6efe4 \
   --subnet-ids "subnet-0441a9342c2d605cf,subnet-0d607c058fe28230e" \
-  -C examples/locust/ -f locustfiles/simple.py \
-  --desired-workers 10
+  -C examples/locust/
 
 # 2. Connect to Fargate master (starts task if not running)
-zae-limiter load connect --name stress-target --region us-east-1
+zae-limiter load connect --name stress-target --region us-east-1 \
+  -f locustfiles/simple.py
 # Opens SSM tunnel to http://localhost:8089 (Locust UI)
 
 # 2b. Connect with runtime overrides (no redeploy needed)
@@ -214,7 +214,7 @@ zae-limiter load connect --name stress-target --region us-east-1 \
 
 # 2d. Force restart with new config (when task already running)
 zae-limiter load connect --name stress-target --region us-east-1 \
-  --max-workers 100 --force
+  --max-workers 100 --force -f locustfiles/simple.py
 
 # 3. Start test via curl (or use Locust UI)
 curl -X POST http://localhost:8089/swarm -d "user_count=100&spawn_rate=10"
@@ -226,25 +226,40 @@ curl http://localhost:8089/stats/requests | jq '{workers: .worker_count, users: 
 curl -X GET http://localhost:8089/stop
 
 # 6. Disconnect and stop Fargate (use --destroy to stop task)
-zae-limiter load connect --name stress-target --region us-east-1 --destroy
+zae-limiter load connect --name stress-target --region us-east-1 --destroy \
+  -f locustfiles/simple.py
+
+# 7. Automated benchmark (no manual Locust UI needed)
+# Lambda (single invocation):
+zae-limiter load benchmark --name stress-target --region us-east-1 \
+  -f locustfiles/max_rps.py --users 10 --duration 60
+
+# Fargate standalone:
+zae-limiter load benchmark --name stress-target --region us-east-1 \
+  --mode fargate -f locustfiles/max_rps.py --users 10 --duration 60
+
+# Distributed (Fargate master + Lambda workers):
+zae-limiter load benchmark --name stress-target --region us-east-1 \
+  --mode distributed --workers 2 -f locustfiles/max_rps.py --users 20 --duration 60
 ```
 
 **Connect runtime overrides:**
-- `--max-workers`, `--desired-workers`, `--min-workers`: Scaling parameters
-- `--users-per-worker`, `--rps-per-worker`, `--startup-lead-time`: Auto-scaling tuning
-- `-f, --locustfile`: Switch locustfile without redeploy
+- `--max-workers`, `--min-workers`: Scaling parameters
+- `--users-per-worker`, `--startup-lead-time`: Auto-scaling tuning
+- `-f, --locustfile`: Locustfile path (required)
 - `--standalone`: Run Locust in single-process mode (no Lambda workers)
 - `--force`: Stop existing task and restart with new config
 
 **Key parameters:**
-- `--desired-workers`: Number of Lambda workers (each runs ~50 users optimally)
 - `--lambda-timeout`: Worker timeout in minutes (default: 5, triggers proactive replacement at 80%)
 - `-C`: Directory containing locustfiles
-- `-f`: Locustfile path relative to `-C`
+- `-f`: Locustfile path relative to `-C` (required on `connect` and `benchmark`)
 
 **Architecture:**
 - Fargate Spot runs Locust master + worker orchestrator sidecar
+- Orchestrator auto-scales Lambda workers based on user count (10 users/worker at 1 vCPU)
 - Orchestrator proactively invokes Lambda replacements at 80% of timeout
+- Orchestrator shuts down after 15 min idle (essential container, stops Fargate task)
 - Lambda workers connect via VPC to Fargate master
 - Lambda workers use 50-connection boto3 pool (configured via gevent monkey-patch)
 

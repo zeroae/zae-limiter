@@ -22,22 +22,10 @@ Parameters:
     MinValue: 1
     MaxValue: 1000
 
-  DesiredWorkers:
-    Type: String
-    Default: ''
-    Description: Fixed number of workers (empty = auto-scaling mode)
-
   UsersPerWorker:
     Type: Number
-    Default: 20
+    Default: 10
     Description: Max users per Lambda worker for auto-scaling
-    MinValue: 1
-    MaxValue: 1000
-
-  RpsPerWorker:
-    Type: Number
-    Default: 50
-    Description: Max RPS per Lambda worker for auto-scaling
     MinValue: 1
     MaxValue: 1000
 
@@ -68,11 +56,6 @@ Parameters:
     Description: Lambda worker memory in MB (CPU scales proportionally; 1769 MB = 1 vCPU)
     MinValue: 128
     MaxValue: 10240
-
-  Locustfile:
-    Type: String
-    Default: locustfile.py
-    Description: Locustfile path relative to project directory
 
   PrivateRouteTableIds:
     Type: CommaDelimitedList
@@ -293,6 +276,7 @@ Resources:
           Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LocustRepository}:latest
           Essential: true
           # Command is not specified - uses Dockerfile ENTRYPOINT which reads LOCUSTFILE env var
+          # LOCUSTFILE must be provided at runtime via container env override
           PortMappings:
             - ContainerPort: 5557
               Protocol: tcp
@@ -301,8 +285,6 @@ Resources:
             - ContainerPort: 8089
               Protocol: tcp
           Environment:
-            - Name: LOCUSTFILE
-              Value: !Ref Locustfile
             - Name: TARGET_STACK_NAME
               Value: !Ref TargetStackName
             - Name: TARGET_REGION
@@ -315,20 +297,14 @@ Resources:
               awslogs-stream-prefix: master
         - Name: worker-orchestrator
           Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LocustRepository}:latest
-          Essential: false
+          Essential: true
           EntryPoint:
             - python
             - /mnt/orchestrator.py
           Command: []
           Environment:
-            - Name: LOCUSTFILE
-              Value: !Ref Locustfile
-            - Name: DESIRED_WORKERS
-              Value: !Ref DesiredWorkers
             - Name: USERS_PER_WORKER
               Value: !Ref UsersPerWorker
-            - Name: RPS_PER_WORKER
-              Value: !Ref RpsPerWorker
             - Name: MIN_WORKERS
               Value: !Ref MinWorkers
             - Name: MAX_WORKERS
@@ -396,7 +372,6 @@ Resources:
           - !Ref WorkerSecurityGroup
       Environment:
         Variables:
-          LOCUSTFILE: !Ref Locustfile
           TARGET_STACK_NAME: !Ref TargetStackName
           TARGET_REGION: !Ref AWS::Region
           METRICS_NAMESPACE: ZaeLimiter/StressTest
@@ -483,7 +458,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !ImportValue
-            Fn::Sub: ${TargetStackName}-AdminPolicyArn
+            Fn::Sub: ${TargetStackName}-FullAccessPolicyArn
       Policies:
         - PolicyName: EcsExec
           PolicyDocument:
@@ -537,7 +512,7 @@ Resources:
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
         - !ImportValue
-            Fn::Sub: ${TargetStackName}-AdminPolicyArn
+            Fn::Sub: ${TargetStackName}-FullAccessPolicyArn
       Policies:
         - PolicyName: StressTestMetrics
           PolicyDocument:
