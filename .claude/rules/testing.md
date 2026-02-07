@@ -41,6 +41,7 @@ tests/
 | Marker | Description | How to Run |
 |--------|-------------|------------|
 | (none) | Unit tests | `pytest tests/unit/` |
+| `@pytest.mark.gevent` | Gevent monkey-patching (auto-skipped under xdist) | `pytest tests/unit/ -m gevent -n 0` |
 | `@pytest.mark.integration` | Requires LocalStack | `pytest -m integration` (with LocalStack env vars) |
 | `@pytest.mark.e2e` | End-to-end workflows | `pytest -m e2e` (with LocalStack env vars) |
 | `@pytest.mark.aws` | Real AWS (requires `--run-aws`) | `pytest -m aws --run-aws` |
@@ -54,6 +55,8 @@ tests/
 ```bash
 # Unit tests only (fast, no Docker)
 uv run pytest tests/unit/ -v
+# Gevent tests require xdist disabled (monkey-patching incompatible with xdist workers)
+uv run pytest tests/unit/ -m gevent -n 0 -v
 
 # Start LocalStack
 zae-limiter local up

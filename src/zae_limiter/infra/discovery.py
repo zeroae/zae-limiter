@@ -17,6 +17,7 @@ from .stack_manager import (
     MANAGED_BY_TAG_VALUE,
     NAME_TAG_KEY,
     SCHEMA_VERSION_TAG_KEY,
+    TYPE_TAG_KEY,
     VERSION_TAG_KEY,
 )
 
@@ -76,7 +77,7 @@ class InfrastructureDiscovery:
         self._client = await session.client("cloudformation", **kwargs).__aenter__()
         return self._client
 
-    async def list_limiters(self) -> list[LimiterInfo]:
+    async def list_limiters(self, stack_type: str | None = None) -> list[LimiterInfo]:
         """
         List all zae-limiter stacks in the region.
 
@@ -89,6 +90,10 @@ class InfrastructureDiscovery:
            in environments where the Tagging API is unavailable (e.g., LocalStack).
 
         Results are de-duplicated by stack name.
+
+        Args:
+            stack_type: Filter by stack type tag (e.g., ``"limiter"``,
+                ``"load-test"``). ``None`` returns all types.
 
         Returns:
             List of LimiterInfo objects, sorted by user name.
@@ -107,6 +112,12 @@ class InfrastructureDiscovery:
             by_stack_name[limiter.stack_name] = limiter
         for limiter in tagged_limiters:
             by_stack_name[limiter.stack_name] = limiter
+
+        # Filter by stack_type if specified
+        if stack_type is not None:
+            by_stack_name = {
+                name: info for name, info in by_stack_name.items() if info.stack_type == stack_type
+            }
 
         # Sort by user name for consistent output
         limiters = sorted(by_stack_name.values(), key=lambda x: x.user_name)
@@ -241,6 +252,7 @@ class InfrastructureDiscovery:
                         version=tag_dict.get(VERSION_TAG_KEY),
                         lambda_version=tag_dict.get(LAMBDA_VERSION_TAG_KEY),
                         schema_version=tag_dict.get(SCHEMA_VERSION_TAG_KEY),
+                        stack_type=tag_dict.get(TYPE_TAG_KEY, "limiter"),
                     )
                 )
 
@@ -304,6 +316,7 @@ class InfrastructureDiscovery:
                 version=tag_dict.get(VERSION_TAG_KEY),
                 lambda_version=tag_dict.get(LAMBDA_VERSION_TAG_KEY),
                 schema_version=tag_dict.get(SCHEMA_VERSION_TAG_KEY),
+                stack_type=tag_dict.get(TYPE_TAG_KEY, "limiter"),
             )
         except Exception:
             return None
