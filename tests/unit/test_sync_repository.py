@@ -2016,3 +2016,85 @@ class TestRepositoryDeserializationEdgeCases:
         assert bucket is not None
         assert bucket.total_consumed_milli is not None
         assert bucket.total_consumed_milli == 5000
+
+
+class TestSpeculativeConsume:
+    """Tests for speculative_consume method."""
+
+    def test_speculative_success(self, repo):
+        """Speculative consume succeeds when tokens available."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 10})
+        assert result.success is True
+        assert len(result.buckets) == 1
+        assert result.buckets[0].limit_name == "rpm"
+
+    def test_speculative_failure_insufficient_tokens(self, repo):
+        """Speculative consume fails when tokens insufficient."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 10)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 10})
+        assert result.success is True
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 5})
+        assert result.success is False
+
+    def test_speculative_missing_item(self, repo):
+        """Speculative consume fails when item doesn't exist."""
+        result = repo.speculative_consume("nonexistent", "gpt-4", {"rpm": 1})
+        assert result.success is False
+        assert result.old_buckets is None
+
+    def test_speculative_with_ttl(self, repo):
+        """Speculative consume handles TTL correctly."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 10}, ttl_seconds=3600)
+        assert result.success is True
+        assert len(result.buckets) == 1
+
+    def test_speculative_cascade_parent_id(self, repo):
+        """Speculative consume returns cascade/parent_id from item."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create(
+            "e1", "gpt-4", [state], now_ms, cascade=True, parent_id="parent-1"
+        )
+        repo.transact_write([put_item])
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is True
+        assert result.cascade is True
+        assert result.parent_id == "parent-1"
+
+    def test_speculative_non_condition_error_reraises(self, repo):
+        """Non-ConditionalCheckFailed errors are re-raised."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        client = repo._get_client()
+        original = client.update_item
+
+        def failing_update(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "InternalServerError", "Message": "boom"}}, "UpdateItem"
+            )
+
+        client.update_item = failing_update
+        try:
+            with pytest.raises(ClientError) as exc_info:
+                repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+            assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+        finally:
+            client.update_item = original

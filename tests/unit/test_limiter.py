@@ -19,6 +19,8 @@ from zae_limiter import (
 )
 from zae_limiter.exceptions import InvalidIdentifierError, InvalidNameError
 from zae_limiter.infra.discovery import InfrastructureDiscovery
+from zae_limiter.models import BucketState
+from zae_limiter.repository_protocol import SpeculativeResult
 
 
 class TestRateLimiterEntities:
@@ -4615,3 +4617,346 @@ class TestSpeculativeAcquire:
         # Should have released 5 tokens back
         async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
             pass
+
+    async def test_speculative_config_changed_fallback(self, limiter):
+        """Falls back to slow path when limit is missing from bucket (config change)."""
+        await limiter.create_entity("entity-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Prime bucket via normal path
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = 1000
+
+        # Mock speculative_consume to return old_buckets missing the requested limit
+        old_bucket = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=50_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+
+        call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Return old_buckets but requesting a limit ("tpm") not in the bucket
+                return SpeculativeResult(success=False, old_buckets=[old_bucket])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            # Request "tpm" but bucket only has "rpm" → config changed → slow path
+            # Slow path will create the tpm bucket and succeed
+            async with limiter.acquire(
+                "entity-1", "gpt-4", {"rpm": 1}, limits=[Limit.per_minute("tpm", 1000)]
+            ) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+    async def test_speculative_cascade_parent_fails_compensate_and_fallback(self, limiter):
+        """Cascade: parent fails, child compensated, falls back to slow path."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Prime both buckets
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        # Build mock buckets
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=500_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Child succeeds
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                # Parent fails but refill would help
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            # Should compensate child and fall back to slow path
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+    async def test_speculative_cascade_parent_missing_fallback(self, limiter):
+        """Cascade: parent bucket missing, compensate child, slow path."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Prime both
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                # Parent missing (no ALL_OLD)
+                return SpeculativeResult(success=False, old_buckets=None)
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+    async def test_speculative_cascade_parent_config_changed(self, limiter):
+        """Cascade: parent config changed (limit missing), compensate child, slow path."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        # Parent bucket has "tpm" but request needs "rpm"
+        parent_bucket_wrong_limit = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="tpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_wrong_limit])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+    async def test_speculative_cascade_parent_exhausted_raises(self, limiter):
+        """Cascade: parent exhausted (refill won't help), raises RateLimitExceeded."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=9_000,
+            last_refill_ms=now_ms,
+            capacity_milli=10_000,
+            burst_milli=10_000,
+            refill_amount_milli=10_000,
+            refill_period_ms=60_000,
+        )
+        parent_bucket_exhausted = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms,
+            capacity_milli=10_000,
+            burst_milli=10_000,
+            refill_amount_milli=10_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_exhausted])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
+                    pass
+            # Should have both child (passed) and parent (failed) statuses
+            assert len(exc_info.value.violations) >= 1
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+    async def test_speculative_skips_zero_consume_entries(self, limiter):
+        """Speculative path skips bucket entries with zero consume."""
+        await limiter.create_entity("entity-1")
+        await limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 200000)]
+        )
+
+        # Prime
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 100}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        rpm_bucket = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=99_000,
+            last_refill_ms=now_ms,
+            capacity_milli=100_000,
+            burst_milli=100_000,
+            refill_amount_milli=100_000,
+            refill_period_ms=60_000,
+        )
+        tpm_bucket = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="tpm",
+            tokens_milli=199_900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=200_000_000,
+            burst_milli=200_000_000,
+            refill_amount_milli=200_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            return SpeculativeResult(
+                success=True,
+                buckets=[rpm_bucket, tpm_bucket],
+                cascade=False,
+                parent_id=None,
+            )
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            # Only consume rpm, not tpm — tpm entry should be skipped
+            async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+                # Only rpm entry should be created (tpm has zero consume)
+                limit_names = [e.limit.name for e in lease.entries]
+                assert "rpm" in limit_names
+        finally:
+            limiter._repository.speculative_consume = original_speculative
