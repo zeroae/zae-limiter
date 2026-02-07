@@ -2891,3 +2891,88 @@ class TestSpeculativeConsume:
             assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
         finally:
             client.update_item = original
+
+
+class TestCompositeNormalGuard:
+    """Tests for tk >= floor guard in build_composite_normal."""
+
+    async def test_normal_write_rejects_when_speculative_drained_tokens(self, repo):
+        """build_composite_normal rejects when concurrent speculative drained tk.
+
+        Sequence:
+        1. Create bucket: tk=100_000 (100 rpm), rf=T1
+        2. Read bucket (simulating slow path read): see tk=100_000, rf=T1
+        3. Concurrent speculative_consume: ADD tk:-80_000 → tk=20_000, rf unchanged
+        4. build_composite_normal with expected_rf=T1, consume=50_000, refill=0
+           → rf lock passes (T1==T1), but tk guard catches it:
+             tk(20_000) < floor(50_000) → ConditionalCheckFailedException
+        """
+        now_ms = int(time.time() * 1000)
+        limit = Limit.per_minute("rpm", 100)
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms)
+
+        # Step 1: Create bucket with 100 rpm tokens
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        # Step 2: Read bucket (slow path would do this)
+        buckets = await repo.get_buckets("e1", resource="gpt-4")
+        assert len(buckets) == 1
+        original_rf = buckets[0].last_refill_ms
+
+        # Step 3: Concurrent speculative drains 80 of 100 tokens
+        spec_result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 80})
+        assert spec_result.success is True
+
+        # Step 4: build_composite_normal with stale read, consume 50, refill 0
+        # The rf lock passes (speculative didn't touch rf), but the tk guard
+        # catches it: tk(20_000) < floor(50_000)
+        normal_item = repo.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpm": 50_000},  # millitokens
+            refill_amounts={"rpm": 0},
+            now_ms=now_ms,
+            expected_rf=original_rf,
+        )
+        with pytest.raises(ClientError) as exc_info:
+            await repo.transact_write([normal_item])
+
+        assert "ConditionalCheckFailedException" in str(exc_info.value)
+
+    async def test_normal_write_allows_when_refill_covers_consumption(self, repo):
+        """build_composite_normal allows when refill >= consumed (net positive).
+
+        When refill >= consumed, the tk floor is 0 and the guard is a no-op.
+        """
+        now_ms = int(time.time() * 1000)
+        limit = Limit.per_minute("rpm", 100)
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms)
+
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        buckets = await repo.get_buckets("e1", resource="gpt-4")
+        original_rf = buckets[0].last_refill_ms
+
+        # Speculative drains 80 of 100
+        spec_result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 80})
+        assert spec_result.success is True
+
+        # Normal write: consume 10_000 with refill 50_000 (net +40_000)
+        # Floor = max(0, 10_000 - 50_000) = 0 → guard always passes
+        normal_item = repo.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpm": 10_000},
+            refill_amounts={"rpm": 50_000},
+            now_ms=now_ms,
+            expected_rf=original_rf,
+        )
+        # Should succeed — net positive change, no over-admission risk
+        await repo.transact_write([normal_item])
+
+        buckets_after = await repo.get_buckets("e1", resource="gpt-4")
+        rpm_bucket = [b for b in buckets_after if b.limit_name == "rpm"][0]
+        # tk was 20_000 after speculative, +50_000 refill -10_000 consume = 60_000
+        assert rpm_bucket.tokens_milli == 60_000

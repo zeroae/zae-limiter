@@ -924,6 +924,8 @@ class Repository:
                 # REMOVE ttl (entity has custom limits, should persist)
                 remove_parts.append("#ttl")
 
+        condition_parts: list[str] = ["#rf = :expected_rf"]
+
         for name in consumed:
             c = consumed[name]
             r = refill_amounts.get(name, 0)
@@ -942,6 +944,15 @@ class Repository:
             add_parts.append(f"{tk_alias} {tk_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
 
+            # Guard against concurrent speculative consumption draining tk.
+            # Speculative writes modify tk without touching rf, so the rf lock
+            # alone can't detect them. Ensure tk can absorb the net decrease.
+            floor = max(0, c - r)
+            if floor > 0:
+                floor_val = f":b_{name}_tk_floor"
+                attr_values[floor_val] = {"N": str(floor)}
+                condition_parts.append(f"{tk_alias} >= {floor_val}")
+
         # Build update expression
         update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
         if remove_parts:
@@ -955,7 +966,7 @@ class Repository:
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
-                "ConditionExpression": "#rf = :expected_rf",
+                "ConditionExpression": " AND ".join(condition_parts),
                 "ExpressionAttributeNames": attr_names,
                 "ExpressionAttributeValues": attr_values,
             }

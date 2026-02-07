@@ -443,10 +443,10 @@ docs/
 ## Important Invariants
 
 1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
-2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
+2. **Bucket can go negative (adjust only)**: `lease.adjust()` never throws, allows debt. The initial admission path (`try_consume` + `_commit_initial`) is a gate that MUST NOT over-admit — do not use "bucket can go negative" to justify skipping admission checks
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
-5. **Initial writes are atomic**: Multi-entity initial consumption (via `_commit_initial`) uses `transact_write` for cross-item atomicity
+5. **Initial writes are atomic + optimistic lock on refill**: `_commit_initial` uses `transact_write` for cross-item atomicity. `build_composite_normal` locks on `last_refill_ms` (`ConditionExpression: #rf = :expected_rf`) to prevent stale refill overwrites. On lock failure, `build_composite_retry` skips refill and uses `tk >= consumed` condition to prevent over-admission
 6. **Adjustments and rollbacks use independent writes**: `_commit_adjustments()` and `_rollback()` use `write_each()` (1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
 7. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources x limits) must stay within this limit
 8. **Speculative writes are pre-committed**: When the speculative path succeeds, `_commit_initial()` is a no-op because the UpdateItem already persisted the consumption. Rollback compensates with `build_composite_adjust` + `write_each`

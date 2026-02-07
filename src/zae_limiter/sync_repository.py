@@ -733,6 +733,7 @@ class SyncRepository:
                 attr_values[":ttl_val"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
             else:
                 remove_parts.append("#ttl")
+        condition_parts: list[str] = ["#rf = :expected_rf"]
         for name in consumed:
             c = consumed[name]
             r = refill_amounts.get(name, 0)
@@ -747,6 +748,11 @@ class SyncRepository:
             attr_values[tc_val] = {"N": str(c)}
             add_parts.append(f"{tk_alias} {tk_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
+            floor = max(0, c - r)
+            if floor > 0:
+                floor_val = f":b_{name}_tk_floor"
+                attr_values[floor_val] = {"N": str(floor)}
+                condition_parts.append(f"{tk_alias} >= {floor_val}")
         update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
         if remove_parts:
             update_expr += f" REMOVE {', '.join(remove_parts)}"
@@ -758,7 +764,7 @@ class SyncRepository:
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
-                "ConditionExpression": "#rf = :expected_rf",
+                "ConditionExpression": " AND ".join(condition_parts),
                 "ExpressionAttributeNames": attr_names,
                 "ExpressionAttributeValues": attr_values,
             }
