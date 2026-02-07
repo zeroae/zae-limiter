@@ -3774,3 +3774,39 @@ class TestSpeculativeAcquire:
                 assert all(e.limit.name == "rpm" for e in parent_entries)
         finally:
             sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_child_refill_helps_fallback(self, sync_limiter):
+        """Falls back to slow path when child refill would satisfy the request."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        old_bucket = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 30000,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(success=False, old_buckets=[old_bucket])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative

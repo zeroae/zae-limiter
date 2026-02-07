@@ -5045,3 +5045,46 @@ class TestSpeculativeAcquire:
                 assert all(e.limit.name == "rpm" for e in parent_entries)
         finally:
             limiter._repository.speculative_consume = original_speculative
+
+    async def test_speculative_child_refill_helps_fallback(self, limiter):
+        """Falls back to slow path when child refill would satisfy the request."""
+        await limiter.create_entity("entity-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Prime bucket via normal path
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        # Bucket with 0 tokens but high refill rate — refill would satisfy 1 rpm
+        old_bucket = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 30_000,  # 30s ago → 50% refill = 500 tokens
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Child fails but refill would help → slow path (line 821)
+                return SpeculativeResult(success=False, old_buckets=[old_bucket])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            limiter._repository.speculative_consume = original_speculative
