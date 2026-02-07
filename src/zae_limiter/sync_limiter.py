@@ -19,7 +19,13 @@ from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
-from .bucket import calculate_available, calculate_time_until_available, try_consume
+from .bucket import (
+    build_limit_status,
+    calculate_available,
+    calculate_time_until_available,
+    try_consume,
+    would_refill_satisfy,
+)
 from .exceptions import (
     IncompatibleSchemaError,
     RateLimiterUnavailable,
@@ -94,6 +100,7 @@ class SyncRateLimiter:
         skip_version_check: bool = False,
         config_cache_ttl: int = 60,
         bucket_ttl_refill_multiplier: int = 7,
+        speculative_writes: bool = False,
     ) -> None:
         """
         Initialize the rate limiter.
@@ -117,6 +124,9 @@ class SyncRateLimiter:
             bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
                 TTL = max_refill_period_seconds × multiplier. Default: 7.
                 Set to 0 to disable TTL for buckets using default limits.
+            speculative_writes: Enable speculative UpdateItem fast path.
+                When True, acquire() tries a speculative write first, falling
+                back to the full read-write path only when needed.
 
         Raises:
             ValueError: If both repository and name/region/endpoint_url/stack_options
@@ -160,6 +170,7 @@ class SyncRateLimiter:
         self._initialized = False
         self._config_cache = SyncConfigCache(ttl_seconds=config_cache_ttl)
         self._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
+        self._speculative_writes = speculative_writes
 
     @property
     def name(self) -> str:
@@ -624,9 +635,15 @@ class SyncRateLimiter:
             )
         mode = self._resolve_on_unavailable(on_unavailable)
         try:
-            lease = self._do_acquire(
-                entity_id=entity_id, resource=resource, limits_override=limits, consume=consume
-            )
+            lease: SyncLease | None = None
+            if self._speculative_writes:
+                lease = self._try_speculative_acquire(
+                    entity_id=entity_id, resource=resource, consume=consume
+                )
+            if lease is None:
+                lease = self._do_acquire(
+                    entity_id=entity_id, resource=resource, limits_override=limits, consume=consume
+                )
         except (RateLimitExceeded, ValidationError):
             raise
         except Exception as e:
@@ -648,6 +665,114 @@ class SyncRateLimiter:
         except Exception:
             lease._rollback()
             raise
+
+    def _try_speculative_acquire(
+        self, entity_id: str, resource: str, consume: dict[str, int]
+    ) -> SyncLease | None:
+        """Try the speculative fast path for acquire (issue #315).
+
+        Issues a speculative UpdateItem with condition check. On success,
+        returns a pre-committed SyncLease. On failure, checks if refill would
+        help and either raises RateLimitExceeded (fast rejection) or returns
+        None to signal fallback to the slow path.
+
+        Returns:
+            SyncLease if speculative write succeeded (already committed).
+            None if slow path is needed (refill would help, bucket missing,
+            or config changed).
+
+        Raises:
+            RateLimitExceeded: If the bucket is truly exhausted (refill
+                wouldn't help). Saves 1 RCU vs the slow path.
+        """
+        now_ms = int(time.time() * 1000)
+        child_result = self._repository.speculative_consume(
+            entity_id=entity_id, resource=resource, consume=consume
+        )
+        if not child_result.success:
+            if child_result.old_buckets is None:
+                return None
+            bucket_names = {b.limit_name for b in child_result.old_buckets}
+            if not all(name in bucket_names for name in consume):
+                return None
+            would_help, statuses = would_refill_satisfy(child_result.old_buckets, consume, now_ms)
+            if not would_help:
+                raise RateLimitExceeded(statuses)
+            return None
+        entries: list[LeaseEntry] = []
+        for state in child_result.buckets:
+            amount = consume.get(state.limit_name, 0)
+            if amount == 0:
+                continue
+            limit = Limit.from_bucket_state(state)
+            entries.append(
+                LeaseEntry(
+                    entity_id=state.entity_id,
+                    resource=state.resource,
+                    limit=limit,
+                    state=state,
+                    consumed=amount,
+                    _cascade=child_result.cascade,
+                    _parent_id=child_result.parent_id,
+                )
+            )
+        if child_result.cascade and child_result.parent_id:
+            parent_id = child_result.parent_id
+            parent_result = self._repository.speculative_consume(
+                entity_id=parent_id, resource=resource, consume=consume
+            )
+            if parent_result.success:
+                for state in parent_result.buckets:
+                    amount = consume.get(state.limit_name, 0)
+                    if amount == 0:
+                        continue
+                    limit = Limit.from_bucket_state(state)
+                    entries.append(
+                        LeaseEntry(
+                            entity_id=state.entity_id,
+                            resource=state.resource,
+                            limit=limit,
+                            state=state,
+                            consumed=amount,
+                        )
+                    )
+            else:
+                child_deltas = {name: -(amount * 1000) for name, amount in consume.items()}
+                compensate_item = self._repository.build_composite_adjust(
+                    entity_id=entity_id, resource=resource, deltas=child_deltas
+                )
+                self._repository.write_each([compensate_item])
+                if parent_result.old_buckets is None:
+                    return None
+                parent_names = {b.limit_name for b in parent_result.old_buckets}
+                if not all(name in parent_names for name in consume):
+                    return None
+                would_help, parent_statuses = would_refill_satisfy(
+                    parent_result.old_buckets, consume, now_ms
+                )
+                if not would_help:
+                    child_statuses = [
+                        build_limit_status(
+                            entity_id=s.entity_id,
+                            resource=s.resource,
+                            limit=Limit.from_bucket_state(s),
+                            state=s,
+                            requested=consume.get(s.limit_name, 0),
+                            now_ms=now_ms,
+                        )
+                        for s in child_result.old_buckets or child_result.buckets
+                    ]
+                    raise RateLimitExceeded(child_statuses + parent_statuses)
+                return None
+        lease = SyncLease(
+            repository=self._repository,
+            entries=entries,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
+        )
+        lease._initial_committed = True
+        for entry in entries:
+            entry._initial_consumed = entry.consumed
+        return lease
 
     def _do_acquire(
         self,
@@ -725,6 +850,8 @@ class SyncRateLimiter:
                         _original_rf_ms=original_rf,
                         _is_new=is_new and (not any_existing),
                         _has_custom_config=has_custom_config,
+                        _cascade=entity.cascade if entity and eid == entity_id else False,
+                        _parent_id=entity.parent_id if entity and eid == entity_id else None,
                     )
                 )
         violations = [s for s in statuses if s.exceeded]

@@ -3314,3 +3314,104 @@ class TestBucketLimitSync:
         with pytest.raises(ClientError) as exc_info:
             sync_limiter.set_limits("user-6", [Limit.per_minute("rpm", 200)], resource="api")
         assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+
+
+class TestSpeculativeAcquire:
+    """Tests for speculative UpdateItem fast path (Issue #315)."""
+
+    def test_speculative_disabled_by_default(self, sync_limiter):
+        """speculative_writes defaults to False."""
+        assert sync_limiter._speculative_writes is False
+
+    def test_speculative_success_non_cascade(self, sync_limiter):
+        """Speculative write succeeds for non-cascade entity with sufficient tokens."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+            assert lease._initial_committed is True
+            assert len(lease.entries) > 0
+            assert lease.entries[0].consumed == 1
+            assert lease.entries[0]._initial_consumed == 1
+
+    def test_speculative_fallback_on_missing_bucket(self, sync_limiter):
+        """Falls back to slow path when bucket doesn't exist."""
+        sync_limiter.create_entity("entity-new")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-new", "gpt-4", {"rpm": 1}) as lease:
+            assert len(lease.entries) > 0
+
+    def test_speculative_fast_rejection(self, sync_limiter):
+        """Raises RateLimitExceeded immediately when refill won't help."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+                pass
+        assert len(exc_info.value.violations) >= 1
+
+    def test_speculative_fallback_when_refill_helps(self, sync_limiter):
+        """Falls back to slow path when refill would provide enough tokens."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 999}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+            assert len(lease.entries) > 0
+
+    def test_speculative_with_multi_limit(self, sync_limiter):
+        """Speculative works with multiple limits."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 200000)]
+        )
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 100}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 100}) as lease:
+            assert len(lease.entries) > 0
+
+    def test_speculative_rollback_on_exception(self, sync_limiter):
+        """Speculative lease rolls back on exception."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with pytest.raises(ValueError):
+            with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 10}):
+                raise ValueError("test error")
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+    def test_speculative_cascade_both_succeed(self, sync_limiter):
+        """Speculative cascade succeeds for both child and parent."""
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+            entity_ids = {e.entity_id for e in lease.entries}
+            assert "child-1" in entity_ids
+            assert "parent-1" in entity_ids
+
+    def test_speculative_adjust_after_speculative(self, sync_limiter):
+        """Adjustments work correctly after speculative commit."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 10}) as lease:
+            lease.adjust(rpm=-5)
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass

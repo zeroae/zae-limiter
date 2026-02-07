@@ -24,6 +24,7 @@ from .models import (
     validate_resource,
 )
 from .naming import normalize_stack_name
+from .repository_protocol import SpeculativeResult
 
 
 class Repository:
@@ -814,6 +815,8 @@ class Repository:
         states: list[BucketState],
         now_ms: int,
         ttl_seconds: int | None = 86400,
+        cascade: bool = False,
+        parent_id: str | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -826,6 +829,8 @@ class Repository:
             states: BucketState objects for each limit
             now_ms: Current timestamp in milliseconds
             ttl_seconds: TTL in seconds from now, or None to omit TTL
+            cascade: Whether the entity has cascade enabled
+            parent_id: The entity's parent_id (if any)
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(entity_id)},
@@ -835,7 +840,10 @@ class Repository:
             schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
             "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
+            "cascade": {"BOOL": cascade},
         }
+        if parent_id is not None:
+            item["parent_id"] = {"S": parent_id}
         # Only add TTL if specified (None means no TTL for entity-level config)
         if ttl_seconds is not None:
             item["ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
@@ -1096,6 +1104,112 @@ class Repository:
                 await client.update_item(**item["Update"])
             elif "Delete" in item:
                 await client.delete_item(**item["Delete"])
+
+    async def speculative_consume(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None = None,
+    ) -> "SpeculativeResult":
+        """Attempt speculative UpdateItem with condition check.
+
+        Issues an UpdateItem with ``ADD -consumed`` and condition
+        ``attribute_exists(PK) AND tk >= consumed`` for each limit.
+        Uses ``ReturnValuesOnConditionCheckFailure=ALL_OLD`` to return
+        the current item state on failure.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consume: Amount per limit (tokens, not milli)
+            ttl_seconds: TTL in seconds from now, or None for no TTL change
+
+        Returns:
+            SpeculativeResult with success flag and either:
+            - On success: buckets, cascade, parent_id from ALL_NEW
+            - On failure with ALL_OLD: old_buckets from ALL_OLD
+            - On failure without ALL_OLD: old_buckets is None (bucket missing)
+        """
+        client = await self._get_client()
+
+        # Build ADD expression for each limit
+        add_parts: list[str] = []
+        condition_parts: list[str] = ["attribute_exists(PK)"]
+        attr_names: dict[str, str] = {}
+        attr_values: dict[str, Any] = {}
+
+        for limit_name, amount in consume.items():
+            amount_milli = amount * 1000
+            tk_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TK)
+            tc_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TC)
+            tk_alias = f"#tk_{limit_name}"
+            tc_alias = f"#tc_{limit_name}"
+            neg_val = f":neg_{limit_name}"
+            pos_val = f":pos_{limit_name}"
+            thresh_val = f":thresh_{limit_name}"
+
+            attr_names[tk_alias] = tk_attr
+            attr_names[tc_alias] = tc_attr
+            attr_values[neg_val] = {"N": str(-amount_milli)}
+            attr_values[pos_val] = {"N": str(amount_milli)}
+            attr_values[thresh_val] = {"N": str(amount_milli)}
+
+            add_parts.append(f"{tk_alias} {neg_val}")
+            add_parts.append(f"{tc_alias} {pos_val}")
+            condition_parts.append(f"{tk_alias} >= {thresh_val}")
+
+        update_expr = "ADD " + ", ".join(add_parts)
+
+        # Handle TTL
+        if ttl_seconds is not None:
+            now_ms = self._now_ms()
+            ttl_epoch = schema.calculate_ttl(now_ms, ttl_seconds)
+            update_expr = f"SET #ttl = :ttl {update_expr}"
+            attr_names["#ttl"] = "ttl"
+            attr_values[":ttl"] = {"N": str(ttl_epoch)}
+
+        condition_expr = " AND ".join(condition_parts)
+
+        try:
+            response = await client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                },
+                UpdateExpression=update_expr,
+                ConditionExpression=condition_expr,
+                ExpressionAttributeNames=attr_names,
+                ExpressionAttributeValues=attr_values,
+                ReturnValues="ALL_NEW",
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
+            )
+
+            # Success: deserialize ALL_NEW
+            item = response["Attributes"]
+            buckets = self._deserialize_composite_bucket(item)
+            cascade = item.get("cascade", {}).get("BOOL", False)
+            parent_id = item.get("parent_id", {}).get("S")
+            return SpeculativeResult(
+                success=True,
+                buckets=buckets,
+                cascade=cascade,
+                parent_id=parent_id,
+            )
+
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                old_item = cast(dict[str, Any] | None, e.response.get("Item"))
+                if old_item:
+                    old_buckets = self._deserialize_composite_bucket(old_item)
+                    return SpeculativeResult(
+                        success=False,
+                        old_buckets=old_buckets,
+                    )
+                else:
+                    return SpeculativeResult(success=False)
+            raise
 
     # -------------------------------------------------------------------------
     # Limit config operations

@@ -4468,3 +4468,150 @@ class TestBucketLimitSync:
             await limiter.set_limits("user-6", [Limit.per_minute("rpm", 200)], resource="api")
 
         assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+
+
+class TestSpeculativeAcquire:
+    """Tests for speculative UpdateItem fast path (Issue #315)."""
+
+    async def test_speculative_disabled_by_default(self, limiter):
+        """speculative_writes defaults to False."""
+        assert limiter._speculative_writes is False
+
+    async def test_speculative_success_non_cascade(self, limiter):
+        """Speculative write succeeds for non-cascade entity with sufficient tokens."""
+        # Setup: create entity and initial bucket via normal acquire
+        await limiter.create_entity("entity-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        # Enable speculative writes
+        limiter._speculative_writes = True
+
+        # Acquire should use speculative path (bucket exists, tokens available)
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+            assert lease._initial_committed is True
+            assert len(lease.entries) > 0
+            assert lease.entries[0].consumed == 1
+            assert lease.entries[0]._initial_consumed == 1
+
+    async def test_speculative_fallback_on_missing_bucket(self, limiter):
+        """Falls back to slow path when bucket doesn't exist."""
+        await limiter.create_entity("entity-new")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        limiter._speculative_writes = True
+
+        # First acquire: bucket doesn't exist → speculative fails → slow path
+        async with limiter.acquire("entity-new", "gpt-4", {"rpm": 1}) as lease:
+            assert len(lease.entries) > 0
+
+    async def test_speculative_fast_rejection(self, limiter):
+        """Raises RateLimitExceeded immediately when refill won't help."""
+        await limiter.create_entity("entity-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1)])
+
+        # Exhaust the bucket
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+
+        # Bucket is exhausted, refill won't help (just acquired 1 of 1)
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+                pass
+
+        assert len(exc_info.value.violations) >= 1
+
+    async def test_speculative_fallback_when_refill_helps(self, limiter):
+        """Falls back to slow path when refill would provide enough tokens."""
+        await limiter.create_entity("entity-1")
+        # High refill rate: 1000/min
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Consume most tokens via normal path
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 999}):
+            pass
+
+        limiter._speculative_writes = True
+
+        # 1 token left + high refill → speculative fails but refill helps → slow path
+        # The slow path does refill and should succeed
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+            assert len(lease.entries) > 0
+
+    async def test_speculative_with_multi_limit(self, limiter):
+        """Speculative works with multiple limits."""
+        await limiter.create_entity("entity-1")
+        await limiter.set_system_defaults(
+            [
+                Limit.per_minute("rpm", 100),
+                Limit.per_minute("tpm", 200000),
+            ]
+        )
+
+        # Prime the bucket
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 100}):
+            pass
+
+        limiter._speculative_writes = True
+
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 100}) as lease:
+            assert len(lease.entries) > 0
+
+    async def test_speculative_rollback_on_exception(self, limiter):
+        """Speculative lease rolls back on exception."""
+        await limiter.create_entity("entity-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Prime the bucket
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+
+        with pytest.raises(ValueError):
+            async with limiter.acquire("entity-1", "gpt-4", {"rpm": 10}):
+                raise ValueError("test error")
+
+        # Tokens should be restored after rollback — verify we can still acquire
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+    async def test_speculative_cascade_both_succeed(self, limiter):
+        """Speculative cascade succeeds for both child and parent."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Prime both buckets via normal path
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+            # Should have entries for both child and parent
+            entity_ids = {e.entity_id for e in lease.entries}
+            assert "child-1" in entity_ids
+            assert "parent-1" in entity_ids
+
+    async def test_speculative_adjust_after_speculative(self, limiter):
+        """Adjustments work correctly after speculative commit."""
+        await limiter.create_entity("entity-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Prime
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 10}) as lease:
+            # Adjust: actually only used 5
+            await lease.adjust(rpm=-5)
+
+        # Should have released 5 tokens back
+        async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass

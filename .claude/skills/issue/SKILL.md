@@ -3,7 +3,7 @@ name: issue
 description: Use when user says "/issue", "create issue", "file issue", "report bug", "request feature", "update issue", "check off", "verify issue", "view issue", or needs to manage GitHub issues.
 allowed-tools: Bash(gh:*), AskUserQuestion, Grep, Read, Edit, Write, TodoWrite
 user-invocable: true
-argument-hint: view <number> [--comments] | verify <number> [--all] [--dry-run] | ralph-loop <number> [--max-iterations <n>] | scan [--milestone <name>] [--fix]
+argument-hint: view <number> | verify <number> [--all] [--dry-run] | ralph-loop <number> [--max-iterations <n>] | scan [--milestone <name>] [--fix]
 context: fork
 ---
 
@@ -15,7 +15,7 @@ Create, update, and manage GitHub issues following ZeroAE conventions. Infer as 
 
 | Mode | Trigger | Purpose |
 |------|---------|---------|
-| **View** | "view issue", "view #123", `/issue view <number>` | Display issue summary |
+| **View** | "view issue", "view #123", `/issue view <number>` | Display full issue details (body, criteria, deps, comments) |
 | **Create** | "create issue", "file issue", "new issue", "report bug", "request feature" | Create new issue |
 | **Update** | "update issue", "add to issue", "update #123" | Modify existing issue |
 | **Progress** | "check off", "mark complete", "done with", "finished" | Check checkboxes based on work done |
