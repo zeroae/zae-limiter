@@ -4909,6 +4909,340 @@ class TestSpeculativeAcquire:
         finally:
             limiter._repository.speculative_consume = original_speculative
 
+    async def test_speculative_cascade_parent_refill_helps_no_compensate(self, limiter):
+        """Cascade: parent fails with refill-would-help, parent-only slow path succeeds.
+
+        Child stays consumed (no compensation). Parent is acquired via slow path.
+        Saves 1 WCU (no compensation) + uses single-item write for parent only.
+        """
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Prime both buckets
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        # Parent has low stored tokens but refill would help (30s elapsed)
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 30_000,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        original_write_each = limiter._repository.write_each
+        call_count = 0
+        child_compensated = False
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Child succeeds
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                # Parent fails but refill would help
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        async def mock_write_each(items):
+            nonlocal child_compensated
+            for item in items:
+                # Compensation targets child-1 entity via build_composite_adjust
+                key = item.get("Update", {}).get("Key", {})
+                pk = key.get("PK", {}).get("S", "")
+                if "child-1" in pk:
+                    child_compensated = True
+            return await original_write_each(items)
+
+        limiter._repository.speculative_consume = mock_speculative
+        limiter._repository.write_each = mock_write_each
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+            # Child was NOT compensated — parent-only slow path succeeded
+            assert not child_compensated, (
+                "Child should not be compensated when parent slow path succeeds"
+            )
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+            limiter._repository.write_each = original_write_each
+
+    async def test_speculative_cascade_parent_slow_path_fails_compensates(self, limiter):
+        """Cascade: parent-only slow path fails → compensate child → full slow path.
+
+        ALL_OLD says refill WOULD help, but actual DDB parent is drained
+        (concurrent consumer). Parent-only try_consume fails, returns None,
+        child is compensated, then full _do_acquire also fails.
+        """
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+
+        # Prime both buckets
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=9_000,
+            last_refill_ms=now_ms,
+            capacity_milli=10_000,
+            burst_milli=10_000,
+            refill_amount_milli=10_000,
+            refill_period_ms=60_000,
+        )
+        # ALL_OLD with 60s elapsed → 10 tokens after refill → enough for 10
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60_000,
+            capacity_milli=10_000,
+            burst_milli=10_000,
+            refill_amount_milli=10_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                # Parent fails, ALL_OLD says refill would help
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        # Drain parent so parent-only slow path's try_consume fails
+        async with limiter.acquire("parent-1", "gpt-4", {"rpm": 9}):
+            pass
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            # Path: speculative parent fails → ALL_OLD says refill helps →
+            # parent-only slow path → try_consume fails → return None →
+            # compensate child → full _do_acquire → also fails
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
+                    pass
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+    async def test_speculative_cascade_parent_only_bucket_missing(self, limiter):
+        """Parent-only slow path returns None when parent bucket is missing.
+
+        Covers line 975: parent bucket missing for a limit → return None →
+        compensate child → full slow path.
+        """
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Prime both buckets
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        # ALL_OLD says refill would help (60s elapsed, full refill)
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60_000,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        original_fetch = limiter._fetch_buckets
+        call_count = 0
+        fetch_call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        async def mock_fetch_buckets(entity_ids, resource):
+            nonlocal fetch_call_count
+            fetch_call_count += 1
+            if fetch_call_count == 1:
+                # First call from _try_parent_only_acquire — return empty
+                return {}
+            return await original_fetch(entity_ids, resource)
+
+        limiter._repository.speculative_consume = mock_speculative
+        limiter._fetch_buckets = mock_fetch_buckets
+        try:
+            # _try_parent_only_acquire finds no parent bucket → returns None
+            # → compensate child → full _do_acquire
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+            limiter._fetch_buckets = original_fetch
+
+    async def test_speculative_cascade_parent_only_commit_fails(self, limiter):
+        """Parent-only slow path: _commit_initial raises → return None.
+
+        Covers lines 1037-1038: RateLimitExceeded from _commit_initial during
+        parent write (concurrent contention).
+        """
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Prime both buckets
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        # ALL_OLD says refill would help (60s elapsed, full refill = 1000 tokens)
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60_000,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        original_transact = limiter._repository.transact_write
+        call_count = 0
+        transact_call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        async def mock_transact_write(items):
+            nonlocal transact_call_count
+            transact_call_count += 1
+            if transact_call_count <= 2:
+                # Fail both normal and retry paths of parent-only _commit_initial
+                from botocore.exceptions import ClientError
+
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "Condition not met",
+                        }
+                    },
+                    "TransactWriteItems",
+                )
+            return await original_transact(items)
+
+        limiter._repository.speculative_consume = mock_speculative
+        limiter._repository.transact_write = mock_transact_write
+        try:
+            # Parent-only _commit_initial fails (ConditionalCheckFailed → retry also fails)
+            # → return None → compensate child → full slow path
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+            limiter._repository.transact_write = original_transact
+
     async def test_speculative_skips_zero_consume_entries(self, limiter):
         """Speculative path skips bucket entries with zero consume."""
         await limiter.create_entity("entity-1")

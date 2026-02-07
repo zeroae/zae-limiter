@@ -866,28 +866,28 @@ class RateLimiter:
                         )
                     )
             else:
-                # Parent failed — compensate child first
-                child_deltas = {name: -(amount * 1000) for name, amount in consume.items()}
-                compensate_item = self._repository.build_composite_adjust(
-                    entity_id=entity_id,
-                    resource=resource,
-                    deltas=child_deltas,
-                )
-                await self._repository.write_each([compensate_item])
+                # Parent failed — defer child compensation (issue #315 optimization).
+                # Check parent ALL_OLD before compensating to avoid unnecessary
+                # compensation + re-read + transactional write when parent refill
+                # would succeed.
 
-                # Check if parent refill would help
                 if parent_result.old_buckets is None:
-                    return None  # Parent bucket missing — slow path
+                    # Parent bucket missing — must compensate and full slow path
+                    await self._compensate_child(entity_id, resource, consume)
+                    return None
 
                 parent_names = {b.limit_name for b in parent_result.old_buckets}
                 if not all(name in parent_names for name in consume):
-                    return None  # Config changed — slow path
+                    # Config changed — must compensate and full slow path
+                    await self._compensate_child(entity_id, resource, consume)
+                    return None
 
                 would_help, parent_statuses = would_refill_satisfy(
                     parent_result.old_buckets, consume, now_ms
                 )
                 if not would_help:
-                    # Include child statuses (passed) + parent statuses (failed)
+                    # Parent truly exhausted — compensate child and fast reject
+                    await self._compensate_child(entity_id, resource, consume)
                     child_statuses = [
                         build_limit_status(
                             entity_id=s.entity_id,
@@ -900,7 +900,17 @@ class RateLimiter:
                         for s in child_result.old_buckets or child_result.buckets
                     ]
                     raise RateLimitExceeded(child_statuses + parent_statuses)
-                return None  # Refill would help — slow path
+
+                # Refill would help — try parent-only slow path (keep child consumed)
+                parent_lease = await self._try_parent_only_acquire(
+                    parent_id, resource, consume, entries
+                )
+                if parent_lease is not None:
+                    return parent_lease
+
+                # Parent-only slow path failed — compensate child and full slow path
+                await self._compensate_child(entity_id, resource, consume)
+                return None
 
         # Build pre-committed lease
         lease = Lease(
@@ -910,6 +920,125 @@ class RateLimiter:
         )
         lease._initial_committed = True
         for entry in entries:
+            entry._initial_consumed = entry.consumed
+        return lease
+
+    async def _compensate_child(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+    ) -> None:
+        """Compensate a speculatively consumed child by adding tokens back."""
+        child_deltas = {name: -(amount * 1000) for name, amount in consume.items()}
+        compensate_item = self._repository.build_composite_adjust(
+            entity_id=entity_id,
+            resource=resource,
+            deltas=child_deltas,
+        )
+        await self._repository.write_each([compensate_item])
+
+    async def _try_parent_only_acquire(
+        self,
+        parent_id: str,
+        resource: str,
+        consume: dict[str, int],
+        child_entries: list[LeaseEntry],
+    ) -> Lease | None:
+        """Attempt parent-only slow path after child speculative succeeded.
+
+        Reads parent buckets, resolves limits, does refill + try_consume,
+        and writes parent via single-item UpdateItem. Returns a Lease combining
+        child's speculative entries with parent's slow-path entries.
+
+        Returns None if parent acquire fails (caller should compensate child).
+        """
+        now_ms = int(time.time() * 1000)
+
+        # Resolve parent limits
+        parent_limits, parent_config_source = await self._resolve_limits(parent_id, resource, None)
+
+        # Fetch parent buckets
+        parent_buckets = await self._fetch_buckets([parent_id], resource)
+
+        # Process parent buckets: refill + try_consume
+        parent_entries: list[LeaseEntry] = []
+        statuses: list[LimitStatus] = []
+        has_custom_config = parent_config_source == "entity"
+
+        for limit in parent_limits:
+            bucket_key = (parent_id, resource, limit.name)
+            existing = parent_buckets.get(bucket_key)
+            if existing is None:
+                # Parent bucket missing for this limit — can't proceed
+                return None
+
+            original_tk = existing.tokens_milli
+            original_rf = existing.last_refill_ms
+
+            amount = consume.get(limit.name, 0)
+            result = try_consume(existing, amount, now_ms)
+
+            status = LimitStatus(
+                entity_id=parent_id,
+                resource=resource,
+                limit_name=limit.name,
+                limit=limit,
+                available=result.available,
+                requested=amount,
+                exceeded=not result.success,
+                retry_after_seconds=result.retry_after_seconds,
+            )
+            statuses.append(status)
+
+            if result.success:
+                existing.tokens_milli = result.new_tokens_milli
+                existing.last_refill_ms = result.new_last_refill_ms
+                if existing.total_consumed_milli is not None and amount > 0:
+                    existing.total_consumed_milli += amount * 1000
+
+            parent_entries.append(
+                LeaseEntry(
+                    entity_id=parent_id,
+                    resource=resource,
+                    limit=limit,
+                    state=existing,
+                    consumed=amount if result.success else 0,
+                    _original_tokens_milli=original_tk,
+                    _original_rf_ms=original_rf,
+                    _has_custom_config=has_custom_config,
+                )
+            )
+
+        # Check for violations
+        violations = [s for s in statuses if s.exceeded]
+        if violations:
+            return None
+
+        # Write parent only via _commit_initial on a parent-only lease
+        all_entries = list(child_entries) + parent_entries
+        lease = Lease(
+            repository=self._repository,
+            entries=all_entries,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
+        )
+        # Mark child entries as already committed (speculative write succeeded)
+        for entry in child_entries:
+            entry._initial_consumed = entry.consumed
+        # Commit only parent entries
+        parent_lease = Lease(
+            repository=self._repository,
+            entries=parent_entries,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
+        )
+        try:
+            await parent_lease._commit_initial()
+        except RateLimitExceeded:
+            return None
+
+        # Mark the full lease as committed
+        lease._initial_committed = True
+        for entry in parent_entries:
             entry._initial_consumed = entry.consumed
         return lease
 
