@@ -105,7 +105,7 @@ generate-sync = "python scripts/generate_sync.py"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-v --tb=short -n auto --dist loadscope --import-mode=importlib"
+addopts = "-v --tb=short -n auto --dist loadscope --import-mode=importlib --benchmark-disable"
 markers = [
     "integration: marks tests as integration tests (require Docker or AWS)",
     "benchmark: marks tests as performance benchmarks",

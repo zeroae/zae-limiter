@@ -216,7 +216,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra plot
       - name: Run moto benchmarks
-        run: uv run pytest tests/benchmark/ -m "benchmark and not integration and not aws" --benchmark-json=benchmark-moto.json -n 0
+        run: uv run pytest tests/benchmark/ -m "benchmark and not integration and not aws" --benchmark-enable --benchmark-json=benchmark-moto.json -n 0
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
         with:
@@ -263,7 +263,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra plot
       - name: Run LocalStack benchmarks
-        run: uv run pytest tests/benchmark/test_localstack.py --benchmark-json=benchmark-localstack.json -n 0
+        run: uv run pytest tests/benchmark/test_localstack.py --benchmark-enable --benchmark-json=benchmark-localstack.json -n 0
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
@@ -297,7 +297,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra plot
       - name: Run AWS benchmarks
-        run: uv run pytest tests/benchmark/test_aws.py --run-aws --benchmark-json=benchmark-aws.json -n 0
+        run: uv run pytest tests/benchmark/test_aws.py --run-aws --benchmark-enable --benchmark-json=benchmark-aws.json -n 0
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
         with:

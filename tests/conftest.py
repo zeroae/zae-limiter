@@ -22,11 +22,14 @@ def pytest_ignore_collect(collection_path, config):
     """
     if not collection_path.suffix == ".py":
         return None
+    # Controller has numprocesses > 0; workers have workerinput attribute.
+    # Both must skip gevent files to prevent import during collection.
     try:
         numprocesses = config.getoption("numprocesses")
     except (ValueError, AttributeError):
-        return None
-    if not numprocesses:
+        numprocesses = None
+    is_xdist_worker = hasattr(config, "workerinput")
+    if not numprocesses and not is_xdist_worker:
         return None
     try:
         source = collection_path.read_text()
