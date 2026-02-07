@@ -249,17 +249,13 @@ class TestGenerateDockerfile:
 
         assert "COPY userfiles/ /mnt/" in dockerfile
 
-    def test_dockerfile_default_locustfile(self):
-        """Dockerfile CMD uses default locustfile.py path."""
+    def test_dockerfile_locustfile_set_at_runtime(self):
+        """Dockerfile expects LOCUSTFILE to be set at runtime, not baked in."""
         dockerfile = _generate_dockerfile("0.8.0")
 
-        assert "ENV LOCUSTFILE=locustfile.py" in dockerfile
-
-    def test_dockerfile_with_custom_locustfile(self):
-        """Dockerfile sets custom LOCUSTFILE env var."""
-        dockerfile = _generate_dockerfile("0.8.0", locustfile="my_locustfiles/api.py")
-
-        assert "ENV LOCUSTFILE=my_locustfiles/api.py" in dockerfile
+        # LOCUSTFILE is referenced via env var substitution, not hardcoded
+        assert "ENV LOCUSTFILE=" not in dockerfile
+        assert "$LOCUSTFILE" in dockerfile
 
     def test_dockerfile_includes_rebalancing(self):
         """Dockerfile CMD includes --enable-rebalancing flag."""
