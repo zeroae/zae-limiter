@@ -1,50 +1,68 @@
-"""E2E test fixtures."""
+"""E2E test fixtures.
+
+Imports shared fixtures from integration conftest and adds E2E-specific fixtures.
+"""
 
 import asyncio
-import os
 import time
 import uuid
 from datetime import UTC, datetime
 
 import boto3
 import pytest
+import pytest_asyncio
 
+# Import shared fixtures from integration conftest
+from tests.integration.conftest import (
+    aggregator_stack_options,
+    full_stack_options,
+    localstack_endpoint,
+    minimal_stack_options,
+    unique_entity_prefix,
+    unique_name,
+    unique_name_class,
+    unique_name_module,
+)
 from zae_limiter import RateLimiter, StackOptions, SyncRateLimiter
 
+__all__ = [
+    # Re-exported from integration
+    "localstack_endpoint",
+    "minimal_stack_options",
+    "aggregator_stack_options",
+    "full_stack_options",
+    "unique_name",
+    "unique_name_class",
+    "unique_name_module",
+    "unique_entity_prefix",
+    # E2E-specific fixtures
+    "e2e_stack_options",
+    "localstack_limiter",
+    "localstack_limiter_with_aggregator",
+    "localstack_limiter_full",
+    "sync_localstack_limiter",
+    "e2e_limiter_module",
+    "e2e_limiter_minimal_module",
+    "cli_stack_module",
+    # AWS client fixtures
+    "cloudwatch_client",
+    "sqs_client",
+    "lambda_client",
+    "s3_client",
+    "dynamodb_client",
+    # Polling helpers
+    "poll_for_snapshots",
+    "wait_for_event_source_mapping",
+    "check_lambda_invocations",
+]
 
-@pytest.fixture(scope="session")
-def localstack_endpoint():
-    """LocalStack endpoint URL from environment."""
-    endpoint = os.getenv("AWS_ENDPOINT_URL")
-    if not endpoint:
-        pytest.skip("AWS_ENDPOINT_URL not set - LocalStack not available")
-    return endpoint
 
-
-# StackOptions fixtures for different test scenarios
-
-
-@pytest.fixture(scope="session")
-def minimal_stack_options():
-    """Minimal stack - no aggregator, no alarms. Fastest deployment."""
-    return StackOptions(enable_aggregator=False, enable_alarms=False)
-
-
-@pytest.fixture(scope="session")
-def aggregator_stack_options():
-    """Stack with aggregator Lambda but no CloudWatch alarms."""
-    return StackOptions(enable_aggregator=True, enable_alarms=False)
-
-
-@pytest.fixture(scope="session")
-def full_stack_options():
-    """Full stack with aggregator and CloudWatch alarms."""
-    return StackOptions(enable_aggregator=True, enable_alarms=True)
+# E2E-specific StackOptions
 
 
 @pytest.fixture(scope="session")
 def e2e_stack_options():
-    """Full stack options for E2E tests."""
+    """Full stack options for E2E tests with snapshot configuration."""
     return StackOptions(
         enable_aggregator=True,
         enable_alarms=True,
@@ -53,35 +71,128 @@ def e2e_stack_options():
     )
 
 
-@pytest.fixture
-def unique_name():
-    """Generate unique resource name for test isolation.
+# Module-scoped fixtures for E2E tests (issue #253)
 
-    Uses hyphens instead of underscores because CloudFormation stack names
-    must match pattern [a-zA-Z][-a-zA-Z0-9]*.
 
-    Kept short (max 20 chars) so IAM role names stay under 64 chars
-    when combined with role_name_format prefix and role suffix.
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def e2e_limiter_module(localstack_endpoint, e2e_stack_options, unique_name_module):
+    """Module-scoped RateLimiter with aggregator for E2E tests.
+
+    Creates CloudFormation stack once per test module. Tests MUST use
+    unique_entity_prefix for entity ID isolation within the shared table.
+
+    This fixture reduces E2E test time by avoiding repeated stack creation/deletion.
+    See issue #253 for details.
     """
-    unique_id = uuid.uuid4().hex[:12]
-    return f"e2e-{unique_id}"
+    limiter = RateLimiter(
+        name=unique_name_module,
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=e2e_stack_options,
+    )
+
+    async with limiter:
+        yield limiter
+
+    try:
+        await limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Module-scoped E2E stack cleanup failed: {e}")
 
 
-@pytest.fixture(scope="class")
-def unique_name_class():
-    """Generate unique resource name for class-level test isolation.
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def e2e_limiter_minimal_module(localstack_endpoint, minimal_stack_options):
+    """Module-scoped minimal RateLimiter for error handling tests.
 
-    Uses hyphens instead of underscores because CloudFormation stack names
-    must match pattern [a-zA-Z][-a-zA-Z0-9]*.
+    Creates CloudFormation stack once per test module. Tests MUST use
+    unique_entity_prefix for entity ID isolation within the shared table.
 
-    This fixture is class-scoped to allow sharing a single stack across
-    all tests within a test class. Kept short for IAM role name limits.
+    Note: Generates its own unique name because e2e_limiter_module and
+    e2e_limiter_minimal_module are different fixtures that need different stacks.
     """
-    unique_id = uuid.uuid4().hex[:12]
-    return f"e2e-{unique_id}"
+    # Generate unique name for minimal stack (separate from e2e_limiter_module)
+    timestamp = int(time.time())
+    unique_id = uuid.uuid4().hex[:8]
+    name = f"e2e-min-{timestamp}-{unique_id}"
+
+    limiter = RateLimiter(
+        name=name,
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=minimal_stack_options,
+    )
+
+    async with limiter:
+        yield limiter
+
+    try:
+        await limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Module-scoped minimal stack cleanup failed: {e}")
 
 
-# LocalStack limiter fixtures
+@pytest.fixture(scope="module")
+def cli_stack_module(localstack_endpoint, minimal_stack_options):
+    """Module-scoped CLI stack for CLI subcommand tests.
+
+    Deploys a minimal stack once per module for tests that verify CLI commands
+    (audit list, list, usage list) without needing to test deploy/delete lifecycle.
+
+    Yields:
+        tuple: (stack_name, endpoint_url) for use in CLI commands
+
+    Note: Tests using this fixture should use unique entity IDs to avoid conflicts.
+    """
+    from click.testing import CliRunner
+
+    from zae_limiter.cli import cli
+
+    # Generate unique name for CLI stack
+    timestamp = int(time.time())
+    unique_id = uuid.uuid4().hex[:8]
+    stack_name = f"e2e-cli-{timestamp}-{unique_id}"
+
+    runner = CliRunner()
+
+    # Deploy stack
+    result = runner.invoke(
+        cli,
+        [
+            "deploy",
+            "--name",
+            stack_name,
+            "--endpoint-url",
+            localstack_endpoint,
+            "--region",
+            "us-east-1",
+            "--no-aggregator",
+            "--no-alarms",
+            "--wait",
+        ],
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(f"CLI stack deployment failed: {result.output}")
+
+    yield stack_name, localstack_endpoint
+
+    # Cleanup
+    runner.invoke(
+        cli,
+        [
+            "delete",
+            "--name",
+            stack_name,
+            "--endpoint-url",
+            localstack_endpoint,
+            "--region",
+            "us-east-1",
+            "--yes",
+            "--wait",
+        ],
+    )
+
+
+# Function-scoped fixtures (for tests that need fresh infrastructure)
 
 
 @pytest.fixture

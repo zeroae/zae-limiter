@@ -16,8 +16,10 @@ from tests.integration.conftest import (
     localstack_endpoint,
     minimal_stack_options,
     sync_localstack_limiter,
+    unique_entity_prefix,
     unique_name,
     unique_name_class,
+    unique_name_module,
 )
 from tests.unit.conftest import (
     aws_credentials,
@@ -36,10 +38,13 @@ __all__ = [
     "minimal_stack_options",
     "aggregator_stack_options",
     "sync_localstack_limiter",
+    "sync_localstack_limiter_module",
     "sync_localstack_limiter_no_cache",
     "sync_localstack_limiter_with_aggregator",
+    "unique_entity_prefix",
     "unique_name",
     "unique_name_class",
+    "unique_name_module",
     "capacity_counter",
     "benchmark_entities",
 ]
@@ -217,20 +222,25 @@ def capacity_counter(sync_limiter: Any) -> Generator[CapacityCounter, None, None
     yield counter
 
 
-@pytest.fixture
+@pytest.fixture(scope="class")
 def sync_localstack_limiter_with_aggregator(
-    localstack_endpoint, aggregator_stack_options, unique_name
+    localstack_endpoint, aggregator_stack_options, unique_name_class
 ):
     """SyncRateLimiter with Lambda aggregator for benchmark tests.
 
     Creates a LocalStack-based limiter with aggregator Lambda enabled
     for benchmarking cold start and warm start latency.
 
-    This fixture is primarily used for Lambda cold/warm start benchmarks
-    that require the aggregator function to be deployed.
+    This fixture is class-scoped to share a single stack across all tests
+    within TestLambdaColdStartBenchmarks. This is intentional:
+    - First test in class = cold start (fresh Lambda)
+    - Subsequent tests = warm start (reused container)
+
+    Tests MUST use unique_entity_prefix for entity ID isolation.
+    See issue #253 for details.
     """
     limiter = SyncRateLimiter(
-        name=unique_name,
+        name=unique_name_class,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=aggregator_stack_options,
@@ -330,3 +340,37 @@ def sync_localstack_limiter_no_cache(localstack_endpoint, minimal_stack_options)
         limiter.delete_stack()
     except Exception as e:
         print(f"Warning: Stack cleanup failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped fixtures for shared infrastructure (issue #253)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def sync_localstack_limiter_module(localstack_endpoint, minimal_stack_options, unique_name_module):
+    """SyncRateLimiter with minimal stack (module-scoped, shared across all tests).
+
+    Creates CloudFormation stack once per test module. Tests MUST use
+    unique_entity_prefix for entity ID isolation within the shared table.
+
+    This fixture reduces benchmark time by avoiding repeated stack creation/deletion.
+    See issue #253 for details.
+
+    Note: Do not use for benchmarks that require fresh infrastructure (e.g., Lambda
+    cold start benchmarks). Use function-scoped sync_localstack_limiter instead.
+    """
+    limiter = SyncRateLimiter(
+        name=unique_name_module,
+        endpoint_url=localstack_endpoint,
+        region="us-east-1",
+        stack_options=minimal_stack_options,
+    )
+
+    with limiter:
+        yield limiter
+
+    try:
+        limiter.delete_stack()
+    except Exception as e:
+        print(f"Warning: Module-scoped stack cleanup failed: {e}")

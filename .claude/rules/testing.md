@@ -49,6 +49,26 @@ tests/
 | `@pytest.mark.monitoring` | CloudWatch/DLQ verification | Skip with `-m "not monitoring"` |
 | `@pytest.mark.snapshots` | Usage snapshot verification | Skip with `-m "not snapshots"` |
 
+## Async Fixture Scoping (pytest-asyncio)
+
+When using module or class-scoped async fixtures, **both** the fixture AND test markers must specify matching `loop_scope`:
+
+```python
+# Fixture
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def shared_repo(...):
+    ...
+
+# Test
+@pytest.mark.asyncio(loop_scope="module")
+async def test_something(shared_repo):
+    ...
+```
+
+Without matching `loop_scope`, you'll get: `RuntimeError: Task got Future attached to a different loop`
+
+**Data isolation pattern:** Use `unique_entity_prefix` fixture for per-test entity ID prefixes within shared infrastructure.
+
 ## Running Tests
 
 ```bash
