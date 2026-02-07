@@ -34,8 +34,7 @@ flowchart LR
 zae-limiter load deploy --name my-limiter --region us-east-1 \
   --vpc-id vpc-xxx \
   --subnet-ids "subnet-aaa,subnet-bbb" \
-  -C examples/locust/ -f locustfiles/simple.py \
-  --desired-workers 10
+  -C examples/locust/
 ```
 
 The deploy command automatically:
@@ -101,13 +100,123 @@ zae-limiter load connect --name my-limiter --region us-east-1 --destroy
 | `--cpu` | Task CPU units (256, 512, 1024, 2048, 4096) | 1024 |
 | `--memory` | Task memory in MB | 2048 |
 | `--pool-connections` | boto3 connection pool size | 1000 |
-| `-f` | Override locustfile | from deploy |
-| `--desired-workers` | Fixed Lambda worker count | from deploy |
+| `-f` | Locustfile path (required) | — |
 | `--max-workers` | Lambda worker cap | from deploy |
 | `--min-workers` | Minimum workers | from deploy |
-| `--users-per-worker` | Auto-scaling ratio | 20 |
-| `--rps-per-worker` | Auto-scaling ratio | 50 |
+| `--users-per-worker` | Auto-scaling ratio | 10 |
 | `--startup-lead-time` | Predictive scaling lookahead (seconds) | 20 |
+
+## Automated Benchmarks
+
+The `load benchmark` command runs a self-contained, headless test and reports results — no manual Locust UI interaction needed. Supports both Lambda and Fargate runtimes.
+
+### Usage
+
+```bash
+# Lambda benchmark (default) — invokes a single Lambda worker
+zae-limiter load benchmark --name my-limiter --region us-east-1 \
+  -f locustfiles/max_rps.py --users 10 --duration 60
+
+# Fargate benchmark — starts a Fargate task in standalone headless mode
+zae-limiter load benchmark --name my-limiter --region us-east-1 \
+  --mode fargate \
+  -f locustfiles/max_rps.py --users 10 --duration 60
+
+# Fargate with custom CPU/memory
+zae-limiter load benchmark --name my-limiter --region us-east-1 \
+  --mode fargate --cpu 2048 --memory 4096 \
+  -f locustfiles/max_rps.py --users 10 --duration 60
+```
+
+### Benchmark Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--mode [lambda\|fargate]` | Runtime to benchmark | `lambda` |
+| `--users` | Number of simulated users | 20 |
+| `--duration` | Test duration in seconds | 60 |
+| `--spawn-rate` | User spawn rate per second | 10 |
+| `-f` | Override locustfile | from deploy |
+| `--cpu` | Fargate task CPU units (Fargate mode only) | from task def |
+| `--memory` | Fargate task memory in MB (Fargate mode only) | from task def |
+| `--port` | Local port for SSM tunnel (Fargate mode only) | 8089 |
+
+### How Each Mode Works
+
+**Lambda mode** invokes the Lambda worker function synchronously with a headless Locust configuration. The Lambda runs the test and returns stats in the response payload. Simple and fast — no SSM tunnel needed.
+
+**Fargate mode** starts a Fargate task with Locust in `--autostart` mode (web UI enabled, test auto-starts). An SSM tunnel is opened in the background to poll `/stats/requests` every 5 seconds. When the test completes (`--run-time` elapses), stats are collected and the task stops automatically.
+
+### Runtime Comparison
+
+Benchmarks run on the `load-test` stack (DynamoDB on-demand, us-east-1). Three modes compared:
+
+- **Lambda standalone**: `load benchmark --mode lambda` — single Lambda invocation, headless
+- **Distributed (1 Lambda)**: `load benchmark --mode distributed --workers 1` — Fargate master + 1 Lambda worker
+- **Fargate standalone**: `load benchmark --mode fargate` — single Fargate task, no workers
+
+**max_rps.py (zero wait between requests) — 10 users, 60s:**
+
+| Metric | Lambda standalone | Distributed (1 Lambda) | Fargate standalone |
+|--------|-------------------|------------------------|--------------------|
+| Requests | 15,921 | 13,253 | 22,665 |
+| RPS | 265 | 230 | 387 |
+| p50 | 33ms | 39ms | 21ms |
+| p95 | 41ms | 53ms | 35ms |
+| p99 | 49ms | 63ms | 44ms |
+| Failures | 0 | 0 | 0 |
+
+**simple.py (wait between requests) — 10 users, 60s:**
+
+| Metric | Lambda standalone | Distributed (1 Lambda) | Fargate standalone |
+|--------|-------------------|------------------------|--------------------|
+| Requests | 1,068 | 1,047 | 1,047 |
+| RPS | 17.8 | 18.5 | 18.8 |
+| p50 | 12ms | 12ms | 10ms |
+| p95 | 16ms | 15ms | 17ms |
+| p99 | 69ms | 44ms | 390ms |
+| Failures | 0 | 0 | 0 |
+
+**Key observations:**
+
+- **Distributed matches standalone Lambda** — at low load (simple.py), the numbers are essentially identical. At saturation (max_rps.py), distributed adds ~6ms p50 overhead from the master relay.
+- **Fargate has ~46% higher max throughput** (387 vs 265 RPS) and ~36% lower p50 at saturation. Fargate sits inside the VPC closer to the DynamoDB Gateway Endpoint, with no per-invocation cold path.
+- **Floor latency is similar across all modes** — at low load (simple.py), all runtimes hit p50=10-12ms. The DynamoDB round trip dominates, not the runtime.
+- **Fargate p99 can spike at task startup** (cold container + SSM agent initialization). Lambda amortizes cold starts across invocations.
+- **Use Lambda benchmarks for quick iteration** (no task startup overhead). Use Fargate benchmarks for production-representative latency numbers. Use distributed benchmarks to validate the orchestration overhead.
+
+### Reproducing
+
+```bash
+# Prerequisites: deployed load test stack
+# zae-limiter load deploy --name <target> --region us-east-1 ...
+
+# 1. Login
+aws sso login --profile zeroae-code/AWSPowerUserAccess
+
+# 2. Lambda standalone benchmark
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
+  uv run zae-limiter load benchmark \
+  --name <target> --region us-east-1 \
+  -f locustfiles/max_rps.py --users 10 --duration 60
+
+# 3. Fargate standalone benchmark
+#    (don't run simultaneously — they share the same DynamoDB table)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
+  uv run zae-limiter load benchmark \
+  --name <target> --region us-east-1 \
+  --mode fargate \
+  -f locustfiles/max_rps.py --users 10 --duration 60
+
+# 4. Distributed benchmark (1 Lambda worker)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
+  uv run zae-limiter load benchmark \
+  --name <target> --region us-east-1 \
+  --mode distributed --workers 1 \
+  -f locustfiles/max_rps.py --users 10 --duration 60
+
+# 5. Repeat steps 2-4 with simple.py for floor latency
+```
 
 ## Capacity Planning
 
@@ -224,13 +333,13 @@ Override at connect time: `--pool-connections 1000`
 
 ### Distributed Mode
 
-For higher throughput, use distributed mode with Lambda workers. Each worker runs ~20 users optimally:
+For higher throughput, use distributed mode with Lambda workers. Each worker runs ~10 users optimally (65% CPU at 1 vCPU):
 
 | Target Users | Workers | Notes |
 |--------------|---------|-------|
-| 100 | 5 | `--desired-workers 5` |
-| 500 | 25 | `--desired-workers 25` |
-| 1000 | 50 | Auto-scale with `--min-workers 10 --max-workers 50` |
+| 100 | 10 | Auto-scales based on user count |
+| 500 | 50 | Auto-scales based on user count |
+| 1000 | 100 | Set `--max-workers 100` at deploy |
 
 Lambda workers have their own connection pool (50 connections each), so pool exhaustion is less of a concern.
 

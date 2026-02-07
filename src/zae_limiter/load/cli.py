@@ -100,10 +100,8 @@ def _build_task_overrides(
     standalone: bool,
     locustfile: str | None,
     max_workers: int | None,
-    desired_workers: int | None,
     min_workers: int | None,
     users_per_worker: int | None,
-    rps_per_worker: int | None,
     startup_lead_time: int | None,
     cpu: int | None = None,
     memory: int | None = None,
@@ -115,10 +113,8 @@ def _build_task_overrides(
         standalone: Run Locust in single-process mode (no workers).
         locustfile: Override locustfile path.
         max_workers: Override max Lambda workers.
-        desired_workers: Override fixed worker count.
         min_workers: Override minimum workers.
         users_per_worker: Override auto-scaling ratio.
-        rps_per_worker: Override auto-scaling ratio.
         startup_lead_time: Override predictive scaling lookahead.
         cpu: Override task CPU units (e.g. 1024 for 1 vCPU).
         memory: Override task memory in MB.
@@ -138,14 +134,10 @@ def _build_task_overrides(
     # Scaling parameters apply to orchestrator
     if max_workers is not None:
         orchestrator_env.append({"name": "MAX_WORKERS", "value": str(max_workers)})
-    if desired_workers is not None:
-        orchestrator_env.append({"name": "DESIRED_WORKERS", "value": str(desired_workers)})
     if min_workers is not None:
         orchestrator_env.append({"name": "MIN_WORKERS", "value": str(min_workers)})
     if users_per_worker is not None:
         orchestrator_env.append({"name": "USERS_PER_WORKER", "value": str(users_per_worker)})
-    if rps_per_worker is not None:
-        orchestrator_env.append({"name": "RPS_PER_WORKER", "value": str(rps_per_worker)})
     if startup_lead_time is not None:
         orchestrator_env.append({"name": "STARTUP_LEAD_TIME", "value": str(startup_lead_time)})
 
@@ -157,7 +149,7 @@ def _build_task_overrides(
     if standalone:
         master_env.append({"name": "LOCUST_MASTER_ARGS", "value": ""})
         # Make orchestrator idle (no workers)
-        orchestrator_env.append({"name": "DESIRED_WORKERS", "value": "0"})
+        orchestrator_env.append({"name": "MAX_WORKERS", "value": "0"})
         orchestrator_env.append({"name": "MIN_WORKERS", "value": "0"})
 
     # Build overrides dict only if we have overrides
@@ -191,6 +183,75 @@ def _build_task_overrides(
         result["memory"] = str(memory)
 
     return result
+
+
+def _display_benchmark_results(stats: dict[str, object]) -> None:
+    """Display benchmark results in a standard format.
+
+    Args:
+        stats: Dict with keys: total_requests, total_failures, failure_rate,
+               requests_per_second, avg_response_time, min_response_time,
+               max_response_time, p50, p95, p99.
+    """
+    total_reqs = stats.get("total_requests", 0)
+    total_fails = stats.get("total_failures", 0)
+    fail_rate = stats.get("failure_rate", 0)
+    rps = stats.get("requests_per_second", 0)
+    p50 = stats.get("p50", 0)
+    p95 = stats.get("p95", 0)
+    p99 = stats.get("p99", 0)
+    avg_rt = stats.get("avg_response_time", 0)
+    min_rt = stats.get("min_response_time", 0)
+    max_rt = stats.get("max_response_time", 0)
+
+    click.echo("\nResults:")
+    click.echo(f"  Requests: {total_reqs:,}")
+    click.echo(f"  RPS: {rps:.1f}")
+    click.echo(f"  Failures: {total_fails:,} ({fail_rate:.1%})")
+    click.echo(f"  Avg: {avg_rt:.0f}ms")
+    click.echo(f"  Min: {min_rt:.0f}ms / Max: {max_rt:.0f}ms")
+    click.echo(f"  p50: {p50:.0f}ms")
+    click.echo(f"  p95: {p95:.0f}ms")
+    click.echo(f"  p99: {p99:.0f}ms")
+
+
+def _map_locust_stats(locust_json: dict[str, Any]) -> dict[str, object]:
+    """Map Locust /stats/requests JSON to standard benchmark stats format.
+
+    Args:
+        locust_json: Response from Locust's /stats/requests endpoint.
+
+    Returns:
+        Dict compatible with _display_benchmark_results().
+    """
+    # Find the "Aggregated" entry in stats (the total)
+    total_entry: dict[str, Any] = {}
+    for entry in locust_json.get("stats", []):
+        if entry.get("name") == "Aggregated":
+            total_entry = entry
+            break
+
+    if not total_entry:
+        return {}
+
+    num_requests = total_entry.get("num_requests", 0)
+    num_failures = total_entry.get("num_failures", 0)
+    fail_ratio = num_failures / num_requests if num_requests > 0 else 0.0
+
+    # Percentiles are flat keys on the stats entry: "response_time_percentile_0.95"
+    # p50 uses "median_response_time" (always present on the entry)
+    return {
+        "total_requests": num_requests,
+        "total_failures": num_failures,
+        "failure_rate": fail_ratio,
+        "requests_per_second": locust_json.get("total_rps", 0),
+        "avg_response_time": total_entry.get("avg_response_time", 0),
+        "min_response_time": total_entry.get("min_response_time", 0),
+        "max_response_time": total_entry.get("max_response_time", 0),
+        "p50": total_entry.get("median_response_time", 0),
+        "p95": total_entry.get("response_time_percentile_0.95", 0),
+        "p99": total_entry.get("response_time_percentile_0.99", 0),
+    }
 
 
 def _get_service_network_config(ecs_client: Any, cluster: str, service: str) -> dict[str, object]:
@@ -230,22 +291,10 @@ def load() -> None:
     "--max-workers", default=100, type=int, help="Maximum Lambda workers (auto-scaling cap)"
 )
 @click.option(
-    "--desired-workers",
-    default=None,
-    type=int,
-    help="Fixed number of workers (disables auto-scaling)",
-)
-@click.option(
     "--users-per-worker",
-    default=20,
+    default=10,
     type=int,
-    help="Max users per Lambda worker for auto-scaling (default: 20)",
-)
-@click.option(
-    "--rps-per-worker",
-    default=50,
-    type=int,
-    help="Max RPS per Lambda worker for auto-scaling (default: 50)",
+    help="Max users per Lambda worker for auto-scaling (default: 10)",
 )
 @click.option(
     "--min-workers",
@@ -281,13 +330,7 @@ def load() -> None:
     "locustfile_dir",
     default=".",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Directory containing locustfile.py (default: current directory)",
-)
-@click.option(
-    "-f",
-    "--locustfile",
-    default="locustfile.py",
-    help="Locustfile path relative to -C directory (default: locustfile.py)",
+    help="Directory containing locustfiles (default: current directory)",
 )
 def deploy(
     name: str | None,
@@ -295,16 +338,13 @@ def deploy(
     vpc_id: str | None,
     subnet_ids: str | None,
     max_workers: int,
-    desired_workers: int | None,
     users_per_worker: int,
-    rps_per_worker: int,
     min_workers: int,
     startup_lead_time: int,
     lambda_timeout: int,
     lambda_memory: int,
     create_vpc_endpoints: bool,
     locustfile_dir: Path,
-    locustfile: str,
 ) -> None:
     """Deploy load test infrastructure."""
     from .builder import build_and_push_locust_image, get_zae_limiter_source
@@ -332,7 +372,7 @@ def deploy(
         click.echo(f"Error: Stack not found: {name}", err=True)
         sys.exit(1)
 
-    required_outputs = ["AppPolicyArn", "AdminPolicyArn"]
+    required_outputs = ["AcquireOnlyPolicyArn", "FullAccessPolicyArn"]
     missing = [k for k in required_outputs if k not in outputs]
     if missing:
         click.echo(f"Error: Stack missing outputs: {missing}", err=True)
@@ -370,19 +410,13 @@ def deploy(
         {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
         {"ParameterKey": "PrivateSubnetIds", "ParameterValue": ",".join(subnet_list)},
         {"ParameterKey": "MaxWorkers", "ParameterValue": str(max_workers)},
-        {
-            "ParameterKey": "DesiredWorkers",
-            "ParameterValue": str(desired_workers) if desired_workers else "",
-        },
         {"ParameterKey": "UsersPerWorker", "ParameterValue": str(users_per_worker)},
-        {"ParameterKey": "RpsPerWorker", "ParameterValue": str(rps_per_worker)},
         {"ParameterKey": "MinWorkers", "ParameterValue": str(min_workers)},
         {"ParameterKey": "StartupLeadTime", "ParameterValue": str(startup_lead_time)},
         {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
         {"ParameterKey": "LambdaMemory", "ParameterValue": str(lambda_memory)},
         {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
         {"ParameterKey": "PrivateRouteTableIds", "ParameterValue": route_table_ids},
-        {"ParameterKey": "Locustfile", "ParameterValue": locustfile},
         {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
         {"ParameterKey": "RoleNameFormat", "ParameterValue": role_name_format},
     ]
@@ -435,7 +469,6 @@ def deploy(
         region or "us-east-1",
         locustfile_dir,
         zae_limiter_source,
-        locustfile=locustfile,
     )
     click.echo(f"  Locust image pushed: {image_uri}")
 
@@ -444,7 +477,6 @@ def deploy(
     zip_path = build_load_lambda_package(
         zae_limiter_source,
         locustfile_dir,
-        locustfile=locustfile,
     )
     click.echo(f"  Lambda package built: {zip_path}")
 
@@ -474,14 +506,12 @@ def deploy(
 @click.option(
     "-f",
     "--locustfile",
-    default=None,
-    help="Override locustfile path (relative to -C directory used in deploy)",
+    required=True,
+    help="Locustfile path (relative to -C directory used in deploy)",
 )
 @click.option("--max-workers", type=int, default=None, help="Override max Lambda workers")
-@click.option("--desired-workers", type=int, default=None, help="Override fixed worker count")
 @click.option("--min-workers", type=int, default=None, help="Override minimum workers")
 @click.option("--users-per-worker", type=int, default=None, help="Override users per worker ratio")
-@click.option("--rps-per-worker", type=int, default=None, help="Override RPS per worker ratio")
 @click.option(
     "--startup-lead-time", type=int, default=None, help="Override predictive scaling lookahead"
 )
@@ -502,12 +532,10 @@ def connect(
     destroy: bool,
     force: bool,
     standalone: bool,
-    locustfile: str | None,
+    locustfile: str,
     max_workers: int | None,
-    desired_workers: int | None,
     min_workers: int | None,
     users_per_worker: int | None,
-    rps_per_worker: int | None,
     startup_lead_time: int | None,
     cpu: int | None,
     memory: int | None,
@@ -528,10 +556,8 @@ def connect(
         standalone=standalone,
         locustfile=locustfile,
         max_workers=max_workers,
-        desired_workers=desired_workers,
         min_workers=min_workers,
         users_per_worker=users_per_worker,
-        rps_per_worker=rps_per_worker,
         startup_lead_time=startup_lead_time,
         cpu=cpu,
         memory=memory,
@@ -821,24 +847,102 @@ def list_cmd(region: str | None) -> None:
 @load.command()
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
+@click.option(
+    "--mode",
+    type=click.Choice(["lambda", "fargate", "distributed"]),
+    default="lambda",
+    help="Runtime mode: lambda (default), fargate (standalone),"
+    " or distributed (Fargate master + Lambda workers)",
+)
 @click.option("--users", default=20, type=int, help="Number of simulated users (default: 20)")
 @click.option("--duration", default=60, type=int, help="Test duration in seconds (default: 60)")
 @click.option("--spawn-rate", default=10, type=int, help="User spawn rate per second (default: 10)")
 @click.option(
     "-f",
     "--locustfile",
+    required=True,
+    help="Locustfile path (e.g. locustfiles/max_rps.py)",
+)
+@click.option(
+    "--cpu", type=int, default=None, help="Override Fargate task CPU units (default from task def)"
+)
+@click.option(
+    "--memory",
+    type=int,
     default=None,
-    help="Override locustfile path (e.g. locustfiles/max_rps.py)",
+    help="Override Fargate task memory in MB (default from task def)",
+)
+@click.option("--port", default=8089, type=int, help="Local port for SSM tunnel (Fargate mode)")
+@click.option(
+    "--workers",
+    default=1,
+    type=int,
+    help="Number of Lambda workers (distributed mode, default: 1)",
 )
 def benchmark(
+    name: str,
+    region: str | None,
+    mode: str,
+    users: int,
+    duration: int,
+    spawn_rate: int,
+    locustfile: str,
+    cpu: int | None,
+    memory: int | None,
+    port: int,
+    workers: int,
+) -> None:
+    """Run a benchmark to measure per-worker capacity.
+
+    Lambda mode (default): Invokes a single Lambda worker in headless mode.
+    Fargate mode: Starts a Fargate task in standalone headless mode and polls stats.
+    Distributed mode: Fargate master + Lambda workers, automated end-to-end.
+    """
+    if mode == "distributed":
+        _benchmark_distributed(
+            name=name,
+            region=region,
+            users=users,
+            duration=duration,
+            spawn_rate=spawn_rate,
+            locustfile=locustfile,
+            cpu=cpu,
+            memory=memory,
+            port=port,
+            workers=workers,
+        )
+    elif mode == "fargate":
+        _benchmark_fargate(
+            name=name,
+            region=region,
+            users=users,
+            duration=duration,
+            spawn_rate=spawn_rate,
+            locustfile=locustfile,
+            cpu=cpu,
+            memory=memory,
+            port=port,
+        )
+    else:
+        _benchmark_lambda(
+            name=name,
+            region=region,
+            users=users,
+            duration=duration,
+            spawn_rate=spawn_rate,
+            locustfile=locustfile,
+        )
+
+
+def _benchmark_lambda(
     name: str,
     region: str | None,
     users: int,
     duration: int,
     spawn_rate: int,
-    locustfile: str | None,
+    locustfile: str,
 ) -> None:
-    """Run a single Lambda worker in headless mode to measure per-worker capacity."""
+    """Run Lambda benchmark (original behavior)."""
     import json
 
     stack_name = f"{name}-load"
@@ -880,8 +984,7 @@ def benchmark(
     click.echo(f"\nLambda Benchmark: {func_name}")
     click.echo(f"  Memory: {memory_mb} MB (~{vcpu_estimate:.2f} vCPU)")
     click.echo(f"  Timeout: {timeout_seconds}s")
-    if locustfile:
-        click.echo(f"  Locustfile: {locustfile}")
+    click.echo(f"  Locustfile: {locustfile}")
     click.echo(f"  Users: {users}, Duration: {duration}s, Spawn Rate: {spawn_rate}/s")
     click.echo()
 
@@ -891,9 +994,8 @@ def benchmark(
         "users": users,
         "duration_seconds": duration,
         "spawn_rate": spawn_rate,
+        "locustfile": locustfile,
     }
-    if locustfile:
-        config["locustfile"] = locustfile
     payload = {"config": config}
 
     click.echo("Invoking Lambda (this may take a while)...")
@@ -914,24 +1016,570 @@ def benchmark(
                 click.echo(f"  {line}", err=True)
         sys.exit(1)
 
-    # Display results
-    total_reqs = response_payload.get("total_requests", 0)
-    total_fails = response_payload.get("total_failures", 0)
-    fail_rate = response_payload.get("failure_rate", 0)
-    rps = response_payload.get("requests_per_second", 0)
-    p50 = response_payload.get("p50", 0)
-    p95 = response_payload.get("p95", 0)
-    p99 = response_payload.get("p99", 0)
-    avg_rt = response_payload.get("avg_response_time", 0)
-    min_rt = response_payload.get("min_response_time", 0)
-    max_rt = response_payload.get("max_response_time", 0)
+    _display_benchmark_results(response_payload)
 
-    click.echo("\nResults:")
-    click.echo(f"  Requests: {total_reqs:,}")
-    click.echo(f"  RPS: {rps:.1f}")
-    click.echo(f"  Failures: {total_fails:,} ({fail_rate:.1%})")
-    click.echo(f"  Avg: {avg_rt:.0f}ms")
-    click.echo(f"  Min: {min_rt:.0f}ms / Max: {max_rt:.0f}ms")
-    click.echo(f"  p50: {p50:.0f}ms")
-    click.echo(f"  p95: {p95:.0f}ms")
-    click.echo(f"  p99: {p99:.0f}ms")
+
+def _benchmark_fargate(
+    name: str,
+    region: str | None,
+    users: int,
+    duration: int,
+    spawn_rate: int,
+    locustfile: str,
+    cpu: int | None,
+    memory: int | None,
+    port: int,
+) -> None:
+    """Run Fargate benchmark in standalone headless mode."""
+    import json
+    import subprocess
+    import time
+    import urllib.error
+    import urllib.request
+
+    stack_name = f"{name}-load"
+    service_name = f"{stack_name}-master"
+    task_definition = f"{stack_name}-master"
+
+    ecs = boto3.client("ecs", region_name=region)
+
+    # Build autostart args for Locust master container
+    # Use --autostart (not --headless) to keep the web UI running on 8089
+    # so we can poll /stats/requests via SSM tunnel. --autoquit 5 exits 5s
+    # after the test finishes.
+    headless_args = (
+        f"--autostart --autoquit 5 --users {users} --run-time {duration}s --spawn-rate {spawn_rate}"
+    )
+    master_env: list[dict[str, str]] = [
+        {"name": "LOCUST_MASTER_ARGS", "value": headless_args},
+        {"name": "LOCUSTFILE", "value": locustfile},
+    ]
+
+    # Orchestrator should be idle (no workers in standalone mode)
+    orchestrator_env: list[dict[str, str]] = [
+        {"name": "MAX_WORKERS", "value": "0"},
+        {"name": "MIN_WORKERS", "value": "0"},
+    ]
+
+    overrides: dict[str, object] = {
+        "containerOverrides": [
+            {"name": "locust-master", "environment": master_env},
+            {"name": "worker-orchestrator", "environment": orchestrator_env},
+        ],
+    }
+    if cpu is not None:
+        overrides["cpu"] = str(cpu)
+    if memory is not None:
+        overrides["memory"] = str(memory)
+
+    # Resolve task def to get default CPU/memory for header display
+    try:
+        td_response = ecs.describe_task_definition(taskDefinition=task_definition)
+        td = td_response["taskDefinition"]
+        display_cpu = cpu or int(td.get("cpu", 1024))
+        display_memory = memory or int(td.get("memory", 2048))
+    except Exception:
+        display_cpu = cpu or 1024
+        display_memory = memory or 2048
+
+    display_vcpu = display_cpu / 1024
+
+    click.echo(f"\nFargate Benchmark: {service_name}")
+    click.echo(f"  CPU: {display_cpu} units ({display_vcpu:.1f} vCPU)")
+    click.echo(f"  Memory: {display_memory} MB")
+    click.echo(f"  Locustfile: {locustfile}")
+    click.echo(f"  Users: {users}, Duration: {duration}s, Spawn Rate: {spawn_rate}/s")
+    click.echo()
+
+    # Get network config from service
+    network_config = _get_service_network_config(ecs, stack_name, service_name)
+
+    # Start Fargate task
+    click.echo("Starting Fargate task...")
+    run_response = ecs.run_task(
+        cluster=stack_name,
+        taskDefinition=task_definition,
+        networkConfiguration=network_config,
+        enableExecuteCommand=True,
+        count=1,
+        overrides=overrides,
+    )
+    if not run_response.get("tasks"):
+        failures = run_response.get("failures", [])
+        reason = failures[0].get("reason", "unknown") if failures else "unknown"
+        click.echo(f"Error: Failed to start Fargate task: {reason}", err=True)
+        sys.exit(1)
+    task_arn = run_response["tasks"][0]["taskArn"]
+    task_id = task_arn.split("/")[-1]
+    click.echo(f"  Task started: {task_id}")
+
+    tunnel_proc: subprocess.Popen[bytes] | None = None
+    last_good_stats: dict[str, Any] | None = None
+
+    try:
+        # Wait for task RUNNING + SSM agent
+        click.echo("  Waiting for task to start...")
+        runtime_id = None
+        for _ in range(60):
+            time.sleep(2)
+            tasks = ecs.describe_tasks(cluster=stack_name, tasks=[task_arn])
+            task = tasks["tasks"][0]
+            if task.get("lastStatus") != "RUNNING":
+                continue
+
+            for container in task.get("containers", []):
+                if container.get("name") == "locust-master":
+                    runtime_id = container.get("runtimeId")
+                    ssm_ready = False
+                    for agent in container.get("managedAgents", []):
+                        if agent.get("name") == "ExecuteCommandAgent":
+                            ssm_ready = agent.get("lastStatus") == "RUNNING"
+                    if runtime_id and ssm_ready:
+                        break
+            else:
+                continue
+            break
+        else:
+            click.echo("Error: Task failed to start within 2 minutes", err=True)
+            ecs.stop_task(cluster=stack_name, task=task_arn)
+            sys.exit(1)
+
+        click.echo(f"  Task running: {task_id}")
+        click.echo("  SSM agent ready")
+        time.sleep(3)
+
+        # Open SSM tunnel in background
+        ssm_target = f"ecs:{stack_name}_{task_id}_{runtime_id}"
+        params = json.dumps(
+            {
+                "host": ["localhost"],
+                "portNumber": ["8089"],
+                "localPortNumber": [str(port)],
+            }
+        )
+        region_args = ["--region", region] if region else []
+        ssm_cmd = [
+            "aws",
+            "ssm",
+            "start-session",
+            "--target",
+            ssm_target,
+            "--document-name",
+            "AWS-StartPortForwardingSessionToRemoteHost",
+            "--parameters",
+            params,
+            *region_args,
+        ]
+
+        click.echo(f"  Opening SSM tunnel to localhost:{port}...")
+        tunnel_proc = subprocess.Popen(
+            ssm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+        # Wait for tunnel to be ready
+        stats_url = f"http://localhost:{port}/stats/requests"
+        click.echo("  Waiting for tunnel + Locust...")
+        tunnel_ready = False
+        for attempt in range(30):
+            time.sleep(2)
+            try:
+                req = urllib.request.Request(stats_url)
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    json.loads(resp.read())
+                tunnel_ready = True
+                break
+            except (urllib.error.URLError, ConnectionRefusedError, OSError):
+                if tunnel_proc.poll() is not None:
+                    # Tunnel process died, restart it
+                    tunnel_proc = subprocess.Popen(
+                        ssm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                continue
+
+        if not tunnel_ready:
+            click.echo("Error: Could not connect to Locust via SSM tunnel", err=True)
+            sys.exit(1)
+
+        click.echo("  Connected. Polling stats...\n")
+
+        # Poll stats until test completes
+        poll_interval = 5
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        # Extra buffer: wait up to duration + ramp-up time + buffer
+        max_wait = duration + (users // max(spawn_rate, 1)) + 30
+
+        elapsed = 0
+        while elapsed < max_wait:
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+            try:
+                req = urllib.request.Request(stats_url)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    stats_json = json.loads(resp.read())
+                consecutive_failures = 0
+                last_good_stats = stats_json
+
+                state = stats_json.get("state", "unknown")
+                total_rps = stats_json.get("total_rps", 0)
+                user_count = stats_json.get("user_count", 0)
+                click.echo(f"  [{elapsed}s] state={state}, users={user_count}, rps={total_rps:.1f}")
+
+                if state == "stopped":
+                    click.echo("  Test completed.")
+                    break
+
+            except (urllib.error.URLError, ConnectionRefusedError, OSError):
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    click.echo("  Locust stopped (connection lost).")
+                    break
+                click.echo(f"  [{elapsed}s] connection lost, retrying...")
+
+        if last_good_stats:
+            mapped = _map_locust_stats(last_good_stats)
+            if mapped:
+                _display_benchmark_results(mapped)
+            else:
+                click.echo("\nNo aggregated stats available.", err=True)
+        else:
+            click.echo("\nError: No stats collected.", err=True)
+            sys.exit(1)
+
+    except KeyboardInterrupt:
+        click.echo("\nInterrupted")
+        if last_good_stats:
+            mapped = _map_locust_stats(last_good_stats)
+            if mapped:
+                click.echo("\nPartial results:")
+                _display_benchmark_results(mapped)
+
+    finally:
+        # Clean up tunnel
+        if tunnel_proc and tunnel_proc.poll() is None:
+            tunnel_proc.terminate()
+            try:
+                tunnel_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                tunnel_proc.kill()
+
+        # Wait for task to stop (it should stop naturally after --run-time)
+        click.echo("\nWaiting for Fargate task to stop...")
+        try:
+            waiter = ecs.get_waiter("tasks_stopped")
+            waiter.wait(
+                cluster=stack_name,
+                tasks=[task_arn],
+                WaiterConfig={"Delay": 5, "MaxAttempts": 24},
+            )
+            click.echo("  Fargate task stopped.")
+        except Exception:
+            # If it's taking too long, stop it explicitly
+            click.echo("  Task still running, stopping...")
+            try:
+                ecs.stop_task(cluster=stack_name, task=task_arn)
+                click.echo("  Fargate task stopped.")
+            except Exception as e:
+                click.echo(f"  Warning: Failed to stop task: {e}", err=True)
+
+
+def _benchmark_distributed(
+    name: str,
+    region: str | None,
+    users: int,
+    duration: int,
+    spawn_rate: int,
+    locustfile: str,
+    cpu: int | None,
+    memory: int | None,
+    port: int,
+    workers: int,
+) -> None:
+    """Run distributed benchmark: Fargate master + Lambda workers."""
+    import json
+    import subprocess
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    stack_name = f"{name}-load"
+    service_name = f"{stack_name}-master"
+    task_definition = f"{stack_name}-master"
+
+    ecs = boto3.client("ecs", region_name=region)
+
+    # Build overrides: master keeps default --master args, orchestrator gets worker params
+    overrides = _build_task_overrides(
+        standalone=False,
+        locustfile=locustfile,
+        max_workers=workers,
+        min_workers=workers,
+        users_per_worker=None,
+        startup_lead_time=None,
+        cpu=cpu,
+        memory=memory,
+    )
+
+    # Resolve task def to get default CPU/memory for header display
+    try:
+        td_response = ecs.describe_task_definition(taskDefinition=task_definition)
+        td = td_response["taskDefinition"]
+        display_cpu = cpu or int(td.get("cpu", 1024))
+        display_memory = memory or int(td.get("memory", 2048))
+    except Exception:
+        display_cpu = cpu or 1024
+        display_memory = memory or 2048
+
+    display_vcpu = display_cpu / 1024
+
+    click.echo(f"\nDistributed Benchmark: {service_name}")
+    click.echo(f"  CPU: {display_cpu} units ({display_vcpu:.1f} vCPU)")
+    click.echo(f"  Memory: {display_memory} MB")
+    click.echo(f"  Workers: {workers} Lambda")
+    click.echo(f"  Locustfile: {locustfile}")
+    click.echo(f"  Users: {users}, Duration: {duration}s, Spawn Rate: {spawn_rate}/s")
+    click.echo()
+
+    # Get network config from service
+    network_config = _get_service_network_config(ecs, stack_name, service_name)
+
+    # Start Fargate task
+    click.echo("Starting Fargate task...")
+    run_kwargs: dict[str, object] = {
+        "cluster": stack_name,
+        "taskDefinition": task_definition,
+        "networkConfiguration": network_config,
+        "enableExecuteCommand": True,
+        "count": 1,
+    }
+    if overrides:
+        run_kwargs["overrides"] = overrides
+
+    run_response = ecs.run_task(**run_kwargs)
+    if not run_response.get("tasks"):
+        failures = run_response.get("failures", [])
+        reason = failures[0].get("reason", "unknown") if failures else "unknown"
+        click.echo(f"Error: Failed to start Fargate task: {reason}", err=True)
+        sys.exit(1)
+    task_arn = run_response["tasks"][0]["taskArn"]
+    task_id = task_arn.split("/")[-1]
+    click.echo(f"  Task started: {task_id}")
+
+    tunnel_proc: subprocess.Popen[bytes] | None = None
+    last_good_stats: dict[str, Any] | None = None
+
+    try:
+        # Wait for task RUNNING + SSM agent
+        click.echo("  Waiting for task to start...")
+        runtime_id = None
+        for _ in range(60):
+            time.sleep(2)
+            tasks = ecs.describe_tasks(cluster=stack_name, tasks=[task_arn])
+            task = tasks["tasks"][0]
+            if task.get("lastStatus") != "RUNNING":
+                continue
+
+            for container in task.get("containers", []):
+                if container.get("name") == "locust-master":
+                    runtime_id = container.get("runtimeId")
+                    ssm_ready = False
+                    for agent in container.get("managedAgents", []):
+                        if agent.get("name") == "ExecuteCommandAgent":
+                            ssm_ready = agent.get("lastStatus") == "RUNNING"
+                    if runtime_id and ssm_ready:
+                        break
+            else:
+                continue
+            break
+        else:
+            click.echo("Error: Task failed to start within 2 minutes", err=True)
+            ecs.stop_task(cluster=stack_name, task=task_arn)
+            sys.exit(1)
+
+        click.echo(f"  Task running: {task_id}")
+        click.echo("  SSM agent ready")
+        time.sleep(3)
+
+        # Open SSM tunnel in background
+        ssm_target = f"ecs:{stack_name}_{task_id}_{runtime_id}"
+        params = json.dumps(
+            {
+                "host": ["localhost"],
+                "portNumber": ["8089"],
+                "localPortNumber": [str(port)],
+            }
+        )
+        region_args = ["--region", region] if region else []
+        ssm_cmd = [
+            "aws",
+            "ssm",
+            "start-session",
+            "--target",
+            ssm_target,
+            "--document-name",
+            "AWS-StartPortForwardingSessionToRemoteHost",
+            "--parameters",
+            params,
+            *region_args,
+        ]
+
+        click.echo(f"  Opening SSM tunnel to localhost:{port}...")
+        tunnel_proc = subprocess.Popen(
+            ssm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+        # Wait for tunnel to be ready
+        stats_url = f"http://localhost:{port}/stats/requests"
+        click.echo("  Waiting for tunnel + Locust...")
+        tunnel_ready = False
+        for _ in range(30):
+            time.sleep(2)
+            try:
+                req = urllib.request.Request(stats_url)
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    json.loads(resp.read())
+                tunnel_ready = True
+                break
+            except (urllib.error.URLError, ConnectionRefusedError, OSError):
+                if tunnel_proc.poll() is not None:
+                    tunnel_proc = subprocess.Popen(
+                        ssm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                continue
+
+        if not tunnel_ready:
+            click.echo("Error: Could not connect to Locust via SSM tunnel", err=True)
+            sys.exit(1)
+
+        click.echo("  Connected.")
+
+        # Wait for workers to connect
+        click.echo(f"  Waiting for {workers} worker(s)...")
+        workers_ready = False
+        for i in range(60):
+            time.sleep(5)
+            elapsed_w = (i + 1) * 5
+            try:
+                req = urllib.request.Request(stats_url)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    stats_json = json.loads(resp.read())
+                worker_list = stats_json.get("workers", [])
+                worker_count = len(worker_list) if isinstance(worker_list, list) else 0
+                click.echo(f"  [{elapsed_w}s] workers={worker_count}/{workers}")
+                if worker_count >= workers:
+                    workers_ready = True
+                    break
+            except (urllib.error.URLError, ConnectionRefusedError, OSError):
+                click.echo(f"  [{elapsed_w}s] connection lost, retrying...")
+
+        if not workers_ready:
+            click.echo("Error: Workers failed to connect within 5 minutes", err=True)
+            sys.exit(1)
+
+        click.echo(f"  {workers} worker(s) connected.")
+
+        # Start test via POST /swarm
+        swarm_url = f"http://localhost:{port}/swarm"
+        data = urllib.parse.urlencode(
+            {
+                "user_count": users,
+                "spawn_rate": spawn_rate,
+                "run_time": f"{duration}s",
+            }
+        ).encode()
+        click.echo(f"\nStarting test: {users} users, {spawn_rate}/s spawn, {duration}s...")
+        req = urllib.request.Request(swarm_url, data=data, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                swarm_response = json.loads(resp.read())
+                if not swarm_response.get("success", True):
+                    msg = swarm_response.get("message", "unknown error")
+                    click.echo(f"Error: Failed to start swarm: {msg}", err=True)
+                    sys.exit(1)
+        except (urllib.error.URLError, OSError) as e:
+            click.echo(f"Error: Failed to start swarm: {e}", err=True)
+            sys.exit(1)
+
+        click.echo("  Test started. Polling stats...\n")
+
+        # Poll stats until test completes
+        poll_interval = 5
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        max_wait = duration + (users // max(spawn_rate, 1)) + 30
+
+        elapsed = 0
+        while elapsed < max_wait:
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+            try:
+                req = urllib.request.Request(stats_url)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    stats_json = json.loads(resp.read())
+                consecutive_failures = 0
+                last_good_stats = stats_json
+
+                state = stats_json.get("state", "unknown")
+                total_rps = stats_json.get("total_rps", 0)
+                user_count = stats_json.get("user_count", 0)
+                worker_list = stats_json.get("workers", [])
+                wc = len(worker_list) if isinstance(worker_list, list) else 0
+                click.echo(
+                    f"  [{elapsed}s] state={state}, users={user_count}, "
+                    f"workers={wc}, rps={total_rps:.1f}"
+                )
+
+                if state == "stopped":
+                    click.echo("  Test completed.")
+                    break
+
+            except (urllib.error.URLError, ConnectionRefusedError, OSError):
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    click.echo("  Locust stopped (connection lost).")
+                    break
+                click.echo(f"  [{elapsed}s] connection lost, retrying...")
+
+        if last_good_stats:
+            mapped = _map_locust_stats(last_good_stats)
+            if mapped:
+                _display_benchmark_results(mapped)
+            else:
+                click.echo("\nNo aggregated stats available.", err=True)
+        else:
+            click.echo("\nError: No stats collected.", err=True)
+            sys.exit(1)
+
+    except KeyboardInterrupt:
+        click.echo("\nInterrupted")
+        if last_good_stats:
+            mapped = _map_locust_stats(last_good_stats)
+            if mapped:
+                click.echo("\nPartial results:")
+                _display_benchmark_results(mapped)
+
+    finally:
+        # Clean up tunnel
+        if tunnel_proc and tunnel_proc.poll() is None:
+            tunnel_proc.terminate()
+            try:
+                tunnel_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                tunnel_proc.kill()
+
+        # Stop the Fargate task explicitly (no --autoquit in distributed mode)
+        click.echo("\nStopping Fargate task...")
+        try:
+            ecs.stop_task(cluster=stack_name, task=task_arn)
+            waiter = ecs.get_waiter("tasks_stopped")
+            waiter.wait(
+                cluster=stack_name,
+                tasks=[task_arn],
+                WaiterConfig={"Delay": 5, "MaxAttempts": 24},
+            )
+            click.echo("  Fargate task stopped.")
+        except Exception as e:
+            click.echo(f"  Warning: Failed to stop task: {e}", err=True)

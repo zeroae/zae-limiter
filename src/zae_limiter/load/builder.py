@@ -66,7 +66,6 @@ def _get_orchestrator_path() -> Path:
 def _generate_dockerfile(
     zae_limiter_source: Path | str,
     *,
-    locustfile: str = "locustfile.py",
     has_user_requirements: bool = False,
 ) -> str:
     """Generate Dockerfile based on how zae-limiter is provided.
@@ -77,8 +76,8 @@ def _generate_dockerfile(
     3. Copy and install wheel
     4. Copy Python files last (invalidates least)
 
-    The LOCUSTFILE env var can be overridden at runtime via ECS task definition
-    or container environment to select different locustfiles without rebuilding.
+    The LOCUSTFILE env var must be set at runtime via ECS task definition
+    or container environment override to select a locustfile.
     """
     if isinstance(zae_limiter_source, Path):
         install_cmd = """\
@@ -114,9 +113,7 @@ COPY orchestrator.py /mnt/orchestrator.py
 # Add /mnt to PYTHONPATH so locustfiles can import sibling packages (e.g., common/)
 ENV PYTHONPATH=/mnt
 
-# Default locustfile (can be overridden at runtime via LOCUSTFILE env var)
-ENV LOCUSTFILE={locustfile}
-
+# LOCUSTFILE must be set at runtime (via ECS container env override)
 # Master mode args (set to empty string for standalone mode via env override)
 ENV LOCUST_MASTER_ARGS="--master --master-bind-port=5557 --enable-rebalancing --class-picker"
 
@@ -128,8 +125,6 @@ ENTRYPOINT ["sh", "-c", "locust $LOCUST_MASTER_ARGS -f /mnt/$LOCUSTFILE"]
 def _create_build_context(
     zae_limiter_source: Path | str,
     locustfile_dir: Path,
-    *,
-    locustfile: str = "locustfile.py",
 ) -> io.BytesIO:
     """Create Docker build context as tar archive.
 
@@ -143,7 +138,6 @@ def _create_build_context(
         # Add Dockerfile
         dockerfile_content = _generate_dockerfile(
             zae_limiter_source,
-            locustfile=locustfile,
             has_user_requirements=has_user_requirements,
         )
         dockerfile_bytes = dockerfile_content.encode()
@@ -173,17 +167,14 @@ def build_and_push_locust_image(
     region: str,
     locustfile_dir: Path,
     zae_limiter_source: Path | str | None = None,
-    *,
-    locustfile: str = "locustfile.py",
 ) -> str:
     """Build Locust master image with zae-limiter and push to ECR.
 
     Args:
         stack_name: Load test stack name (ECR repo name derived from this)
         region: AWS region
-        locustfile_dir: Directory containing locustfile.py
+        locustfile_dir: Directory containing locustfiles
         zae_limiter_source: Path to wheel, version string, or None to auto-detect
-        locustfile: Locustfile path relative to locustfile_dir
 
     Returns:
         ECR image URI
@@ -217,7 +208,7 @@ def build_and_push_locust_image(
     client = docker.from_env()
 
     # Build image context
-    context = _create_build_context(zae_limiter_source, locustfile_dir, locustfile=locustfile)
+    context = _create_build_context(zae_limiter_source, locustfile_dir)
 
     # Build image (this can take 15-30s due to pip install)
     import sys

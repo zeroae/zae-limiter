@@ -133,6 +133,7 @@ def _run_headless(
         shutdown_buffer_pct: Quit when this fraction of time remains (default 10%)
     """
     import gevent
+    from locust import events as global_events
     from locust.env import Environment
 
     # Calculate shutdown buffer as percentage of initial timeout
@@ -151,7 +152,10 @@ def _run_headless(
     user_classes = _load_user_classes(config)
     print(f"Loaded user classes: {[cls.__name__ for cls in user_classes]}")
 
-    env = Environment(user_classes=user_classes)
+    # Pass global events so module-level @events.test_start.add_listener decorators
+    # in locustfiles fire correctly. Pass host so locustfiles can find the stack name.
+    host = os.environ.get("TARGET_STACK_NAME", "")
+    env = Environment(user_classes=user_classes, events=global_events, host=host)
     env.create_local_runner()
     assert env.runner is not None
 
@@ -231,6 +235,7 @@ def _run_as_worker(
     """
     import uuid
 
+    from locust import events as global_events
     from locust.env import Environment
 
     # Calculate shutdown buffer as percentage of initial timeout
@@ -253,6 +258,7 @@ def _run_as_worker(
     # Set environment variable that Locust uses for worker identification
     os.environ["LOCUST_UNIQUE_ID"] = worker_id
 
+    host = os.environ.get("TARGET_STACK_NAME", "")
     user_classes = _load_user_classes(config)
     print(
         f"Starting worker {worker_id} connecting to {master_host}:{master_port}, "
@@ -261,7 +267,7 @@ def _run_as_worker(
         flush=True,
     )
 
-    env = Environment(user_classes=user_classes)
+    env = Environment(user_classes=user_classes, events=global_events, host=host)
     env.create_worker_runner(master_host, master_port)
     assert env.runner is not None
 

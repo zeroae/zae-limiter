@@ -12,7 +12,7 @@ Uses a closed-loop control system with auto-scaling:
 - Times out pending invocations after PENDING_TIMEOUT seconds
 
 Auto-scaling formula:
-    desired = max(ceil(users / USERS_PER_WORKER), ceil(rps / RPS_PER_WORKER))
+    desired = ceil(users / USERS_PER_WORKER)
     desired = clamp(desired, MIN_WORKERS, MAX_WORKERS)
 
 Environment variables:
@@ -20,15 +20,12 @@ Environment variables:
     MASTER_PORT: Locust master port (default: 5557)
     POLL_INTERVAL: Seconds between maintenance loops (default: 5)
     PENDING_TIMEOUT: Seconds before pending invocation expires (default: 30)
+    IDLE_TIMEOUT: Seconds to wait idle before shutting down (default: 900 = 15 min)
 
-    Auto-scaling (when enabled):
-    USERS_PER_WORKER: Max users per Lambda worker (default: 20)
-    RPS_PER_WORKER: Max RPS per Lambda worker (default: 50)
+    Auto-scaling:
+    USERS_PER_WORKER: Max users per Lambda worker (default: 10)
     MIN_WORKERS: Minimum workers to maintain (default: 1)
     MAX_WORKERS: Maximum workers cap (default: unlimited)
-
-    Fixed scaling (legacy):
-    DESIRED_WORKERS: Fixed number of workers (disables auto-scaling)
 """
 
 from __future__ import annotations
@@ -123,8 +120,7 @@ def get_locust_stats() -> LocustStats | None:
 class ScalingConfig:
     """Configuration for auto-scaling Lambda workers."""
 
-    users_per_worker: int = 20
-    rps_per_worker: int = 50
+    users_per_worker: int = 10
     min_workers: int = 1
     max_workers: int | None = None  # None = unlimited
     startup_lead_time: float = 20.0  # Seconds to predict ahead for proactive scaling
@@ -134,8 +130,7 @@ class ScalingConfig:
         """Create config from environment variables."""
         max_workers_str = os.environ.get("MAX_WORKERS")
         return cls(
-            users_per_worker=int(os.environ.get("USERS_PER_WORKER", "20")),
-            rps_per_worker=int(os.environ.get("RPS_PER_WORKER", "50")),
+            users_per_worker=int(os.environ.get("USERS_PER_WORKER", "10")),
             min_workers=int(os.environ.get("MIN_WORKERS", "1")),
             max_workers=int(max_workers_str) if max_workers_str else None,
             startup_lead_time=float(os.environ.get("STARTUP_LEAD_TIME", "20")),
@@ -152,11 +147,11 @@ def calculate_desired_workers(
 
     Formula:
         # Current need
-        current = max(ceil(users / users_per_worker), ceil(rps / rps_per_worker))
+        current = ceil(users / users_per_worker)
 
         # Predict future need (startup_lead_time seconds ahead)
         predicted_users = users + (user_rate * startup_lead_time)
-        predicted = max(ceil(predicted_users / users_per_worker), ...)
+        predicted = ceil(predicted_users / users_per_worker)
 
         # Take the higher to proactively scale
         desired = max(current, predicted)
@@ -178,17 +173,9 @@ def calculate_desired_workers(
         return config.min_workers
 
     # Calculate workers needed for current users
-    workers_for_users = (
+    current_desired = (
         math.ceil(stats.user_count / config.users_per_worker) if stats.user_count > 0 else 0
     )
-
-    # Calculate workers needed for current RPS
-    workers_for_rps = (
-        math.ceil(stats.total_rps / config.rps_per_worker) if stats.total_rps > 0 else 0
-    )
-
-    # Current desired
-    current_desired = max(workers_for_users, workers_for_rps)
 
     # Predictive scaling: estimate need in startup_lead_time seconds
     predicted_desired = current_desired
@@ -313,11 +300,6 @@ class WorkerPool:
 
 def main() -> None:
     """Run the worker orchestration loop."""
-    # Check if fixed scaling is enabled (legacy mode)
-    fixed_workers_str = os.environ.get("DESIRED_WORKERS")
-    fixed_workers = int(fixed_workers_str) if fixed_workers_str else None
-
-    # Load auto-scaling config
     scaling_config = ScalingConfig.from_env()
 
     worker_function = os.environ["WORKER_FUNCTION_NAME"]
@@ -328,29 +310,21 @@ def main() -> None:
     lambda_timeout = float(os.environ.get("LAMBDA_TIMEOUT", "300"))
     # Start replacements at 80% of timeout (before workers quit at 90%)
     replacement_pct = float(os.environ.get("REPLACEMENT_PCT", "0.8"))
+    # Idle timeout: shut down after this many seconds without a running test
+    idle_timeout = float(os.environ.get("IDLE_TIMEOUT", "900"))
 
     master_ip = get_task_ip()
 
-    if fixed_workers is not None:
-        logger.info(
-            "Orchestrator started (fixed mode): master=%s:%d, workers=%d, lambda_timeout=%ds",
-            master_ip,
-            master_port,
-            fixed_workers,
-            int(lambda_timeout),
-        )
-    else:
-        logger.info(
-            "Orchestrator started (auto-scaling): master=%s:%d, "
-            "users_per_worker=%d, rps_per_worker=%d, min=%d, max=%s, lambda_timeout=%ds",
-            master_ip,
-            master_port,
-            scaling_config.users_per_worker,
-            scaling_config.rps_per_worker,
-            scaling_config.min_workers,
-            scaling_config.max_workers or "unlimited",
-            int(lambda_timeout),
-        )
+    logger.info(
+        "Orchestrator started: master=%s:%d, "
+        "users_per_worker=%d, min=%d, max=%s, lambda_timeout=%ds",
+        master_ip,
+        master_port,
+        scaling_config.users_per_worker,
+        scaling_config.min_workers,
+        scaling_config.max_workers or "unlimited",
+        int(lambda_timeout),
+    )
 
     lambda_client = boto3.client("lambda")
     payload_config: dict[str, object] = {
@@ -377,6 +351,7 @@ def main() -> None:
     last_connected = -1
     prev_stats: LocustStats | None = None
     last_stats_time = time.time()
+    last_active_time = time.time()  # Last time a test was running (or master not ready)
     shutdown = False
 
     def handle_signal(signum: int, frame: object) -> None:
@@ -393,17 +368,26 @@ def main() -> None:
             stats = get_locust_stats()
             connected = stats.worker_count if stats else -1
 
-            # Calculate time since last stats for rate calculation
+            # Track idle time: reset when test is running or master not ready
             now = time.time()
+            if stats is None or stats.state in ("spawning", "running"):
+                last_active_time = now
+            elif idle_timeout > 0:
+                idle_seconds = now - last_active_time
+                if idle_seconds >= idle_timeout:
+                    logger.info(
+                        "Idle timeout reached (%.0fs without a running test), shutting down",
+                        idle_seconds,
+                    )
+                    break
+
+            # Calculate time since last stats for rate calculation
             time_delta = now - last_stats_time
 
-            # Calculate desired workers (auto-scaling or fixed)
-            if fixed_workers is not None:
-                desired_workers = fixed_workers
-            else:
-                desired_workers = calculate_desired_workers(
-                    stats, scaling_config, prev_stats, time_delta
-                )
+            # Calculate desired workers via auto-scaling
+            desired_workers = calculate_desired_workers(
+                stats, scaling_config, prev_stats, time_delta
+            )
 
             # Expire old pending invocations
             expired = pool.expire_old()
@@ -464,32 +448,18 @@ def main() -> None:
                         pool.mark_replaced(not_replacing)
 
                 # Log state on every poll for visibility
-                if fixed_workers is not None:
-                    logger.info(
-                        "Workers: connected=%d, pending=%d, active=%d, "
-                        "expiring=%d, effective=%d/%d, need=%d",
-                        connected,
-                        pool.pending_count,
-                        pool.active_count,
-                        expiring,
-                        effective,
-                        desired_workers,
-                        needed,
-                    )
-                else:
-                    # Include auto-scaling metrics (users, RPS)
-                    assert stats is not None  # connected >= 0 means stats is valid
-                    logger.info(
-                        "Auto-scale: users=%d, rps=%.1f, desired=%d | "
-                        "Workers: connected=%d, pending=%d, expiring=%d, need=%d",
-                        stats.user_count,
-                        stats.total_rps,
-                        desired_workers,
-                        connected,
-                        pool.pending_count,
-                        expiring,
-                        needed,
-                    )
+                assert stats is not None  # connected >= 0 means stats is valid
+                logger.info(
+                    "Auto-scale: users=%d, rps=%.1f, desired=%d | "
+                    "Workers: connected=%d, pending=%d, expiring=%d, need=%d",
+                    stats.user_count,
+                    stats.total_rps,
+                    desired_workers,
+                    connected,
+                    pool.pending_count,
+                    expiring,
+                    needed,
+                )
 
             # Invoke new workers if needed
             if needed > 0:
