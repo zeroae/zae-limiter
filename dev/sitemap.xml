@@ -2,302 +2,302 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/benchmarks/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/cli/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/getting-started/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/migrations/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/monitoring/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/performance/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/000-adr-format-standard/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/001-single-table-dynamodb/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/002-integer-arithmetic-millitokens/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/003-cloudformation-infrastructure/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/004-declarative-stack-options/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/005-exception-hierarchy/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/006-flat-schema-snapshots/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/007-input-validation/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/008-security-audit-logging/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/009-version-migration-system/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/010-total-consumed-counter/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/011-api-cli-parity/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/012-cloudformation-docs-parity/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/013-module-documentation-parity/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/100-centralized-config/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/101-flat-schema-config/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/102-config-hierarchy/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/103-config-caching/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/104-stored-limits-default/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/105-eventual-consistency/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/106-audit-entity-ids-for-config/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/107-iam-roles-for-application-access/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/108-repository-protocol/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/109-backend-capability-matrix/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/110-deprecation-constructor/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/111-flatten-all-records/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/112-cascade-per-entity/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/113-lambda-packaging/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/114-composite-bucket-items/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/115-add-based-writes-lazy-refill/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/116-iam-role-naming/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/117-managed-policies-by-default/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/118-four-level-config-hierarchy/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/119-bucket-ttl-strategy/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/120-bucket-param-sync/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/121-native-sync-unasync/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/121-policy-rename-clarity/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/exceptions/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/limiter/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/models/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/repository/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/contributing/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/contributing/architecture/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/contributing/development/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/contributing/localstack/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/contributing/testing/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/basic-usage/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/config-hierarchy/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/hierarchical/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/llm-integration/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/token-bucket/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/unavailability/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/guide/usage-snapshots/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/infra/auditing/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/infra/cloudformation/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/infra/deployment/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/infra/production/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/operations/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/operations/dynamodb/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/operations/lambda/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/operations/rate-limits/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/operations/recovery/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/operations/streams/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/operations/version/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-01-30-iam-role-naming-design/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-02-native-sync-implementation/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-02-native-sync-unasync-design/</loc>
-         <lastmod>2026-02-06</lastmod>
+         <lastmod>2026-02-07</lastmod>
     </url>
 </urlset>
