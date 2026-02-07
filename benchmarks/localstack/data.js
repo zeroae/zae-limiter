@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770370572465,
+  "lastUpdate": 1770478143297,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -7329,6 +7329,135 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.007952634253371331",
             "extra": "mean: 1.1014141844000278 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77d99e09fb9e113b8c3ae2c9786cd5a25d91a3dc",
+          "message": "build(deps): bump pip from 25.3 to 26.0 (#324)\n\nBumps [pip](https://github.com/pypa/pip) from 25.3 to 26.0.\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/pypa/pip/blob/main/NEWS.rst\">pip's\nchangelog</a>.</em></p>\n<blockquote>\n<h1>26.0 (2026-01-30)</h1>\n<h2>Deprecations and Removals</h2>\n<ul>\n<li>Remove support for non-bare project names in egg fragments. Affected\nusers should use\nthe <code>Direct URL requirement syntax\n&lt;https://packaging.python.org/en/latest/specifications/version-specifiers/#direct-references&gt;</code><em>.\n(<code>[#13157](https://github.com/pypa/pip/issues/13157)\n&lt;https://github.com/pypa/pip/issues/13157&gt;</code></em>)</li>\n</ul>\n<h2>Features</h2>\n<ul>\n<li>\n<p>Display pip's command-line help in colour, if possible.\n(<code>[#12134](https://github.com/pypa/pip/issues/12134)\n&lt;https://github.com/pypa/pip/issues/12134&gt;</code>_)</p>\n</li>\n<li>\n<p>Support installing dependencies declared with inline script metadata\n(:pep:<code>723</code>) with <code>--requirements-from-script</code>.\n(<code>[#12891](https://github.com/pypa/pip/issues/12891)\n&lt;https://github.com/pypa/pip/issues/12891&gt;</code>_)</p>\n</li>\n<li>\n<p>Add <code>--all-releases</code> and <code>--only-final</code> options\nto control pre-release\nand final release selection during package installation.\n(<code>[#13221](https://github.com/pypa/pip/issues/13221)\n&lt;https://github.com/pypa/pip/issues/13221&gt;</code>_)</p>\n</li>\n<li>\n<p>Add <code>--uploaded-prior-to</code> option to only consider packages\nuploaded prior to\na given datetime when the <code>upload-time</code> field is available\nfrom a remote index.\n(<code>[#13625](https://github.com/pypa/pip/issues/13625)\n&lt;https://github.com/pypa/pip/issues/13625&gt;</code>_)</p>\n</li>\n<li>\n<p>Add <code>--use-feature inprocess-build-deps</code> to request that\nbuild dependencies are installed\nwithin the same pip install process. This new mechanism is faster,\nsupports <code>--no-clean</code>\nand <code>--no-cache-dir</code> reliably, and supports prompting for\nauthentication.</p>\n<p>Enabling this feature will also enable <code>--use-feature\nbuild-constraints</code>. This feature will\nbecome the default in a future pip version.\n(<code>[#9081](https://github.com/pypa/pip/issues/9081)\n&lt;https://github.com/pypa/pip/issues/9081&gt;</code>_)</p>\n</li>\n<li>\n<p><code>pip cache purge</code> and <code>pip cache remove</code> now\nclean up empty directories\nand legacy files left by older pip versions.\n(<code>[#9058](https://github.com/pypa/pip/issues/9058)\n&lt;https://github.com/pypa/pip/issues/9058&gt;</code>_)</p>\n</li>\n</ul>\n<h2>Bug Fixes</h2>\n<ul>\n<li>Fix selecting pre-release versions when only pre-releases match.\nFor example, <code>package&gt;1.0</code> with versions <code>1.0,\n2.0rc1</code> now installs\n<code>2.0rc1</code> instead of failing.\n(<code>[#13746](https://github.com/pypa/pip/issues/13746)\n&lt;https://github.com/pypa/pip/issues/13746&gt;</code>_)</li>\n<li>Revisions in version control URLs now must be percent-encoded.\nFor example, use <code>git+https://example.com/repo.git@issue%231</code>\nto specify the branch <code>issue#1</code>.\nIf you previously used a branch name containing a <code>%</code>\ncharacter in a version control URL, you now need to replace it with\n<code>%25</code> to ensure correct percent-encoding.\n(<code>[#13407](https://github.com/pypa/pip/issues/13407)\n&lt;https://github.com/pypa/pip/issues/13407&gt;</code>_)</li>\n<li>Preserve original casing when a path is displayed.\n(<code>[#6823](https://github.com/pypa/pip/issues/6823)\n&lt;https://github.com/pypa/pip/issues/6823&gt;</code>_)</li>\n<li>Fix bash completion when the <code>$IFS</code> variable has been\nmodified from its default.\n(<code>[#13555](https://github.com/pypa/pip/issues/13555)\n&lt;https://github.com/pypa/pip/issues/13555&gt;</code>_)</li>\n<li>Precompute Python requirements on each candidate, reducing time of\nlong resolutions.\n(<code>[#13656](https://github.com/pypa/pip/issues/13656)\n&lt;https://github.com/pypa/pip/issues/13656&gt;</code>_)</li>\n<li>Skip redundant work converting version objects to strings when using\nthe\n<code>importlib.metadata</code> backend.\n(<code>[#13660](https://github.com/pypa/pip/issues/13660)\n&lt;https://github.com/pypa/pip/issues/13660&gt;</code>_)</li>\n<li>Fix <code>pip index versions</code> to honor only-binary/no-binary\noptions. (<code>[#13682](https://github.com/pypa/pip/issues/13682)\n&lt;https://github.com/pypa/pip/issues/13682&gt;</code>_)</li>\n<li>Fix fallthrough logic for options, allowing overriding global\noptions with\ndefaults from user config.\n(<code>[#13703](https://github.com/pypa/pip/issues/13703)\n&lt;https://github.com/pypa/pip/issues/13703&gt;</code>_)</li>\n<li>Use a path-segment prefix comparison, not char-by-char.\n(<code>[#13777](https://github.com/pypa/pip/issues/13777)\n&lt;https://github.com/pypa/pip/issues/13777&gt;</code>_)</li>\n</ul>\n<h2>Vendored Libraries</h2>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/2f4d4a836ed00076001376fbb0ce6dc4f22cdae2\"><code>2f4d4a8</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/pypa/pip/issues/13779\">#13779</a> from\nnotatallshaw/fix-26.0-news</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/04307a42261749cfa1c86a5537ad88f44ed2a41a\"><code>04307a4</code></a>\nfix 26.0 news</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/6ec7b0a488f614a7632442fe7c651957fdb5fc85\"><code>6ec7b0a</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/pypa/pip/issues/13775\">#13775</a> from\nnotatallshaw/release/26.0</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/4104356cd83d1614af45d203d64cb84705dad9d2\"><code>4104356</code></a>\nBump for release</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/58be8836b68814295d33bc5c56c38d3a0659ae81\"><code>58be883</code></a>\nUpdate AUTHORS.txt</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/66f2dece5ba9cc0ee9fe7035c46ba4b0756559b5\"><code>66f2dec</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/pypa/pip/issues/13778\">#13778</a> from\nichard26/docs/groups</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/0214103df7d7e6e3de3b8352ce3a3135437124f0\"><code>0214103</code></a>\ndoc: Re-expose package selection group options</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/fdbe7628f3ce5d99ac5962fa9dba9e31f3738fcc\"><code>fdbe762</code></a>\nInstall pip within docs Nox sessions</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/8e227a9be4faa9594e05d02ca05a413a2a4e7735\"><code>8e227a9</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/pypa/pip/issues/13777\">#13777</a> from\nsethmlarson/commonpath</li>\n<li><a\nhref=\"https://github.com/pypa/pip/commit/f5315ad96808c106a5c73936cebd335082be406e\"><code>f5315ad</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/pypa/pip/issues/13776\">#13776</a> from\nichard26/docs/versionadded</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/pypa/pip/compare/25.3...26.0\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=pip&package-manager=uv&previous-version=25.3&new-version=26.0)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\nYou can disable automated security fix PRs for this repo from the\n[Security Alerts\npage](https://github.com/zeroae/zae-limiter/network/alerts).\n\n</details>",
+          "timestamp": "2026-02-07T10:13:06-05:00",
+          "tree_id": "b836eb909c0d635dad1cd61c0f5e3d785f6246de",
+          "url": "https://github.com/zeroae/zae-limiter/commit/77d99e09fb9e113b8c3ae2c9786cd5a25d91a3dc"
+        },
+        "date": 1770478142240,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.920985693080908,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01097369547970663",
+            "extra": "mean: 45.61838659999846 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.67588199980993,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011226050022847633",
+            "extra": "mean: 53.54499455555444 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 28.36642816377158,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00643317487810813",
+            "extra": "mean: 35.25294035000002 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.792400674362945,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004031457091793066",
+            "extra": "mean: 27.179525708329304 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.067301637266052,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005800210631642082",
+            "extra": "mean: 41.55015028571337 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 205.274950400397,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001099293656574338",
+            "extra": "mean: 4.871515000001024 msec\nrounds: 149"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.215968494201952,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004124442102686451",
+            "extra": "mean: 38.14469033334262 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.930261164085593,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0035489863198520767",
+            "extra": "mean: 37.13294846667168 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 28.99716077804488,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002753570267482342",
+            "extra": "mean: 34.48613495832831 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 16.697844078977422,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008157496141641928",
+            "extra": "mean: 59.88797088236077 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.211467724304864,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005659809877251353",
+            "extra": "mean: 35.44657831249509 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9213302483989323,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0018287462981879511",
+            "extra": "mean: 520.472730199981 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9225776925036266,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014662084945013172",
+            "extra": "mean: 520.1350270000148 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9292895847440598,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01705645707518295",
+            "extra": "mean: 1.0760908293999818 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8975006752835489,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010994220937790001",
+            "extra": "mean: 1.1142052897999974 sec\nrounds: 5"
           }
         ]
       }
