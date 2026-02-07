@@ -274,24 +274,24 @@ class TestScalingConfig:
 
     def test_default_values(self):
         config = ScalingConfig()
-        assert config.users_per_worker == 20
-        assert config.rps_per_worker == 50
+        assert config.users_per_worker == 10
         assert config.min_workers == 1
         assert config.max_workers is None
+        assert config.startup_lead_time == 20.0
 
     def test_from_env(self):
         env = {
-            "USERS_PER_WORKER": "10",
-            "RPS_PER_WORKER": "25",
+            "USERS_PER_WORKER": "5",
             "MIN_WORKERS": "2",
             "MAX_WORKERS": "100",
+            "STARTUP_LEAD_TIME": "30",
         }
         with patch.dict("os.environ", env, clear=False):
             config = ScalingConfig.from_env()
-            assert config.users_per_worker == 10
-            assert config.rps_per_worker == 25
+            assert config.users_per_worker == 5
             assert config.min_workers == 2
             assert config.max_workers == 100
+            assert config.startup_lead_time == 30.0
 
     def test_from_env_defaults(self):
         with patch.dict("os.environ", {}, clear=False):
@@ -299,15 +299,15 @@ class TestScalingConfig:
             import os
 
             os.environ.pop("USERS_PER_WORKER", None)
-            os.environ.pop("RPS_PER_WORKER", None)
             os.environ.pop("MIN_WORKERS", None)
             os.environ.pop("MAX_WORKERS", None)
+            os.environ.pop("STARTUP_LEAD_TIME", None)
 
             config = ScalingConfig.from_env()
-            assert config.users_per_worker == 20
-            assert config.rps_per_worker == 50
+            assert config.users_per_worker == 10
             assert config.min_workers == 1
             assert config.max_workers is None
+            assert config.startup_lead_time == 20.0
 
 
 class TestCalculateDesiredWorkers:
@@ -328,47 +328,45 @@ class TestCalculateDesiredWorkers:
         assert calculate_desired_workers(stats, config) == 2
 
     def test_scales_by_users(self):
-        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=1)
-        # 100 users / 20 per worker = 5 workers
+        config = ScalingConfig(users_per_worker=10, min_workers=1)
+        # 100 users / 10 per worker = 10 workers
         stats = LocustStats(user_count=100, total_rps=10, worker_count=3, state="running")
-        assert calculate_desired_workers(stats, config) == 5
+        assert calculate_desired_workers(stats, config) == 10
 
     def test_scales_by_rps(self):
-        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=1)
-        # 200 RPS / 50 per worker = 4 workers (higher than users-based)
-        stats = LocustStats(user_count=20, total_rps=200, worker_count=2, state="running")
-        assert calculate_desired_workers(stats, config) == 4
+        config = ScalingConfig(users_per_worker=10, min_workers=1)
+        # 50 users / 10 per worker = 5 workers (RPS no longer factors in)
+        stats = LocustStats(user_count=50, total_rps=200, worker_count=2, state="running")
+        assert calculate_desired_workers(stats, config) == 5
 
     def test_takes_max_of_users_and_rps(self):
-        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=1)
-        # users: 60/20 = 3, rps: 300/50 = 6 -> takes 6
+        config = ScalingConfig(users_per_worker=10, min_workers=1)
+        # 60 users / 10 per worker = 6 workers
         stats = LocustStats(user_count=60, total_rps=300, worker_count=3, state="running")
         assert calculate_desired_workers(stats, config) == 6
 
     def test_respects_min_workers(self):
-        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=5)
-        # Only needs 1 worker for 10 users, but min is 5
-        stats = LocustStats(user_count=10, total_rps=5, worker_count=1, state="running")
+        config = ScalingConfig(users_per_worker=10, min_workers=5)
+        # Only needs 1 worker for 5 users, but min is 5
+        stats = LocustStats(user_count=5, total_rps=5, worker_count=1, state="running")
         assert calculate_desired_workers(stats, config) == 5
 
     def test_respects_max_workers(self):
-        config = ScalingConfig(
-            users_per_worker=20, rps_per_worker=50, min_workers=1, max_workers=10
-        )
-        # Needs 50 workers for 1000 users, but max is 10
+        config = ScalingConfig(users_per_worker=10, min_workers=1, max_workers=10)
+        # Needs 100 workers for 1000 users, but max is 10
         stats = LocustStats(user_count=1000, total_rps=100, worker_count=5, state="running")
         assert calculate_desired_workers(stats, config) == 10
 
     def test_spawning_state_triggers_scaling(self):
-        config = ScalingConfig(users_per_worker=20, min_workers=1)
+        config = ScalingConfig(users_per_worker=10, min_workers=1)
         # During spawning, start scaling based on target
         stats = LocustStats(user_count=50, total_rps=10, worker_count=1, state="spawning")
-        assert calculate_desired_workers(stats, config) == 3  # ceil(50/20)
+        assert calculate_desired_workers(stats, config) == 5  # ceil(50/10)
 
     def test_rounds_up_workers(self):
-        config = ScalingConfig(users_per_worker=20, rps_per_worker=50, min_workers=1)
-        # 21 users should need 2 workers (ceil(21/20) = 2)
-        stats = LocustStats(user_count=21, total_rps=1, worker_count=1, state="running")
+        config = ScalingConfig(users_per_worker=10, min_workers=1)
+        # 11 users should need 2 workers (ceil(11/10) = 2)
+        stats = LocustStats(user_count=11, total_rps=1, worker_count=1, state="running")
         assert calculate_desired_workers(stats, config) == 2
 
 
@@ -376,7 +374,7 @@ class TestMain:
     """Tests for the main orchestration loop."""
 
     def test_invokes_workers_when_needed(self):
-        """Main loop invokes Lambda workers to fill gap (fixed mode)."""
+        """Main loop invokes Lambda workers to fill gap."""
         mock_lambda = MagicMock()
         call_count = 0
 
@@ -384,15 +382,17 @@ class TestMain:
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
-                return LocustStats(user_count=0, total_rps=0, worker_count=0, state="ready")
-            return LocustStats(user_count=0, total_rps=0, worker_count=3, state="ready")
+                # 30 users / 10 per worker = 3 workers needed
+                return LocustStats(user_count=30, total_rps=0, worker_count=0, state="running")
+            return LocustStats(user_count=30, total_rps=0, worker_count=3, state="running")
 
         env = {
-            "DESIRED_WORKERS": "3",
             "WORKER_FUNCTION_NAME": "test-worker",
             "MASTER_PORT": "5557",
             "POLL_INTERVAL": "0",
             "PENDING_TIMEOUT": "30",
+            "USERS_PER_WORKER": "10",
+            "MIN_WORKERS": "1",
             "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
         }
 
@@ -414,7 +414,7 @@ class TestMain:
             with pytest.raises(KeyboardInterrupt):
                 main()
 
-            # Should have invoked Lambda workers
+            # Should have invoked 3 Lambda workers (30 users / 10 per worker)
             assert mock_lambda.invoke.call_count == 3
 
     def test_shutdown_on_sigterm(self):
@@ -492,11 +492,11 @@ class TestMain:
         mock_lambda = MagicMock()
 
         env = {
-            "DESIRED_WORKERS": "2",
             "WORKER_FUNCTION_NAME": "test-worker",
             "MASTER_PORT": "5557",
             "POLL_INTERVAL": "0",
             "PENDING_TIMEOUT": "30",
+            "MIN_WORKERS": "2",
             "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
         }
 
@@ -515,7 +515,7 @@ class TestMain:
             with pytest.raises(KeyboardInterrupt):
                 main()
 
-            # Should still invoke workers when master not ready
+            # Should still invoke min_workers when master not ready
             assert mock_lambda.invoke.call_count == 2
 
     def test_exception_in_loop_is_caught(self):
@@ -663,7 +663,7 @@ class TestMain:
             assert "locustfile" not in payload["config"]
 
     def test_auto_scaling_mode(self):
-        """Main loop auto-scales based on user count and RPS."""
+        """Main loop auto-scales based on user count."""
         mock_lambda = MagicMock()
         call_count = 0
 
@@ -671,19 +671,17 @@ class TestMain:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # First poll: 40 users running, need 2 workers (40/20)
+                # First poll: 40 users running, need 4 workers (40/10)
                 return LocustStats(user_count=40, total_rps=10, worker_count=0, state="running")
             # Second poll: workers connected
-            return LocustStats(user_count=40, total_rps=10, worker_count=2, state="running")
+            return LocustStats(user_count=40, total_rps=10, worker_count=4, state="running")
 
         env = {
-            # No DESIRED_WORKERS = auto-scaling mode
             "WORKER_FUNCTION_NAME": "test-worker",
             "MASTER_PORT": "5557",
             "POLL_INTERVAL": "0",
             "PENDING_TIMEOUT": "30",
-            "USERS_PER_WORKER": "20",
-            "RPS_PER_WORKER": "50",
+            "USERS_PER_WORKER": "10",
             "MIN_WORKERS": "1",
             "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
         }
@@ -698,21 +696,16 @@ class TestMain:
         ):
             mock_boto3.client.return_value = mock_lambda
 
-            # Remove DESIRED_WORKERS if set from other tests
-            import os
-
-            os.environ.pop("DESIRED_WORKERS", None)
-
             from zae_limiter.load.orchestrator import main
 
             with pytest.raises(KeyboardInterrupt):
                 main()
 
-            # Should have invoked 2 workers (40 users / 20 per worker)
-            assert mock_lambda.invoke.call_count == 2
+            # Should have invoked 4 workers (40 users / 10 per worker)
+            assert mock_lambda.invoke.call_count == 4
 
     def test_auto_scaling_by_rps(self):
-        """Main loop scales by RPS when RPS demands more workers than users."""
+        """Main loop scales by users only (RPS no longer drives scaling)."""
         mock_lambda = MagicMock()
         call_count = 0
 
@@ -720,17 +713,16 @@ class TestMain:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # 20 users = 1 worker, but 200 RPS = 4 workers (200/50)
-                return LocustStats(user_count=20, total_rps=200, worker_count=0, state="running")
-            return LocustStats(user_count=20, total_rps=200, worker_count=4, state="running")
+                # 40 users / 10 per worker = 4 workers
+                return LocustStats(user_count=40, total_rps=200, worker_count=0, state="running")
+            return LocustStats(user_count=40, total_rps=200, worker_count=4, state="running")
 
         env = {
             "WORKER_FUNCTION_NAME": "test-worker",
             "MASTER_PORT": "5557",
             "POLL_INTERVAL": "0",
             "PENDING_TIMEOUT": "30",
-            "USERS_PER_WORKER": "20",
-            "RPS_PER_WORKER": "50",
+            "USERS_PER_WORKER": "10",
             "MIN_WORKERS": "1",
             "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
         }
@@ -745,20 +737,16 @@ class TestMain:
         ):
             mock_boto3.client.return_value = mock_lambda
 
-            import os
-
-            os.environ.pop("DESIRED_WORKERS", None)
-
             from zae_limiter.load.orchestrator import main
 
             with pytest.raises(KeyboardInterrupt):
                 main()
 
-            # Should have invoked 4 workers (200 RPS / 50 per worker)
+            # Should have invoked 4 workers (40 users / 10 per worker)
             assert mock_lambda.invoke.call_count == 4
 
     def test_auto_scaling_scale_down(self):
-        """Workers are NOT replaced when scaling down (users decrease)."""
+        """Only needed workers are replaced when scaling down."""
         mock_lambda = MagicMock()
         call_count = 0
 
@@ -766,8 +754,9 @@ class TestMain:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # First poll: 100 users = need 5 workers, but we have 10 connected
-                # Orchestrator should NOT invoke replacements for expiring workers
+                # First poll: 100 users = need 5 workers, but we have 10 connected.
+                # On first poll, all 10 are adopted as near-expiring.
+                # Orchestrator replaces 5 (needed) and lets 5 expire.
                 return LocustStats(user_count=100, total_rps=10, worker_count=10, state="running")
             # Subsequent polls: same state
             return LocustStats(user_count=100, total_rps=10, worker_count=10, state="running")
@@ -778,7 +767,6 @@ class TestMain:
             "POLL_INTERVAL": "0",
             "PENDING_TIMEOUT": "30",
             "USERS_PER_WORKER": "20",  # 100 users / 20 = 5 workers needed
-            "RPS_PER_WORKER": "50",
             "MIN_WORKERS": "1",
             "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
         }
@@ -793,18 +781,13 @@ class TestMain:
         ):
             mock_boto3.client.return_value = mock_lambda
 
-            import os
-
-            os.environ.pop("DESIRED_WORKERS", None)
-
             from zae_limiter.load.orchestrator import main
 
             with pytest.raises(KeyboardInterrupt):
                 main()
 
-            # Should NOT invoke any workers - we have 10 but only need 5
-            # Let excess workers expire naturally
-            assert mock_lambda.invoke.call_count == 0
+            # Should replace only 5 workers (desired), letting the other 5 expire
+            assert mock_lambda.invoke.call_count == 5
 
     def test_main_guard(self):
         """The if __name__ == '__main__' guard calls main()."""

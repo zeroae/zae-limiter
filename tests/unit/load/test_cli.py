@@ -208,6 +208,14 @@ class TestDeployCommand:
                 {
                     "Outputs": [
                         {
+                            "OutputKey": "AcquireOnlyPolicyArn",
+                            "OutputValue": "arn:aws:iam::123:policy/acq",
+                        },
+                        {
+                            "OutputKey": "FullAccessPolicyArn",
+                            "OutputValue": "arn:aws:iam::123:policy/full",
+                        },
+                        {
                             "OutputKey": "AppPolicyArn",
                             "OutputValue": "arn:aws:iam::123:policy/app",
                         },
@@ -296,6 +304,14 @@ class TestDeployCommand:
                 "Stacks": [
                     {
                         "Outputs": [
+                            {
+                                "OutputKey": "AcquireOnlyPolicyArn",
+                                "OutputValue": "arn:aws:iam::123:policy/acq",
+                            },
+                            {
+                                "OutputKey": "FullAccessPolicyArn",
+                                "OutputValue": "arn:aws:iam::123:policy/full",
+                            },
                             {
                                 "OutputKey": "AppPolicyArn",
                                 "OutputValue": "arn:aws:iam::123:policy/app",
@@ -418,6 +434,14 @@ class TestDeployCommand:
                 "Stacks": [
                     {
                         "Outputs": [
+                            {
+                                "OutputKey": "AcquireOnlyPolicyArn",
+                                "OutputValue": "arn:aws:iam::123:policy/acq",
+                            },
+                            {
+                                "OutputKey": "FullAccessPolicyArn",
+                                "OutputValue": "arn:aws:iam::123:policy/full",
+                            },
                             {
                                 "OutputKey": "AppPolicyArn",
                                 "OutputValue": "arn:aws:iam::123:policy/app",
@@ -566,38 +590,6 @@ class TestDeployCommand:
             assert result.exit_code != 0
 
 
-class TestSetupCommand:
-    """Tests for the setup command."""
-
-    def test_creates_entities_and_limits(self, runner):
-        """Setup creates system defaults, resource configs, and entities."""
-        mock_limiter = MagicMock()
-        mock_limiter.__aenter__ = AsyncMock(return_value=mock_limiter)
-        mock_limiter.__aexit__ = AsyncMock(return_value=False)
-        mock_limiter.set_system_defaults = AsyncMock()
-        mock_limiter.set_resource_defaults = AsyncMock()
-        mock_limiter.create_entity = AsyncMock()
-        mock_limiter.set_limits = AsyncMock()
-
-        with patch("zae_limiter.RateLimiter", return_value=mock_limiter):
-            result = runner.invoke(
-                load,
-                [
-                    "setup",
-                    "--name",
-                    "my-app",
-                    "--region",
-                    "us-east-1",
-                    "--custom-limits",
-                    "2",
-                    "--apis",
-                    "2",
-                ],
-            )
-            assert result.exit_code == 0, result.output
-            assert "Ready for testing" in result.output
-
-
 class TestTeardownCommand:
     """Tests for the teardown command."""
 
@@ -705,7 +697,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
             assert "Found running Fargate task" in result.output
@@ -737,7 +729,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
 
@@ -768,7 +760,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
 
@@ -797,7 +789,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
 
@@ -815,7 +807,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py"],
             )
             assert result.exit_code != 0
             assert "failed to start" in result.output.lower()
@@ -839,7 +831,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py"],
             )
             assert result.exit_code != 0
             assert "ssm agent failed" in result.output.lower()
@@ -868,7 +860,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
             assert mock_subprocess_run.call_count == 3
@@ -894,7 +886,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert mock_subprocess_run.call_count == 5
             assert "failed after 5 attempts" in result.output.lower()
@@ -917,7 +909,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert "Interrupted" in result.output
 
@@ -942,7 +934,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert "Warning" in result.output or "cannot stop" in result.output.lower()
 
@@ -965,7 +957,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app"],  # no --destroy
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py"],  # no --destroy
             )
             assert result.exit_code == 0, result.output
             assert "still running" in result.output.lower()
@@ -1026,7 +1018,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--destroy"],
+                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
             # Should have called run_task
@@ -1069,7 +1061,16 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--max-workers", "50", "--destroy"],
+                [
+                    "connect",
+                    "--name",
+                    "my-app",
+                    "-f",
+                    "locustfiles/simple.py",
+                    "--max-workers",
+                    "50",
+                    "--destroy",
+                ],
             )
             assert result.exit_code == 0, result.output
 
@@ -1120,7 +1121,17 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--max-workers", "50", "--force", "--destroy"],
+                [
+                    "connect",
+                    "--name",
+                    "my-app",
+                    "-f",
+                    "locustfiles/simple.py",
+                    "--max-workers",
+                    "50",
+                    "--force",
+                    "--destroy",
+                ],
             )
             assert result.exit_code == 0, result.output
 
@@ -1149,7 +1160,16 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--max-workers", "50", "--destroy"],
+                [
+                    "connect",
+                    "--name",
+                    "my-app",
+                    "-f",
+                    "locustfiles/simple.py",
+                    "--max-workers",
+                    "50",
+                    "--destroy",
+                ],
             )
             assert result.exit_code == 0, result.output
             assert "already running" in result.output.lower()
@@ -1191,17 +1211,28 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 load,
-                ["connect", "--name", "my-app", "--standalone", "--destroy"],
+                [
+                    "connect",
+                    "--name",
+                    "my-app",
+                    "-f",
+                    "locustfiles/simple.py",
+                    "--standalone",
+                    "--destroy",
+                ],
             )
             assert result.exit_code == 0, result.output
 
-            # Verify overrides include standalone command
+            # Verify overrides clear master args for standalone mode
             call_kwargs = mock_ecs.run_task.call_args[1]
             overrides = call_kwargs["overrides"]
             master = next(
                 c for c in overrides["containerOverrides"] if c["name"] == "locust-master"
             )
-            assert "command" in master
+            master_args = next(
+                e["value"] for e in master["environment"] if e["name"] == "LOCUST_MASTER_ARGS"
+            )
+            assert master_args == ""
 
 
 class TestBuildTaskOverrides:
@@ -1214,10 +1245,8 @@ class TestBuildTaskOverrides:
             standalone=False,
             locustfile=None,
             max_workers=None,
-            desired_workers=None,
             min_workers=None,
             users_per_worker=None,
-            rps_per_worker=None,
             startup_lead_time=None,
         )
         assert result == {}
@@ -1229,10 +1258,8 @@ class TestBuildTaskOverrides:
             standalone=False,
             locustfile=None,
             max_workers=50,
-            desired_workers=10,
             min_workers=2,
             users_per_worker=25,
-            rps_per_worker=100,
             startup_lead_time=30,
         )
 
@@ -1242,10 +1269,8 @@ class TestBuildTaskOverrides:
         env_dict = {e["name"]: e["value"] for e in orchestrator["environment"]}
 
         assert env_dict["MAX_WORKERS"] == "50"
-        assert env_dict["DESIRED_WORKERS"] == "10"
         assert env_dict["MIN_WORKERS"] == "2"
         assert env_dict["USERS_PER_WORKER"] == "25"
-        assert env_dict["RPS_PER_WORKER"] == "100"
         assert env_dict["STARTUP_LEAD_TIME"] == "30"
 
     def test_locustfile_overrides_both_containers(self):
@@ -1255,10 +1280,8 @@ class TestBuildTaskOverrides:
             standalone=False,
             locustfile="locustfiles/llm_production.py",
             max_workers=None,
-            desired_workers=None,
             min_workers=None,
             users_per_worker=None,
-            rps_per_worker=None,
             startup_lead_time=None,
         )
 
@@ -1267,24 +1290,22 @@ class TestBuildTaskOverrides:
             env_dict = {e["name"]: e["value"] for e in container["environment"]}
             assert env_dict["LOCUSTFILE"] == "locustfiles/llm_production.py"
 
-    def test_standalone_mode_overrides_master_command(self):
+    def test_standalone_mode_clears_master_args(self):
         from zae_limiter.load.cli import _build_task_overrides
 
         result = _build_task_overrides(
             standalone=True,
             locustfile="simple.py",
             max_workers=None,
-            desired_workers=None,
             min_workers=None,
             users_per_worker=None,
-            rps_per_worker=None,
             startup_lead_time=None,
         )
 
         master = next(c for c in result["containerOverrides"] if c["name"] == "locust-master")
-        assert "command" in master
-        assert "--master" not in " ".join(master["command"])
-        assert "simple.py" in " ".join(master["command"])
+        env_dict = {e["name"]: e["value"] for e in master["environment"]}
+        assert env_dict["LOCUST_MASTER_ARGS"] == ""
+        assert env_dict["LOCUSTFILE"] == "simple.py"
 
     def test_standalone_mode_sets_orchestrator_idle(self):
         from zae_limiter.load.cli import _build_task_overrides
@@ -1293,10 +1314,8 @@ class TestBuildTaskOverrides:
             standalone=True,
             locustfile=None,
             max_workers=None,
-            desired_workers=None,
             min_workers=None,
             users_per_worker=None,
-            rps_per_worker=None,
             startup_lead_time=None,
         )
 
@@ -1304,7 +1323,7 @@ class TestBuildTaskOverrides:
             c for c in result["containerOverrides"] if c["name"] == "worker-orchestrator"
         )
         env_dict = {e["name"]: e["value"] for e in orchestrator["environment"]}
-        assert env_dict["DESIRED_WORKERS"] == "0"
+        assert env_dict["MAX_WORKERS"] == "0"
         assert env_dict["MIN_WORKERS"] == "0"
 
 
