@@ -369,6 +369,43 @@ class TestDualDiscovery:
         assert len(limiters) == 1
         assert limiters[0].user_name == "fallback-app"
 
+    def test_filters_by_stack_type(self) -> None:
+        """list_limiters filters results when stack_type is specified."""
+        limiter_stack = LimiterInfo(
+            stack_name="my-limiter",
+            user_name="my-limiter",
+            region="us-east-1",
+            stack_status="CREATE_COMPLETE",
+            creation_time="2024-01-15T10:30:00",
+            stack_type="limiter",
+        )
+        load_stack = LimiterInfo(
+            stack_name="my-load-test",
+            user_name="my-load-test",
+            region="us-east-1",
+            stack_status="CREATE_COMPLETE",
+            creation_time="2024-01-15T11:00:00",
+            stack_type="load-test",
+        )
+        with (
+            patch.object(
+                SyncInfrastructureDiscovery,
+                "_discover_via_tagging_api",
+                new_callable=MagicMock,
+                return_value=[limiter_stack, load_stack],
+            ),
+            patch.object(
+                SyncInfrastructureDiscovery,
+                "_discover_via_describe_stacks",
+                new_callable=MagicMock,
+                return_value=[],
+            ),
+        ):
+            with SyncInfrastructureDiscovery(region="us-east-1") as discovery:
+                limiters = discovery.list_limiters(stack_type="limiter")
+        assert len(limiters) == 1
+        assert limiters[0].stack_name == "my-limiter"
+
 
 class TestStackOptionsWithTags:
     """Tests for StackOptions tags field."""
