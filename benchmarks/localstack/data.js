@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770478143297,
+  "lastUpdate": 1770482485982,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -7458,6 +7458,135 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010994220937790001",
             "extra": "mean: 1.1142052897999974 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2dd63045c42a88cf6230fc153765ed6d705e0048",
+          "message": "⚡ perf(cache): BatchGetItem optimization for config resolution (#298) (#323)\n\n## Summary\n- Add `Repository.batch_get_configs()` method that fetches all 4 config\nhierarchy levels (entity, entity default, resource, system) in a single\n`BatchGetItem` call instead of 4 sequential `GetItem` calls\n- Integrate batch config resolution into `ConfigCache` with fallback to\nsequential `GetItem` on partial failure\n- Add `ConfigSource` and `OnUnavailableAction` Literal type aliases for\ntype-safe config resolution\n- Add benchmark tests to track cold-cache config resolution RCU/latency\n\n## Benchmark Results: BatchGetItem vs Sequential GetItem (#298)\n\nCold-cache config resolution (moto, no config cache, unique entity IDs\nper iteration):\n\n| Approach | Mean | Median | OPS | Relative |\n|----------|------|--------|-----|----------|\n| **Batched** (1 BatchGetItem) | 5.25ms | 5.18ms | 190/s | 1.0x |\n| **Sequential** (4 GetItem) | 8.26ms | 8.14ms | 121/s | **1.57x\nslower** |\n\n### API Call Reduction\n\n| Path | Config Reads | Total BatchGetItem |\n|------|-------------|--------------------|\n| Before (sequential) | 4 GetItem (entity, entity_default, resource,\nsystem) | 1 (buckets) |\n| After (batched) | 1 BatchGetItem (4 config keys) | 2 (configs +\nbuckets) |\n| Version check | 1 GetItem | unchanged |\n\n**Note:** With moto (in-process mock), the improvement is ~37% because\nthere's no real network latency. On real DynamoDB, eliminating 3 network\nround trips would yield a significantly larger improvement proportional\nto network RTT (typically 2-5ms per call).\n\n### Benchmark command\n\n```bash\nuv run pytest tests/benchmark/test_operations.py -o \"addopts=\" -v --benchmark-only -k \"config_resolution\"\n```\n\n## Test plan\n- [x] Unit tests for `batch_get_configs()` in `test_repository.py` and\n`test_sync_repository.py`\n- [x] Unit tests for batch config cache integration in\n`test_config_cache.py` and `test_sync_config_cache.py`\n- [x] Edge case coverage: partial results, empty responses,\ndeserialization\n- [x] Benchmark test in `test_capacity.py` for cold-cache config\nresolution\n- [x] Verify `uv run pytest tests/unit/ -v` passes (1730 tests)\n- [x] Verify `uv run mypy src/zae_limiter` passes\n\nCloses #298\nCloses #325\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-02-07T11:26:40-05:00",
+          "tree_id": "bc3afdc3cb58f986aa8a472e133901c4c28fabd4",
+          "url": "https://github.com/zeroae/zae-limiter/commit/2dd63045c42a88cf6230fc153765ed6d705e0048"
+        },
+        "date": 1770482485221,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.797616406791146,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009641554622411732",
+            "extra": "mean: 43.86423484615311 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.449487242665707,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006635695856325096",
+            "extra": "mean: 51.41523719999839 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 33.16570776590656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004885846155175346",
+            "extra": "mean: 30.151625499998303 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 40.941313576402756,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001490197954903275",
+            "extra": "mean: 24.42520555999863 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 27.157611736233644,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0043797644111189474",
+            "extra": "mean: 36.82208913333132 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 226.14880989468026,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005714707925753443",
+            "extra": "mean: 4.421867178808989 msec\nrounds: 151"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 30.521841135500843,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032590440100210573",
+            "extra": "mean: 32.76342326665448 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 28.95032756354086,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004704068929218948",
+            "extra": "mean: 34.541923500007954 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 29.79691506681589,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0038658429103889786",
+            "extra": "mean: 33.56052120689755 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 17.229156065770585,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00517618794461109",
+            "extra": "mean: 58.041148166665835 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 31.34352481253988,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00412036951279707",
+            "extra": "mean: 31.904516354839625 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9276314543132211,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006860693575082062",
+            "extra": "mean: 518.7713646000248 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.921118986583824,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00256519627320603",
+            "extra": "mean: 520.5299656000079 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9309876778282218,
+            "unit": "iter/sec",
+            "range": "stddev: 0.022944971492330955",
+            "extra": "mean: 1.0741280726000242 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9091500679817415,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010839257810722414",
+            "extra": "mean: 1.0999284223999894 sec\nrounds: 5"
           }
         ]
       }
