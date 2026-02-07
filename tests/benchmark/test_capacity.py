@@ -190,6 +190,49 @@ class TestCapacityConsumption:
         # GetItem calls for limit resolution (composite limits use GetItem, not Query)
         assert capacity_counter.get_item >= 3, "Should have GetItem calls for config resolution"
 
+    def test_acquire_batched_config_resolution_capacity(self, sync_limiter, capacity_counter):
+        """Verify: acquire() without limits override uses BatchGetItem for configs (#298).
+
+        Expected calls:
+        - 1 GetItem (version check)
+        - 1 BatchGetItem for config resolution (entity, entity_default, resource, system)
+        - 1 BatchGetItem with 2 keys = entity META + 1 bucket
+        - 1 PutItem (single-item optimization)
+
+        The config BatchGetItem replaces up to 4 sequential GetItem calls.
+        """
+        # Setup entity with stored limits
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+        sync_limiter.create_entity("cap-batch-config", name="Batch Config Entity")
+        sync_limiter.set_limits("cap-batch-config", limits)
+
+        # Reset counter after setup
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="cap-batch-config",
+                resource="api",
+                consume={"rpm": 1},
+            ):
+                pass
+
+        # Verify 2 BatchGetItem calls: 1 for configs + 1 for buckets
+        assert len(capacity_counter.batch_get_item) == 2, (
+            "Should have 2 BatchGetItem calls (configs + buckets)"
+        )
+        # Config batch fetches 3 keys: entity config, resource config, system config
+        # (entity_default also fetched = 4 keys total)
+        assert capacity_counter.batch_get_item[0] >= 3, (
+            "First BatchGetItem should fetch config keys"
+        )
+        # Bucket batch fetches META + bucket
+        assert capacity_counter.batch_get_item[1] == 2, (
+            "Second BatchGetItem should fetch 1 bucket + 1 META"
+        )
+        # No sequential GetItem for config resolution
+        assert capacity_counter.get_item == 1, "Should have only 1 GetItem (version check)"
+
     def test_available_check_capacity(self, sync_limiter, capacity_counter):
         """Verify: available() reads bucket state without writes.
 

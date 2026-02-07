@@ -16,6 +16,7 @@ from .models import (
     BucketState,
     Entity,
     Limit,
+    OnUnavailableAction,
     StackOptions,
     UsageSnapshot,
     UsageSummary,
@@ -626,6 +627,75 @@ class Repository:
                         buckets[key] = bucket
 
         return entity, buckets
+
+    async def batch_get_configs(
+        self,
+        keys: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]:
+        """
+        Batch get config items in a single DynamoDB call.
+
+        Fetches config records (entity, resource, system level) in a single
+        BatchGetItem request and returns deserialized limits.
+
+        Args:
+            keys: List of (PK, SK) tuples identifying config items
+
+        Returns:
+            Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
+            on_unavailable is extracted from system config items (None for others).
+            Missing items are not included in the result.
+
+        Note:
+            DynamoDB BatchGetItem supports up to 100 items per request.
+            For larger batches, this method automatically chunks the requests.
+            Uses eventually consistent reads (0.5 RCU per item).
+        """
+        if not keys:
+            return {}
+
+        client = await self._get_client()
+        result: dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]] = {}
+
+        # Deduplicate keys
+        unique_keys = list(set(keys))
+
+        # BatchGetItem supports max 100 items per request
+        for i in range(0, len(unique_keys), 100):
+            chunk = unique_keys[i : i + 100]
+
+            request_keys = [
+                {
+                    "PK": {"S": pk},
+                    "SK": {"S": sk},
+                }
+                for pk, sk in chunk
+            ]
+
+            response = await client.batch_get_item(
+                RequestItems={
+                    self.table_name: {
+                        "Keys": request_keys,
+                        "ConsistentRead": False,
+                    }
+                }
+            )
+
+            # Process responses: deserialize each item
+            items = response.get("Responses", {}).get(self.table_name, [])
+            for item in items:
+                pk = item.get("PK", {}).get("S", "")
+                sk = item.get("SK", {}).get("S", "")
+                if pk and sk:
+                    limits = self._deserialize_composite_limits(item)
+                    ou_attr = item.get("on_unavailable", {})
+                    ou_str = ou_attr.get("S") if ou_attr else None
+                    on_unavailable: OnUnavailableAction | None = (
+                        cast(OnUnavailableAction, ou_str) if ou_str else None
+                    )
+                    result[(pk, sk)] = (limits, on_unavailable)
+
+        return result
 
     async def get_or_create_bucket(
         self,
@@ -1567,7 +1637,7 @@ class Repository:
     async def set_system_defaults(
         self,
         limits: list[Limit],
-        on_unavailable: str | None = None,
+        on_unavailable: OnUnavailableAction | None = None,
         principal: str | None = None,
     ) -> None:
         """
@@ -1611,7 +1681,7 @@ class Repository:
             },
         )
 
-    async def get_system_defaults(self) -> tuple[list[Limit], str | None]:
+    async def get_system_defaults(self) -> tuple[list[Limit], OnUnavailableAction | None]:
         """
         Get system-wide default limits and config (composite format, ADR-114).
 
@@ -1642,7 +1712,11 @@ class Repository:
 
         # Extract on_unavailable
         on_unavailable_attr = item.get("on_unavailable", {})
-        on_unavailable: str | None = on_unavailable_attr.get("S") if on_unavailable_attr else None
+        on_unavailable: OnUnavailableAction | None = (
+            cast(OnUnavailableAction, on_unavailable_attr.get("S"))
+            if on_unavailable_attr and on_unavailable_attr.get("S")
+            else None
+        )
 
         return limits, on_unavailable
 

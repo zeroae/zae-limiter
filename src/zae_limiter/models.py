@@ -2,7 +2,7 @@
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
 
@@ -164,6 +164,9 @@ class BackendCapabilities:
     supports_batch_operations: bool = False
     """Whether the backend supports batch_get_buckets() for optimized reads."""
 
+
+#: Valid values for the ``on_unavailable`` system config attribute.
+OnUnavailableAction = Literal["allow", "block"]
 
 # ---------------------------------------------------------------------------
 # Limit Configuration

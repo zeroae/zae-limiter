@@ -35,6 +35,7 @@ from .models import (
     Limit,
     LimiterInfo,
     LimitStatus,
+    OnUnavailableAction,
     ResourceCapacity,
     StackOptions,
     Status,
@@ -44,7 +45,7 @@ from .models import (
     validate_resource,
 )
 from .schema import DEFAULT_RESOURCE
-from .sync_config_cache import SyncConfigCache
+from .sync_config_cache import ConfigSource, SyncConfigCache
 from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
 
@@ -792,7 +793,7 @@ class SyncRateLimiter:
 
     def _resolve_limits(
         self, entity_id: str, resource: str, limits_override: list[Limit] | None
-    ) -> tuple[list[Limit], Literal["entity", "entity_default", "resource", "system", "override"]]:
+    ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
 
@@ -824,6 +825,15 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
+        if limits_override is None and self._repository.capabilities.supports_batch_operations:
+            try:
+                limits, _, config_source = self._config_cache.resolve_limits(
+                    entity_id, resource, self._repository.batch_get_configs
+                )
+                if limits is not None and config_source is not None:
+                    return (limits, config_source)
+            except Exception:
+                logger.debug("Batched config resolution failed, falling back to sequential")
         entity_limits = self._config_cache.get_entity_limits(
             entity_id, resource, self._repository.get_limits
         )
@@ -867,11 +877,11 @@ class SyncRateLimiter:
         """
         if on_unavailable_param is not None:
             return on_unavailable_param
-        _, on_unavailable_str = self._config_cache.get_system_defaults(
+        _, on_unavailable_action = self._config_cache.get_system_defaults(
             self._repository.get_system_defaults
         )
-        if on_unavailable_str is not None:
-            return OnUnavailable(on_unavailable_str)
+        if on_unavailable_action is not None:
+            return OnUnavailable(on_unavailable_action)
         return self.on_unavailable
 
     def available(
@@ -1131,9 +1141,11 @@ class SyncRateLimiter:
             principal: Caller identity for audit logging (optional)
         """
         self._ensure_initialized()
-        on_unavailable_str = on_unavailable.value if on_unavailable else None
+        on_unavailable_action: OnUnavailableAction | None = (
+            on_unavailable.value if on_unavailable else None
+        )
         self._repository.set_system_defaults(
-            limits, on_unavailable=on_unavailable_str, principal=principal
+            limits, on_unavailable=on_unavailable_action, principal=principal
         )
 
     def get_system_defaults(self) -> tuple[list[Limit], OnUnavailable | None]:
@@ -1144,10 +1156,8 @@ class SyncRateLimiter:
             Tuple of (limits, on_unavailable). on_unavailable may be None if not set.
         """
         self._ensure_initialized()
-        limits, on_unavailable_str = self._repository.get_system_defaults()
-        on_unavailable = None
-        if on_unavailable_str:
-            on_unavailable = OnUnavailable(on_unavailable_str)
+        limits, on_unavailable_action = self._repository.get_system_defaults()
+        on_unavailable = OnUnavailable(on_unavailable_action) if on_unavailable_action else None
         return (limits, on_unavailable)
 
     def delete_system_defaults(self, principal: str | None = None) -> None:

@@ -2937,6 +2937,25 @@ class TestConfigSourceTracking:
         assert limits[0].capacity == 50
 
 
+class TestBatchedConfigResolutionFallback:
+    """Tests for batched config resolution exception fallback (Issue #298)."""
+
+    def test_resolve_limits_falls_back_on_batch_exception(self, sync_limiter):
+        """When batch_get_configs raises, _resolve_limits falls back to sequential."""
+        from unittest.mock import MagicMock, patch
+
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with patch.object(
+            sync_limiter._repository,
+            "batch_get_configs",
+            new=MagicMock(side_effect=RuntimeError("boom")),
+        ):
+            limits, source = sync_limiter._resolve_limits("user-1", "gpt-4", None)
+        assert source == "system"
+        assert len(limits) == 1
+        assert limits[0].capacity == 1000
+
+
 class TestBucketTTLConfiguration:
     """Tests for bucket_ttl_refill_multiplier parameter (Issue #271)."""
 

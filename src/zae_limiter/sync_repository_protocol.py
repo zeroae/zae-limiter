@@ -8,6 +8,8 @@ Changes should be made to the source file, then regenerated.
 
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from .limiter import OnUnavailable as OnUnavailable
+
 if TYPE_CHECKING:
     from .models import (
         AuditEvent,
@@ -15,6 +17,7 @@ if TYPE_CHECKING:
         BucketState,
         Entity,
         Limit,
+        OnUnavailableAction,
         UsageSnapshot,
         UsageSummary,
     )
@@ -220,6 +223,25 @@ class SyncRepositoryProtocol(Protocol):
 
         Returns:
             Existing or newly created BucketState
+        """
+        ...
+
+    def batch_get_configs(
+        self, keys: list[tuple[str, str]]
+    ) -> "dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]":
+        """
+        Batch get config items in a single DynamoDB call.
+
+        Fetches config records (entity, resource, system level) in a single
+        BatchGetItem request and returns deserialized limits.
+
+        Args:
+            keys: List of (PK, SK) tuples identifying config items
+
+        Returns:
+            Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
+            on_unavailable is extracted from system config items (None for others).
+            Missing items are not included in the result.
         """
         ...
 
@@ -507,7 +529,10 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def set_system_defaults(
-        self, limits: "list[Limit]", on_unavailable: str | None = None, principal: str | None = None
+        self,
+        limits: "list[Limit]",
+        on_unavailable: "OnUnavailableAction | None" = None,
+        principal: str | None = None,
     ) -> None:
         """
         Store system-wide default limits and config.
@@ -521,7 +546,7 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_system_defaults(self) -> "tuple[list[Limit], str | None]":
+    def get_system_defaults(self) -> "tuple[list[Limit], OnUnavailableAction | None]":
         """
         Get system-wide default limits and config.
 

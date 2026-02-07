@@ -3910,6 +3910,30 @@ class TestConfigSourceTracking:
         assert limits[0].capacity == 50
 
 
+class TestBatchedConfigResolutionFallback:
+    """Tests for batched config resolution exception fallback (Issue #298)."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_limits_falls_back_on_batch_exception(self, limiter):
+        """When batch_get_configs raises, _resolve_limits falls back to sequential."""
+        from unittest.mock import AsyncMock, patch
+
+        # Set system limits so sequential fallback succeeds
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Make batch_get_configs raise an exception
+        with patch.object(
+            limiter._repository,
+            "batch_get_configs",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            limits, source = await limiter._resolve_limits("user-1", "gpt-4", None)
+
+        assert source == "system"
+        assert len(limits) == 1
+        assert limits[0].capacity == 1000
+
+
 class TestBucketTTLConfiguration:
     """Tests for bucket_ttl_refill_multiplier parameter (Issue #271)."""
 
