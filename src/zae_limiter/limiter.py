@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -939,7 +939,7 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         limits_override: list[Limit] | None,
-    ) -> tuple[list[Limit], Literal["entity", "entity_default", "resource", "system", "override"]]:
+    ) -> tuple[list[Limit], str]:
         """
         Resolve limits using four-tier hierarchy.
 
@@ -971,7 +971,21 @@ class RateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        # Try Entity level for specific resource (with caching and negative caching)
+        # Try batched resolution (1 BatchGetItem instead of up to 4 GetItem calls)
+        # Skip when limits are already provided as override - no need to fetch config
+        if limits_override is None and self._repository.capabilities.supports_batch_operations:
+            try:
+                limits, _, config_source = await self._config_cache.resolve_limits(
+                    entity_id,
+                    resource,
+                    self._repository.batch_get_configs,
+                )
+                if limits is not None and config_source is not None:
+                    return limits, config_source
+            except Exception:
+                logger.debug("Batched config resolution failed, falling back to sequential")
+
+        # Sequential fallback (or non-batch backend)
         entity_limits = await self._config_cache.get_entity_limits(
             entity_id,
             resource,

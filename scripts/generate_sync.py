@@ -112,6 +112,7 @@ REMOVE_METHODS = {
     "get_resource_defaults_sync",
     "get_entity_limits_sync",
     "invalidate_sync",
+    "resolve_limits_sync",
 }
 
 # Module-level assignments to remove (unused in sync code).
@@ -154,6 +155,7 @@ TEST_METHOD_NAME_REWRITES = {
     "get_resource_defaults_sync": "get_resource_defaults",
     "get_entity_limits_sync": "get_entity_limits",
     "invalidate_sync": "invalidate",
+    "resolve_limits_sync": "resolve_limits",
 }
 
 # Test-specific: additional class renames for imports

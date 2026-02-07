@@ -12,7 +12,7 @@ import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from .config_cache import CacheStats as CacheStats
 from .limiter import OnUnavailable as OnUnavailable
@@ -792,7 +792,7 @@ class SyncRateLimiter:
 
     def _resolve_limits(
         self, entity_id: str, resource: str, limits_override: list[Limit] | None
-    ) -> tuple[list[Limit], Literal["entity", "entity_default", "resource", "system", "override"]]:
+    ) -> tuple[list[Limit], str]:
         """
         Resolve limits using four-tier hierarchy.
 
@@ -824,6 +824,15 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
+        if limits_override is None and self._repository.capabilities.supports_batch_operations:
+            try:
+                limits, _, config_source = self._config_cache.resolve_limits(
+                    entity_id, resource, self._repository.batch_get_configs
+                )
+                if limits is not None and config_source is not None:
+                    return (limits, config_source)
+            except Exception:
+                logger.debug("Batched config resolution failed, falling back to sequential")
         entity_limits = self._config_cache.get_entity_limits(
             entity_id, resource, self._repository.get_limits
         )

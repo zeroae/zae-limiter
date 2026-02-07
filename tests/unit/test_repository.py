@@ -334,6 +334,79 @@ class TestRepositoryBucketOperations:
         result = await repo.batch_get_buckets([])
         assert result == {}
 
+    # -------------------------------------------------------------------------
+    # batch_get_configs tests (issue #298)
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_batch_get_configs_empty_keys(self, repo):
+        """batch_get_configs should return empty dict for empty keys list."""
+        result = await repo.batch_get_configs([])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_batch_get_configs_all_present(self, repo):
+        """batch_get_configs returns deserialized (limits, on_unavailable) tuples."""
+        from zae_limiter import Limit, schema
+
+        # Set up configs at all 4 levels
+        await repo.set_system_defaults([Limit.per_minute("rpm", 1000)], on_unavailable="allow")
+        await repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 500)])
+        await repo.create_entity("user-1")
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="_default_")
+
+        keys = [
+            (schema.pk_system(), schema.sk_config()),
+            (schema.pk_resource("gpt-4"), schema.sk_config()),
+            (schema.pk_entity("user-1"), schema.sk_config("gpt-4")),
+            (schema.pk_entity("user-1"), schema.sk_config("_default_")),
+        ]
+
+        result = await repo.batch_get_configs(keys)
+
+        assert len(result) == 4
+        for key in keys:
+            assert key in result
+            limits, on_unavailable = result[key]
+            assert isinstance(limits, list)
+
+        # Verify system config has on_unavailable
+        sys_limits, sys_ou = result[(schema.pk_system(), schema.sk_config())]
+        assert len(sys_limits) == 1
+        assert sys_limits[0].name == "rpm"
+        assert sys_limits[0].capacity == 1000
+        assert sys_ou == "allow"
+
+        # Verify resource config has no on_unavailable
+        res_limits, res_ou = result[(schema.pk_resource("gpt-4"), schema.sk_config())]
+        assert len(res_limits) == 1
+        assert res_limits[0].capacity == 500
+        assert res_ou is None
+
+    @pytest.mark.asyncio
+    async def test_batch_get_configs_partial_results(self, repo):
+        """batch_get_configs returns only present items (missing ones omitted)."""
+        from zae_limiter import Limit, schema
+
+        # Only set system defaults
+        await repo.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        keys = [
+            (schema.pk_system(), schema.sk_config()),
+            (schema.pk_resource("gpt-4"), schema.sk_config()),  # Not set
+            (schema.pk_entity("user-1"), schema.sk_config("gpt-4")),  # Not set
+        ]
+
+        result = await repo.batch_get_configs(keys)
+
+        assert len(result) == 1
+        sys_key = (schema.pk_system(), schema.sk_config())
+        assert sys_key in result
+        limits, on_unavailable = result[sys_key]
+        assert len(limits) == 1
+        assert limits[0].name == "rpm"
+
     @pytest.mark.asyncio
     async def test_get_or_create_bucket_creates_new(self, repo):
         """get_or_create_bucket should create a new bucket if it doesn't exist."""

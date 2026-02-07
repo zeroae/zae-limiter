@@ -579,3 +579,189 @@ class TestConfigCacheNegativeCachingSentinel:
         assert _NO_CONFIG is not None
         assert _NO_CONFIG != []
         assert _NO_CONFIG != []
+
+
+class TestConfigCacheResolveLimits:
+    """Tests for batched config resolution (issue #298)."""
+
+    @pytest.mark.asyncio
+    async def test_all_cached_no_batch_call(self) -> None:
+        """When all slots are cached, no batch call is made."""
+        cache = ConfigCache(ttl_seconds=60)
+
+        # Pre-populate all 4 cache slots
+        entity_limits = [Limit.per_minute("rpm", 100)]
+        cache._entity_limits[("user-1", "gpt-4")] = cache._make_entry(entity_limits)
+        cache._entity_limits[("user-1", "_default_")] = cache._make_entry(_NO_CONFIG)
+        cache._resource_defaults["gpt-4"] = cache._make_entry([])
+        cache._system_defaults = cache._make_entry(([], None))
+
+        batch_fn = AsyncMock(return_value={})
+
+        limits, on_unavailable, source = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert limits == entity_limits
+        assert source == "entity"
+        batch_fn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_all_missed_single_batch_call(self) -> None:
+        """When all slots miss, one batch call fetches everything."""
+        from zae_limiter import schema
+
+        cache = ConfigCache(ttl_seconds=60)
+
+        system_limits = [Limit.per_minute("rpm", 1000)]
+
+        async def batch_fn(keys):
+            return {(schema.pk_system(), schema.sk_config()): (system_limits, "allow")}
+
+        limits, on_unavailable, source = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert limits is not None
+        assert len(limits) == 1
+        assert limits[0].name == "rpm"
+        assert limits[0].capacity == 1000
+        assert on_unavailable == "allow"
+        assert source == "system"
+
+    @pytest.mark.asyncio
+    async def test_entity_precedence_over_system(self) -> None:
+        """Entity config takes precedence over system config."""
+        from zae_limiter import schema
+
+        cache = ConfigCache(ttl_seconds=60)
+
+        entity_limits = [Limit.per_minute("rpm", 100)]
+        system_limits = [Limit.per_minute("rpm", 1000)]
+
+        async def batch_fn(keys):
+            result = {}
+            for pk, sk in keys:
+                if pk == schema.pk_entity("user-1") and sk == schema.sk_config("gpt-4"):
+                    result[(pk, sk)] = (entity_limits, None)
+                elif pk == schema.pk_system() and sk == schema.sk_config():
+                    result[(pk, sk)] = (system_limits, None)
+            return result
+
+        limits, _, source = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert limits is not None
+        assert limits[0].capacity == 100
+        assert source == "entity"
+
+    @pytest.mark.asyncio
+    async def test_partial_cache_only_fetches_misses(self) -> None:
+        """When entity is cached (negative), only resource/system are fetched."""
+        from zae_limiter import schema
+
+        cache = ConfigCache(ttl_seconds=60)
+
+        # Entity has no config (negative cache)
+        cache._entity_limits[("user-1", "gpt-4")] = cache._make_entry(_NO_CONFIG)
+        cache._entity_limits[("user-1", "_default_")] = cache._make_entry(_NO_CONFIG)
+
+        resource_limits = [Limit.per_minute("rpm", 500)]
+
+        called_keys: list[tuple[str, str]] = []
+
+        async def batch_fn(keys):
+            called_keys.extend(keys)
+            result = {}
+            for pk, sk in keys:
+                if pk == schema.pk_resource("gpt-4"):
+                    result[(pk, sk)] = (resource_limits, None)
+            return result
+
+        limits, _, source = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert limits is not None
+        assert limits[0].capacity == 500
+        assert source == "resource"
+        # Verify entity keys were NOT fetched (they were in cache)
+        entity_pk = schema.pk_entity("user-1")
+        fetched_pks = [pk for pk, _ in called_keys]
+        assert entity_pk not in fetched_pks
+
+    @pytest.mark.asyncio
+    async def test_negative_caching_stored_for_entity_miss(self) -> None:
+        """When entity has no config in DynamoDB, negative cache is stored."""
+        from zae_limiter import schema
+
+        cache = ConfigCache(ttl_seconds=60)
+
+        system_limits = [Limit.per_minute("rpm", 1000)]
+
+        call_count = 0
+
+        async def batch_fn(keys):
+            nonlocal call_count
+            call_count += 1
+            return {(schema.pk_system(), schema.sk_config()): (system_limits, None)}
+
+        # First call
+        limits1, _, source1 = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+        assert limits1 is not None
+        assert source1 == "system"
+        assert call_count == 1
+
+        # Second call - should be all cache hits, no batch call
+        limits2, _, source2 = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+        assert limits2 is not None
+        assert source2 == "system"
+        assert call_count == 1  # No additional batch call
+
+    @pytest.mark.asyncio
+    async def test_nothing_found_returns_none(self) -> None:
+        """When no config exists at any level, returns None."""
+        cache = ConfigCache(ttl_seconds=60)
+
+        async def batch_fn(keys):
+            return {}  # Nothing found
+
+        limits, on_unavailable, source = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert limits is None
+        assert source is None
+
+    @pytest.mark.asyncio
+    async def test_disabled_cache_batches_every_time(self) -> None:
+        """With TTL=0, every call makes a batch request."""
+        from zae_limiter import schema
+
+        cache = ConfigCache(ttl_seconds=0)
+
+        system_limits = [Limit.per_minute("rpm", 1000)]
+        call_count = 0
+
+        async def batch_fn(keys):
+            nonlocal call_count
+            call_count += 1
+            return {(schema.pk_system(), schema.sk_config()): (system_limits, None)}
+
+        await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+        await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_entity_default_fallback(self) -> None:
+        """Entity _default_ config is used when resource-specific is missing."""
+        from zae_limiter import schema
+
+        cache = ConfigCache(ttl_seconds=60)
+
+        entity_default_limits = [Limit.per_minute("rpm", 200)]
+
+        async def batch_fn(keys):
+            result = {}
+            for pk, sk in keys:
+                if pk == schema.pk_entity("user-1") and sk == schema.sk_config("_default_"):
+                    result[(pk, sk)] = (entity_default_limits, None)
+            return result
+
+        limits, _, source = await cache.resolve_limits("user-1", "gpt-4", batch_fn)
+
+        assert limits is not None
+        assert limits[0].capacity == 200
+        assert source == "entity_default"

@@ -627,6 +627,72 @@ class Repository:
 
         return entity, buckets
 
+    async def batch_get_configs(
+        self,
+        keys: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], tuple[list[Limit], str | None]]:
+        """
+        Batch get config items in a single DynamoDB call.
+
+        Fetches config records (entity, resource, system level) in a single
+        BatchGetItem request and returns deserialized limits.
+
+        Args:
+            keys: List of (PK, SK) tuples identifying config items
+
+        Returns:
+            Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
+            on_unavailable is extracted from system config items (None for others).
+            Missing items are not included in the result.
+
+        Note:
+            DynamoDB BatchGetItem supports up to 100 items per request.
+            For larger batches, this method automatically chunks the requests.
+            Uses eventually consistent reads (0.5 RCU per item).
+        """
+        if not keys:
+            return {}
+
+        client = await self._get_client()
+        result: dict[tuple[str, str], tuple[list[Limit], str | None]] = {}
+
+        # Deduplicate keys
+        unique_keys = list(set(keys))
+
+        # BatchGetItem supports max 100 items per request
+        for i in range(0, len(unique_keys), 100):
+            chunk = unique_keys[i : i + 100]
+
+            request_keys = [
+                {
+                    "PK": {"S": pk},
+                    "SK": {"S": sk},
+                }
+                for pk, sk in chunk
+            ]
+
+            response = await client.batch_get_item(
+                RequestItems={
+                    self.table_name: {
+                        "Keys": request_keys,
+                        "ConsistentRead": False,
+                    }
+                }
+            )
+
+            # Process responses: deserialize each item
+            items = response.get("Responses", {}).get(self.table_name, [])
+            for item in items:
+                pk = item.get("PK", {}).get("S", "")
+                sk = item.get("SK", {}).get("S", "")
+                if pk and sk:
+                    limits = self._deserialize_composite_limits(item)
+                    ou_attr = item.get("on_unavailable", {})
+                    on_unavailable: str | None = ou_attr.get("S") if ou_attr else None
+                    result[(pk, sk)] = (limits, on_unavailable)
+
+        return result
+
     async def get_or_create_bucket(
         self,
         entity_id: str,

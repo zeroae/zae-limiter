@@ -457,6 +457,7 @@ Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the pro
 | Get entity | `PK=ENTITY#{id}, SK=#META` |
 | Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
 | Batch get buckets | `BatchGetItem` with multiple PK/SK pairs (issue #133) |
+| Batch get configs | `BatchGetItem` with entity/resource/system config keys (issue #298) |
 | Get children | GSI1: `GSI1PK=PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
 | List resources with defaults | `PK=SYSTEM#, SK=#RESOURCES` (single GetItem: 1 RCU, issue #233) |

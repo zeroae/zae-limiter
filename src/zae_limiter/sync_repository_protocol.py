@@ -223,6 +223,25 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def batch_get_configs(
+        self, keys: list[tuple[str, str]]
+    ) -> "dict[tuple[str, str], tuple[list[Limit], str | None]]":
+        """
+        Batch get config items in a single DynamoDB call.
+
+        Fetches config records (entity, resource, system level) in a single
+        BatchGetItem request and returns deserialized limits.
+
+        Args:
+            keys: List of (PK, SK) tuples identifying config items
+
+        Returns:
+            Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
+            on_unavailable is extracted from system config items (None for others).
+            Missing items are not included in the result.
+        """
+        ...
+
     def batch_get_buckets(
         self, keys: list[tuple[str, str]]
     ) -> dict[tuple[str, str, str], "BucketState"]:

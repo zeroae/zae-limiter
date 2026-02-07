@@ -154,6 +154,250 @@ class SyncConfigCache:
                 self._entity_limits[cache_key] = self._make_entry(_NO_CONFIG)
             return value
 
+    def _check_cache_slot(
+        self, slot_type: str, entity_id: str | None = None, resource: str | None = None
+    ) -> tuple[bool, Any]:
+        """Check a single cache slot for a valid entry.
+
+        Args:
+            slot_type: One of "entity", "entity_default", "resource", "system"
+            entity_id: Entity ID (for entity/entity_default slots)
+            resource: Resource name (for entity/resource slots)
+
+        Returns:
+            (is_cached, value) where is_cached indicates if a valid entry exists.
+            For entity slots, _NO_CONFIG sentinel means "confirmed no config" (negative cache).
+        """
+        if slot_type == "entity":
+            assert entity_id is not None and resource is not None
+            entry = self._entity_limits.get((entity_id, resource))
+        elif slot_type == "entity_default":
+            assert entity_id is not None
+            entry = self._entity_limits.get((entity_id, "_default_"))
+        elif slot_type == "resource":
+            assert resource is not None
+            entry = self._resource_defaults.get(resource)
+        elif slot_type == "system":
+            entry = self._system_defaults
+        else:
+            return (False, None)
+        if entry is not None and (not self._is_expired(entry)):
+            return (True, entry.value)
+        return (False, None)
+
+    def resolve_limits(
+        self,
+        entity_id: str,
+        resource: str,
+        batch_fetch_fn: Callable[
+            [list[tuple[str, str]]], "dict[tuple[str, str], tuple[list[Limit], str | None]]"
+        ],
+    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+        """
+        Resolve limits using batched config fetch with cache awareness.
+
+        Checks all 4 cache slots (entity, entity_default, resource, system),
+        collects misses, fetches them in a single BatchGetItem call, populates
+        the cache, and returns the highest-precedence match.
+
+        Args:
+            entity_id: Entity to resolve limits for
+            resource: Resource being accessed
+            batch_fetch_fn: Async function to batch-fetch config items by (PK, SK).
+                Returns dict mapping (PK, SK) to (limits, on_unavailable) tuples.
+
+        Returns:
+            Tuple of (limits, on_unavailable, config_source) where:
+            - limits: Resolved limits or None if nothing found
+            - on_unavailable: on_unavailable string from system config (if fetched)
+            - config_source: "entity", "entity_default", "resource", "system", or None
+        """
+        if not self._enabled:
+            return self._resolve_limits_uncached(entity_id, resource, batch_fetch_fn)
+        with self._sync_lock:
+            return self._resolve_limits_inner_async(entity_id, resource, batch_fetch_fn)
+
+    def _resolve_limits_inner_async(
+        self,
+        entity_id: str,
+        resource: str,
+        batch_fetch_fn: Callable[
+            [list[tuple[str, str]]], "dict[tuple[str, str], tuple[list[Limit], str | None]]"
+        ],
+    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+        """Async inner implementation for batched config resolution."""
+        from . import schema
+
+        levels, cached_results, miss_keys = self._build_levels_and_check_cache(
+            entity_id, resource, schema
+        )
+        fetched_results: dict[str, Any] = {}
+        on_unavailable: str | None = None
+        if miss_keys:
+            fetch_keys = [(pk, sk) for _, pk, sk in miss_keys]
+            items = batch_fetch_fn(fetch_keys)
+            fetched_results, on_unavailable = self._process_fetched_items(
+                miss_keys, items, entity_id, resource
+            )
+        return self._evaluate_hierarchy(levels, cached_results, fetched_results, on_unavailable)
+
+    def _build_levels_and_check_cache(
+        self, entity_id: str, resource: str, schema: Any
+    ) -> tuple[list[tuple[str, str, str]], dict[str, Any], list[tuple[str, str, str]]]:
+        """Build config levels and check cache for each, returning misses.
+
+        Returns:
+            (levels, cached_results, miss_keys)
+        """
+        include_entity_default = resource != "_default_"
+        levels: list[tuple[str, str, str]] = [
+            ("entity", schema.pk_entity(entity_id), schema.sk_config(resource))
+        ]
+        if include_entity_default:
+            levels.append(
+                ("entity_default", schema.pk_entity(entity_id), schema.sk_config("_default_"))
+            )
+        levels.extend(
+            [
+                ("resource", schema.pk_resource(resource), schema.sk_config()),
+                ("system", schema.pk_system(), schema.sk_config()),
+            ]
+        )
+        cached_results: dict[str, Any] = {}
+        miss_keys: list[tuple[str, str, str]] = []
+        for slot_type, pk, sk in levels:
+            is_cached, value = self._check_cache_slot(
+                slot_type, entity_id=entity_id, resource=resource
+            )
+            if is_cached:
+                self._hits += 1
+                cached_results[slot_type] = value
+            else:
+                self._misses += 1
+                miss_keys.append((slot_type, pk, sk))
+        return (levels, cached_results, miss_keys)
+
+    def _process_fetched_items(
+        self,
+        miss_keys: list[tuple[str, str, str]],
+        items: "dict[tuple[str, str], tuple[list[Limit], str | None]]",
+        entity_id: str,
+        resource: str,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Process fetched items: populate cache and return results.
+
+        Returns:
+            (fetched_results, on_unavailable)
+        """
+        fetched_results: dict[str, Any] = {}
+        on_unavailable: str | None = None
+        for slot_type, pk, sk in miss_keys:
+            entry = items.get((pk, sk))
+            if entry is not None:
+                limits, ou_val = entry
+                if slot_type == "system":
+                    self._system_defaults = self._make_entry((limits, ou_val))
+                    fetched_results[slot_type] = limits
+                    on_unavailable = ou_val
+                elif slot_type == "resource":
+                    self._resource_defaults[resource] = self._make_entry(limits)
+                    fetched_results[slot_type] = limits
+                elif slot_type == "entity":
+                    cache_key = (entity_id, resource)
+                    if limits:
+                        self._entity_limits[cache_key] = self._make_entry(limits)
+                    else:
+                        self._entity_limits[cache_key] = self._make_entry(_NO_CONFIG)
+                    fetched_results[slot_type] = limits
+                elif slot_type == "entity_default":
+                    cache_key_d = (entity_id, "_default_")
+                    if limits:
+                        self._entity_limits[cache_key_d] = self._make_entry(limits)
+                    else:
+                        self._entity_limits[cache_key_d] = self._make_entry(_NO_CONFIG)
+                    fetched_results[slot_type] = limits
+            elif slot_type == "entity":
+                self._entity_limits[entity_id, resource] = self._make_entry(_NO_CONFIG)
+                fetched_results[slot_type] = _NO_CONFIG
+            elif slot_type == "entity_default":
+                self._entity_limits[entity_id, "_default_"] = self._make_entry(_NO_CONFIG)
+                fetched_results[slot_type] = _NO_CONFIG
+            elif slot_type == "resource":
+                self._resource_defaults[resource] = self._make_entry([])
+                fetched_results[slot_type] = []
+            elif slot_type == "system":
+                self._system_defaults = self._make_entry(([], None))
+                fetched_results[slot_type] = []
+                on_unavailable = None
+        return (fetched_results, on_unavailable)
+
+    def _evaluate_hierarchy(
+        self,
+        levels: list[tuple[str, str, str]],
+        cached_results: dict[str, Any],
+        fetched_results: dict[str, Any],
+        on_unavailable: str | None,
+    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+        """Evaluate config hierarchy from cached + fetched results.
+
+        Returns:
+            (limits, on_unavailable, config_source)
+        """
+        if "system" not in fetched_results and "system" in cached_results:
+            system_value = cached_results["system"]
+            if isinstance(system_value, tuple) and len(system_value) == 2:
+                on_unavailable = system_value[1]
+        for slot_type, _, _ in levels:
+            value = cached_results.get(slot_type) or fetched_results.get(slot_type)
+            if value is _NO_CONFIG or value is None:
+                continue
+            if slot_type == "system" and isinstance(value, tuple):
+                limits_val = value[0]
+                if limits_val:
+                    return (limits_val, on_unavailable, slot_type)
+                continue
+            if isinstance(value, list) and value:
+                return (value, on_unavailable, slot_type)
+        return (None, on_unavailable, None)
+
+    def _resolve_limits_uncached(
+        self,
+        entity_id: str,
+        resource: str,
+        batch_fetch_fn: Callable[
+            [list[tuple[str, str]]], "dict[tuple[str, str], tuple[list[Limit], str | None]]"
+        ],
+    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+        """Resolve limits without caching (TTL=0): batch fetch all 4 levels."""
+        from . import schema
+
+        levels, _, _ = self._build_levels_and_check_cache(entity_id, resource, schema)
+        fetch_keys = [(pk, sk) for _, pk, sk in levels]
+        items = batch_fetch_fn(fetch_keys)
+        return self._evaluate_uncached(levels, items)
+
+    def _evaluate_uncached(
+        self,
+        levels: list[tuple[str, str, str]],
+        items: "dict[tuple[str, str], tuple[list[Limit], str | None]]",
+    ) -> "tuple[list[Limit] | None, str | None, str | None]":
+        """Evaluate hierarchy from batch results without caching."""
+        on_unavailable: str | None = None
+        for slot_type, pk, sk in levels:
+            if slot_type == "system":
+                entry = items.get((pk, sk))
+                if entry is not None:
+                    on_unavailable = entry[1]
+                break
+        for slot_type, pk, sk in levels:
+            entry = items.get((pk, sk))
+            if entry is None:
+                continue
+            limits = entry[0]
+            if limits:
+                return (limits, on_unavailable, slot_type)
+        return (None, on_unavailable, None)
+
     def invalidate(self) -> None:
         """
         Invalidate all cached entries.
