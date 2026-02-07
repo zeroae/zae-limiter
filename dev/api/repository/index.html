@@ -1306,6 +1306,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.batch_get_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;batch_get_configs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.get_or_create_bucket" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1839,6 +1850,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_or_create_bucket
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.batch_get_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;batch_get_configs
       
     </span>
   </a>
@@ -3750,6 +3772,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.batch_get_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;batch_get_configs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.get_or_create_bucket" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4283,6 +4316,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_or_create_bucket
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.batch_get_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;batch_get_configs
       
     </span>
   </a>
@@ -5611,6 +5655,128 @@ The META key counts toward that limit.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.repository.Repository.batch_get_configs" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">batch_get_configs</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.batch_get_configs" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">batch_get_configs</span><span class="p">(</span><span class="n">keys</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Batch get config items in a single DynamoDB call.</p>
+<p>Fetches config records (entity, resource, system level) in a single
+BatchGetItem request and returns deserialized limits.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>keys</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of (PK, SK) tuples identifying config items</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>], <span title="tuple">tuple</span>[<span title="list">list</span>[<a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Dict mapping (PK, SK) to (limits, on_unavailable) tuples.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>], <span title="tuple">tuple</span>[<span title="list">list</span>[<a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>on_unavailable is extracted from system config items (None for others).</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>], <span title="tuple">tuple</span>[<span title="list">list</span>[<a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Missing items are not included in the result.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="note" open>
+  <summary>Note</summary>
+  <p>DynamoDB BatchGetItem supports up to 100 items per request.
+For larger batches, this method automatically chunks the requests.
+Uses eventually consistent reads (0.5 RCU per item).</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.repository.Repository.get_or_create_bucket" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_or_create_bucket</span>
 
@@ -6806,7 +6972,7 @@ composite item with SK '#CONFIG'. This reduces cache-miss cost.</p>
                 <code>on_unavailable</code>
             </td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -6879,7 +7045,7 @@ and on_unavailable setting.</p>
 
   
       dataclass
-   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="str">str</span> | None]</code>
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -8810,6 +8976,121 @@ set to the limit's capacity.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.batch_get_configs" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">batch_get_configs</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.batch_get_configs" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">batch_get_configs</span><span class="p">(</span><span class="n">keys</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Batch get config items in a single DynamoDB call.</p>
+<p>Fetches config records (entity, resource, system level) in a single
+BatchGetItem request and returns deserialized limits.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>keys</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>List of (PK, SK) tuples identifying config items</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>], <span title="tuple">tuple</span>[<span title="list">list</span>[<a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Dict mapping (PK, SK) to (limits, on_unavailable) tuples.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>], <span title="tuple">tuple</span>[<span title="list">list</span>[<a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>on_unavailable is extracted from system config items (None for others).</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>], <span title="tuple">tuple</span>[<span title="list">list</span>[<a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Missing items are not included in the result.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.repository_protocol.RepositoryProtocol.batch_get_buckets" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">batch_get_buckets</span>
 
@@ -10581,7 +10862,7 @@ unless overridden at the entity level.</p>
                 <code>on_unavailable</code>
             </td>
             <td>
-                  <code><span title="str">str</span> | None</code>
+                  <code><span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -10652,7 +10933,7 @@ unless overridden at the entity level.</p>
 
   
       dataclass
-   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="str">str</span> | None]</code>
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>], <span title="zae_limiter.models.OnUnavailableAction">OnUnavailableAction</span> | None]</code>
             </td>
             <td>
               <div class="doc-md-description">
