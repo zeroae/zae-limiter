@@ -53,7 +53,11 @@ repos:
     hooks:
       - id: patch-coverage
         name: Check patch coverage (100%)
-        entry: bash -c 'uv run pytest tests/unit/ --cov=zae_limiter --cov-report=xml -q -n auto && uv run diff-cover coverage.xml --compare-branch=origin/main --fail-under=100'
+        entry: >-
+          bash -c '
+          uv run pytest tests/unit/ --cov=zae_limiter --cov-report=xml -q -n auto &&
+          uv run pytest tests/unit/ -m gevent -n 0 --cov=zae_limiter --cov-report=xml --cov-append -q &&
+          uv run diff-cover coverage.xml --compare-branch=origin/main --fail-under=100'
         language: system
         stages: [pre-push]
         files: ^src/
