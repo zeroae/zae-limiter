@@ -1,6 +1,6 @@
 # ADR-122: Move Limit Resolution to Repository Protocol
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-02-08
 **Supersedes:** ADR-103
 
