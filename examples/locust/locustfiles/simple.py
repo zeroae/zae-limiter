@@ -6,6 +6,10 @@ Usage:
 Each Locust user simulates a unique API consumer hitting a single
 resource ("api") with a single rate limit (RPM). System-level defaults
 define the limit so entities need no individual configuration.
+
+Two user classes are available (select via --class-picker or Locust UI):
+- SimpleUser: standalone entities, no cascade
+- SimpleCascadeUser: child entities with cascade=True to a shared parent
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from zae_limiter import Limit, SyncRateLimiter
 from zae_limiter.locust import RateLimiterUser
 
 _created_entities: set[str] = set()
+_cascade_parent: str | None = None
 
 
 def _make_limiter(environment: object) -> SyncRateLimiter:
@@ -31,11 +36,16 @@ def _make_limiter(environment: object) -> SyncRateLimiter:
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
-    """Set system defaults once (master or standalone only)."""
+    """Set system defaults and cascade parent (master or standalone only)."""
+    global _cascade_parent  # noqa: PLW0603
     if isinstance(environment.runner, WorkerRunner):
         return
     limiter = _make_limiter(environment)
-    limiter.set_system_defaults(limits=[Limit.per_minute("rpm", 1_000_000)])
+    limiter.set_system_defaults(limits=[Limit.per_minute("rpm", 1_000_000_000)])
+    # Create a shared parent for cascade users
+    _cascade_parent = f"org-{uuid.uuid4().hex[:8]}"
+    limiter.create_entity(_cascade_parent, name="Cascade Parent")
+    _created_entities.add(_cascade_parent)
 
 
 @events.test_stop.add_listener
@@ -62,6 +72,37 @@ class SimpleUser(RateLimiterUser):
     @task
     def acquire(self) -> None:
         """Acquire one request token."""
+        with self.client.acquire(
+            entity_id=self.entity_id,
+            resource="api",
+            consume={"rpm": 1},
+        ):
+            pass  # Simulated work happens here
+
+
+class SimpleCascadeUser(RateLimiterUser):
+    """Anonymous API consumers with cascade=True to a shared parent.
+
+    Same wait time as SimpleUser but each user is a child of a single
+    parent org, measuring cascade overhead under realistic traffic.
+    """
+
+    wait_time = between(0.1, 1.0)  # type: ignore[no-untyped-call]
+
+    def on_start(self) -> None:
+        """Create a child entity under the shared cascade parent."""
+        limiter = _make_limiter(self.environment)
+        self.entity_id = f"user-{uuid.uuid4().hex[:8]}"
+        limiter.create_entity(
+            self.entity_id,
+            parent_id=_cascade_parent,
+            cascade=True,
+        )
+        _created_entities.add(self.entity_id)
+
+    @task
+    def acquire(self) -> None:
+        """Acquire one request token (cascades to parent)."""
         with self.client.acquire(
             entity_id=self.entity_id,
             resource="api",

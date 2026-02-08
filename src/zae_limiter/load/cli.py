@@ -900,6 +900,11 @@ def list_cmd(region: str | None) -> None:
     type=int,
     help="Number of Lambda workers (distributed mode, default: 1)",
 )
+@click.option(
+    "--user-classes",
+    default=None,
+    help="Comma-separated User class names to run (e.g. MaxRpsCascadeUser)",
+)
 def benchmark(
     name: str,
     region: str | None,
@@ -912,6 +917,7 @@ def benchmark(
     memory: int | None,
     port: int,
     workers: int,
+    user_classes: str | None,
 ) -> None:
     """Run a benchmark to measure per-worker capacity.
 
@@ -931,6 +937,7 @@ def benchmark(
             memory=memory,
             port=port,
             workers=workers,
+            user_classes=user_classes,
         )
     elif mode == "fargate":
         _benchmark_fargate(
@@ -943,6 +950,7 @@ def benchmark(
             cpu=cpu,
             memory=memory,
             port=port,
+            user_classes=user_classes,
         )
     else:
         _benchmark_lambda(
@@ -952,6 +960,7 @@ def benchmark(
             duration=duration,
             spawn_rate=spawn_rate,
             locustfile=locustfile,
+            user_classes=user_classes,
         )
 
 
@@ -962,6 +971,7 @@ def _benchmark_lambda(
     duration: int,
     spawn_rate: int,
     locustfile: str,
+    user_classes: str | None = None,
 ) -> None:
     """Run Lambda benchmark (original behavior)."""
     import json
@@ -1017,6 +1027,8 @@ def _benchmark_lambda(
         "spawn_rate": spawn_rate,
         "locustfile": locustfile,
     }
+    if user_classes:
+        config["user_classes"] = user_classes
     payload = {"config": config}
 
     click.echo("Invoking Lambda (this may take a while)...")
@@ -1050,6 +1062,7 @@ def _benchmark_fargate(
     cpu: int | None,
     memory: int | None,
     port: int,
+    user_classes: str | None = None,
 ) -> None:
     """Run Fargate benchmark in standalone headless mode."""
     import json
@@ -1316,6 +1329,7 @@ def _benchmark_distributed(
     memory: int | None,
     port: int,
     workers: int,
+    user_classes: str | None = None,
 ) -> None:
     """Run distributed benchmark: Fargate master + Lambda workers."""
     import json
