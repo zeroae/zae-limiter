@@ -14,8 +14,6 @@ import inspect  # noqa: E402
 import os  # noqa: E402
 from typing import Any  # noqa: E402
 
-_boto3_pool_configured = False
-
 
 def _configure_boto3_pool(max_connections: int = 50) -> None:
     """Configure boto3 to use larger connection pool for DynamoDB.
@@ -23,8 +21,7 @@ def _configure_boto3_pool(max_connections: int = 50) -> None:
     Must be called before any boto3 clients are created.
     Only applies the patch once per Lambda container.
     """
-    global _boto3_pool_configured
-    if _boto3_pool_configured:
+    if getattr(_configure_boto3_pool, "_configured", False):
         return
 
     import boto3
@@ -39,7 +36,7 @@ def _configure_boto3_pool(max_connections: int = 50) -> None:
         return original_client(self, service_name, **kwargs)  # type: ignore[call-overload]
 
     boto3.Session.client = patched_client  # type: ignore[assignment]
-    _boto3_pool_configured = True
+    _configure_boto3_pool._configured = True  # type: ignore[attr-defined]
 
 
 def _load_user_classes(config: dict[str, Any]) -> list[type]:

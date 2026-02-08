@@ -42,9 +42,6 @@ if TYPE_CHECKING:
     from zae_limiter.limiter import OnUnavailable
 
 
-_boto3_pool_configured = False
-
-
 def _configure_boto3_pool(max_connections: int = 1000) -> None:
     """Configure boto3 to use a larger connection pool for DynamoDB.
 
@@ -54,8 +51,7 @@ def _configure_boto3_pool(max_connections: int = 1000) -> None:
 
     Pool size can be overridden via BOTO3_MAX_POOL env var.
     """
-    global _boto3_pool_configured
-    if _boto3_pool_configured:
+    if getattr(_configure_boto3_pool, "_configured", False):
         return
 
     import boto3
@@ -71,7 +67,7 @@ def _configure_boto3_pool(max_connections: int = 1000) -> None:
         return original_client(self, service_name, **kwargs)  # type: ignore[call-overload]
 
     boto3.Session.client = patched_client  # type: ignore[assignment]
-    _boto3_pool_configured = True
+    _configure_boto3_pool._configured = True  # type: ignore[attr-defined]
 
 
 class RateLimiterSession:

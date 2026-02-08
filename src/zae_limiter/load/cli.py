@@ -797,8 +797,8 @@ def teardown(name: str, region: str | None, yes: bool) -> None:
     try:
         ecs.update_service(cluster=stack_name, service=f"{stack_name}-master", desiredCount=0)
         click.echo("  Stopped Fargate tasks")
-    except Exception:
-        pass
+    except Exception as e:
+        click.echo(f"  Warning: Failed to scale down service: {e}", err=True)
 
     # Delete stack
     cfn.delete_stack(StackName=stack_name)

@@ -635,17 +635,16 @@ class TestConfigureBoto3Pool:
         with patch.dict("sys.modules", {"locust": MagicMock(), "locust.exception": MagicMock()}):
             import importlib
 
-            import zae_limiter.locust as mod
-
+            mod = importlib.import_module("zae_limiter.locust")
             importlib.reload(mod)
 
             # Reset state
-            mod._boto3_pool_configured = False
+            mod._configure_boto3_pool._configured = False
 
             with patch.object(mod, "boto3", create=True) as mock_boto3:
                 mock_boto3.Session.client = MagicMock()
                 mod._configure_boto3_pool()
-                assert mod._boto3_pool_configured is True
+                assert mod._configure_boto3_pool._configured is True
 
                 # Second call should be a no-op (won't touch boto3 again)
                 mock_boto3.Session.client = MagicMock()
@@ -655,7 +654,7 @@ class TestConfigureBoto3Pool:
                 assert mock_boto3.Session.client is original_client
 
             # Reset for other tests
-            mod._boto3_pool_configured = False
+            mod._configure_boto3_pool._configured = False
 
 
 # ---------------------------------------------------------------------------
@@ -691,8 +690,7 @@ def _load_locust_module():
         "sys.modules",
         {"locust": _mock_locust, "locust.exception": _mock_exception},
     ):
-        import zae_limiter.locust as mod
-
+        mod = importlib.import_module("zae_limiter.locust")
         importlib.reload(mod)
         return mod
 

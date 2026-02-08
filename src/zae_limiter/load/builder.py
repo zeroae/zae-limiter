@@ -215,7 +215,7 @@ def build_and_push_locust_image(
 
     print("  Building Docker image (this may take 15-30s)...", file=sys.stderr)
     sys.stderr.flush()
-    image, build_logs = client.images.build(
+    _, _ = client.images.build(
         fileobj=context,
         custom_context=True,
         tag=image_uri,
