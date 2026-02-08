@@ -4221,3 +4221,83 @@ class TestSpeculativeAcquire:
                 assert len(lease.entries) > 0
         finally:
             sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_error_compensates_child_tokens(self, sync_limiter):
+        """Parent-only slow path error must restore child tokens in DynamoDB.
+
+        Regression test: before the fix, _try_parent_only_acquire exceptions
+        propagated without compensating the child's speculative consumption,
+        permanently leaking tokens from the child bucket.
+
+        This test verifies the actual DynamoDB bucket balance is restored.
+        """
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        buckets_before = sync_limiter._fetch_buckets(["child-1"], "gpt-4")
+        child_key = ("child-1", "gpt-4", "rpm")
+        tokens_before = buckets_before[child_key].tokens_milli
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=tokens_before - 10000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60000,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        original_fetch = sync_limiter._fetch_buckets
+        spec_call_count = 0
+        fetch_call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal spec_call_count
+            spec_call_count += 1
+            if spec_call_count == 1:
+                original_speculative(entity_id, resource, consume, ttl_seconds)
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if spec_call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        def mock_fetch_raising(entity_ids, resource):
+            nonlocal fetch_call_count
+            fetch_call_count += 1
+            if fetch_call_count == 1 and "parent-1" in entity_ids:
+                raise RuntimeError("DynamoDB service unavailable")
+            return original_fetch(entity_ids, resource)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        sync_limiter._fetch_buckets = mock_fetch_raising
+        try:
+            with pytest.raises(RateLimiterUnavailable, match="DynamoDB service unavailable"):
+                with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
+                    pass
+            buckets_after = original_fetch(["child-1"], "gpt-4")
+            tokens_after = buckets_after[child_key].tokens_milli
+            assert tokens_after == tokens_before, (
+                f"Child tokens leaked! Before={tokens_before}, after={tokens_after}. Expected compensation to restore tokens."
+            )
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+            sync_limiter._fetch_buckets = original_fetch

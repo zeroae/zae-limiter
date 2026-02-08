@@ -5608,3 +5608,96 @@ class TestSpeculativeAcquire:
                 assert len(lease.entries) > 0
         finally:
             limiter._repository.speculative_consume = original_speculative
+
+    async def test_speculative_cascade_parent_error_compensates_child_tokens(self, limiter):
+        """Parent-only slow path error must restore child tokens in DynamoDB.
+
+        Regression test: before the fix, _try_parent_only_acquire exceptions
+        propagated without compensating the child's speculative consumption,
+        permanently leaking tokens from the child bucket.
+
+        This test verifies the actual DynamoDB bucket balance is restored.
+        """
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        # Prime both buckets and record child's initial balance
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        buckets_before = await limiter._fetch_buckets(["child-1"], "gpt-4")
+        child_key = ("child-1", "gpt-4", "rpm")
+        tokens_before = buckets_before[child_key].tokens_milli
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=tokens_before - 10_000,  # speculative consumed 10 rpm
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        # ALL_OLD says refill would help → triggers parent-only slow path
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60_000,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        original_fetch = limiter._fetch_buckets
+        spec_call_count = 0
+        fetch_call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal spec_call_count
+            spec_call_count += 1
+            if spec_call_count == 1:
+                # Child succeeds speculatively — deduct 10 rpm from real DDB
+                await original_speculative(entity_id, resource, consume, ttl_seconds)
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if spec_call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        async def mock_fetch_raising(entity_ids, resource):
+            nonlocal fetch_call_count
+            fetch_call_count += 1
+            if fetch_call_count == 1 and "parent-1" in entity_ids:
+                raise RuntimeError("DynamoDB service unavailable")
+            return await original_fetch(entity_ids, resource)
+
+        limiter._repository.speculative_consume = mock_speculative
+        limiter._fetch_buckets = mock_fetch_raising
+        try:
+            with pytest.raises(RateLimiterUnavailable, match="DynamoDB service unavailable"):
+                async with limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
+                    pass
+
+            # Verify child tokens were restored in DynamoDB
+            buckets_after = await original_fetch(["child-1"], "gpt-4")
+            tokens_after = buckets_after[child_key].tokens_milli
+            assert tokens_after == tokens_before, (
+                f"Child tokens leaked! Before={tokens_before}, after={tokens_after}. "
+                f"Expected compensation to restore tokens."
+            )
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+            limiter._fetch_buckets = original_fetch

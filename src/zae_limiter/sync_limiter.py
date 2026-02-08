@@ -761,7 +761,13 @@ class SyncRateLimiter:
                         for s in child_result.old_buckets or child_result.buckets
                     ]
                     raise RateLimitExceeded(child_statuses + parent_statuses)
-                parent_lease = self._try_parent_only_acquire(parent_id, resource, consume, entries)
+                try:
+                    parent_lease = self._try_parent_only_acquire(
+                        parent_id, resource, consume, entries
+                    )
+                except Exception:
+                    self._compensate_child(entity_id, resource, consume)
+                    raise
                 if parent_lease is not None:
                     return parent_lease
                 self._compensate_child(entity_id, resource, consume)

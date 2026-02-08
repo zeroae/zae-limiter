@@ -902,9 +902,15 @@ class RateLimiter:
                     raise RateLimitExceeded(child_statuses + parent_statuses)
 
                 # Refill would help — try parent-only slow path (keep child consumed)
-                parent_lease = await self._try_parent_only_acquire(
-                    parent_id, resource, consume, entries
-                )
+                try:
+                    parent_lease = await self._try_parent_only_acquire(
+                        parent_id, resource, consume, entries
+                    )
+                except Exception:
+                    # Any failure — compensate child before propagating
+                    await self._compensate_child(entity_id, resource, consume)
+                    raise
+
                 if parent_lease is not None:
                     return parent_lease
 
