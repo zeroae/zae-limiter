@@ -27,7 +27,9 @@
       "Bash(git diff:*)",
       "Bash(git log:*)",
       "Bash(git push)",
+      "Bash(git status:*)",
       "Bash(hatch run generate-sync:*)",
+      "Bash(pre-commit run:*)",
       "Bash(uv run cfn-lint:*)",
       "Bash(uv run diff-cover:*)",
       "Bash(uv run mkdocs:*)",
@@ -39,6 +41,7 @@
       "Bash(uv run zae-limiter:*)",
       "Bash(zae-limiter local status:*)",
       "Bash(zae-limiter local up:*)",
+      "Skill(issue)",
       "Skill(milestone)"
     ],
     "ask": [
