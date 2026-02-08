@@ -244,6 +244,11 @@ zae-limiter load connect --name load-test --region us-east-1 --destroy \
 zae-limiter load benchmark --name load-test --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
+# Cascade benchmark (select specific User class):
+zae-limiter load benchmark --name load-test --region us-east-1 \
+  -f locustfiles/max_rps.py --users 10 --duration 60 \
+  --user-classes MaxRpsCascadeUser
+
 # Fargate standalone:
 zae-limiter load benchmark --name load-test --region us-east-1 \
   --mode fargate -f locustfiles/max_rps.py --users 10 --duration 60
@@ -264,6 +269,7 @@ zae-limiter load benchmark --name load-test --region us-east-1 \
 - `--lambda-timeout`: Worker timeout in minutes (default: 5, triggers proactive replacement at 80%)
 - `-C`: Directory containing locustfiles
 - `-f`: Locustfile path relative to `-C` (required on `connect` and `benchmark`)
+- `--user-classes`: Comma-separated User class names to run (e.g. `MaxRpsCascadeUser`)
 
 **Architecture:**
 - Fargate Spot runs Locust master + worker orchestrator sidecar
@@ -272,6 +278,15 @@ zae-limiter load benchmark --name load-test --region us-east-1 \
 - Orchestrator shuts down after 15 min idle (essential container, stops Fargate task)
 - Lambda workers connect via VPC to Fargate master
 - Lambda workers use 50-connection boto3 pool (configured via gevent monkey-patch)
+
+**Locustfile user classes:**
+
+| Locustfile | User Class | Wait Time | Cascade | Purpose |
+|------------|-----------|-----------|---------|---------|
+| `max_rps.py` | `MaxRpsUser` | 0 | No | Max throughput baseline |
+| `max_rps.py` | `MaxRpsCascadeUser` | 0 | Yes | Cascade overhead under max load |
+| `simple.py` | `SimpleUser` | 0.1-1.0s | No | Realistic traffic baseline |
+| `simple.py` | `SimpleCascadeUser` | 0.1-1.0s | Yes | Cascade overhead under realistic traffic |
 
 ## Project Structure
 
