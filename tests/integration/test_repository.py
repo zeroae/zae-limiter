@@ -616,3 +616,280 @@ class TestEntityConfigRegistry:
         item = response.get("Item", {})
         count = int(item.get("gpt-4", {}).get("N", "0"))
         assert count == 1, "Registry should have count=1, not 2"
+
+
+class TestSpeculativeConsume:
+    """Integration tests for speculative_consume() against real DynamoDB.
+
+    Validates that DynamoDB condition expressions, ReturnValues=ALL_NEW, and
+    ReturnValuesOnConditionCheckFailure=ALL_OLD work as expected for the
+    speculative UpdateItem path (issue #315).
+    """
+
+    @pytest.mark.asyncio
+    async def test_speculative_success_single_limit(self, localstack_repo):
+        """Speculative consume succeeds when bucket has enough tokens."""
+        repo = localstack_repo
+        await repo.create_entity("spec-entity-1")
+
+        # Create composite bucket with 100 rpm
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-entity-1", "api", limit, now_ms)
+        put_item = repo.build_composite_create("spec-entity-1", "api", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        # Speculative consume 1 rpm (bucket has 100)
+        result = await repo.speculative_consume(
+            entity_id="spec-entity-1",
+            resource="api",
+            consume={"rpm": 1},
+        )
+
+        assert result.success is True
+        assert len(result.buckets) == 1
+        assert result.buckets[0].entity_id == "spec-entity-1"
+        assert result.buckets[0].limit_name == "rpm"
+        # Tokens should be reduced: 100_000 - 1_000 = 99_000
+        assert result.buckets[0].tokens_milli == 99_000
+
+    @pytest.mark.asyncio
+    async def test_speculative_success_multi_limit(self, localstack_repo):
+        """Speculative consume succeeds with multiple limits in one bucket."""
+        repo = localstack_repo
+        await repo.create_entity("spec-entity-2")
+
+        rpm_limit = Limit.per_minute("rpm", 100)
+        tpm_limit = Limit.per_minute("tpm", 10_000)
+        now_ms = int(time.time() * 1000)
+        rpm_state = BucketState.from_limit("spec-entity-2", "api", rpm_limit, now_ms)
+        tpm_state = BucketState.from_limit("spec-entity-2", "api", tpm_limit, now_ms)
+        put_item = repo.build_composite_create(
+            "spec-entity-2", "api", [rpm_state, tpm_state], now_ms
+        )
+        await repo.transact_write([put_item])
+
+        result = await repo.speculative_consume(
+            entity_id="spec-entity-2",
+            resource="api",
+            consume={"rpm": 1, "tpm": 500},
+        )
+
+        assert result.success is True
+        assert len(result.buckets) == 2
+        bucket_map = {b.limit_name: b for b in result.buckets}
+        assert bucket_map["rpm"].tokens_milli == 99_000  # 100_000 - 1_000
+        assert bucket_map["tpm"].tokens_milli == 9_500_000  # 10_000_000 - 500_000
+
+    @pytest.mark.asyncio
+    async def test_speculative_success_returns_total_consumed(self, localstack_repo):
+        """ALL_NEW response includes total_consumed_milli counter."""
+        repo = localstack_repo
+        await repo.create_entity("spec-entity-tc")
+
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-entity-tc", "api", limit, now_ms)
+        put_item = repo.build_composite_create("spec-entity-tc", "api", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        # First consume
+        result1 = await repo.speculative_consume(
+            entity_id="spec-entity-tc", resource="api", consume={"rpm": 3}
+        )
+        assert result1.success is True
+        assert result1.buckets[0].total_consumed_milli == 3_000
+
+        # Second consume — counter accumulates
+        result2 = await repo.speculative_consume(
+            entity_id="spec-entity-tc", resource="api", consume={"rpm": 7}
+        )
+        assert result2.success is True
+        assert result2.buckets[0].total_consumed_milli == 10_000
+
+    @pytest.mark.asyncio
+    async def test_speculative_failure_insufficient_tokens(self, localstack_repo):
+        """Speculative consume fails when bucket has insufficient tokens."""
+        repo = localstack_repo
+        await repo.create_entity("spec-entity-3")
+
+        limit = Limit.per_minute("rpm", 10)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-entity-3", "api", limit, now_ms)
+        put_item = repo.build_composite_create("spec-entity-3", "api", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        # Try to consume more than available
+        result = await repo.speculative_consume(
+            entity_id="spec-entity-3",
+            resource="api",
+            consume={"rpm": 20},
+        )
+
+        assert result.success is False
+        assert result.old_buckets is not None
+        assert len(result.old_buckets) == 1
+        assert result.old_buckets[0].limit_name == "rpm"
+        # Old bucket should have original tokens (unconsumed)
+        assert result.old_buckets[0].tokens_milli == 10_000
+
+    @pytest.mark.asyncio
+    async def test_speculative_failure_multi_limit_one_exhausted(self, localstack_repo):
+        """Condition fails when ANY limit is insufficient (AND across limits)."""
+        repo = localstack_repo
+        await repo.create_entity("spec-entity-4")
+
+        rpm_limit = Limit.per_minute("rpm", 100)
+        tpm_limit = Limit.per_minute("tpm", 5)  # Very low
+        now_ms = int(time.time() * 1000)
+        rpm_state = BucketState.from_limit("spec-entity-4", "api", rpm_limit, now_ms)
+        tpm_state = BucketState.from_limit("spec-entity-4", "api", tpm_limit, now_ms)
+        put_item = repo.build_composite_create(
+            "spec-entity-4", "api", [rpm_state, tpm_state], now_ms
+        )
+        await repo.transact_write([put_item])
+
+        # rpm has plenty (100 >= 1), but tpm is insufficient (5 < 10)
+        result = await repo.speculative_consume(
+            entity_id="spec-entity-4",
+            resource="api",
+            consume={"rpm": 1, "tpm": 10},
+        )
+
+        assert result.success is False
+        assert result.old_buckets is not None
+        assert len(result.old_buckets) == 2
+        # Tokens untouched (transaction-like: neither limit consumed)
+        bucket_map = {b.limit_name: b for b in result.old_buckets}
+        assert bucket_map["rpm"].tokens_milli == 100_000
+        assert bucket_map["tpm"].tokens_milli == 5_000
+
+    @pytest.mark.asyncio
+    async def test_speculative_failure_bucket_missing(self, localstack_repo):
+        """Speculative consume fails gracefully when bucket doesn't exist."""
+        repo = localstack_repo
+        await repo.create_entity("spec-entity-5")
+
+        # Don't create any bucket — first acquire scenario
+        result = await repo.speculative_consume(
+            entity_id="spec-entity-5",
+            resource="api",
+            consume={"rpm": 1},
+        )
+
+        assert result.success is False
+        assert result.old_buckets is None  # No ALL_OLD because item doesn't exist
+
+    @pytest.mark.asyncio
+    async def test_speculative_success_returns_cascade_and_parent(self, localstack_repo):
+        """ALL_NEW response includes denormalized cascade and parent_id."""
+        repo = localstack_repo
+        await repo.create_entity("spec-child", parent_id="spec-parent", cascade=True)
+
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-child", "api", limit, now_ms)
+        put_item = repo.build_composite_create(
+            "spec-child",
+            "api",
+            [state],
+            now_ms,
+            cascade=True,
+            parent_id="spec-parent",
+        )
+        await repo.transact_write([put_item])
+
+        result = await repo.speculative_consume(
+            entity_id="spec-child",
+            resource="api",
+            consume={"rpm": 1},
+        )
+
+        assert result.success is True
+        assert result.cascade is True
+        assert result.parent_id == "spec-parent"
+
+    @pytest.mark.asyncio
+    async def test_speculative_success_no_cascade(self, localstack_repo):
+        """ALL_NEW response correctly reports cascade=False."""
+        repo = localstack_repo
+        await repo.create_entity("spec-nocascade")
+
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-nocascade", "api", limit, now_ms)
+        put_item = repo.build_composite_create(
+            "spec-nocascade",
+            "api",
+            [state],
+            now_ms,
+            cascade=False,
+        )
+        await repo.transact_write([put_item])
+
+        result = await repo.speculative_consume(
+            entity_id="spec-nocascade",
+            resource="api",
+            consume={"rpm": 1},
+        )
+
+        assert result.success is True
+        assert result.cascade is False
+        assert result.parent_id is None
+
+    @pytest.mark.asyncio
+    async def test_speculative_preserves_bucket_fields(self, localstack_repo):
+        """ALL_NEW returns all bucket fields needed for BucketState reconstruction."""
+        repo = localstack_repo
+        await repo.create_entity("spec-fields")
+
+        limit = Limit.per_minute("rpm", 100, burst=150)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-fields", "api", limit, now_ms)
+        put_item = repo.build_composite_create("spec-fields", "api", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        result = await repo.speculative_consume(
+            entity_id="spec-fields",
+            resource="api",
+            consume={"rpm": 5},
+        )
+
+        assert result.success is True
+        bucket = result.buckets[0]
+        assert bucket.entity_id == "spec-fields"
+        assert bucket.resource == "api"
+        assert bucket.limit_name == "rpm"
+        assert bucket.capacity_milli == 100_000
+        assert bucket.burst_milli == 150_000
+        assert bucket.refill_amount_milli == 100_000
+        assert bucket.refill_period_ms == 60_000
+        assert bucket.tokens_milli == 150_000 - 5_000  # burst - consumed
+
+    @pytest.mark.asyncio
+    async def test_speculative_drain_then_fail(self, localstack_repo):
+        """Repeated speculative consumes drain bucket until condition fails."""
+        repo = localstack_repo
+        await repo.create_entity("spec-drain")
+
+        limit = Limit.per_minute("rpm", 10)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-drain", "api", limit, now_ms)
+        put_item = repo.build_composite_create("spec-drain", "api", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        # Consume 3 at a time: 10 -> 7 -> 4 -> 1 -> fail (1 < 3)
+        for expected_remaining in [7_000, 4_000, 1_000]:
+            result = await repo.speculative_consume(
+                entity_id="spec-drain", resource="api", consume={"rpm": 3}
+            )
+            assert result.success is True
+            assert result.buckets[0].tokens_milli == expected_remaining
+
+        # Fourth attempt fails (1 < 3)
+        result = await repo.speculative_consume(
+            entity_id="spec-drain", resource="api", consume={"rpm": 3}
+        )
+        assert result.success is False
+        assert result.old_buckets is not None
+        assert result.old_buckets[0].tokens_milli == 1_000
