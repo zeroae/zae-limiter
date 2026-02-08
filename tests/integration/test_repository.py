@@ -893,3 +893,68 @@ class TestSpeculativeConsume:
         assert result.success is False
         assert result.old_buckets is not None
         assert result.old_buckets[0].tokens_milli == 1_000
+
+    @pytest.mark.asyncio
+    async def test_speculative_rejects_expired_ttl_bucket(self, localstack_repo):
+        """Speculative consume rejects buckets with expired TTL."""
+        repo = localstack_repo
+        await repo.create_entity("spec-expired")
+
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-expired", "api", limit, now_ms)
+        # Create bucket with TTL 1 second in the past
+        put_item = repo.build_composite_create(
+            "spec-expired", "api", [state], now_ms, ttl_seconds=-1
+        )
+        await repo.transact_write([put_item])
+
+        # Speculative consume should fail (bucket TTL expired)
+        result = await repo.speculative_consume(
+            entity_id="spec-expired", resource="api", consume={"rpm": 1}
+        )
+        assert result.success is False
+        # ALL_OLD is returned because item exists but condition failed
+        assert result.old_buckets is not None
+
+    @pytest.mark.asyncio
+    async def test_speculative_accepts_no_ttl_bucket(self, localstack_repo):
+        """Speculative consume accepts buckets without TTL attribute."""
+        repo = localstack_repo
+        await repo.create_entity("spec-no-ttl")
+
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-no-ttl", "api", limit, now_ms)
+        # Create bucket without TTL (custom config entity)
+        put_item = repo.build_composite_create(
+            "spec-no-ttl", "api", [state], now_ms, ttl_seconds=None
+        )
+        await repo.transact_write([put_item])
+
+        # Speculative consume should succeed (no TTL = no expiry)
+        result = await repo.speculative_consume(
+            entity_id="spec-no-ttl", resource="api", consume={"rpm": 1}
+        )
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_speculative_accepts_future_ttl_bucket(self, localstack_repo):
+        """Speculative consume accepts buckets with TTL in the future."""
+        repo = localstack_repo
+        await repo.create_entity("spec-future-ttl")
+
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("spec-future-ttl", "api", limit, now_ms)
+        # Create bucket with TTL 1 hour in the future
+        put_item = repo.build_composite_create(
+            "spec-future-ttl", "api", [state], now_ms, ttl_seconds=3600
+        )
+        await repo.transact_write([put_item])
+
+        # Speculative consume should succeed (TTL not expired)
+        result = await repo.speculative_consume(
+            entity_id="spec-future-ttl", resource="api", consume={"rpm": 1}
+        )
+        assert result.success is True

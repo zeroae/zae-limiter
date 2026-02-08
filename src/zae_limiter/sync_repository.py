@@ -942,6 +942,10 @@ class SyncRepository:
             update_expr = f"SET #ttl = :ttl {update_expr}"
             attr_names["#ttl"] = "ttl"
             attr_values[":ttl"] = {"N": str(ttl_epoch)}
+        now_epoch = self._now_ms() // 1000
+        attr_names["#ttl"] = "ttl"
+        attr_values[":now_epoch"] = {"N": str(now_epoch)}
+        condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
         condition_expr = " AND ".join(condition_parts)
         try:
             response = client.update_item(

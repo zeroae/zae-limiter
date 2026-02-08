@@ -1180,6 +1180,12 @@ class Repository:
             attr_names["#ttl"] = "ttl"
             attr_values[":ttl"] = {"N": str(ttl_epoch)}
 
+        # Reject expired-but-not-yet-deleted buckets (DynamoDB TTL is eventual)
+        now_epoch = self._now_ms() // 1000
+        attr_names["#ttl"] = "ttl"
+        attr_values[":now_epoch"] = {"N": str(now_epoch)}
+        condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
+
         condition_expr = " AND ".join(condition_parts)
 
         try:
