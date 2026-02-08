@@ -75,6 +75,14 @@ Parameters:
     Default: ''
     Description: Permission boundary ARN for IAM roles (optional)
 
+  CapacityProvider:
+    Type: String
+    Default: FARGATE_SPOT
+    AllowedValues:
+      - FARGATE_SPOT
+      - FARGATE
+    Description: ECS capacity provider for Fargate tasks
+
   RoleNameFormat:
     Type: String
     Default: '{}'
@@ -94,6 +102,9 @@ Conditions:
   ShouldCreateVpcEndpoints: !Equals
     - !Ref CreateVpcEndpoints
     - 'true'
+  IsFargateSpot: !Equals
+    - !Ref CapacityProvider
+    - FARGATE_SPOT
 
 Resources:
   # ===========================================================================
@@ -246,11 +257,13 @@ Resources:
     Type: AWS::ECS::Cluster
     Properties:
       ClusterName: !Sub ${AWS::StackName}
-      CapacityProviders:
-        - FARGATE_SPOT
-        - FARGATE
+      CapacityProviders: !If
+        - IsFargateSpot
+        - - FARGATE_SPOT
+          - FARGATE
+        - - FARGATE
       DefaultCapacityProviderStrategy:
-        - CapacityProvider: FARGATE_SPOT
+        - CapacityProvider: !Ref CapacityProvider
           Weight: 1
       ClusterSettings:
         - Name: containerInsights
@@ -340,7 +353,7 @@ Resources:
       DesiredCount: 0
       EnableExecuteCommand: true
       CapacityProviderStrategy:
-        - CapacityProvider: FARGATE_SPOT
+        - CapacityProvider: !Ref CapacityProvider
           Weight: 1
       NetworkConfiguration:
         AwsvpcConfiguration:

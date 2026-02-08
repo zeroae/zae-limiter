@@ -559,6 +559,83 @@ class TestDeployCommand:
             assert result.exit_code == 0, result.output
             assert "up to date" in result.output.lower()
 
+    def test_capacity_provider_passed_to_cloudformation(self, runner, tmp_path):
+        """Deploy passes --capacity-provider to CloudFormation parameters."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
+            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
+            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+        ):
+            mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
+            mock_client.side_effect = client_factory
+
+            mock_source.return_value = "0.8.0"
+            mock_build.return_value = "123.dkr.ecr.us-east-1.amazonaws.com/test:latest"
+            zip_path = tmp_path / "lambda.zip"
+            zip_path.write_bytes(b"fake zip")
+            mock_lambda_pkg.return_value = zip_path
+
+            result = runner.invoke(
+                load,
+                [
+                    "deploy",
+                    "--name",
+                    "my-app",
+                    "--vpc-id",
+                    "vpc-123",
+                    "--subnet-ids",
+                    "subnet-a,subnet-b",
+                    "--capacity-provider",
+                    "FARGATE",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+
+            # Verify CapacityProvider param was passed to create_stack
+            call_kwargs = mock_cfn.create_stack.call_args[1]
+            params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
+            assert params["CapacityProvider"] == "FARGATE"
+
+    def test_capacity_provider_defaults_to_fargate_spot(self, runner, tmp_path):
+        """Deploy defaults --capacity-provider to FARGATE_SPOT."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
+            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
+            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+        ):
+            mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
+            mock_client.side_effect = client_factory
+
+            mock_source.return_value = "0.8.0"
+            mock_build.return_value = "123.dkr.ecr.us-east-1.amazonaws.com/test:latest"
+            zip_path = tmp_path / "lambda.zip"
+            zip_path.write_bytes(b"fake zip")
+            mock_lambda_pkg.return_value = zip_path
+
+            result = runner.invoke(
+                load,
+                [
+                    "deploy",
+                    "--name",
+                    "my-app",
+                    "--vpc-id",
+                    "vpc-123",
+                    "--subnet-ids",
+                    "subnet-a,subnet-b",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+
+            call_kwargs = mock_cfn.create_stack.call_args[1]
+            params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
+            assert params["CapacityProvider"] == "FARGATE_SPOT"
+
     def test_update_reraises_other_errors(self, runner, tmp_path):
         """Deploy re-raises non-'no updates' errors during update."""
         with (

@@ -321,6 +321,12 @@ def load() -> None:
     help="Lambda worker memory in MB (CPU scales with memory; 1769 MB = 1 vCPU, default: 1769)",
 )
 @click.option(
+    "--capacity-provider",
+    type=click.Choice(["FARGATE_SPOT", "FARGATE"], case_sensitive=False),
+    default="FARGATE_SPOT",
+    help="ECS capacity provider (default: FARGATE_SPOT)",
+)
+@click.option(
     "--create-vpc-endpoints",
     is_flag=True,
     help="Create VPC endpoints for SSM (not needed if VPC has NAT gateway)",
@@ -343,6 +349,7 @@ def deploy(
     startup_lead_time: int,
     lambda_timeout: int,
     lambda_memory: int,
+    capacity_provider: str,
     create_vpc_endpoints: bool,
     locustfile_dir: Path,
 ) -> None:
@@ -428,6 +435,7 @@ def deploy(
         {"ParameterKey": "StartupLeadTime", "ParameterValue": str(startup_lead_time)},
         {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
         {"ParameterKey": "LambdaMemory", "ParameterValue": str(lambda_memory)},
+        {"ParameterKey": "CapacityProvider", "ParameterValue": capacity_provider.upper()},
         {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
         {"ParameterKey": "PrivateRouteTableIds", "ParameterValue": route_table_ids},
         {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
