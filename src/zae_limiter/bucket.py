@@ -16,6 +16,7 @@ Key functions:
     try_consume: Attempt to consume tokens (atomic check-and-consume)
     force_consume: Force consume tokens (can go negative for debt)
     calculate_retry_after: Calculate wait time until tokens available
+    would_refill_satisfy: Check if refilling would allow a request to succeed
 
 For conceptual explanation, see docs/guide/token-bucket.md
 For implementation details, see docs/contributing/architecture.md
@@ -310,3 +311,44 @@ def build_limit_status(
         exceeded=not result.success,
         retry_after_seconds=result.retry_after_seconds,
     )
+
+
+def would_refill_satisfy(
+    buckets: list[BucketState],
+    consume: dict[str, int],
+    now_ms: int,
+) -> tuple[bool, list[LimitStatus]]:
+    """Check if refilling buckets would allow the request to succeed.
+
+    Used after a speculative UpdateItem fails to determine whether the slow
+    path (which does refill) would help, or whether the request should be
+    rejected immediately.
+
+    Args:
+        buckets: Current bucket states (from ALL_OLD, before refill)
+        consume: Amount requested per limit (limit_name -> tokens)
+        now_ms: Current timestamp for refill calculation
+
+    Returns:
+        Tuple of (would_satisfy, statuses) where:
+        - would_satisfy: True if ALL limits pass after refill
+        - statuses: LimitStatus for each limit (for RateLimitExceeded if needed)
+    """
+    statuses: list[LimitStatus] = []
+    for state in buckets:
+        amount = consume.get(state.limit_name, 0)
+        if amount == 0:
+            continue
+        limit = Limit.from_bucket_state(state)
+        status = build_limit_status(
+            entity_id=state.entity_id,
+            resource=state.resource,
+            limit=limit,
+            state=state,
+            requested=amount,
+            now_ms=now_ms,
+        )
+        statuses.append(status)
+
+    any_exceeded = any(s.exceeded for s in statuses)
+    return (not any_exceeded, statuses)

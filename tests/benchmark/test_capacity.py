@@ -550,3 +550,105 @@ class TestCapacityConsumption:
         assert capacity_counter.transact_write_items[0] == 2, (
             "Initial commit should write 2 items (child + parent)"
         )
+
+
+class TestSpeculativeCapacity:
+    """Verify DynamoDB capacity for speculative UpdateItem path (issue #315).
+
+    Speculative acquire skips the BatchGetItem read round trip by attempting
+    a conditional UpdateItem directly. On success, saves 1 RCU (0 reads).
+    On failure with exhausted bucket, raises immediately (0 RCU, 0 WCU).
+    """
+
+    def test_speculative_success_non_cascade(self, sync_limiter, capacity_counter):
+        """Verify: speculative acquire with pre-warmed bucket uses 0 RCU for bucket reads.
+
+        Expected calls (speculative path):
+        - GetItem calls (version check + limit resolution)
+        - 0 BatchGetItem (no bucket read — this is the savings!)
+        - 1 UpdateItem (speculative consume with condition)
+        - 0 PutItem, 0 TransactWriteItems
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Pre-warm: normal path creates the bucket
+        with sync_limiter.acquire(
+            entity_id="spec-success",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Enable speculative writes
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="spec-success",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        # Key assertion: no BatchGetItem (speculative skips bucket read)
+        assert len(capacity_counter.batch_get_item) == 0, (
+            "Speculative path should not read buckets via BatchGetItem"
+        )
+        # Single UpdateItem for speculative consume
+        assert capacity_counter.update_item == 1, (
+            "Should have exactly 1 UpdateItem (speculative consume)"
+        )
+        assert capacity_counter.put_item == 0, "Speculative should not use PutItem"
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Speculative should not use TransactWriteItems"
+        )
+
+    def test_speculative_fast_rejection_zero_rcu(self, sync_limiter, capacity_counter):
+        """Verify: fast rejection on exhausted bucket uses 0 RCU.
+
+        When speculative UpdateItem fails and refill won't help, we raise
+        RateLimitExceeded immediately using ALL_OLD data — no read round trip.
+
+        Expected calls:
+        - GetItem calls (version check + limit resolution)
+        - 1 UpdateItem (condition fails, but API call still counted)
+        - 0 BatchGetItem (no fallback to slow path)
+        """
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Pre-warm and exhaust the bucket
+        with sync_limiter.acquire(
+            entity_id="spec-reject",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 100},
+        ):
+            pass
+
+        # Enable speculative writes
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire(
+                    entity_id="spec-reject",
+                    resource="api",
+                    limits=limits,
+                    consume={"rpm": 50},
+                ):
+                    pass
+
+        # Key assertion: no BatchGetItem (fast rejection, no slow path)
+        assert len(capacity_counter.batch_get_item) == 0, (
+            "Fast rejection should not fall back to BatchGetItem"
+        )
+        # The failed UpdateItem call is still counted
+        assert capacity_counter.update_item == 1, "Should have 1 UpdateItem call (condition failed)"
+        assert capacity_counter.put_item == 0, "Should not use PutItem"
+        assert len(capacity_counter.transact_write_items) == 0, "Should not use TransactWriteItems"

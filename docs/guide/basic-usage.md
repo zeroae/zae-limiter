@@ -303,6 +303,27 @@ print(f"Cache entries: {stats.size}")
 
 See [Config Cache Tuning](../performance.md#7-config-cache-tuning) for advanced configuration.
 
+## Speculative Writes
+
+For latency-sensitive workloads with pre-warmed buckets, enable speculative writes to skip the read round trip:
+
+```python
+limiter = RateLimiter(
+    repository=Repository(name="my-app", region="us-east-1"),
+    speculative_writes=True,
+)
+```
+
+When enabled, `acquire()` attempts a conditional UpdateItem directly instead of reading bucket state first. On success, this saves one DynamoDB round trip (0 RCU, 1 WCU instead of 1 RCU + 1 WCU). When the bucket is exhausted and refill would not help, it rejects immediately without any writes (0 RCU, 0 WCU).
+
+The speculative path falls back to the normal read-write path when:
+
+- The bucket does not exist yet (first acquire for an entity)
+- A new limit was added that is not in the bucket
+- Token refill since last access would provide enough capacity
+
+See [Performance Tuning - Speculative Writes](../performance.md#8-speculative-writes) for detailed cost analysis and guidance on when to enable this feature.
+
 ## Next Steps
 
 - [Hierarchical Limits](hierarchical.md) - Parent/child rate limiting

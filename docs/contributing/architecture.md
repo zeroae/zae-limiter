@@ -166,12 +166,15 @@ For a conceptual overview of the token bucket algorithm, see the [User Guide](..
 
 The algorithm is implemented in [`bucket.py`](https://github.com/zeroae/zae-limiter/blob/main/src/zae_limiter/bucket.py):
 
-| Function | Purpose | Lines |
-|----------|---------|-------|
-| `refill_bucket()` | Calculate refilled tokens with drift compensation | 27-75 |
-| `try_consume()` | Atomic check-and-consume operation | 78-134 |
-| `force_consume()` | Force consume (can go negative) | 224-255 |
-| `calculate_retry_after()` | Calculate wait time for deficit | 137-159 |
+| Function | Purpose |
+|----------|---------|
+| `refill_bucket()` | Calculate refilled tokens with drift compensation |
+| `try_consume()` | Atomic check-and-consume operation |
+| `force_consume()` | Force consume (can go negative) |
+| `calculate_retry_after()` | Calculate wait time for deficit |
+| `calculate_available()` | Calculate currently available tokens |
+| `build_limit_status()` | Build a LimitStatus for a bucket check |
+| `would_refill_satisfy()` | Check if refilling would allow a request to succeed (speculative writes) |
 
 ### Mathematical Formulas
 
@@ -340,6 +343,49 @@ call (1 WCU each). This is safe because:
 
 This halves the WCU cost compared to using TransactWriteItems for these paths.
 
+### Speculative Write Path (Issue #315)
+
+When `speculative_writes=True`, `acquire()` adds a fast path before the normal read-write flow:
+
+| Write Path | Method | API Used | WCU Cost | Atomicity |
+|------------|--------|----------|----------|-----------|
+| Speculative consumption | `speculative_consume()` | Conditional `UpdateItem` | 1 WCU (success) or 0 WCU (reject) | Single item |
+| Speculative compensation | `_compensate_child()` via `write_each()` | `UpdateItem` | 1 WCU | Single item |
+| Parent-only slow path | `_try_parent_only_acquire()` via `_commit_initial()` | `UpdateItem` | 1 WCU | Single item |
+
+The speculative path uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to inspect bucket state
+on failure without a separate read. On success, `ReturnValues=ALL_NEW` provides the post-write
+state including denormalized `cascade` and `parent_id` fields.
+
+```
+Speculative flow:
+1. UpdateItem with condition: attribute_exists(PK) AND tk >= consumed
+   +- SUCCESS -> Lease is pre-committed (_initial_committed=True)
+   |  +- cascade=False -> DONE
+   |  +- cascade=True -> Speculative UpdateItem on parent
+   |     +- SUCCESS -> DONE (child + parent both speculative)
+   |     +- FAIL -> Check parent ALL_OLD (child stays consumed)
+   |        +- No item / missing limit -> Compensate child, fall back
+   |        +- Refill won't help -> Compensate child, RateLimitExceeded
+   |        +- Refill would help -> Parent-only slow path (read + write parent)
+   |           +- SUCCESS -> DONE (child speculative + parent slow path)
+   |           +- FAIL -> Compensate child, fall back to full slow path
+   +- FAIL -> Check ALL_OLD
+      +- No item (bucket missing) -> Fall back to normal path
+      +- Refill would help -> Fall back to normal path
+      +- Refill won't help -> RateLimitExceeded (fast rejection)
+```
+
+Cascade and `parent_id` are denormalized into composite bucket items (via `build_composite_create`)
+so the speculative path avoids a separate entity metadata lookup.
+
+**Deferred cascade compensation:** When the child speculative write succeeds but the parent
+fails, child compensation is deferred. If refill would help the parent, a parent-only slow
+path is attempted: read parent buckets (0.5 RCU), refill + try_consume, write via single-item
+UpdateItem (1 WCU). This avoids the cost of compensating the child (1 WCU), re-reading it
+(0.5 RCU), and using TransactWriteItems for the full cascade write (4 WCU). The child is
+only compensated when the parent-only path also fails.
+
 ### Optimistic Locking
 
 Entity metadata uses version numbers for optimistic locking:
@@ -391,6 +437,7 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override
 5. **Initial writes are atomic**: Multi-entity initial consumption uses `transact_write()` for cross-item atomicity
 6. **Adjustments and rollbacks use independent writes**: `write_each()` dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead for unconditional ADD operations
+7. **Speculative writes skip reads**: With `speculative_writes=True`, `acquire()` tries a conditional UpdateItem first, saving 1 round trip and 1 RCU when the bucket has sufficient tokens
 
 ## Next Steps
 

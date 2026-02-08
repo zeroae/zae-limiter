@@ -6,6 +6,7 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .limiter import OnUnavailable as OnUnavailable
@@ -21,6 +22,26 @@ if TYPE_CHECKING:
         UsageSnapshot,
         UsageSummary,
     )
+
+
+@dataclass
+class SpeculativeResult:
+    """Result of a speculative UpdateItem attempt.
+
+    Attributes:
+        success: True if the speculative write succeeded.
+        buckets: On success, deserialized BucketStates from ALL_NEW response.
+        cascade: On success, whether the entity has cascade enabled.
+        parent_id: On success, the entity's parent_id (if any).
+        old_buckets: On failure, deserialized BucketStates from ALL_OLD response.
+            None if the bucket doesn't exist (first acquire).
+    """
+
+    success: bool
+    buckets: "list[BucketState]" = field(default_factory=list)
+    cascade: bool = False
+    parent_id: str | None = None
+    old_buckets: "list[BucketState] | None" = None
 
 
 @runtime_checkable
@@ -315,6 +336,8 @@ class SyncRepositoryProtocol(Protocol):
         states: "list[BucketState]",
         now_ms: int,
         ttl_seconds: int | None = 86400,
+        cascade: bool = False,
+        parent_id: str | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -324,6 +347,8 @@ class SyncRepositoryProtocol(Protocol):
             states: BucketState objects for each limit
             now_ms: Current timestamp in milliseconds
             ttl_seconds: TTL in seconds from now, or None to omit TTL
+            cascade: Whether the entity has cascade enabled
+            parent_id: The entity's parent_id (if any)
         """
         ...
 
@@ -405,6 +430,30 @@ class SyncRepositoryProtocol(Protocol):
 
         Args:
             items: List of items to write independently
+        """
+        ...
+
+    def speculative_consume(
+        self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
+    ) -> SpeculativeResult:
+        """Attempt speculative UpdateItem with condition check.
+
+        Issues an UpdateItem with ADD -consumed and condition
+        ``attribute_exists(PK) AND tk >= consumed`` for each limit.
+        Uses ``ReturnValuesOnConditionCheckFailure=ALL_OLD`` to return
+        the current item state on failure.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consume: Amount per limit (tokens, not milli)
+            ttl_seconds: TTL in seconds from now, or None for no TTL change
+
+        Returns:
+            SpeculativeResult with success flag and either:
+            - On success: buckets, cascade, parent_id from ALL_NEW
+            - On failure with ALL_OLD: old_buckets from ALL_OLD
+            - On failure without ALL_OLD: old_buckets is None (bucket missing)
         """
         ...
 
