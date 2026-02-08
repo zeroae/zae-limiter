@@ -4481,7 +4481,7 @@
 
 
 <a href="#zae_limiter.limiter.RateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="o">=</span><span class="mi">7</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="o">=</span><span class="mi">7</span><span class="p">,</span> <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -4710,6 +4710,24 @@ Set to 0 to disable TTL for buckets using default limits.</p>
             </td>
             <td>
                   <code>7</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>speculative_writes</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Enable speculative UpdateItem fast path.
+When True, acquire() tries a speculative write first, falling
+back to the full read-write path only when needed.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
             </td>
           </tr>
       </tbody>
@@ -6768,6 +6786,9 @@ stored config. This parameter will be removed in v1.0.</p>
     <div class="doc doc-contents ">
 
         <p>Delete stored limit configs for an entity.</p>
+<p>Reconciles existing buckets to fallback config (resource/system
+defaults) by syncing limit fields, setting TTL, and removing
+stale limit attributes (issue #327).</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -7989,7 +8010,7 @@ round-trip time to the DynamoDB endpoint.</p>
 
 
 <a href="#zae_limiter.sync_limiter.SyncRateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="o">=</span><span class="mi">7</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="o">=</span><span class="mi">7</span><span class="p">,</span> <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -8218,6 +8239,24 @@ Set to 0 to disable TTL for buckets using default limits.</p>
             </td>
             <td>
                   <code>7</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>speculative_writes</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Enable speculative UpdateItem fast path.
+When True, acquire() tries a speculative write first, falling
+back to the full read-write path only when needed.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
             </td>
           </tr>
       </tbody>
@@ -10211,6 +10250,9 @@ stored config. This parameter will be removed in v1.0.</p>
     <div class="doc doc-contents ">
 
         <p>Delete stored limit configs for an entity.</p>
+<p>Reconciles existing buckets to fallback config (resource/system
+defaults) by syncing limit fields, setting TTL, and removing
+stale limit attributes (issue #327).</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>

@@ -1234,6 +1234,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.from_bucket_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_bucket_state
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1881,6 +1892,34 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;EntityCapacity
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speculativeresult" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SpeculativeResult
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="SpeculativeResult">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.SpeculativeResult" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;SpeculativeResult
       
     </span>
   </a>
@@ -3407,6 +3446,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.from_bucket_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_bucket_state
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -4066,6 +4116,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#speculativeresult" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SpeculativeResult
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="SpeculativeResult">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.SpeculativeResult" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;SpeculativeResult
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cachestats" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4444,6 +4522,30 @@ to avoid floating point precision issues.</p>
     <div class="doc doc-contents ">
 
         <p>Deserialize from dictionary.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.models.Limit.from_bucket_state" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">from_bucket_state</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#zae_limiter.models.Limit.from_bucket_state" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_bucket_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Reconstruct a Limit from BucketState fields.</p>
 
 
     </div>
@@ -6783,6 +6885,138 @@ property.</p>
 
 
         <p>Capacity info for a single entity.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="speculativeresult">SpeculativeResult<a class="headerlink" href="#speculativeresult" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="zae_limiter.repository_protocol.SpeculativeResult" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">SpeculativeResult</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.SpeculativeResult" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SpeculativeResult</span><span class="p">(</span><span class="n">success</span><span class="p">,</span> <span class="n">buckets</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">old_buckets</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>Result of a speculative UpdateItem attempt.</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.success">success</span></code></td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>True if the speculative write succeeded.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.buckets">buckets</span></code></td>
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            BucketState
+
+
+  
+      dataclass
+   (zae_limiter.models.BucketState)" href="#zae_limiter.models.BucketState">BucketState</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>On success, deserialized BucketStates from ALL_NEW response.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.cascade">cascade</span></code></td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>On success, whether the entity has cascade enabled.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.parent_id">parent_id</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>On success, the entity's parent_id (if any).</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.old_buckets">old_buckets</span></code></td>
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            BucketState
+
+
+  
+      dataclass
+   (zae_limiter.models.BucketState)" href="#zae_limiter.models.BucketState">BucketState</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>On failure, deserialized BucketStates from ALL_OLD response.
+None if the bucket doesn't exist (first acquire).</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
 
