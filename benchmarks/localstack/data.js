@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770482485982,
+  "lastUpdate": 1770543455968,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -7587,6 +7587,135 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010839257810722414",
             "extra": "mean: 1.0999284223999894 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "626beb70e1556fd62854fe16537c076db5ed7619",
+          "message": "⚡ perf(limiter): speculative UpdateItem to skip read round trip (#326)\n\n## Summary\n- Add speculative `UpdateItem` fast path to `acquire()` that skips the\nread round trip when tokens are plentiful (steady-state case)\n- Non-cascade acquires drop from 2 round trips (1 RCU + 1 WCU) to 1\nround trip (0 RCU + 1 WCU); cascade acquires drop from 2 RT to 2 RT with\n0 RCU + 2 WCU\n- Denormalize `cascade` and `parent_id` into composite bucket items so\n`ReturnValues=ALL_NEW` reveals cascade info without a separate read\n- New `Repository.speculative_consume()` method issues conditional\n`UpdateItem` with `ADD -consumed` and `tk >= consumed` guard; returns\n`SpeculativeResult` with deserialized bucket state\n- Feature is enabled by default (`speculative_writes=True`); data\npopulation (cascade/parent_id in buckets) happens regardless of flag\n- On condition failure, checks whether refill would satisfy the request:\nraises `RateLimitExceeded` (fast rejection, saves 1 RCU) or falls back\nto slow path\n- Cascade failure compensates child via `write_each` before falling back\nto full transact_write slow path\n- Eagerly reconcile bucket limit fields, TTL, and stale attributes when\n`set_limits()` or `delete_limits()` modifies entity-level config,\nensuring the speculative path operates with correct bucket state (#327)\n\n## Test plan\n- [x] Unit tests for speculative success (single + multi-limit)\n- [x] Unit tests for fallback on condition failure and missing bucket\n- [x] Unit tests for cascade speculative success and parent failure with\nchild compensation\n- [x] Unit tests for config change self-correction (new limit not in\nbucket)\n- [x] Unit tests for child refill-helps fallback path\n- [x] Unit tests for bucket reconciliation (TTL removal on set_limits,\nTTL + stale attr removal on delete_limits, cache eviction)\n- [x] Integration test for TTL downgrade on config deletion\n- [x] Benchmark tests demonstrating 0 RCU on speculative happy path\n- [x] Sync variants generated and passing pre-commit\n- [x] Integration tests with LocalStack\n- [x] E2E tests passing (LocalStack + AWS)\n- [x] CLAUDE.md updated to reflect default-on behavior\n\nCloses #315\nCloses #327\nCloses #328\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-02-08T04:22:04-05:00",
+          "tree_id": "0e586548e07caeadd6a0ca59aaa7373b5c24314d",
+          "url": "https://github.com/zeroae/zae-limiter/commit/626beb70e1556fd62854fe16537c076db5ed7619"
+        },
+        "date": 1770543455392,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.537367356998914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010717652540478958",
+            "extra": "mean: 39.15830422222181 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.055921077233258,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005950274699799984",
+            "extra": "mean: 52.47712750000488 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 41.52193027520955,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004014731931796337",
+            "extra": "mean: 24.08365876470451 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 37.15451303258467,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0035058910273720687",
+            "extra": "mean: 26.91463077777377 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.119368896156168,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0043682597395544535",
+            "extra": "mean: 45.209246461537916 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 224.5476003815401,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005969214513844067",
+            "extra": "mean: 4.453398737287104 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.946967859762708,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004294225386973289",
+            "extra": "mean: 38.54014871428392 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 22.462794688640983,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00338919358168635",
+            "extra": "mean: 44.51805814285795 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 25.56136046314328,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005028809402216466",
+            "extra": "mean: 39.121548379316195 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.22141964750761,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004833466904361507",
+            "extra": "mean: 41.28577162498814 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 25.652785736237586,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004628633596524425",
+            "extra": "mean: 38.9821210952299 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9436510676747594,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003239838468244289",
+            "extra": "mean: 514.4956399999955 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9235999506433985,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006656534864683692",
+            "extra": "mean: 519.8586117999866 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9447263083671438,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007725238758845645",
+            "extra": "mean: 1.0585076240000035 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9253718418849636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013958919305425012",
+            "extra": "mean: 1.0806466706000264 sec\nrounds: 5"
           }
         ]
       }
