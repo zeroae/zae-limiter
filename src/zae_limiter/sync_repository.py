@@ -31,6 +31,7 @@ from .models import (
     validate_resource,
 )
 from .naming import normalize_stack_name
+from .sync_repository_protocol import SpeculativeResult
 
 
 class SyncRepository:
@@ -636,6 +637,8 @@ class SyncRepository:
         states: list[BucketState],
         now_ms: int,
         ttl_seconds: int | None = 86400,
+        cascade: bool = False,
+        parent_id: str | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -648,6 +651,8 @@ class SyncRepository:
             states: BucketState objects for each limit
             now_ms: Current timestamp in milliseconds
             ttl_seconds: TTL in seconds from now, or None to omit TTL
+            cascade: Whether the entity has cascade enabled
+            parent_id: The entity's parent_id (if any)
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(entity_id)},
@@ -657,7 +662,10 @@ class SyncRepository:
             schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
             "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
+            "cascade": {"BOOL": cascade},
         }
+        if parent_id is not None:
+            item["parent_id"] = {"S": parent_id}
         if ttl_seconds is not None:
             item["ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
         for state in states:
@@ -725,6 +733,7 @@ class SyncRepository:
                 attr_values[":ttl_val"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
             else:
                 remove_parts.append("#ttl")
+        condition_parts: list[str] = ["#rf = :expected_rf"]
         for name in consumed:
             c = consumed[name]
             r = refill_amounts.get(name, 0)
@@ -739,6 +748,11 @@ class SyncRepository:
             attr_values[tc_val] = {"N": str(c)}
             add_parts.append(f"{tk_alias} {tk_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
+            floor = max(0, c - r)
+            if floor > 0:
+                floor_val = f":b_{name}_tk_floor"
+                attr_values[floor_val] = {"N": str(floor)}
+                condition_parts.append(f"{tk_alias} >= {floor_val}")
         update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
         if remove_parts:
             update_expr += f" REMOVE {', '.join(remove_parts)}"
@@ -750,7 +764,7 @@ class SyncRepository:
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
-                "ConditionExpression": "#rf = :expected_rf",
+                "ConditionExpression": " AND ".join(condition_parts),
                 "ExpressionAttributeNames": attr_names,
                 "ExpressionAttributeValues": attr_values,
             }
@@ -877,6 +891,93 @@ class SyncRepository:
             elif "Delete" in item:
                 client.delete_item(**item["Delete"])
 
+    def speculative_consume(
+        self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
+    ) -> "SpeculativeResult":
+        """Attempt speculative UpdateItem with condition check.
+
+        Issues an UpdateItem with ``ADD -consumed`` and condition
+        ``attribute_exists(PK) AND tk >= consumed`` for each limit.
+        Uses ``ReturnValuesOnConditionCheckFailure=ALL_OLD`` to return
+        the current item state on failure.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consume: Amount per limit (tokens, not milli)
+            ttl_seconds: TTL in seconds from now, or None for no TTL change
+
+        Returns:
+            SpeculativeResult with success flag and either:
+            - On success: buckets, cascade, parent_id from ALL_NEW
+            - On failure with ALL_OLD: old_buckets from ALL_OLD
+            - On failure without ALL_OLD: old_buckets is None (bucket missing)
+        """
+        client = self._get_client()
+        add_parts: list[str] = []
+        condition_parts: list[str] = ["attribute_exists(PK)"]
+        attr_names: dict[str, str] = {}
+        attr_values: dict[str, Any] = {}
+        for limit_name, amount in consume.items():
+            amount_milli = amount * 1000
+            tk_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TK)
+            tc_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TC)
+            tk_alias = f"#tk_{limit_name}"
+            tc_alias = f"#tc_{limit_name}"
+            neg_val = f":neg_{limit_name}"
+            pos_val = f":pos_{limit_name}"
+            thresh_val = f":thresh_{limit_name}"
+            attr_names[tk_alias] = tk_attr
+            attr_names[tc_alias] = tc_attr
+            attr_values[neg_val] = {"N": str(-amount_milli)}
+            attr_values[pos_val] = {"N": str(amount_milli)}
+            attr_values[thresh_val] = {"N": str(amount_milli)}
+            add_parts.append(f"{tk_alias} {neg_val}")
+            add_parts.append(f"{tc_alias} {pos_val}")
+            condition_parts.append(f"{tk_alias} >= {thresh_val}")
+        update_expr = "ADD " + ", ".join(add_parts)
+        if ttl_seconds is not None:
+            now_ms = self._now_ms()
+            ttl_epoch = schema.calculate_ttl(now_ms, ttl_seconds)
+            update_expr = f"SET #ttl = :ttl {update_expr}"
+            attr_names["#ttl"] = "ttl"
+            attr_values[":ttl"] = {"N": str(ttl_epoch)}
+        now_epoch = self._now_ms() // 1000
+        attr_names["#ttl"] = "ttl"
+        attr_values[":now_epoch"] = {"N": str(now_epoch)}
+        condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
+        condition_expr = " AND ".join(condition_parts)
+        try:
+            response = client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                },
+                UpdateExpression=update_expr,
+                ConditionExpression=condition_expr,
+                ExpressionAttributeNames=attr_names,
+                ExpressionAttributeValues=attr_values,
+                ReturnValues="ALL_NEW",
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
+            )
+            item = response["Attributes"]
+            buckets = self._deserialize_composite_bucket(item)
+            cascade = item.get("cascade", {}).get("BOOL", False)
+            parent_id = item.get("parent_id", {}).get("S")
+            return SpeculativeResult(
+                success=True, buckets=buckets, cascade=cascade, parent_id=parent_id
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                old_item = cast(dict[str, Any] | None, e.response.get("Item"))
+                if old_item:
+                    old_buckets = self._deserialize_composite_bucket(old_item)
+                    return SpeculativeResult(success=False, old_buckets=old_buckets)
+                else:
+                    return SpeculativeResult(success=False)
+            raise
+
     def set_limits(
         self,
         entity_id: str,
@@ -941,7 +1042,7 @@ class SyncRepository:
                     raise
             else:
                 raise
-        self._sync_bucket_params(entity_id, resource, limits)
+        self._sync_bucket_params(entity_id, resource, limits, bucket_ttl_refill_multiplier=0)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=entity_id,
@@ -950,22 +1051,38 @@ class SyncRepository:
             details={"limits": [limit.to_dict() for limit in limits]},
         )
 
-    def _sync_bucket_params(self, entity_id: str, resource: str, limits: list[Limit]) -> None:
-        """Sync bucket static params when limits change (issue #294).
+    def _sync_bucket_params(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        bucket_ttl_refill_multiplier: int | None = None,
+        stale_limit_names: set[str] | None = None,
+    ) -> None:
+        """Sync bucket static params when limits change (issue #294, #327).
 
-        Updates capacity, burst, refill_amount, and refill_period for existing
-        buckets. Uses conditional update with attribute_exists(PK) to skip if
+        Updates capacity, burst, refill_amount, refill_period, and TTL for
+        existing buckets. Optionally removes stale limit attributes.
+        Uses conditional update with attribute_exists(PK) to skip if
         bucket doesn't exist yet.
 
         Args:
             entity_id: ID of the entity
             resource: Resource name
             limits: New limit configurations
+            bucket_ttl_refill_multiplier: TTL behavior (issue #327):
+                - None: Don't change TTL
+                - 0: REMOVE ttl (entity has custom limits)
+                - >0: SET ttl to (now + calculated_seconds)
+            stale_limit_names: Limit names to REMOVE from bucket (issue #327).
+                Used when downgrading from entity config to defaults where
+                the old config had limits not present in the new defaults.
         """
         if not limits:
             return
         client = self._get_client()
         set_parts: list[str] = []
+        remove_parts: list[str] = []
         expr_names: dict[str, str] = {}
         expr_values: dict[str, dict[str, str]] = {}
         for i, limit in enumerate(limits):
@@ -986,6 +1103,34 @@ class SyncRepository:
             set_parts.append(f"#rp{i} = :rp{i}")
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
+        if bucket_ttl_refill_multiplier is not None:
+            expr_names["#ttl"] = "ttl"
+            if bucket_ttl_refill_multiplier > 0:
+                ttl_seconds = schema.calculate_bucket_ttl_seconds(
+                    limits, bucket_ttl_refill_multiplier
+                )
+                if ttl_seconds is not None:
+                    now_ms = self._now_ms()
+                    set_parts.append("#ttl = :ttl_val")
+                    expr_values[":ttl_val"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
+            else:
+                remove_parts.append("#ttl")
+        if stale_limit_names:
+            for stale_name in stale_limit_names:
+                for field in (
+                    schema.BUCKET_FIELD_TK,
+                    schema.BUCKET_FIELD_CP,
+                    schema.BUCKET_FIELD_BX,
+                    schema.BUCKET_FIELD_RA,
+                    schema.BUCKET_FIELD_RP,
+                    schema.BUCKET_FIELD_TC,
+                ):
+                    alias = f"#stale_{stale_name}_{field}"
+                    expr_names[alias] = schema.bucket_attr(stale_name, field)
+                    remove_parts.append(alias)
+        update_expr = f"SET {', '.join(set_parts)}"
+        if remove_parts:
+            update_expr += f" REMOVE {', '.join(remove_parts)}"
         try:
             client.update_item(
                 TableName=self.table_name,
@@ -993,7 +1138,7 @@ class SyncRepository:
                     "PK": {"S": schema.pk_entity(entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
-                UpdateExpression=f"SET {', '.join(set_parts)}",
+                UpdateExpression=update_expr,
                 ConditionExpression="attribute_exists(PK)",
                 ExpressionAttributeNames=expr_names,
                 ExpressionAttributeValues=expr_values,
@@ -1002,6 +1147,38 @@ class SyncRepository:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return
             raise
+
+    def reconcile_bucket_to_defaults(
+        self,
+        entity_id: str,
+        resource: str,
+        effective_limits: list[Limit],
+        bucket_ttl_refill_multiplier: int,
+        stale_limit_names: set[str] | None = None,
+    ) -> None:
+        """Reconcile bucket to effective defaults after config deletion (issue #327).
+
+        Updates limit fields (cp, bx, ra, rp) to match the new effective
+        limits, sets TTL (since entity is now on defaults), and removes
+        stale limit attributes that no longer exist in the effective config.
+
+        No-op if bucket doesn't exist (uses attribute_exists(PK) condition).
+
+        Args:
+            entity_id: ID of the entity
+            resource: Resource name
+            effective_limits: The new effective limits (resource/system defaults)
+            bucket_ttl_refill_multiplier: TTL multiplier for default limits
+            stale_limit_names: Limit names to REMOVE from bucket (limits that
+                were in the deleted entity config but not in effective defaults)
+        """
+        self._sync_bucket_params(
+            entity_id,
+            resource,
+            effective_limits,
+            bucket_ttl_refill_multiplier=bucket_ttl_refill_multiplier,
+            stale_limit_names=stale_limit_names,
+        )
 
     def _cleanup_entity_config_registry(self, resource: str) -> None:
         """Remove resource from entity config registry if count <= 0.

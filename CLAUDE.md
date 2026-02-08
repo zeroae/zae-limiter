@@ -354,6 +354,14 @@ Primary mitigation: cascade defaults to `False`.
 - Uses TransactWriteItems for atomic multi-entity writes (initial consumption)
 - Uses independent single-item writes (`write_each`) for adjustments and rollbacks (1 WCU each)
 
+### Speculative Writes (Issue #315)
+- Enabled by default (`speculative_writes=True`); disable with `speculative_writes=False`
+- Skips the read round trip (BatchGetItem) by issuing a conditional UpdateItem directly
+- Uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to inspect bucket state on failure
+- Falls back to the normal read-write path when the bucket is missing, config changed, or refill would help
+- Fast rejection: if refill would not help, raises `RateLimitExceeded` immediately (0 RCU, 0 WCU)
+- Cascade/parent_id denormalized into bucket items to avoid entity metadata lookup on the fast path
+
 ### Exception Design
 - `RateLimitExceeded` includes **ALL** limit statuses
 - Both `violations` (exceeded) and `passed` (ok) are available
@@ -435,12 +443,13 @@ docs/
 ## Important Invariants
 
 1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
-2. **Bucket can go negative**: `lease.adjust()` never throws, allows debt
+2. **Bucket can go negative (adjust only)**: `lease.adjust()` never throws, allows debt. The initial admission path (`try_consume` + `_commit_initial`) is a gate that MUST NOT over-admit — do not use "bucket can go negative" to justify skipping admission checks
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
-5. **Initial writes are atomic**: Multi-entity initial consumption (via `_commit_initial`) uses `transact_write` for cross-item atomicity
+5. **Initial writes are atomic + optimistic lock on refill**: `_commit_initial` uses `transact_write` for cross-item atomicity. `build_composite_normal` locks on `last_refill_ms` (`ConditionExpression: #rf = :expected_rf`) to prevent stale refill overwrites. On lock failure, `build_composite_retry` skips refill and uses `tk >= consumed` condition to prevent over-admission
 6. **Adjustments and rollbacks use independent writes**: `_commit_adjustments()` and `_rollback()` use `write_each()` (1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
 7. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources x limits) must stay within this limit
+8. **Speculative writes are pre-committed**: When the speculative path succeeds, `_commit_initial()` is a no-op because the UpdateItem already persisted the consumption. Rollback compensates with `build_composite_adjust` + `write_each`
 
 ## DynamoDB Pricing Reference
 
@@ -449,6 +458,13 @@ On-demand pricing (us-east-1, post-Nov 2023 50% reduction):
 - Read Request Units: **$0.125/M** ($0.25/M for transactional reads)
 
 Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the project's advertised cost).
+
+Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~17% savings).
+Speculative fast rejection (exhausted) = 0 RCU + 0 WCU = **$0/M** (free).
+Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
+Speculative cascade (both succeed) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
+Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
+Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/M** (child consumed + compensated).
 
 ## DynamoDB Access Patterns
 
@@ -474,6 +490,12 @@ Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the pro
 **Optimized read patterns (issue #133):**
 - `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
 - This reduces cascade scenarios from N sequential GetItem calls to 1 BatchGetItem call
+
+**Speculative write pattern (issue #315):**
+- `speculative_consume()` issues a conditional `UpdateItem` with `ADD -consumed` and condition `attribute_exists(PK) AND tk >= consumed`
+- Uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to return bucket state on failure without a separate read
+- Uses `ReturnValues=ALL_NEW` on success to reconstruct `BucketState`, `cascade`, and `parent_id` from the response
+- Cascade and parent_id are denormalized into bucket items (via `build_composite_create`) to avoid entity metadata lookup
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
 

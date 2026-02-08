@@ -25,6 +25,8 @@ from zae_limiter import (
 )
 from zae_limiter.exceptions import InvalidIdentifierError, InvalidNameError
 from zae_limiter.infra.sync_discovery import SyncInfrastructureDiscovery
+from zae_limiter.models import BucketState
+from zae_limiter.sync_repository_protocol import SpeculativeResult
 
 
 class TestRateLimiterEntities:
@@ -3314,3 +3316,988 @@ class TestBucketLimitSync:
         with pytest.raises(ClientError) as exc_info:
             sync_limiter.set_limits("user-6", [Limit.per_minute("rpm", 200)], resource="api")
         assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+
+
+class TestBucketReconciliation:
+    """Tests for eager bucket reconciliation on config changes (issue #327).
+
+    Verifies that set_limits() removes TTL, delete_limits() syncs bucket to
+    effective defaults, and stale limit attributes are removed.
+    """
+
+    def test_set_limits_removes_ttl_from_bucket(self, sync_limiter):
+        """set_limits() removes TTL from existing bucket that had TTL.
+
+        Transition: system defaults (TTL) → entity config (no TTL).
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire(entity_id="user-ttl", resource="api", consume={"rpm": 1}):
+            pass
+        item = sync_limiter._repository._get_item(pk_entity("user-ttl"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" in item
+        sync_limiter.set_limits("user-ttl", [Limit.per_minute("rpm", 200)], resource="api")
+        item = sync_limiter._repository._get_item(pk_entity("user-ttl"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" not in item
+        assert item["b_rpm_cp"] == 200000
+
+    def test_delete_limits_sets_ttl_and_syncs_to_defaults(self, sync_limiter):
+        """delete_limits() syncs bucket to resource defaults with TTL.
+
+        Transition: entity config (no TTL) → resource defaults (TTL).
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        sync_limiter.set_resource_defaults("api", [Limit.per_minute("rpm", 100)])
+        sync_limiter.set_limits("user-del", [Limit.per_minute("rpm", 500)], resource="api")
+        sync_limiter.invalidate_config_cache()
+        with sync_limiter.acquire(entity_id="user-del", resource="api", consume={"rpm": 1}):
+            pass
+        item = sync_limiter._repository._get_item(pk_entity("user-del"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" not in item
+        assert item["b_rpm_cp"] == 500000
+        sync_limiter.delete_limits("user-del", resource="api")
+        item = sync_limiter._repository._get_item(pk_entity("user-del"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" in item, "TTL should be set (now using defaults)"
+        assert item["b_rpm_cp"] == 100000, "Capacity should match resource defaults"
+
+    def test_delete_limits_removes_stale_attributes(self, sync_limiter):
+        """delete_limits() removes stale limit attributes from bucket.
+
+        Entity had [rpm, tpm], defaults have [rpm] only — tpm attrs removed.
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        sync_limiter.set_limits(
+            "user-stale",
+            [Limit.per_minute("rpm", 500), Limit.per_minute("tpm", 50000)],
+            resource="api",
+        )
+        sync_limiter.invalidate_config_cache()
+        with sync_limiter.acquire(
+            entity_id="user-stale", resource="api", consume={"rpm": 1, "tpm": 100}
+        ):
+            pass
+        item = sync_limiter._repository._get_item(pk_entity("user-stale"), sk_bucket("api"))
+        assert item is not None
+        assert "b_tpm_cp" in item, "tpm limit should exist in bucket"
+        sync_limiter.delete_limits("user-stale", resource="api")
+        item = sync_limiter._repository._get_item(pk_entity("user-stale"), sk_bucket("api"))
+        assert item is not None
+        assert "b_rpm_cp" in item, "rpm limit should still exist"
+        assert item["b_rpm_cp"] == 100000, "rpm should match system defaults"
+        assert "b_tpm_cp" not in item, "Stale tpm limit should be removed"
+        assert "b_tpm_tk" not in item, "Stale tpm tokens should be removed"
+        assert "b_tpm_tc" not in item, "Stale tpm counter should be removed"
+
+    def test_delete_limits_no_effective_defaults(self, sync_limiter):
+        """delete_limits() leaves bucket as-is when no fallback config exists."""
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        sync_limiter.set_limits("user-orphan", [Limit.per_minute("rpm", 100)], resource="api")
+        sync_limiter.invalidate_config_cache()
+        with sync_limiter.acquire(entity_id="user-orphan", resource="api", consume={"rpm": 1}):
+            pass
+        item_before = sync_limiter._repository._get_item(pk_entity("user-orphan"), sk_bucket("api"))
+        assert item_before is not None
+        sync_limiter.delete_limits("user-orphan", resource="api")
+        item_after = sync_limiter._repository._get_item(pk_entity("user-orphan"), sk_bucket("api"))
+        assert item_after is not None
+        assert item_after["b_rpm_cp"] == item_before["b_rpm_cp"]
+
+    def test_delete_limits_bucket_does_not_exist(self, sync_limiter):
+        """delete_limits() does not error when bucket doesn't exist."""
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        sync_limiter.set_limits("user-nobucket", [Limit.per_minute("rpm", 200)], resource="api")
+        sync_limiter.delete_limits("user-nobucket", resource="api")
+
+    def test_set_limits_evicts_config_cache(self, sync_limiter):
+        """set_limits() evicts entity from config cache."""
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire(entity_id="user-cache", resource="api", consume={"rpm": 1}):
+            pass
+        sync_limiter.set_limits("user-cache", [Limit.per_minute("rpm", 200)], resource="api")
+        assert ("user-cache", "api") not in sync_limiter._config_cache._entity_limits
+
+    def test_delete_limits_evicts_config_cache(self, sync_limiter):
+        """delete_limits() evicts stale entity config from cache."""
+        from zae_limiter.sync_config_cache import _NO_CONFIG
+
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        sync_limiter.set_limits("user-dcache", [Limit.per_minute("rpm", 200)], resource="api")
+        sync_limiter.invalidate_config_cache()
+        with sync_limiter.acquire(entity_id="user-dcache", resource="api", consume={"rpm": 1}):
+            pass
+        entry = sync_limiter._config_cache._entity_limits.get(("user-dcache", "api"))
+        assert entry is not None and entry.value is not _NO_CONFIG
+        sync_limiter.delete_limits("user-dcache", resource="api")
+        entry = sync_limiter._config_cache._entity_limits.get(("user-dcache", "api"))
+        assert entry is None or entry.value is _NO_CONFIG, (
+            "Cache should not contain stale entity limits after delete"
+        )
+
+
+class TestSpeculativeAcquire:
+    """Tests for speculative UpdateItem fast path (Issue #315)."""
+
+    def test_speculative_enabled_by_default(self, sync_limiter):
+        """speculative_writes defaults to True."""
+        assert sync_limiter._speculative_writes is True
+
+    def test_speculative_success_non_cascade(self, sync_limiter):
+        """Speculative write succeeds for non-cascade entity with sufficient tokens."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+            assert lease._initial_committed is True
+            assert len(lease.entries) > 0
+            assert lease.entries[0].consumed == 1
+            assert lease.entries[0]._initial_consumed == 1
+
+    def test_speculative_fallback_on_missing_bucket(self, sync_limiter):
+        """Falls back to slow path when bucket doesn't exist."""
+        sync_limiter.create_entity("entity-new")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-new", "gpt-4", {"rpm": 1}) as lease:
+            assert len(lease.entries) > 0
+
+    def test_speculative_fast_rejection(self, sync_limiter):
+        """Raises RateLimitExceeded immediately when refill won't help."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+                pass
+        assert len(exc_info.value.violations) >= 1
+
+    def test_speculative_fallback_when_refill_helps(self, sync_limiter):
+        """Falls back to slow path when refill would provide enough tokens."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 999}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+            assert len(lease.entries) > 0
+
+    def test_speculative_with_multi_limit(self, sync_limiter):
+        """Speculative works with multiple limits."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 200000)]
+        )
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 100}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 100}) as lease:
+            assert len(lease.entries) > 0
+
+    def test_speculative_rollback_on_exception(self, sync_limiter):
+        """Speculative lease rolls back on exception."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+
+        def acquire_and_raise(lim):
+            with lim.acquire("entity-1", "gpt-4", {"rpm": 10}):
+                raise ValueError("test error")
+
+        with pytest.raises(ValueError):
+            acquire_and_raise(sync_limiter)
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+    def test_speculative_cascade_both_succeed(self, sync_limiter):
+        """Speculative cascade succeeds for both child and parent."""
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+            entity_ids = {e.entity_id for e in lease.entries}
+            assert "child-1" in entity_ids
+            assert "parent-1" in entity_ids
+
+    def test_speculative_adjust_after_speculative(self, sync_limiter):
+        """Adjustments work correctly after speculative commit."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 10}) as lease:
+            lease.adjust(rpm=-5)
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+
+    def test_speculative_config_changed_fallback(self, sync_limiter):
+        """Falls back to slow path when limit is missing from bucket (config change)."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 1000), Limit.per_minute("tpm", 100000)]
+        )
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        old_bucket_rpm_only = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=50000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(success=False, old_buckets=[old_bucket_rpm_only])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_fails_compensate_and_fallback(self, sync_limiter):
+        """Cascade: parent fails, child compensated, falls back to slow path."""
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=500000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_missing_fallback(self, sync_limiter):
+        """Cascade: parent bucket missing, compensate child, slow path."""
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=None)
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_config_changed(self, sync_limiter):
+        """Cascade: parent config changed (limit missing), compensate child, slow path."""
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket_wrong_limit = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="tpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_wrong_limit])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_exhausted_raises(self, sync_limiter):
+        """Cascade: parent exhausted (refill won't help), raises RateLimitExceeded."""
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=9000,
+            last_refill_ms=now_ms,
+            capacity_milli=10000,
+            burst_milli=10000,
+            refill_amount_milli=10000,
+            refill_period_ms=60000,
+        )
+        parent_bucket_exhausted = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms,
+            capacity_milli=10000,
+            burst_milli=10000,
+            refill_amount_milli=10000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_exhausted])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
+                    pass
+            assert len(exc_info.value.violations) >= 1
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_refill_helps_no_compensate(self, sync_limiter):
+        """Cascade: parent fails with refill-would-help, parent-only slow path succeeds.
+
+        Child stays consumed (no compensation). Parent is acquired via slow path.
+        Saves 1 WCU (no compensation) + uses single-item write for parent only.
+        """
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 30000,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        original_write_each = sync_limiter._repository.write_each
+        call_count = 0
+        child_compensated = False
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        def mock_write_each(items):
+            nonlocal child_compensated
+            for item in items:
+                key = item.get("Update", {}).get("Key", {})
+                pk = key.get("PK", {}).get("S", "")
+                if "child-1" in pk:
+                    child_compensated = True
+            return original_write_each(items)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        sync_limiter._repository.write_each = mock_write_each
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+            assert not child_compensated, (
+                "Child should not be compensated when parent slow path succeeds"
+            )
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+            sync_limiter._repository.write_each = original_write_each
+
+    def test_speculative_cascade_parent_slow_path_fails_compensates(self, sync_limiter):
+        """Cascade: parent-only slow path fails → compensate child → full slow path.
+
+        ALL_OLD says refill WOULD help, but actual DDB parent is drained
+        (concurrent consumer). Parent-only try_consume fails, returns None,
+        child is compensated, then full _do_acquire also fails.
+        """
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 10)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=9000,
+            last_refill_ms=now_ms,
+            capacity_milli=10000,
+            burst_milli=10000,
+            refill_amount_milli=10000,
+            refill_period_ms=60000,
+        )
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60000,
+            capacity_milli=10000,
+            burst_milli=10000,
+            refill_amount_milli=10000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        with sync_limiter.acquire("parent-1", "gpt-4", {"rpm": 9}):
+            pass
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
+                    pass
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_only_bucket_missing(self, sync_limiter):
+        """Parent-only slow path returns None when parent bucket is missing.
+
+        Covers line 975: parent bucket missing for a limit → return None →
+        compensate child → full slow path.
+        """
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60000,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        original_fetch = sync_limiter._fetch_buckets
+        call_count = 0
+        fetch_call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        def mock_fetch_buckets(entity_ids, resource):
+            nonlocal fetch_call_count
+            fetch_call_count += 1
+            if fetch_call_count == 1:
+                return {}
+            return original_fetch(entity_ids, resource)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        sync_limiter._fetch_buckets = mock_fetch_buckets
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+            sync_limiter._fetch_buckets = original_fetch
+
+    def test_speculative_cascade_parent_only_commit_fails(self, sync_limiter):
+        """Parent-only slow path: _commit_initial raises → return None.
+
+        Covers lines 1037-1038: RateLimitExceeded from _commit_initial during
+        parent write (concurrent contention).
+        """
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60000,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        original_transact = sync_limiter._repository.transact_write
+        call_count = 0
+        transact_call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        def mock_transact_write(items):
+            nonlocal transact_call_count
+            transact_call_count += 1
+            if transact_call_count <= 2:
+                from botocore.exceptions import ClientError
+
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ConditionalCheckFailedException",
+                            "Message": "Condition not met",
+                        }
+                    },
+                    "TransactWriteItems",
+                )
+            return original_transact(items)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        sync_limiter._repository.transact_write = mock_transact_write
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+            sync_limiter._repository.transact_write = original_transact
+
+    def test_speculative_skips_zero_consume_entries(self, sync_limiter):
+        """Speculative path skips bucket entries with zero consume."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 200000)]
+        )
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1, "tpm": 100}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        rpm_bucket = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=99000,
+            last_refill_ms=now_ms,
+            capacity_milli=100000,
+            burst_milli=100000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        tpm_bucket = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="tpm",
+            tokens_milli=199900000,
+            last_refill_ms=now_ms,
+            capacity_milli=200000000,
+            burst_milli=200000000,
+            refill_amount_milli=200000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            return SpeculativeResult(
+                success=True, buckets=[rpm_bucket, tpm_bucket], cascade=False, parent_id=None
+            )
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+                limit_names = [e.limit.name for e in lease.entries]
+                assert "rpm" in limit_names
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_skips_zero_consume(self, sync_limiter):
+        """Cascade: parent entries with zero consume are skipped."""
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 200000)]
+        )
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1, "tpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_rpm = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=99000,
+            last_refill_ms=now_ms,
+            capacity_milli=100000,
+            burst_milli=100000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        parent_rpm = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=99000,
+            last_refill_ms=now_ms,
+            capacity_milli=100000,
+            burst_milli=100000,
+            refill_amount_milli=100000,
+            refill_period_ms=60000,
+        )
+        parent_tpm = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="tpm",
+            tokens_milli=199000000,
+            last_refill_ms=now_ms,
+            capacity_milli=200000000,
+            burst_milli=200000000,
+            refill_amount_milli=200000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_rpm], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(
+                    success=True, buckets=[parent_rpm, parent_tpm], cascade=False, parent_id=None
+                )
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                entity_ids = {e.entity_id for e in lease.entries}
+                assert "child-1" in entity_ids
+                assert "parent-1" in entity_ids
+                parent_entries = [e for e in lease.entries if e.entity_id == "parent-1"]
+                assert all(e.limit.name == "rpm" for e in parent_entries)
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_child_refill_helps_fallback(self, sync_limiter):
+        """Falls back to slow path when child refill would satisfy the request."""
+        sync_limiter.create_entity("entity-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
+            pass
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        old_bucket = BucketState(
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 30000,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(success=False, old_buckets=[old_bucket])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+
+    def test_speculative_cascade_parent_error_compensates_child_tokens(self, sync_limiter):
+        """Parent-only slow path error must restore child tokens in DynamoDB.
+
+        Regression test: before the fix, _try_parent_only_acquire exceptions
+        propagated without compensating the child's speculative consumption,
+        permanently leaking tokens from the child bucket.
+
+        This test verifies the actual DynamoDB bucket balance is restored.
+        """
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        buckets_before = sync_limiter._fetch_buckets(["child-1"], "gpt-4")
+        child_key = ("child-1", "gpt-4", "rpm")
+        tokens_before = buckets_before[child_key].tokens_milli
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=tokens_before - 10000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60000,
+            capacity_milli=1000000,
+            burst_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        original_fetch = sync_limiter._fetch_buckets
+        spec_call_count = 0
+        fetch_call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal spec_call_count
+            spec_call_count += 1
+            if spec_call_count == 1:
+                original_speculative(entity_id, resource, consume, ttl_seconds)
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if spec_call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        def mock_fetch_raising(entity_ids, resource):
+            nonlocal fetch_call_count
+            fetch_call_count += 1
+            if fetch_call_count == 1 and "parent-1" in entity_ids:
+                raise RuntimeError("DynamoDB service unavailable")
+            return original_fetch(entity_ids, resource)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        sync_limiter._fetch_buckets = mock_fetch_raising
+        try:
+            with pytest.raises(RateLimiterUnavailable, match="DynamoDB service unavailable"):
+                with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
+                    pass
+            buckets_after = original_fetch(["child-1"], "gpt-4")
+            tokens_after = buckets_after[child_key].tokens_milli
+            assert tokens_after == tokens_before, (
+                f"Child tokens leaked! Before={tokens_before}, after={tokens_after}. Expected compensation to restore tokens."
+            )
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+            sync_limiter._fetch_buckets = original_fetch

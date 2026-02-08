@@ -320,6 +320,17 @@ class Limit:
             refill_period_seconds=data["refill_period_seconds"],
         )
 
+    @classmethod
+    def from_bucket_state(cls, state: "BucketState") -> "Limit":
+        """Reconstruct a Limit from BucketState fields."""
+        return cls.custom(
+            name=state.limit_name,
+            capacity=state.capacity_milli // 1000,
+            burst=state.burst_milli // 1000,
+            refill_amount=state.refill_amount_milli // 1000,
+            refill_period_seconds=state.refill_period_ms // 1000,
+        )
+
 
 @dataclass
 class Entity:

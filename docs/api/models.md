@@ -128,6 +128,15 @@ Data models for rate limit configuration and status.
       members_order: source
       heading_level: 3
 
+## SpeculativeResult
+
+::: zae_limiter.repository_protocol.SpeculativeResult
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
 ## CacheStats
 
 ::: zae_limiter.config_cache.CacheStats

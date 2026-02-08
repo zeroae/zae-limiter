@@ -73,6 +73,18 @@ class SyncConfigCache:
         """Create a new cache entry with TTL."""
         return CacheEntry(value=value, expires_at=time.time() + self.ttl_seconds)
 
+    def evict_entity(self, entity_id: str, resource: str) -> None:
+        """Evict a single entity+resource config from cache (issue #327).
+
+        Called after set_limits() or delete_limits() to ensure the next
+        config resolution reads fresh data from DynamoDB.
+
+        Args:
+            entity_id: Entity ID to evict
+            resource: Resource name to evict
+        """
+        self._entity_limits.pop((entity_id, resource), None)
+
     def get_system_defaults(
         self, fetch_fn: Callable[[], tuple[list["Limit"], "OnUnavailableAction | None"]]
     ) -> tuple[list["Limit"], "OnUnavailableAction | None"]:

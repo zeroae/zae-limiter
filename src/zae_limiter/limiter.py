@@ -14,9 +14,11 @@ if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
 
 from .bucket import (
+    build_limit_status,
     calculate_available,
     calculate_time_until_available,
     try_consume,
+    would_refill_satisfy,
 )
 from .config_cache import CacheStats, ConfigCache, ConfigSource
 from .exceptions import (
@@ -104,6 +106,7 @@ class RateLimiter:
         skip_version_check: bool = False,
         config_cache_ttl: int = 60,
         bucket_ttl_refill_multiplier: int = 7,
+        speculative_writes: bool = True,
     ) -> None:
         """
         Initialize the rate limiter.
@@ -127,6 +130,9 @@ class RateLimiter:
             bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
                 TTL = max_refill_period_seconds × multiplier. Default: 7.
                 Set to 0 to disable TTL for buckets using default limits.
+            speculative_writes: Enable speculative UpdateItem fast path.
+                When True, acquire() tries a speculative write first, falling
+                back to the full read-write path only when needed.
 
         Raises:
             ValueError: If both repository and name/region/endpoint_url/stack_options
@@ -185,6 +191,9 @@ class RateLimiter:
 
         # Bucket TTL multiplier for default limit buckets (issue #271)
         self._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
+
+        # Speculative writes fast path (issue #315)
+        self._speculative_writes = speculative_writes
 
     @property
     def name(self) -> str:
@@ -717,12 +726,24 @@ class RateLimiter:
 
         # Acquire the lease (this may fail due to rate limit or infrastructure)
         try:
-            lease = await self._do_acquire(
-                entity_id=entity_id,
-                resource=resource,
-                limits_override=limits,
-                consume=consume,
-            )
+            lease: Lease | None = None
+
+            # Try speculative fast path first (issue #315)
+            if self._speculative_writes:
+                lease = await self._try_speculative_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    consume=consume,
+                )
+
+            # Fall back to slow path if speculative didn't succeed
+            if lease is None:
+                lease = await self._do_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limits_override=limits,
+                    consume=consume,
+                )
         except (RateLimitExceeded, ValidationError):
             raise
         except Exception as e:
@@ -740,6 +761,7 @@ class RateLimiter:
                 ) from e
 
         # Write initial consumption to DynamoDB before yielding (Issue #309)
+        # No-op for speculative leases (already committed by UpdateItem)
         await lease._commit_initial()
 
         # Lease committed - manage the context
@@ -749,6 +771,282 @@ class RateLimiter:
         except Exception:
             await lease._rollback()
             raise
+
+    async def _try_speculative_acquire(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+    ) -> Lease | None:
+        """Try the speculative fast path for acquire (issue #315).
+
+        Issues a speculative UpdateItem with condition check. On success,
+        returns a pre-committed Lease. On failure, checks if refill would
+        help and either raises RateLimitExceeded (fast rejection) or returns
+        None to signal fallback to the slow path.
+
+        Returns:
+            Lease if speculative write succeeded (already committed).
+            None if slow path is needed (refill would help, bucket missing,
+            or config changed).
+
+        Raises:
+            RateLimitExceeded: If the bucket is truly exhausted (refill
+                wouldn't help). Saves 1 RCU vs the slow path.
+        """
+        now_ms = int(time.time() * 1000)
+
+        # Speculative write for child entity
+        child_result = await self._repository.speculative_consume(
+            entity_id=entity_id,
+            resource=resource,
+            consume=consume,
+        )
+
+        if not child_result.success:
+            # Check if refill would help
+            if child_result.old_buckets is None:
+                # Bucket missing (first acquire) — slow path creates it
+                return None
+
+            # Check requested limits exist in the bucket
+            bucket_names = {b.limit_name for b in child_result.old_buckets}
+            if not all(name in bucket_names for name in consume):
+                # Config changed (new limit not in bucket) — slow path resolves
+                return None
+
+            would_help, statuses = would_refill_satisfy(child_result.old_buckets, consume, now_ms)
+            if not would_help:
+                raise RateLimitExceeded(statuses)
+            # Refill would help — fall back to slow path
+            return None
+
+        # Child speculative succeeded — build entries from ALL_NEW
+        entries: list[LeaseEntry] = []
+        for state in child_result.buckets:
+            amount = consume.get(state.limit_name, 0)
+            if amount == 0:
+                continue
+            limit = Limit.from_bucket_state(state)
+            entries.append(
+                LeaseEntry(
+                    entity_id=state.entity_id,
+                    resource=state.resource,
+                    limit=limit,
+                    state=state,
+                    consumed=amount,
+                    _cascade=child_result.cascade,
+                    _parent_id=child_result.parent_id,
+                )
+            )
+
+        # Handle cascade
+        if child_result.cascade and child_result.parent_id:
+            parent_id = child_result.parent_id
+            parent_result = await self._repository.speculative_consume(
+                entity_id=parent_id,
+                resource=resource,
+                consume=consume,
+            )
+
+            if parent_result.success:
+                # Parent succeeded — add parent entries
+                for state in parent_result.buckets:
+                    amount = consume.get(state.limit_name, 0)
+                    if amount == 0:
+                        continue
+                    limit = Limit.from_bucket_state(state)
+                    entries.append(
+                        LeaseEntry(
+                            entity_id=state.entity_id,
+                            resource=state.resource,
+                            limit=limit,
+                            state=state,
+                            consumed=amount,
+                        )
+                    )
+            else:
+                # Parent failed — defer child compensation (issue #315 optimization).
+                # Check parent ALL_OLD before compensating to avoid unnecessary
+                # compensation + re-read + transactional write when parent refill
+                # would succeed.
+
+                if parent_result.old_buckets is None:
+                    # Parent bucket missing — must compensate and full slow path
+                    await self._compensate_child(entity_id, resource, consume)
+                    return None
+
+                parent_names = {b.limit_name for b in parent_result.old_buckets}
+                if not all(name in parent_names for name in consume):
+                    # Config changed — must compensate and full slow path
+                    await self._compensate_child(entity_id, resource, consume)
+                    return None
+
+                would_help, parent_statuses = would_refill_satisfy(
+                    parent_result.old_buckets, consume, now_ms
+                )
+                if not would_help:
+                    # Parent truly exhausted — compensate child and fast reject
+                    await self._compensate_child(entity_id, resource, consume)
+                    child_statuses = [
+                        build_limit_status(
+                            entity_id=s.entity_id,
+                            resource=s.resource,
+                            limit=Limit.from_bucket_state(s),
+                            state=s,
+                            requested=consume.get(s.limit_name, 0),
+                            now_ms=now_ms,
+                        )
+                        for s in child_result.old_buckets or child_result.buckets
+                    ]
+                    raise RateLimitExceeded(child_statuses + parent_statuses)
+
+                # Refill would help — try parent-only slow path (keep child consumed)
+                try:
+                    parent_lease = await self._try_parent_only_acquire(
+                        parent_id, resource, consume, entries
+                    )
+                except Exception:
+                    # Any failure — compensate child before propagating
+                    await self._compensate_child(entity_id, resource, consume)
+                    raise
+
+                if parent_lease is not None:
+                    return parent_lease
+
+                # Parent-only slow path failed — compensate child and full slow path
+                await self._compensate_child(entity_id, resource, consume)
+                return None
+
+        # Build pre-committed lease
+        lease = Lease(
+            repository=self._repository,
+            entries=entries,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
+        )
+        lease._initial_committed = True
+        for entry in entries:
+            entry._initial_consumed = entry.consumed
+        return lease
+
+    async def _compensate_child(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+    ) -> None:
+        """Compensate a speculatively consumed child by adding tokens back."""
+        child_deltas = {name: -(amount * 1000) for name, amount in consume.items()}
+        compensate_item = self._repository.build_composite_adjust(
+            entity_id=entity_id,
+            resource=resource,
+            deltas=child_deltas,
+        )
+        await self._repository.write_each([compensate_item])
+
+    async def _try_parent_only_acquire(
+        self,
+        parent_id: str,
+        resource: str,
+        consume: dict[str, int],
+        child_entries: list[LeaseEntry],
+    ) -> Lease | None:
+        """Attempt parent-only slow path after child speculative succeeded.
+
+        Reads parent buckets, resolves limits, does refill + try_consume,
+        and writes parent via single-item UpdateItem. Returns a Lease combining
+        child's speculative entries with parent's slow-path entries.
+
+        Returns None if parent acquire fails (caller should compensate child).
+        """
+        now_ms = int(time.time() * 1000)
+
+        # Resolve parent limits
+        parent_limits, parent_config_source = await self._resolve_limits(parent_id, resource, None)
+
+        # Fetch parent buckets
+        parent_buckets = await self._fetch_buckets([parent_id], resource)
+
+        # Process parent buckets: refill + try_consume
+        parent_entries: list[LeaseEntry] = []
+        statuses: list[LimitStatus] = []
+        has_custom_config = parent_config_source == "entity"
+
+        for limit in parent_limits:
+            bucket_key = (parent_id, resource, limit.name)
+            existing = parent_buckets.get(bucket_key)
+            if existing is None:
+                # Parent bucket missing for this limit — can't proceed
+                return None
+
+            original_tk = existing.tokens_milli
+            original_rf = existing.last_refill_ms
+
+            amount = consume.get(limit.name, 0)
+            result = try_consume(existing, amount, now_ms)
+
+            status = LimitStatus(
+                entity_id=parent_id,
+                resource=resource,
+                limit_name=limit.name,
+                limit=limit,
+                available=result.available,
+                requested=amount,
+                exceeded=not result.success,
+                retry_after_seconds=result.retry_after_seconds,
+            )
+            statuses.append(status)
+
+            if result.success:
+                existing.tokens_milli = result.new_tokens_milli
+                existing.last_refill_ms = result.new_last_refill_ms
+                if existing.total_consumed_milli is not None and amount > 0:
+                    existing.total_consumed_milli += amount * 1000
+
+            parent_entries.append(
+                LeaseEntry(
+                    entity_id=parent_id,
+                    resource=resource,
+                    limit=limit,
+                    state=existing,
+                    consumed=amount if result.success else 0,
+                    _original_tokens_milli=original_tk,
+                    _original_rf_ms=original_rf,
+                    _has_custom_config=has_custom_config,
+                )
+            )
+
+        # Check for violations
+        violations = [s for s in statuses if s.exceeded]
+        if violations:
+            return None
+
+        # Write parent only via _commit_initial on a parent-only lease
+        all_entries = list(child_entries) + parent_entries
+        lease = Lease(
+            repository=self._repository,
+            entries=all_entries,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
+        )
+        # Mark child entries as already committed (speculative write succeeded)
+        for entry in child_entries:
+            entry._initial_consumed = entry.consumed
+        # Commit only parent entries
+        parent_lease = Lease(
+            repository=self._repository,
+            entries=parent_entries,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
+        )
+        try:
+            await parent_lease._commit_initial()
+        except RateLimitExceeded:
+            return None
+
+        # Mark the full lease as committed
+        lease._initial_committed = True
+        for entry in parent_entries:
+            entry._initial_consumed = entry.consumed
+        return lease
 
     async def _do_acquire(
         self,
@@ -855,6 +1153,8 @@ class RateLimiter:
                         _original_rf_ms=original_rf,
                         _is_new=is_new and not any_existing,
                         _has_custom_config=has_custom_config,
+                        _cascade=entity.cascade if entity and eid == entity_id else False,
+                        _parent_id=entity.parent_id if entity and eid == entity_id else None,
                     )
                 )
 
@@ -1200,6 +1500,8 @@ class RateLimiter:
         """
         await self._ensure_initialized()
         await self._repository.set_limits(entity_id, limits, resource, principal=principal)
+        # Evict entity from config cache so next acquire() reads fresh config
+        self._config_cache.evict_entity(entity_id, resource)
 
     async def get_limits(
         self,
@@ -1228,13 +1530,46 @@ class RateLimiter:
         """
         Delete stored limit configs for an entity.
 
+        Reconciles existing buckets to fallback config (resource/system
+        defaults) by syncing limit fields, setting TTL, and removing
+        stale limit attributes (issue #327).
+
         Args:
             entity_id: Entity to delete limits for
             resource: Resource to delete limits for
             principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
+
+        # Capture old entity limits before deletion (for stale detection)
+        old_limits = await self._repository.get_limits(entity_id, resource)
+
+        # Delete entity config
         await self._repository.delete_limits(entity_id, resource, principal=principal)
+
+        # Evict cache so resolve sees the deletion
+        self._config_cache.evict_entity(entity_id, resource)
+
+        # Resolve effective fallback limits (entity config gone → resource/system)
+        try:
+            effective_limits, _ = await self._resolve_limits(
+                entity_id, resource, limits_override=None
+            )
+        except ValidationError:
+            # No fallback config — bucket left as-is (acceptance criterion #11)
+            return
+
+        # Compute stale limit names (in old entity config but not in defaults)
+        stale_names = {lim.name for lim in old_limits} - {lim.name for lim in effective_limits}
+
+        # Reconcile bucket to effective defaults
+        await self._repository.reconcile_bucket_to_defaults(
+            entity_id,
+            resource,
+            effective_limits,
+            self._bucket_ttl_refill_multiplier,
+            stale_limit_names=stale_names if stale_names else None,
+        )
 
     async def list_entities_with_custom_limits(
         self,

@@ -2016,3 +2016,149 @@ class TestRepositoryDeserializationEdgeCases:
         assert bucket is not None
         assert bucket.total_consumed_milli is not None
         assert bucket.total_consumed_milli == 5000
+
+
+class TestSpeculativeConsume:
+    """Tests for speculative_consume method."""
+
+    def test_speculative_success(self, repo):
+        """Speculative consume succeeds when tokens available."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 10})
+        assert result.success is True
+        assert len(result.buckets) == 1
+        assert result.buckets[0].limit_name == "rpm"
+
+    def test_speculative_failure_insufficient_tokens(self, repo):
+        """Speculative consume fails when tokens insufficient."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 10)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 10})
+        assert result.success is True
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 5})
+        assert result.success is False
+
+    def test_speculative_missing_item(self, repo):
+        """Speculative consume fails when item doesn't exist."""
+        result = repo.speculative_consume("nonexistent", "gpt-4", {"rpm": 1})
+        assert result.success is False
+        assert result.old_buckets is None
+
+    def test_speculative_with_ttl(self, repo):
+        """Speculative consume handles TTL correctly."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 10}, ttl_seconds=3600)
+        assert result.success is True
+        assert len(result.buckets) == 1
+
+    def test_speculative_cascade_parent_id(self, repo):
+        """Speculative consume returns cascade/parent_id from item."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create(
+            "e1", "gpt-4", [state], now_ms, cascade=True, parent_id="parent-1"
+        )
+        repo.transact_write([put_item])
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is True
+        assert result.cascade is True
+        assert result.parent_id == "parent-1"
+
+    def test_speculative_non_condition_error_reraises(self, repo):
+        """Non-ConditionalCheckFailed errors are re-raised."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        client = repo._get_client()
+        original = client.update_item
+
+        def failing_update(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "InternalServerError", "Message": "boom"}}, "UpdateItem"
+            )
+
+        client.update_item = failing_update
+        try:
+            with pytest.raises(ClientError) as exc_info:
+                repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+            assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+        finally:
+            client.update_item = original
+
+
+class TestCompositeNormalGuard:
+    """Tests for tk >= floor guard in build_composite_normal."""
+
+    def test_normal_write_rejects_when_speculative_drained_tokens(self, repo):
+        """build_composite_normal rejects when concurrent speculative drained tk.
+
+        Sequence:
+        1. Create bucket: tk=100_000 (100 rpm), rf=T1
+        2. Read bucket (simulating slow path read): see tk=100_000, rf=T1
+        3. Concurrent speculative_consume: ADD tk:-80_000 → tk=20_000, rf unchanged
+        4. build_composite_normal with expected_rf=T1, consume=50_000, refill=0
+           → rf lock passes (T1==T1), but tk guard catches it:
+             tk(20_000) < floor(50_000) → ConditionalCheckFailedException
+        """
+        now_ms = int(time.time() * 1000)
+        limit = Limit.per_minute("rpm", 100)
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        buckets = repo.get_buckets("e1", resource="gpt-4")
+        assert len(buckets) == 1
+        original_rf = buckets[0].last_refill_ms
+        spec_result = repo.speculative_consume("e1", "gpt-4", {"rpm": 80})
+        assert spec_result.success is True
+        normal_item = repo.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpm": 50000},
+            refill_amounts={"rpm": 0},
+            now_ms=now_ms,
+            expected_rf=original_rf,
+        )
+        with pytest.raises(ClientError) as exc_info:
+            repo.transact_write([normal_item])
+        assert "ConditionalCheckFailedException" in str(exc_info.value)
+
+    def test_normal_write_allows_when_refill_covers_consumption(self, repo):
+        """build_composite_normal allows when refill >= consumed (net positive).
+
+        When refill >= consumed, the tk floor is 0 and the guard is a no-op.
+        """
+        now_ms = int(time.time() * 1000)
+        limit = Limit.per_minute("rpm", 100)
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms)
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        repo.transact_write([put_item])
+        buckets = repo.get_buckets("e1", resource="gpt-4")
+        original_rf = buckets[0].last_refill_ms
+        spec_result = repo.speculative_consume("e1", "gpt-4", {"rpm": 80})
+        assert spec_result.success is True
+        normal_item = repo.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpm": 10000},
+            refill_amounts={"rpm": 50000},
+            now_ms=now_ms,
+            expected_rf=original_rf,
+        )
+        repo.transact_write([normal_item])
+        buckets_after = repo.get_buckets("e1", resource="gpt-4")
+        rpm_bucket = [b for b in buckets_after if b.limit_name == "rpm"][0]
+        assert rpm_bucket.tokens_milli == 60000

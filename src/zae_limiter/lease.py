@@ -33,6 +33,9 @@ class LeaseEntry:
     _has_custom_config: bool = False  # True if entity has custom limits (no TTL)
     # Write-on-enter tracking (Issue #309)
     _initial_consumed: int = 0  # consumption written to DynamoDB on enter
+    # Denormalized entity fields for speculative writes (Issue #315)
+    _cascade: bool = False
+    _parent_id: str | None = None
 
 
 @dataclass
@@ -221,6 +224,7 @@ class Lease:
                 )
 
             if is_new:
+                first_entry = group_entries[0]
                 items.append(
                     repo.build_composite_create(
                         entity_id=entity_id,
@@ -228,6 +232,8 @@ class Lease:
                         states=[e.state for e in group_entries],
                         now_ms=now_ms,
                         ttl_seconds=ttl_seconds if ttl_seconds != 0 else None,
+                        cascade=first_entry._cascade,
+                        parent_id=first_entry._parent_id,
                     )
                 )
             else:

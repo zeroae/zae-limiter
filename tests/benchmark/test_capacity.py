@@ -409,12 +409,15 @@ class TestCapacityConsumption:
     def test_single_entity_uses_single_item_api(self, sync_limiter, capacity_counter):
         """Verify: single-item optimization uses correct API per path (issue #313).
 
-        - Non-cascade (1 item) → PutItem or UpdateItem (1 WCU)
-        - Cascade (2 items) → TransactWriteItems (2x WCU for atomicity)
+        With speculative writes (default-on, issue #315):
+        - First acquire: speculative UpdateItem fails (missing bucket) → PutItem fallback
+        - Second acquire: speculative UpdateItem succeeds (pre-committed, 0 RCU)
+        - Cascade first acquire: speculative UpdateItem fails → TransactWriteItems fallback
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
-        # --- Non-cascade: first acquire creates bucket via PutItem ---
+        # --- Non-cascade: first acquire ---
+        # Speculative UpdateItem fails (bucket missing) → fallback creates via PutItem
         with capacity_counter.counting():
             with sync_limiter.acquire(
                 entity_id="single-api-test",
@@ -424,13 +427,14 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        assert capacity_counter.put_item == 1, "First acquire should use PutItem"
-        assert capacity_counter.update_item == 0, "First acquire should not use UpdateItem"
+        assert capacity_counter.put_item == 1, "Fallback should create bucket via PutItem"
+        assert capacity_counter.update_item == 1, "Speculative UpdateItem attempted before fallback"
         assert len(capacity_counter.transact_write_items) == 0, (
             "Single-item should not use TransactWriteItems"
         )
 
-        # --- Non-cascade: second acquire updates bucket via UpdateItem ---
+        # --- Non-cascade: second acquire ---
+        # Speculative UpdateItem succeeds (pre-committed, no read needed)
         capacity_counter.reset()
 
         with capacity_counter.counting():
@@ -442,13 +446,14 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        assert capacity_counter.update_item == 1, "Second acquire should use UpdateItem"
+        assert capacity_counter.update_item == 1, "Speculative UpdateItem succeeds (pre-committed)"
         assert capacity_counter.put_item == 0, "Second acquire should not use PutItem"
         assert len(capacity_counter.transact_write_items) == 0, (
             "Single-item should not use TransactWriteItems"
         )
 
-        # --- Cascade: 2 items → must use TransactWriteItems ---
+        # --- Cascade: first acquire ---
+        # Speculative UpdateItem fails (child bucket missing) → TransactWriteItems fallback
         sync_limiter.create_entity("single-api-parent", name="Parent")
         sync_limiter.create_entity(
             "single-api-child", name="Child", parent_id="single-api-parent", cascade=True
@@ -465,19 +470,21 @@ class TestCapacityConsumption:
                 pass
 
         assert len(capacity_counter.transact_write_items) == 1, (
-            "Cascade should use TransactWriteItems"
+            "Cascade fallback should use TransactWriteItems"
         )
         assert capacity_counter.transact_write_items[0] == 2, (
             "Cascade should write 2 items (child + parent)"
         )
-        assert capacity_counter.put_item == 0, "Cascade should not use PutItem"
-        assert capacity_counter.update_item == 0, "Cascade should not use UpdateItem"
+        assert capacity_counter.update_item == 1, (
+            "Speculative UpdateItem attempted for child before fallback"
+        )
 
     def test_adjust_uses_write_each(self, sync_limiter, capacity_counter):
         """Verify: adjust() uses write_each (independent UpdateItem calls).
 
-        Single entity: acquire + adjust → 1 UpdateItem (write_each dispatches)
-        Cascade: acquire + adjust → 2 UpdateItem, 0 TransactWriteItems
+        With speculative writes (default-on, issue #315):
+        - Single entity: speculative UpdateItem (1) + adjust write_each (1) = 2 UpdateItem
+        - Cascade: speculative child+parent (2 UpdateItem) + adjust write_each (2) = 4 UpdateItem
 
         write_each avoids TransactWriteItems for unconditional ADD adjustments,
         saving WCU cost (1 WCU per item vs 2 WCU per item in transactions).
@@ -504,10 +511,9 @@ class TestCapacityConsumption:
             ) as lease:
                 lease.adjust(rpm=5)
 
-        # Initial commit uses single-item API (UpdateItem for existing bucket)
-        # Adjustment uses write_each → UpdateItem
+        # Speculative UpdateItem (pre-committed) + adjustment write_each → UpdateItem
         assert capacity_counter.update_item == 2, (
-            "Should have 2 UpdateItem calls (initial commit + adjustment)"
+            "Should have 2 UpdateItem calls (speculative commit + adjustment)"
         )
         assert len(capacity_counter.transact_write_items) == 0, (
             "Adjustment should not use TransactWriteItems"
@@ -539,14 +545,113 @@ class TestCapacityConsumption:
             ) as lease:
                 lease.adjust(rpm=5)
 
-        # Initial commit: TransactWriteItems with 2 items (child + parent, atomic)
+        # Speculative: child UpdateItem (1) + parent UpdateItem (1) = 2
         # Adjustment: write_each → 2 independent UpdateItem calls
-        assert capacity_counter.update_item == 2, (
-            "Adjustment should dispatch 2 independent UpdateItem calls"
+        assert capacity_counter.update_item == 4, (
+            "Should have 4 UpdateItem calls (2 speculative + 2 adjustment)"
         )
-        assert len(capacity_counter.transact_write_items) == 1, (
-            "Only initial commit should use TransactWriteItems"
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Speculative path avoids TransactWriteItems"
         )
-        assert capacity_counter.transact_write_items[0] == 2, (
-            "Initial commit should write 2 items (child + parent)"
+
+
+class TestSpeculativeCapacity:
+    """Verify DynamoDB capacity for speculative UpdateItem path (issue #315).
+
+    Speculative acquire skips the BatchGetItem read round trip by attempting
+    a conditional UpdateItem directly. On success, saves 1 RCU (0 reads).
+    On failure with exhausted bucket, raises immediately (0 RCU, 0 WCU).
+    """
+
+    def test_speculative_success_non_cascade(self, sync_limiter, capacity_counter):
+        """Verify: speculative acquire with pre-warmed bucket uses 0 RCU for bucket reads.
+
+        Expected calls (speculative path):
+        - GetItem calls (version check + limit resolution)
+        - 0 BatchGetItem (no bucket read — this is the savings!)
+        - 1 UpdateItem (speculative consume with condition)
+        - 0 PutItem, 0 TransactWriteItems
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Pre-warm: normal path creates the bucket
+        with sync_limiter.acquire(
+            entity_id="spec-success",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Enable speculative writes
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="spec-success",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        # Key assertion: no BatchGetItem (speculative skips bucket read)
+        assert len(capacity_counter.batch_get_item) == 0, (
+            "Speculative path should not read buckets via BatchGetItem"
         )
+        # Single UpdateItem for speculative consume
+        assert capacity_counter.update_item == 1, (
+            "Should have exactly 1 UpdateItem (speculative consume)"
+        )
+        assert capacity_counter.put_item == 0, "Speculative should not use PutItem"
+        assert len(capacity_counter.transact_write_items) == 0, (
+            "Speculative should not use TransactWriteItems"
+        )
+
+    def test_speculative_fast_rejection_zero_rcu(self, sync_limiter, capacity_counter):
+        """Verify: fast rejection on exhausted bucket uses 0 RCU.
+
+        When speculative UpdateItem fails and refill won't help, we raise
+        RateLimitExceeded immediately using ALL_OLD data — no read round trip.
+
+        Expected calls:
+        - GetItem calls (version check + limit resolution)
+        - 1 UpdateItem (condition fails, but API call still counted)
+        - 0 BatchGetItem (no fallback to slow path)
+        """
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limits = [Limit.per_minute("rpm", 100)]
+
+        # Pre-warm and exhaust the bucket
+        with sync_limiter.acquire(
+            entity_id="spec-reject",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 100},
+        ):
+            pass
+
+        # Enable speculative writes
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire(
+                    entity_id="spec-reject",
+                    resource="api",
+                    limits=limits,
+                    consume={"rpm": 50},
+                ):
+                    pass
+
+        # Key assertion: no BatchGetItem (fast rejection, no slow path)
+        assert len(capacity_counter.batch_get_item) == 0, (
+            "Fast rejection should not fall back to BatchGetItem"
+        )
+        # The failed UpdateItem call is still counted
+        assert capacity_counter.update_item == 1, "Should have 1 UpdateItem call (condition failed)"
+        assert capacity_counter.put_item == 0, "Should not use PutItem"
+        assert len(capacity_counter.transact_write_items) == 0, "Should not use TransactWriteItems"

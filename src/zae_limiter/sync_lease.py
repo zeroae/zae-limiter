@@ -35,6 +35,8 @@ class LeaseEntry:
     _is_new: bool = False
     _has_custom_config: bool = False
     _initial_consumed: int = 0
+    _cascade: bool = False
+    _parent_id: str | None = None
 
 
 @dataclass
@@ -195,6 +197,7 @@ class SyncLease:
                     limits, self.bucket_ttl_refill_multiplier
                 )
             if is_new:
+                first_entry = group_entries[0]
                 items.append(
                     repo.build_composite_create(
                         entity_id=entity_id,
@@ -202,6 +205,8 @@ class SyncLease:
                         states=[e.state for e in group_entries],
                         now_ms=now_ms,
                         ttl_seconds=ttl_seconds if ttl_seconds != 0 else None,
+                        cascade=first_entry._cascade,
+                        parent_id=first_entry._parent_id,
                     )
                 )
             else:
