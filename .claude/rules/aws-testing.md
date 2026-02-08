@@ -34,7 +34,7 @@ The PowerUserAccess profile lacks `iam:CreateRole` and `iam:CreatePolicy` by def
 
 | Mistake | Symptom | Fix |
 |---------|---------|-----|
-| Missing `--policy-name-format` | `iam:CreatePolicy` denied for policies like `stress-target-acq` | Add `--policy-name-format "PowerUserPB-{}"` |
+| Missing `--policy-name-format` | `iam:CreatePolicy` denied for policies like `load-test-acq` | Add `--policy-name-format "PowerUserPB-{}"` |
 | Using `--no-iam` | Load stack fails: missing `AcquireOnlyPolicyArn`, `FullAccessPolicyArn` outputs | Use the three flags above instead |
 | Using `--no-aggregator` alone | Works for limiter stack, but load stack still needs IAM policy ARNs | Use three flags + `--no-aggregator` only if aggregator is truly not needed |
 
@@ -43,14 +43,14 @@ The PowerUserAccess profile lacks `iam:CreateRole` and `iam:CreatePolicy` by def
 ```bash
 # With aggregator (full stack)
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter deploy \
-  --name stress-target --region us-east-1 \
+  --name load-test --region us-east-1 \
   --permission-boundary "arn:aws:iam::aws:policy/PowerUserAccess" \
   --role-name-format "PowerUserPB-{}" \
   --policy-name-format "PowerUserPB-{}"
 
 # Without aggregator (benchmark-only, no Lambda needed)
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter deploy \
-  --name stress-target --region us-east-1 \
+  --name load-test --region us-east-1 \
   --permission-boundary "arn:aws:iam::aws:policy/PowerUserAccess" \
   --role-name-format "PowerUserPB-{}" \
   --policy-name-format "PowerUserPB-{}" \
@@ -63,7 +63,7 @@ The load stack requires `AcquireOnlyPolicyArn` and `FullAccessPolicyArn` outputs
 
 ```bash
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load deploy \
-  --name stress-target --region us-east-1 \
+  --name load-test --region us-east-1 \
   --vpc-id vpc-09fa0359f30c6efe4 \
   --subnet-ids "subnet-0441a9342c2d605cf,subnet-0d607c058fe28230e" \
   -C examples/locust/
@@ -76,6 +76,6 @@ The load deploy inherits `PermissionBoundary` and `RoleNameFormat` from the limi
 ```bash
 # Lambda mode (single invocation, simplest)
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load benchmark \
-  --name stress-target --region us-east-1 \
+  --name load-test --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 ```
