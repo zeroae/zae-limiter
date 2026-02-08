@@ -4061,10 +4061,6 @@ class TestLeaseCommitTTL:
         item = await limiter._repository._get_item(pk_entity("nonexistent-user"), sk_bucket("api"))
         assert item is None
 
-    @pytest.mark.xfail(
-        reason="Speculative path doesn't reconcile TTL on config change (#327)",
-        strict=True,
-    )
     async def test_commit_removes_ttl_for_entity_config(self, limiter):
         """Lease._commit() removes TTL when entity has custom limits."""
         # First set system defaults and create a bucket with TTL
@@ -4220,10 +4216,6 @@ class TestLeaseCommitTTL:
                 assert item is not None
                 assert "ttl" not in item
 
-    @pytest.mark.xfail(
-        reason="Speculative path doesn't reconcile TTL on config change (#327)",
-        strict=True,
-    )
     async def test_commit_sets_ttl_after_deleting_entity_config(self, limiter):
         """Lease._commit() sets TTL when entity downgrades from custom to default limits.
 
@@ -4478,6 +4470,189 @@ class TestBucketLimitSync:
             await limiter.set_limits("user-6", [Limit.per_minute("rpm", 200)], resource="api")
 
         assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+
+
+class TestBucketReconciliation:
+    """Tests for eager bucket reconciliation on config changes (issue #327).
+
+    Verifies that set_limits() removes TTL, delete_limits() syncs bucket to
+    effective defaults, and stale limit attributes are removed.
+    """
+
+    async def test_set_limits_removes_ttl_from_bucket(self, limiter):
+        """set_limits() removes TTL from existing bucket that had TTL.
+
+        Transition: system defaults (TTL) → entity config (no TTL).
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Create bucket with system defaults (has TTL)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        async with limiter.acquire(entity_id="user-ttl", resource="api", consume={"rpm": 1}):
+            pass
+
+        # Verify bucket has TTL
+        item = await limiter._repository._get_item(pk_entity("user-ttl"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" in item
+
+        # Set entity-level config — should remove TTL from bucket
+        await limiter.set_limits("user-ttl", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Verify TTL removed and capacity updated
+        item = await limiter._repository._get_item(pk_entity("user-ttl"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" not in item
+        assert item["b_rpm_cp"] == 200000
+
+    async def test_delete_limits_sets_ttl_and_syncs_to_defaults(self, limiter):
+        """delete_limits() syncs bucket to resource defaults with TTL.
+
+        Transition: entity config (no TTL) → resource defaults (TTL).
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Set resource defaults
+        await limiter.set_resource_defaults("api", [Limit.per_minute("rpm", 100)])
+
+        # Set entity config (overrides resource defaults)
+        await limiter.set_limits("user-del", [Limit.per_minute("rpm", 500)], resource="api")
+
+        # Create bucket with entity config (no TTL, capacity=500)
+        await limiter.invalidate_config_cache()
+        async with limiter.acquire(entity_id="user-del", resource="api", consume={"rpm": 1}):
+            pass
+
+        item = await limiter._repository._get_item(pk_entity("user-del"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" not in item
+        assert item["b_rpm_cp"] == 500000
+
+        # Delete entity config — should reconcile to resource defaults
+        await limiter.delete_limits("user-del", resource="api")
+
+        item = await limiter._repository._get_item(pk_entity("user-del"), sk_bucket("api"))
+        assert item is not None
+        assert "ttl" in item, "TTL should be set (now using defaults)"
+        assert item["b_rpm_cp"] == 100000, "Capacity should match resource defaults"
+
+    async def test_delete_limits_removes_stale_attributes(self, limiter):
+        """delete_limits() removes stale limit attributes from bucket.
+
+        Entity had [rpm, tpm], defaults have [rpm] only — tpm attrs removed.
+        """
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Set system defaults with rpm only
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Set entity config with rpm + tpm
+        await limiter.set_limits(
+            "user-stale",
+            [Limit.per_minute("rpm", 500), Limit.per_minute("tpm", 50000)],
+            resource="api",
+        )
+
+        # Create bucket with both limits
+        await limiter.invalidate_config_cache()
+        async with limiter.acquire(
+            entity_id="user-stale",
+            resource="api",
+            consume={"rpm": 1, "tpm": 100},
+        ):
+            pass
+
+        item = await limiter._repository._get_item(pk_entity("user-stale"), sk_bucket("api"))
+        assert item is not None
+        assert "b_tpm_cp" in item, "tpm limit should exist in bucket"
+
+        # Delete entity config — tpm attrs should be removed
+        await limiter.delete_limits("user-stale", resource="api")
+
+        item = await limiter._repository._get_item(pk_entity("user-stale"), sk_bucket("api"))
+        assert item is not None
+        assert "b_rpm_cp" in item, "rpm limit should still exist"
+        assert item["b_rpm_cp"] == 100000, "rpm should match system defaults"
+        assert "b_tpm_cp" not in item, "Stale tpm limit should be removed"
+        assert "b_tpm_tk" not in item, "Stale tpm tokens should be removed"
+        assert "b_tpm_tc" not in item, "Stale tpm counter should be removed"
+
+    async def test_delete_limits_no_effective_defaults(self, limiter):
+        """delete_limits() leaves bucket as-is when no fallback config exists."""
+        from zae_limiter.schema import pk_entity, sk_bucket
+
+        # Set entity config (no resource or system defaults)
+        await limiter.set_limits("user-orphan", [Limit.per_minute("rpm", 100)], resource="api")
+
+        # Create bucket
+        await limiter.invalidate_config_cache()
+        async with limiter.acquire(entity_id="user-orphan", resource="api", consume={"rpm": 1}):
+            pass
+
+        item_before = await limiter._repository._get_item(
+            pk_entity("user-orphan"), sk_bucket("api")
+        )
+        assert item_before is not None
+
+        # Delete entity config — no fallback, bucket left as-is
+        await limiter.delete_limits("user-orphan", resource="api")
+
+        item_after = await limiter._repository._get_item(pk_entity("user-orphan"), sk_bucket("api"))
+        assert item_after is not None
+        # Bucket should be unchanged (no reconciliation)
+        assert item_after["b_rpm_cp"] == item_before["b_rpm_cp"]
+
+    async def test_delete_limits_bucket_does_not_exist(self, limiter):
+        """delete_limits() does not error when bucket doesn't exist."""
+        # Set system defaults (needed for reconciliation)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Set entity config but never acquire (no bucket created)
+        await limiter.set_limits("user-nobucket", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Delete should succeed without error (reconciliation is a no-op)
+        await limiter.delete_limits("user-nobucket", resource="api")
+
+    async def test_set_limits_evicts_config_cache(self, limiter):
+        """set_limits() evicts entity from config cache."""
+        # Warm cache via acquire (creates negative entity cache entry)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        async with limiter.acquire(entity_id="user-cache", resource="api", consume={"rpm": 1}):
+            pass
+
+        # set_limits should evict cache
+        await limiter.set_limits("user-cache", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Verify cache entry was evicted
+        assert ("user-cache", "api") not in limiter._config_cache._entity_limits
+
+    async def test_delete_limits_evicts_config_cache(self, limiter):
+        """delete_limits() evicts stale entity config from cache."""
+        from zae_limiter.config_cache import _NO_CONFIG
+
+        # Set system defaults and entity config
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        await limiter.set_limits("user-dcache", [Limit.per_minute("rpm", 200)], resource="api")
+
+        # Warm cache — entity config (rpm=200) is now cached
+        await limiter.invalidate_config_cache()
+        async with limiter.acquire(entity_id="user-dcache", resource="api", consume={"rpm": 1}):
+            pass
+
+        # Verify entity config is cached (not _NO_CONFIG)
+        entry = limiter._config_cache._entity_limits.get(("user-dcache", "api"))
+        assert entry is not None and entry.value is not _NO_CONFIG
+
+        # delete_limits should evict stale entity config
+        await limiter.delete_limits("user-dcache", resource="api")
+
+        # After delete, _resolve_limits() re-caches with _NO_CONFIG sentinel
+        # (entity config is gone → negative cache entry). The stale entity
+        # limits (rpm=200) must NOT be in the cache.
+        entry = limiter._config_cache._entity_limits.get(("user-dcache", "api"))
+        assert entry is None or entry.value is _NO_CONFIG, (
+            "Cache should not contain stale entity limits after delete"
+        )
 
 
 class TestSpeculativeAcquire:

@@ -1042,7 +1042,7 @@ class SyncRepository:
                     raise
             else:
                 raise
-        self._sync_bucket_params(entity_id, resource, limits)
+        self._sync_bucket_params(entity_id, resource, limits, bucket_ttl_refill_multiplier=0)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=entity_id,
@@ -1051,22 +1051,38 @@ class SyncRepository:
             details={"limits": [limit.to_dict() for limit in limits]},
         )
 
-    def _sync_bucket_params(self, entity_id: str, resource: str, limits: list[Limit]) -> None:
-        """Sync bucket static params when limits change (issue #294).
+    def _sync_bucket_params(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        bucket_ttl_refill_multiplier: int | None = None,
+        stale_limit_names: set[str] | None = None,
+    ) -> None:
+        """Sync bucket static params when limits change (issue #294, #327).
 
-        Updates capacity, burst, refill_amount, and refill_period for existing
-        buckets. Uses conditional update with attribute_exists(PK) to skip if
+        Updates capacity, burst, refill_amount, refill_period, and TTL for
+        existing buckets. Optionally removes stale limit attributes.
+        Uses conditional update with attribute_exists(PK) to skip if
         bucket doesn't exist yet.
 
         Args:
             entity_id: ID of the entity
             resource: Resource name
             limits: New limit configurations
+            bucket_ttl_refill_multiplier: TTL behavior (issue #327):
+                - None: Don't change TTL
+                - 0: REMOVE ttl (entity has custom limits)
+                - >0: SET ttl to (now + calculated_seconds)
+            stale_limit_names: Limit names to REMOVE from bucket (issue #327).
+                Used when downgrading from entity config to defaults where
+                the old config had limits not present in the new defaults.
         """
         if not limits:
             return
         client = self._get_client()
         set_parts: list[str] = []
+        remove_parts: list[str] = []
         expr_names: dict[str, str] = {}
         expr_values: dict[str, dict[str, str]] = {}
         for i, limit in enumerate(limits):
@@ -1087,6 +1103,34 @@ class SyncRepository:
             set_parts.append(f"#rp{i} = :rp{i}")
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
+        if bucket_ttl_refill_multiplier is not None:
+            expr_names["#ttl"] = "ttl"
+            if bucket_ttl_refill_multiplier > 0:
+                ttl_seconds = schema.calculate_bucket_ttl_seconds(
+                    limits, bucket_ttl_refill_multiplier
+                )
+                if ttl_seconds is not None:
+                    now_ms = self._now_ms()
+                    set_parts.append("#ttl = :ttl_val")
+                    expr_values[":ttl_val"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
+            else:
+                remove_parts.append("#ttl")
+        if stale_limit_names:
+            for stale_name in stale_limit_names:
+                for field in (
+                    schema.BUCKET_FIELD_TK,
+                    schema.BUCKET_FIELD_CP,
+                    schema.BUCKET_FIELD_BX,
+                    schema.BUCKET_FIELD_RA,
+                    schema.BUCKET_FIELD_RP,
+                    schema.BUCKET_FIELD_TC,
+                ):
+                    alias = f"#stale_{stale_name}_{field}"
+                    expr_names[alias] = schema.bucket_attr(stale_name, field)
+                    remove_parts.append(alias)
+        update_expr = f"SET {', '.join(set_parts)}"
+        if remove_parts:
+            update_expr += f" REMOVE {', '.join(remove_parts)}"
         try:
             client.update_item(
                 TableName=self.table_name,
@@ -1094,7 +1138,7 @@ class SyncRepository:
                     "PK": {"S": schema.pk_entity(entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
-                UpdateExpression=f"SET {', '.join(set_parts)}",
+                UpdateExpression=update_expr,
                 ConditionExpression="attribute_exists(PK)",
                 ExpressionAttributeNames=expr_names,
                 ExpressionAttributeValues=expr_values,
@@ -1103,6 +1147,38 @@ class SyncRepository:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return
             raise
+
+    def reconcile_bucket_to_defaults(
+        self,
+        entity_id: str,
+        resource: str,
+        effective_limits: list[Limit],
+        bucket_ttl_refill_multiplier: int,
+        stale_limit_names: set[str] | None = None,
+    ) -> None:
+        """Reconcile bucket to effective defaults after config deletion (issue #327).
+
+        Updates limit fields (cp, bx, ra, rp) to match the new effective
+        limits, sets TTL (since entity is now on defaults), and removes
+        stale limit attributes that no longer exist in the effective config.
+
+        No-op if bucket doesn't exist (uses attribute_exists(PK) condition).
+
+        Args:
+            entity_id: ID of the entity
+            resource: Resource name
+            effective_limits: The new effective limits (resource/system defaults)
+            bucket_ttl_refill_multiplier: TTL multiplier for default limits
+            stale_limit_names: Limit names to REMOVE from bucket (limits that
+                were in the deleted entity config but not in effective defaults)
+        """
+        self._sync_bucket_params(
+            entity_id,
+            resource,
+            effective_limits,
+            bucket_ttl_refill_multiplier=bucket_ttl_refill_multiplier,
+            stale_limit_names=stale_limit_names,
+        )
 
     def _cleanup_entity_config_registry(self, resource: str) -> None:
         """Remove resource from entity config registry if count <= 0.

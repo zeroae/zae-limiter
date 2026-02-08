@@ -1494,6 +1494,8 @@ class RateLimiter:
         """
         await self._ensure_initialized()
         await self._repository.set_limits(entity_id, limits, resource, principal=principal)
+        # Evict entity from config cache so next acquire() reads fresh config
+        self._config_cache.evict_entity(entity_id, resource)
 
     async def get_limits(
         self,
@@ -1522,13 +1524,46 @@ class RateLimiter:
         """
         Delete stored limit configs for an entity.
 
+        Reconciles existing buckets to fallback config (resource/system
+        defaults) by syncing limit fields, setting TTL, and removing
+        stale limit attributes (issue #327).
+
         Args:
             entity_id: Entity to delete limits for
             resource: Resource to delete limits for
             principal: Caller identity for audit logging (optional)
         """
         await self._ensure_initialized()
+
+        # Capture old entity limits before deletion (for stale detection)
+        old_limits = await self._repository.get_limits(entity_id, resource)
+
+        # Delete entity config
         await self._repository.delete_limits(entity_id, resource, principal=principal)
+
+        # Evict cache so resolve sees the deletion
+        self._config_cache.evict_entity(entity_id, resource)
+
+        # Resolve effective fallback limits (entity config gone → resource/system)
+        try:
+            effective_limits, _ = await self._resolve_limits(
+                entity_id, resource, limits_override=None
+            )
+        except ValidationError:
+            # No fallback config — bucket left as-is (acceptance criterion #11)
+            return
+
+        # Compute stale limit names (in old entity config but not in defaults)
+        stale_names = {lim.name for lim in old_limits} - {lim.name for lim in effective_limits}
+
+        # Reconcile bucket to effective defaults
+        await self._repository.reconcile_bucket_to_defaults(
+            entity_id,
+            resource,
+            effective_limits,
+            self._bucket_ttl_refill_multiplier,
+            stale_limit_names=stale_names if stale_names else None,
+        )
 
     async def list_entities_with_custom_limits(
         self,

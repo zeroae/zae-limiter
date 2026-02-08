@@ -1218,6 +1218,7 @@ class SyncRateLimiter:
         """
         self._ensure_initialized()
         self._repository.set_limits(entity_id, limits, resource, principal=principal)
+        self._config_cache.evict_entity(entity_id, resource)
 
     def get_limits(self, entity_id: str, resource: str = DEFAULT_RESOURCE) -> list[Limit]:
         """
@@ -1239,13 +1240,31 @@ class SyncRateLimiter:
         """
         Delete stored limit configs for an entity.
 
+        Reconciles existing buckets to fallback config (resource/system
+        defaults) by syncing limit fields, setting TTL, and removing
+        stale limit attributes (issue #327).
+
         Args:
             entity_id: Entity to delete limits for
             resource: Resource to delete limits for
             principal: Caller identity for audit logging (optional)
         """
         self._ensure_initialized()
+        old_limits = self._repository.get_limits(entity_id, resource)
         self._repository.delete_limits(entity_id, resource, principal=principal)
+        self._config_cache.evict_entity(entity_id, resource)
+        try:
+            effective_limits, _ = self._resolve_limits(entity_id, resource, limits_override=None)
+        except ValidationError:
+            return
+        stale_names = {lim.name for lim in old_limits} - {lim.name for lim in effective_limits}
+        self._repository.reconcile_bucket_to_defaults(
+            entity_id,
+            resource,
+            effective_limits,
+            self._bucket_ttl_refill_multiplier,
+            stale_limit_names=stale_names if stale_names else None,
+        )
 
     def list_entities_with_custom_limits(
         self, resource: str, limit: int | None = None, cursor: str | None = None
