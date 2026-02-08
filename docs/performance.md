@@ -15,7 +15,8 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` speculative success | 0 | 1 | Skips read; conditional UpdateItem (issue #315) |
 | `acquire()` speculative success + cascade | 0 | 2 | Child + parent speculative UpdateItem |
 | `acquire()` speculative fast rejection | 0 | 0 | Exhausted bucket; rejected from ALL_OLD without write |
-| `acquire()` speculative fallback | 1 | 2 | Failed speculative (1 WCU) + normal path (1 RCU + 1 WCU) |
+| `acquire()` speculative fallback (non-cascade) | 1 | 2 | Failed speculative (1 WCU) + normal path (1 RCU + 1 WCU) |
+| `acquire()` speculative cascade fallback (parent refill helps) | 0.5 | 3 | Child stays consumed; parent-only read (0.5 RCU) + single-item write (1 WCU) |
 | `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
 | `acquire()` with adjustments | 0 | +1 per entity | Independent writes via `write_each()` (1 WCU each) |
 | `acquire()` rollback (on exception) | 0 | +1 per entity | Independent compensating writes (1 WCU each) |
@@ -42,6 +43,14 @@ Use these formulas to estimate hourly capacity requirements:
 Hourly RCUs = requests/hour × (1 + cascade_pct + config_cache_miss_pct × 3)
 Hourly WCUs = requests/hour × (1 + cascade_pct × 3)
 ```
+
+With speculative writes enabled (`speculative_writes=True`), the steady-state formula changes:
+```
+Hourly RCUs = requests/hour × (fallback_pct + cascade_pct × 0.5 + config_cache_miss_pct × 3)
+Hourly WCUs = requests/hour × (1 + cascade_pct)
+```
+
+Where `fallback_pct` is the fraction of requests that fall back to the slow path (typically <5% for pre-warmed buckets).
 
 !!! note "O(1) Scaling (v0.7.0+)"
     Costs no longer scale with the number of limits per request. Composite bucket items
@@ -712,10 +721,16 @@ acquire(entity_id, resource, consume)
 +- Speculative UpdateItem (condition: bucket exists AND has enough tokens)
    |
    +- SUCCEEDS -> read cascade/parent_id from ALL_NEW
-   |  +- cascade=False -> DONE (1 round trip, 0 RCU, 1 WCU)
+   |  +- cascade=False -> DONE (1 RT, 0 RCU, 1 WCU)
    |  +- cascade=True -> Parent speculative UpdateItem
-   |     +- SUCCEEDS -> DONE (2 round trips, 0 RCU, 2 WCU)
-   |     +- FAILS -> Compensate child, then slow path or fast reject
+   |     +- SUCCEEDS -> DONE (2 RT, 0 RCU, 2 WCU)
+   |     +- FAILS -> Check parent ALL_OLD (child stays consumed)
+   |        +- No ALL_OLD (missing) -> Compensate child, SLOW PATH
+   |        +- Missing limit -> Compensate child, SLOW PATH
+   |        +- Refill won't help -> Compensate child, RateLimitExceeded
+   |        +- Refill would help -> Parent-only slow path (keep child)
+   |           +- Parent acquire succeeds -> DONE (4 RT, 0.5 RCU, 3 WCU)
+   |           +- Parent acquire fails -> Compensate child, SLOW PATH
    |
    +- FAILS (ConditionalCheckFailedException)
       +- No ALL_OLD (bucket missing) -> SLOW PATH (creates bucket)
@@ -725,6 +740,8 @@ acquire(entity_id, resource, consume)
 ```
 
 The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current bucket state on failure, allowing the limiter to determine whether refill would help without an additional read.
+
+**Deferred cascade compensation:** When the child speculative write succeeds but the parent fails with "refill would help", the child's consumption is kept in place while a parent-only slow path is attempted. This avoids compensating the child (1 WCU), re-reading it (0.5 RCU), and using TransactWriteItems for the full cascade write (4 WCU). Instead, only the parent is read (0.5 RCU) and written via a single-item UpdateItem (1 WCU). Compensation only happens when the parent-only path also fails.
 
 ### Cost Comparison
 
@@ -736,6 +753,8 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | **Speculative fallback** (refill helps) | 3 | 1 | 2 | $1.375 |
 | **Normal path** (cascade) | 3 | 2 | 4 | $1.75 |
 | **Speculative success** (cascade) | 2 | 0 | 2 | $1.25 |
+| **Speculative cascade fallback** (parent refill helps) | 4 | 0.5 | 3 | $2.00 |
+| **Speculative cascade fast rejection** (parent exhausted) | 2 | 0 | 2 | $1.25 |
 
 !!! note "When speculative writes save money"
     The speculative path is cheaper than the normal path when most requests succeed without needing refill. If a high percentage of requests fall back to the slow path (new entities, near-capacity buckets, frequent config changes), the extra WCU from the failed speculative write makes it more expensive.
@@ -748,6 +767,10 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | Speculative success (non-cascade) | 1 | 5-8ms |
 | Speculative fast rejection (exhausted) | 1 | 5-8ms |
 | Speculative fallback (refill helps) | 3 | 15-22ms |
+| Normal path (cascade) | 3 | 15-22ms |
+| Speculative success (cascade) | 2 | 8-12ms |
+| Speculative cascade fallback (parent refill helps) | 4 | 18-28ms |
+| Speculative cascade fast rejection (parent exhausted) | 2 | 8-12ms |
 
 ### When to Use Speculative Writes
 

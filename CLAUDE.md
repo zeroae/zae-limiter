@@ -462,6 +462,9 @@ Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the pro
 Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~17% savings).
 Speculative fast rejection (exhausted) = 0 RCU + 0 WCU = **$0/M** (free).
 Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
+Speculative cascade (both succeed) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
+Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
+Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/M** (child consumed + compensated).
 
 ## DynamoDB Access Patterns
 

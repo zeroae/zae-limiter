@@ -350,7 +350,8 @@ When `speculative_writes=True`, `acquire()` adds a fast path before the normal r
 | Write Path | Method | API Used | WCU Cost | Atomicity |
 |------------|--------|----------|----------|-----------|
 | Speculative consumption | `speculative_consume()` | Conditional `UpdateItem` | 1 WCU (success) or 0 WCU (reject) | Single item |
-| Speculative compensation | `build_composite_adjust()` + `write_each()` | `UpdateItem` | 1 WCU | Single item |
+| Speculative compensation | `_compensate_child()` via `write_each()` | `UpdateItem` | 1 WCU | Single item |
+| Parent-only slow path | `_try_parent_only_acquire()` via `_commit_initial()` | `UpdateItem` | 1 WCU | Single item |
 
 The speculative path uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to inspect bucket state
 on failure without a separate read. On success, `ReturnValues=ALL_NEW` provides the post-write
@@ -360,8 +361,15 @@ state including denormalized `cascade` and `parent_id` fields.
 Speculative flow:
 1. UpdateItem with condition: attribute_exists(PK) AND tk >= consumed
    +- SUCCESS -> Lease is pre-committed (_initial_committed=True)
+   |  +- cascade=False -> DONE
    |  +- cascade=True -> Speculative UpdateItem on parent
-   |     +- FAIL -> Compensate child (ADD +consumed), then fall back
+   |     +- SUCCESS -> DONE (child + parent both speculative)
+   |     +- FAIL -> Check parent ALL_OLD (child stays consumed)
+   |        +- No item / missing limit -> Compensate child, fall back
+   |        +- Refill won't help -> Compensate child, RateLimitExceeded
+   |        +- Refill would help -> Parent-only slow path (read + write parent)
+   |           +- SUCCESS -> DONE (child speculative + parent slow path)
+   |           +- FAIL -> Compensate child, fall back to full slow path
    +- FAIL -> Check ALL_OLD
       +- No item (bucket missing) -> Fall back to normal path
       +- Refill would help -> Fall back to normal path
@@ -370,6 +378,13 @@ Speculative flow:
 
 Cascade and `parent_id` are denormalized into composite bucket items (via `build_composite_create`)
 so the speculative path avoids a separate entity metadata lookup.
+
+**Deferred cascade compensation:** When the child speculative write succeeds but the parent
+fails, child compensation is deferred. If refill would help the parent, a parent-only slow
+path is attempted: read parent buckets (0.5 RCU), refill + try_consume, write via single-item
+UpdateItem (1 WCU). This avoids the cost of compensating the child (1 WCU), re-reading it
+(0.5 RCU), and using TransactWriteItems for the full cascade write (4 WCU). The child is
+only compensated when the parent-only path also fails.
 
 ### Optimistic Locking
 
