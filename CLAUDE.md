@@ -355,7 +355,7 @@ Primary mitigation: cascade defaults to `False`.
 - Uses independent single-item writes (`write_each`) for adjustments and rollbacks (1 WCU each)
 
 ### Speculative Writes (Issue #315)
-- Opt-in via `speculative_writes=True` on RateLimiter constructor
+- Enabled by default (`speculative_writes=True`); disable with `speculative_writes=False`
 - Skips the read round trip (BatchGetItem) by issuing a conditional UpdateItem directly
 - Uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to inspect bucket state on failure
 - Falls back to the normal read-write path when the bucket is missing, config changed, or refill would help
