@@ -100,7 +100,7 @@ class SyncRateLimiter:
         skip_version_check: bool = False,
         config_cache_ttl: int = 60,
         bucket_ttl_refill_multiplier: int = 7,
-        speculative_writes: bool = False,
+        speculative_writes: bool = True,
     ) -> None:
         """
         Initialize the rate limiter.

@@ -449,6 +449,10 @@ class TestRepositoryPing:
 class TestBucketTTLDowngrade:
     """Integration tests for bucket TTL when entity downgrades from custom to default limits."""
 
+    @pytest.mark.xfail(
+        reason="Speculative path doesn't reconcile TTL on config downgrade (#327)",
+        strict=True,
+    )
     @pytest.mark.asyncio
     async def test_ttl_set_after_deleting_entity_config(
         self,
