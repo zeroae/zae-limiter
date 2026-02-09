@@ -14,7 +14,6 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from .config_cache import CacheStats as CacheStats
 from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
@@ -312,20 +311,6 @@ class SyncRateLimiter:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
-
-    def invalidate_config_cache(self) -> None:
-        """Invalidate all cached config entries.
-
-        Delegates to ``repository.invalidate_config_cache()``.
-        """
-        self._repository.invalidate_config_cache()
-
-    def get_cache_stats(self) -> CacheStats:
-        """Get config cache performance statistics.
-
-        Delegates to ``repository.get_cache_stats()``.
-        """
-        return self._repository.get_cache_stats()
 
     def is_available(self, timeout: float = 1.0) -> bool:
         """

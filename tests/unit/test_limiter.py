@@ -3744,13 +3744,13 @@ class TestRateLimiterConfigCache:
 
     @pytest.mark.asyncio
     async def test_get_cache_stats_returns_cache_stats(self, mock_dynamodb):
-        """Test get_cache_stats() delegates to repository and returns CacheStats."""
+        """Test Repository.get_cache_stats() returns CacheStats object."""
         from tests.unit.conftest import _patch_aiobotocore_response
 
         with _patch_aiobotocore_response():
             limiter = RateLimiter()
 
-            stats = limiter.get_cache_stats()
+            stats = limiter._repository.get_cache_stats()
 
             assert isinstance(stats, CacheStats)
             assert stats.hits == 0
@@ -3761,7 +3761,7 @@ class TestRateLimiterConfigCache:
 
     @pytest.mark.asyncio
     async def test_get_cache_stats_with_custom_ttl(self, mock_dynamodb):
-        """Test get_cache_stats() reflects custom TTL from Repository."""
+        """Test Repository.get_cache_stats() reflects custom TTL."""
         from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import Repository
 
@@ -3769,14 +3769,14 @@ class TestRateLimiterConfigCache:
             repo = Repository(name="test-rate-limits", region="us-east-1", config_cache_ttl=120)
             limiter = RateLimiter(repository=repo)
 
-            stats = limiter.get_cache_stats()
+            stats = limiter._repository.get_cache_stats()
 
             assert stats.ttl_seconds == 120
             await limiter.close()
 
     @pytest.mark.asyncio
     async def test_invalidate_config_cache(self, mock_dynamodb):
-        """Test invalidate_config_cache() delegates to repository."""
+        """Test Repository.invalidate_config_cache() clears cache entries."""
         from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.config_cache import CacheEntry
 
@@ -3787,11 +3787,11 @@ class TestRateLimiterConfigCache:
             entry = CacheEntry(value=[], expires_at=9999999999.0)
             limiter._repository._config_cache._resource_defaults["gpt-4"] = entry
 
-            assert limiter.get_cache_stats().size == 1
+            assert limiter._repository.get_cache_stats().size == 1
 
-            await limiter.invalidate_config_cache()
+            await limiter._repository.invalidate_config_cache()
 
-            assert limiter.get_cache_stats().size == 0
+            assert limiter._repository.get_cache_stats().size == 0
             await limiter.close()
 
     @pytest.mark.asyncio
@@ -3809,14 +3809,14 @@ class TestRateLimiterConfigCache:
         result = await limiter._repository.resolve_on_unavailable()
         assert result == "allow"
 
-        stats_after_first = limiter.get_cache_stats()
+        stats_after_first = limiter._repository.get_cache_stats()
         assert stats_after_first.misses == 1
 
         # Second call: cache hit (no additional DynamoDB read)
         result = await limiter._repository.resolve_on_unavailable()
         assert result == "allow"
 
-        stats_after_second = limiter.get_cache_stats()
+        stats_after_second = limiter._repository.get_cache_stats()
         assert stats_after_second.hits == 1
         assert stats_after_second.misses == 1  # No new misses
 
@@ -4171,7 +4171,7 @@ class TestLeaseCommitTTL:
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
 
         # Invalidate cache to ensure entity config is read (cache has negative entry)
-        await limiter.invalidate_config_cache()
+        await limiter._repository.invalidate_config_cache()
 
         # Acquire again - should remove TTL since entity now has custom config
         async with limiter.acquire(
@@ -4342,7 +4342,7 @@ class TestLeaseCommitTTL:
         await limiter.delete_limits("user-1", resource="api")
 
         # Invalidate cache to ensure deleted config is recognized
-        await limiter.invalidate_config_cache()
+        await limiter._repository.invalidate_config_cache()
 
         # Acquire again - should now set TTL since entity uses defaults
         async with limiter.acquire(
@@ -4614,7 +4614,7 @@ class TestBucketReconciliation:
         await limiter.set_limits("user-del", [Limit.per_minute("rpm", 500)], resource="api")
 
         # Create bucket with entity config (no TTL, capacity=500)
-        await limiter.invalidate_config_cache()
+        await limiter._repository.invalidate_config_cache()
         async with limiter.acquire(entity_id="user-del", resource="api", consume={"rpm": 1}):
             pass
 
@@ -4649,7 +4649,7 @@ class TestBucketReconciliation:
         )
 
         # Create bucket with both limits
-        await limiter.invalidate_config_cache()
+        await limiter._repository.invalidate_config_cache()
         async with limiter.acquire(
             entity_id="user-stale",
             resource="api",
@@ -4680,7 +4680,7 @@ class TestBucketReconciliation:
         await limiter.set_limits("user-orphan", [Limit.per_minute("rpm", 100)], resource="api")
 
         # Create bucket
-        await limiter.invalidate_config_cache()
+        await limiter._repository.invalidate_config_cache()
         async with limiter.acquire(entity_id="user-orphan", resource="api", consume={"rpm": 1}):
             pass
 
@@ -4730,7 +4730,7 @@ class TestBucketReconciliation:
         await limiter.set_limits("user-dcache", [Limit.per_minute("rpm", 200)], resource="api")
 
         # Warm cache — entity config (rpm=200) is now cached
-        await limiter.invalidate_config_cache()
+        await limiter._repository.invalidate_config_cache()
         async with limiter.acquire(entity_id="user-dcache", resource="api", consume={"rpm": 1}):
             pass
 
