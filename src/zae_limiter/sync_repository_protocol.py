@@ -743,7 +743,7 @@ class SyncRepositoryProtocol(Protocol):
             - limits: Resolved limits or None if nothing found at any level
             - on_unavailable: System-level unavailability behavior (if any)
             - config_source: "entity", "entity_default", "resource", "system",
-              or None if no config found
+                or None if no config found
         """
         ...
 

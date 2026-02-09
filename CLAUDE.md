@@ -254,6 +254,7 @@ limiter = RateLimiter(repository=repo)
 
 **Key API methods:**
 - `Repository(stack_options=...)` - Pass infrastructure config to constructor
+- `Repository(config_cache_ttl=...)` - Config cache TTL in seconds (default: 60, 0 to disable)
 - `repo.ensure_infrastructure()` - Create/update stack using stored options (no-op if None)
 - `repo.create_stack()` - **Deprecated**. Will be removed in v2.0.0
 
