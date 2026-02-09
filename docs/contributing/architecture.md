@@ -321,6 +321,7 @@ atomicity and cost characteristics:
 | Initial consumption | `_commit_initial()` | `transact_write()` | 2 WCU (transaction) or 1 WCU (single item) | Cross-item atomic |
 | Post-enter adjustments | `_commit_adjustments()` | `write_each()` | 1 WCU per item | Independent per item |
 | Rollback (on exception) | `_rollback()` | `write_each()` | 1 WCU per item | Independent per item |
+| Aggregator refill | `try_refill_bucket()` | `UpdateItem` | 1 WCU | Single item |
 
 ### TransactWriteItems (Initial Consumption)
 
@@ -401,6 +402,48 @@ UpdateItem (1 WCU). This avoids the cost of compensating the child (1 WCU), re-r
 (0.5 RCU), and using TransactWriteItems for the full cascade write (4 WCU). The child is
 only compensated when the parent-only path also fails.
 
+### Aggregator Refill Path (Issue #317)
+
+The Lambda aggregator proactively refills token buckets for active entities, keeping
+speculative writes on the fast path (1 RT) instead of falling back to the slow path (3 RT).
+
+| Write Path | Method | API Used | WCU Cost | Atomicity |
+|------------|--------|----------|----------|-----------|
+| Aggregator refill | `try_refill_bucket()` | Conditional `UpdateItem` | 1 WCU (success) or 0 WCU (lock lost) | Single item |
+
+The aggregator processes DynamoDB Stream records in each batch to:
+
+1. **Aggregate bucket states** -- `aggregate_bucket_states()` accumulates `tc` deltas and keeps
+   the last NewImage per (entity_id, resource) across all stream records in the batch
+2. **Compute refill** -- For each bucket, `try_refill_bucket()` calls `refill_bucket()` to
+   calculate the refill delta, then checks if projected tokens are insufficient to cover
+   the observed consumption rate
+3. **Write refill** -- Issues a single `UpdateItem` with `ADD b_{limit}_tk +refill_delta`
+   and `SET rf = :now`, conditioned on `rf = :expected_rf` (optimistic lock)
+
+```
+Aggregator refill flow (per composite bucket):
+1. Aggregate tc deltas + last NewImage across stream batch
+2. For each limit: refill_bucket(tk, rf, now, bx, ra, rp)
+   +- refill_delta = new_tk - current_tk
+   +- projected = new_tk after refill
+   +- consumption_estimate = max(0, accumulated tc_delta)
+   +- projected >= consumption_estimate -> SKIP (sufficient tokens)
+3. Any limit needs refill?
+   +- NO -> SKIP
+   +- YES -> UpdateItem (ADD tk +delta, SET rf = :now, condition rf = :expected_rf)
+      +- SUCCESS -> refill written (1 WCU)
+      +- ConditionalCheckFailedException -> silently skip (another writer updated rf)
+```
+
+**Key design properties:**
+
+- **ADD is commutative** with concurrent speculative writes -- the aggregator uses `ADD`
+  for token deltas, so a concurrent `speculative_consume()` (also `ADD`) does not conflict
+- **Optimistic lock on `rf`** prevents double-refill with the client slow path or another
+  aggregator invocation
+- **No read required** -- all state is derived from stream record NewImage fields
+
 ### Optimistic Locking
 
 Entity metadata uses version numbers for optimistic locking:
@@ -439,8 +482,8 @@ src/zae_limiter/
 
 src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 ├── __init__.py               # Re-exports handler, processor types
-├── handler.py                # Lambda entry point
-├── processor.py              # Stream processing logic for usage snapshots
+├── handler.py                # Lambda entry point (returns refills_written count)
+├── processor.py              # Stream processing: usage snapshots + bucket refill
 └── archiver.py               # S3 audit archival (gzip JSONL)
 ```
 
@@ -453,6 +496,7 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 5. **Initial writes are atomic**: Multi-entity initial consumption uses `transact_write()` for cross-item atomicity
 6. **Adjustments and rollbacks use independent writes**: `write_each()` dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead for unconditional ADD operations
 7. **Speculative writes skip reads**: With `speculative_writes=True`, `acquire()` tries a conditional UpdateItem first, saving 1 round trip and 1 RCU when the bucket has sufficient tokens
+8. **Aggregator-assisted refill**: The Lambda aggregator proactively refills buckets for active entities, keeping speculative writes on the fast path by ensuring buckets have sufficient tokens between client requests
 
 ## Next Steps
 

@@ -64,6 +64,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             request_id=request_id,
             processed=0,
             snapshots_updated=0,
+            refills_written=0,
             events_archived=0,
             error_count=0,
             processing_time_ms=round(processing_time_ms, 2),
@@ -73,6 +74,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "body": {
                 "processed": 0,
                 "snapshots_updated": 0,
+                "refills_written": 0,
                 "events_archived": 0,
                 "errors": [],
             },
@@ -110,6 +112,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         request_id=request_id,
         processed=result.processed_count,
         snapshots_updated=result.snapshots_updated,
+        refills_written=result.refills_written,
         events_archived=events_archived,
         s3_objects_created=s3_objects_created,
         error_count=len(all_errors),
@@ -121,6 +124,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "body": {
             "processed": result.processed_count,
             "snapshots_updated": result.snapshots_updated,
+            "refills_written": result.refills_written,
             "events_archived": events_archived,
             "errors": all_errors,
         },
