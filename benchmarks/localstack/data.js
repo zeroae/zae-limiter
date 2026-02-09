@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770609332671,
+  "lastUpdate": 1770626946974,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -7845,6 +7845,135 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.005613108954019855",
             "extra": "mean: 1.0769831855999883 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "52d260ec118a0ad43e4a08ea364d1331429947f8",
+          "message": "⚡ perf(aggregator): proactive bucket refill from DynamoDB Streams (#317) (#335)\n\n## Summary\n\n- Add aggregator-assisted bucket refill to the Lambda stream processor\n(`processor.py`), keeping speculative writes on the 1-RT fast path by\nproactively topping up token buckets for active entities\n- Introduce shared stream record parsing (`ParsedBucketRecord`,\n`ParsedBucketLimit`) and refill state aggregation (`BucketRefillState`,\n`LimitRefillInfo`) to compute per-bucket consumption rate and project\nwhether tokens will be exhausted before the next batch window\n- `try_refill_bucket()` uses `ADD tk +refill` (commutative with\nconcurrent speculative writes) with an optimistic lock on `rf`\n(`ConditionExpression: rf = :expected_rf`) to prevent double-refill with\nthe client slow path\n- Update `lambda_builder.py` to include `bucket.py`, `models.py`, and\n`exceptions.py` stubs in the Lambda deployment package (required for\n`refill_bucket()` math)\n- Update `ProcessResult` and handler response to include\n`refills_written` count\n- Update CLAUDE.md with aggregator refill documentation, DynamoDB writer\ntable, and access pattern details\n\n## Test plan\n\n- [x] Unit tests cover: refill triggers when projected tokens\ninsufficient, skips when tokens sufficient, handles\n`ConditionalCheckFailedException` gracefully, consumption rate\ncalculation from stream event deltas\n- [x] Integration test (`tests/integration/test_bucket_refill.py`)\nverifies end-to-end: speculative write -> stream event -> aggregator\nrefill -> next speculative write succeeds without slow path\n- [x] Verify `--no-aggregator` deployments are unaffected (no behavioral\nchange without the Lambda)\n- [x] Run `uv run pytest tests/unit/test_processor.py\ntests/unit/test_handler.py -v`\n- [x] Run `uv run pytest tests/integration/test_bucket_refill.py -v`\n(requires LocalStack)\n\nCloses #317\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-02-09T03:33:25-05:00",
+          "tree_id": "ddfeeb8008c7e67c2f544e98607ecb05b9da7d76",
+          "url": "https://github.com/zeroae/zae-limiter/commit/52d260ec118a0ad43e4a08ea364d1331429947f8"
+        },
+        "date": 1770626945851,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.389258720678782,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008632399208407577",
+            "extra": "mean: 39.38673480000148 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.277713125168457,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006491607125443106",
+            "extra": "mean: 54.71143972727077 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 43.68948393230036,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028314251468480977",
+            "extra": "mean: 22.888803208331865 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 42.24922624585926,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0035296935212600104",
+            "extra": "mean: 23.66907252172476 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.22979550207172,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005910988899015545",
+            "extra": "mean: 43.04816199999764 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 202.8755033914819,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013971516509131557",
+            "extra": "mean: 4.929131330707455 msec\nrounds: 127"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 23.90045019351849,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004909030538674033",
+            "extra": "mean: 41.84021605882502 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.569431157128708,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005521170186099352",
+            "extra": "mean: 37.63723784999797 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.441937251486415,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0047609828599217245",
+            "extra": "mean: 36.440575999999204 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 23.116416558848574,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004632188491800154",
+            "extra": "mean: 43.25930004999918 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 25.98588032765283,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0038761067892477807",
+            "extra": "mean: 38.48243690000572 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.940567956945337,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0017032921371671957",
+            "extra": "mean: 515.3130538000369 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9349694282609968,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003427460582235417",
+            "extra": "mean: 516.8040307999718 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9475937102203849,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011999804194406289",
+            "extra": "mean: 1.0553045985999916 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9318949858030148,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009488872438113449",
+            "extra": "mean: 1.0730822841999725 sec\nrounds: 5"
           }
         ]
       }
