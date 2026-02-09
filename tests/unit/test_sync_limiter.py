@@ -2867,6 +2867,61 @@ class TestRateLimiterConfigCache:
         assert stats_after_second.misses == 1
 
 
+class TestResolveLinitsSequentialFallback:
+    """Tests for SyncRepository._resolve_limits_sequential() (ADR-122)."""
+
+    def test_sequential_entity_level(self, sync_limiter):
+        """Sequential fallback returns entity-level config."""
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        sync_limiter.set_limits("user-seq", [Limit.per_minute("rpm", 500)], resource="api")
+        repo = sync_limiter._repository
+        limits, on_unavailable, source = repo._resolve_limits_sequential("user-seq", "api")
+        assert source == "entity"
+        assert limits is not None
+        assert limits[0].capacity == 500
+        assert on_unavailable is None
+
+    def test_sequential_entity_default_level(self, sync_limiter):
+        """Sequential fallback returns entity _default_ config."""
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        sync_limiter.set_limits("user-def", [Limit.per_minute("rpm", 300)], resource="_default_")
+        repo = sync_limiter._repository
+        limits, _, source = repo._resolve_limits_sequential("user-def", "api")
+        assert source == "entity_default"
+        assert limits is not None
+        assert limits[0].capacity == 300
+
+    def test_sequential_resource_level(self, sync_limiter):
+        """Sequential fallback returns resource-level config."""
+        sync_limiter.set_resource_defaults("api", [Limit.per_minute("rpm", 200)])
+        repo = sync_limiter._repository
+        limits, _, source = repo._resolve_limits_sequential("user-res", "api")
+        assert source == "resource"
+        assert limits is not None
+        assert limits[0].capacity == 200
+
+    def test_sequential_system_level(self, sync_limiter):
+        """Sequential fallback returns system-level config."""
+        from zae_limiter import OnUnavailable
+
+        sync_limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100)], on_unavailable=OnUnavailable.ALLOW
+        )
+        repo = sync_limiter._repository
+        limits, on_unavailable, source = repo._resolve_limits_sequential("user-sys", "api")
+        assert source == "system"
+        assert limits is not None
+        assert limits[0].capacity == 100
+        assert on_unavailable == "allow"
+
+    def test_sequential_no_config(self, sync_limiter):
+        """Sequential fallback returns None when no config exists."""
+        repo = sync_limiter._repository
+        limits, on_unavailable, source = repo._resolve_limits_sequential("user-none", "api")
+        assert limits is None
+        assert source is None
+
+
 class TestListEntitiesWithCustomLimits:
     """Tests for list_entities_with_custom_limits method."""
 
