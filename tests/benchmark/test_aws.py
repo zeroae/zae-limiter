@@ -452,6 +452,26 @@ class TestAWSCascadeSpeculativeComparison:
             print(f"Warning: Stack cleanup failed: {e}")
 
     @pytest.mark.benchmark(group="aws-cascade-speculative")
+    def test_non_cascade_speculative_aws(self, benchmark, aws_speculative_limiter):
+        """Reference: non-cascade speculative write on real AWS.
+
+        Single-entity speculative write (no parent, no ThreadPoolExecutor).
+        Provides a baseline to gauge the overhead of the parallel cascade path.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        def operation():
+            with aws_speculative_limiter.acquire(
+                entity_id="aws-spec-parent",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="aws-cascade-speculative")
     def test_cascade_speculative_cache_cold_aws(self, benchmark, aws_speculative_limiter):
         """Baseline: cascade speculative writes with entity cache COLD on real AWS.
 
