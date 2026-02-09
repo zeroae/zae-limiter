@@ -5870,22 +5870,22 @@ class TestCascadeEntityCache:
         async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}):
             pass
 
-        # Third acquire uses cache hit (non-cascade) — single write
-        spec_call_count = 0
-        original_speculative = limiter._repository.speculative_consume
+        # Third acquire uses cache hit (non-cascade) — single _speculative_consume_single
+        single_call_count = 0
+        original_single = limiter._repository._speculative_consume_single
 
-        async def counting_speculative(entity_id, resource, consume, ttl_seconds=None):
-            nonlocal spec_call_count
-            spec_call_count += 1
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+        async def counting_single(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal single_call_count
+            single_call_count += 1
+            return await original_single(entity_id, resource, consume, ttl_seconds)
 
-        limiter._repository.speculative_consume = counting_speculative
+        limiter._repository._speculative_consume_single = counting_single
         try:
             async with limiter.acquire("entity-1", "gpt-4", {"rpm": 1}) as lease:
                 assert lease._initial_committed is True
-            assert spec_call_count == 1  # Only child, no parent
+            assert single_call_count == 1  # Only child, no parent
         finally:
-            limiter._repository.speculative_consume = original_speculative
+            limiter._repository._speculative_consume_single = original_single
 
     async def test_parallel_cascade_both_succeed(self, limiter):
         """Cache hit with cascade=True issues parallel writes, both succeed."""
@@ -5903,15 +5903,15 @@ class TestCascadeEntityCache:
         async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
             pass
 
-        # Third acquire: cache hit, should use parallel path
-        spec_calls: list[str] = []
-        original_speculative = limiter._repository.speculative_consume
+        # Third acquire: cache hit, should use parallel path via _speculative_consume_single
+        single_calls: list[str] = []
+        original_single = limiter._repository._speculative_consume_single
 
-        async def tracking_speculative(entity_id, resource, consume, ttl_seconds=None):
-            spec_calls.append(entity_id)
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+        async def tracking_single(entity_id, resource, consume, ttl_seconds=None):
+            single_calls.append(entity_id)
+            return await original_single(entity_id, resource, consume, ttl_seconds)
 
-        limiter._repository.speculative_consume = tracking_speculative
+        limiter._repository._speculative_consume_single = tracking_single
         try:
             async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
                 assert lease._initial_committed is True
@@ -5919,11 +5919,11 @@ class TestCascadeEntityCache:
                 assert "child-1" in entity_ids
                 assert "parent-1" in entity_ids
 
-            # Both child and parent speculative writes were called
-            assert "child-1" in spec_calls
-            assert "parent-1" in spec_calls
+            # Both child and parent _speculative_consume_single were called
+            assert "child-1" in single_calls
+            assert "parent-1" in single_calls
         finally:
-            limiter._repository.speculative_consume = original_speculative
+            limiter._repository._speculative_consume_single = original_single
 
     async def test_parallel_child_fails_parent_succeeds_compensates_parent(self, limiter):
         """Parallel: child fails, parent succeeds — parent compensated, fall back."""
@@ -5966,7 +5966,7 @@ class TestCascadeEntityCache:
             refill_period_ms=60_000,
         )
 
-        original_speculative = limiter._repository.speculative_consume
+        original_single = limiter._repository._speculative_consume_single
         compensated_entity_ids: list[str] = []
         original_compensate = limiter._compensate_speculative
 
@@ -5974,7 +5974,7 @@ class TestCascadeEntityCache:
             compensated_entity_ids.append(entity_id)
             return await original_compensate(entity_id, resource, consume)
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=False,
@@ -5987,9 +5987,9 @@ class TestCascadeEntityCache:
                     cascade=False,
                     parent_id=None,
                 )
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_single(entity_id, resource, consume, ttl_seconds)
 
-        limiter._repository.speculative_consume = mock_speculative
+        limiter._repository._speculative_consume_single = mock_single
         limiter._compensate_speculative = tracking_compensate
         try:
             # Should fall back to slow path (child refill helps)
@@ -5998,7 +5998,7 @@ class TestCascadeEntityCache:
             # Parent should have been compensated
             assert "parent-1" in compensated_entity_ids
         finally:
-            limiter._repository.speculative_consume = original_speculative
+            limiter._repository._speculative_consume_single = original_single
             limiter._compensate_speculative = original_compensate
 
     async def test_parallel_parent_fails_child_succeeds_compensates_child(self, limiter):
@@ -6031,10 +6031,10 @@ class TestCascadeEntityCache:
             refill_period_ms=60_000,
         )
 
-        original_speculative = limiter._repository.speculative_consume
+        original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6047,9 +6047,9 @@ class TestCascadeEntityCache:
             if entity_id == "parent-1" and call_count <= 2:
                 # Parent bucket missing
                 return SpeculativeResult(success=False, old_buckets=None)
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_single(entity_id, resource, consume, ttl_seconds)
 
-        limiter._repository.speculative_consume = mock_speculative
+        limiter._repository._speculative_consume_single = mock_single
         try:
             # Should compensate child and fall back to slow path
             async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
@@ -6057,7 +6057,7 @@ class TestCascadeEntityCache:
                 assert "child-1" in entity_ids
                 assert "parent-1" in entity_ids
         finally:
-            limiter._repository.speculative_consume = original_speculative
+            limiter._repository._speculative_consume_single = original_single
 
     async def test_parallel_both_fail_no_compensation(self, limiter):
         """Parallel: both fail — no compensation needed, falls back to slow path."""
@@ -6100,25 +6100,25 @@ class TestCascadeEntityCache:
             refill_period_ms=60_000,
         )
 
-        original_speculative = limiter._repository.speculative_consume
+        original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
                 return SpeculativeResult(success=False, old_buckets=[child_old])
             if entity_id == "parent-1" and call_count <= 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_old])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_single(entity_id, resource, consume, ttl_seconds)
 
-        limiter._repository.speculative_consume = mock_speculative
+        limiter._repository._speculative_consume_single = mock_single
         try:
             # Both fail with refill-would-help → falls back to slow path
             async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
                 assert len(lease.entries) > 0
         finally:
-            limiter._repository.speculative_consume = original_speculative
+            limiter._repository._speculative_consume_single = original_single
 
     async def test_parallel_parent_exhausted_compensates_child_raises(self, limiter):
         """Parallel: parent exhausted (no refill help), child compensated, raises."""
@@ -6161,9 +6161,9 @@ class TestCascadeEntityCache:
             refill_period_ms=60_000,
         )
 
-        original_speculative = limiter._repository.speculative_consume
+        original_single = limiter._repository._speculative_consume_single
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6176,15 +6176,15 @@ class TestCascadeEntityCache:
                     success=False,
                     old_buckets=[parent_bucket_exhausted],
                 )
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_single(entity_id, resource, consume, ttl_seconds)
 
-        limiter._repository.speculative_consume = mock_speculative
+        limiter._repository._speculative_consume_single = mock_single
         try:
             with pytest.raises(RateLimitExceeded):
                 async with limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
                     pass
         finally:
-            limiter._repository.speculative_consume = original_speculative
+            limiter._repository._speculative_consume_single = original_single
 
     async def test_parallel_both_succeed_skips_zero_amount_buckets(self, limiter):
         """Parallel both succeed: buckets not in consume dict are skipped."""
@@ -6239,9 +6239,9 @@ class TestCascadeEntityCache:
             refill_period_ms=60_000,
         )
 
-        original_speculative = limiter._repository.speculative_consume
+        original_single = limiter._repository._speculative_consume_single
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6256,9 +6256,9 @@ class TestCascadeEntityCache:
                     cascade=False,
                     parent_id=None,
                 )
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_single(entity_id, resource, consume, ttl_seconds)
 
-        limiter._repository.speculative_consume = mock_speculative
+        limiter._repository._speculative_consume_single = mock_single
         try:
             # Only consume rpm — tpm bucket should be skipped
             async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
@@ -6268,7 +6268,7 @@ class TestCascadeEntityCache:
                 assert "rpm" in limit_names
                 assert "tpm" not in limit_names
         finally:
-            limiter._repository.speculative_consume = original_speculative
+            limiter._repository._speculative_consume_single = original_single
 
     async def test_parallel_parent_fails_refill_helps_skips_zero_amount(self, limiter):
         """Parent fails with refill help: extra child buckets not in consume are skipped."""
@@ -6322,10 +6322,10 @@ class TestCascadeEntityCache:
             refill_period_ms=60_000,
         )
 
-        original_speculative = limiter._repository.speculative_consume
+        original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6340,9 +6340,9 @@ class TestCascadeEntityCache:
                     success=False,
                     old_buckets=[parent_old_rpm],
                 )
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_single(entity_id, resource, consume, ttl_seconds)
 
-        limiter._repository.speculative_consume = mock_speculative
+        limiter._repository._speculative_consume_single = mock_single
         try:
             # Parent refill helps → parent-only slow path; tpm bucket skipped in entries
             async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
@@ -6355,4 +6355,4 @@ class TestCascadeEntityCache:
                 assert "rpm" in child_limit_names
                 assert "tpm" not in child_limit_names
         finally:
-            limiter._repository.speculative_consume = original_speculative
+            limiter._repository._speculative_consume_single = original_single

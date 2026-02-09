@@ -106,6 +106,24 @@ TYPE_REWRITES = {
 # Subscript type unwrapping (e.g., Awaitable[X] -> X, Coroutine[Any, Any, X] -> X)
 UNWRAP_SUBSCRIPTS = {"Awaitable", "Coroutine"}
 
+# Methods injected into SyncRepository for parallel execution (issue #318)
+# asyncio.gather() is transformed to self._run_in_executor(lambda: a, lambda: b)
+# and the executor + method are injected into SyncRepository by visit_ClassDef.
+_EXECUTOR_METHODS = """\
+@property
+def _executor(self) -> Any:
+    executor = getattr(self, "_thread_executor", None)
+    if executor is None:
+        from concurrent.futures import ThreadPoolExecutor
+        executor = ThreadPoolExecutor(max_workers=2)
+        self._thread_executor = executor
+    return executor
+
+def _run_in_executor(self, *funcs: Any) -> Any:
+    futures = [self._executor.submit(fn) for fn in funcs]
+    return tuple(f.result() for f in futures)
+"""
+
 # Methods/functions to remove (already have sync equivalents)
 REMOVE_METHODS = {
     "get_system_defaults_sync",
@@ -251,15 +269,39 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             # Return just the first argument (the coroutine), skip timeout
             return node.args[0]
 
-        # Handle asyncio.gather(a, b, ...) -> (a, b, ...) (sequential tuple)
+        # Handle asyncio.gather(a, b, ...) -> self._run_in_executor(lambda: a, ...)
         if (
             isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "asyncio"
             and node.func.attr == "gather"
         ):
-            # Convert gather args to a tuple of sequential calls
-            return ast.copy_location(ast.Tuple(elts=node.args, ctx=ast.Load()), node)
+            # Wrap each arg in a lambda for executor submission
+            lambda_args = [
+                ast.Lambda(
+                    args=ast.arguments(
+                        posonlyargs=[],
+                        args=[],
+                        kwonlyargs=[],
+                        kw_defaults=[],
+                        defaults=[],
+                    ),
+                    body=arg,
+                )
+                for arg in node.args
+            ]
+            return ast.copy_location(
+                ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id="self", ctx=ast.Load()),
+                        attr="_run_in_executor",
+                        ctx=ast.Load(),
+                    ),
+                    args=lambda_args,
+                    keywords=[],
+                ),
+                node,
+            )
 
         # Handle boto3/aioboto3 client context manager pattern:
         # session.client("dynamodb", ...)__aenter__() -> session.client("dynamodb", ...)
@@ -374,6 +416,12 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
 
         # Continue visiting children
         self.generic_visit(node)
+
+        # Inject _executor property and _run_in_executor method into SyncRepository
+        if node.name == "SyncRepository":
+            executor_stmts = ast.parse(_EXECUTOR_METHODS).body
+            node.body.extend(executor_stmts)
+
         return node
 
     def _transform_base_class(self, node: ast.AST) -> ast.AST:

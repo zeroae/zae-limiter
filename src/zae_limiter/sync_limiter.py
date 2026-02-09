@@ -630,8 +630,8 @@ class SyncRateLimiter:
     ) -> SyncLease | None:
         """Try the speculative fast path for acquire (issue #315).
 
-        Uses entity cache (issue #318) to enable parallel child+parent
-        speculative writes when cascade is known from a prior acquire.
+        SyncRepository checks its own entity cache (issue #318) and issues
+        parallel child+parent UpdateItems when cache hit + cascade.
 
         Returns:
             SyncLease if speculative write succeeded (already committed).
@@ -643,25 +643,17 @@ class SyncRateLimiter:
                 wouldn't help). Saves 1 RCU vs the slow path.
         """
         now_ms = int(time.time() * 1000)
-        cache_entry = getattr(self._repository, "_entity_cache", {}).get(entity_id)
-        if cache_entry is not None:
-            cascade, parent_id = cache_entry
-            if cascade and parent_id:
-                return self._try_parallel_speculative(
-                    entity_id, parent_id, resource, consume, now_ms
-                )
-        child_result = self._repository.speculative_consume(
+        result = self._repository.speculative_consume(
             entity_id=entity_id, resource=resource, consume=consume
         )
-        if child_result.success:
-            entity_cache = getattr(self._repository, "_entity_cache", None)
-            if entity_cache is not None:
-                entity_cache[entity_id] = (child_result.cascade, child_result.parent_id)
-        if not child_result.success:
-            self._check_speculative_failure(child_result, consume, now_ms)
+        if not result.success:
+            if result.parent_result is not None and result.parent_result.success:
+                assert result.parent_id is not None
+                self._compensate_speculative(result.parent_id, resource, consume)
+            self._check_speculative_failure(result, consume, now_ms)
             return None
         entries: list[LeaseEntry] = []
-        for state in child_result.buckets:
+        for state in result.buckets:
             amount = consume.get(state.limit_name, 0)
             if amount == 0:
                 continue
@@ -673,12 +665,32 @@ class SyncRateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
-                    _cascade=child_result.cascade,
-                    _parent_id=child_result.parent_id,
+                    _cascade=result.cascade,
+                    _parent_id=result.parent_id,
                 )
             )
-        if child_result.cascade and child_result.parent_id:
-            parent_id = child_result.parent_id
+        if result.parent_result is not None:
+            if result.parent_result.success:
+                for state in result.parent_result.buckets:
+                    amount = consume.get(state.limit_name, 0)
+                    if amount == 0:
+                        continue
+                    limit = Limit.from_bucket_state(state)
+                    entries.append(
+                        LeaseEntry(
+                            entity_id=state.entity_id,
+                            resource=state.resource,
+                            limit=limit,
+                            state=state,
+                            consumed=amount,
+                        )
+                    )
+            else:
+                return self._handle_nested_parent_failure(
+                    entity_id, resource, consume, result, now_ms
+                )
+        elif result.cascade and result.parent_id:
+            parent_id = result.parent_id
             parent_result = self._repository.speculative_consume(
                 entity_id=parent_id, resource=resource, consume=consume
             )
@@ -719,7 +731,7 @@ class SyncRateLimiter:
                             requested=consume.get(s.limit_name, 0),
                             now_ms=now_ms,
                         )
-                        for s in child_result.old_buckets or child_result.buckets
+                        for s in result.buckets
                     ]
                     raise RateLimitExceeded(child_statuses + parent_statuses)
                 try:
@@ -743,97 +755,20 @@ class SyncRateLimiter:
             entry._initial_consumed = entry.consumed
         return lease
 
-    def _try_parallel_speculative(
-        self, entity_id: str, parent_id: str, resource: str, consume: dict[str, int], now_ms: int
-    ) -> SyncLease | None:
-        """Parallel speculative writes for cascade entities (issue #318).
-
-        Issues child and parent speculative UpdateItems concurrently via
-        asyncio.gather. On success, returns a pre-committed SyncLease with
-        both child and parent entries. On partial failure, compensates
-        the successful write and falls back.
-
-        Returns:
-            SyncLease if both writes succeeded (already committed).
-            None if slow path is needed.
-
-        Raises:
-            RateLimitExceeded: If the child bucket is truly exhausted
-                (refill wouldn't help).
-        """
-        child_result, parent_result = (
-            self._repository.speculative_consume(
-                entity_id=entity_id, resource=resource, consume=consume
-            ),
-            self._repository.speculative_consume(
-                entity_id=parent_id, resource=resource, consume=consume
-            ),
-        )
-        if not child_result.success:
-            if parent_result.success:
-                self._compensate_speculative(parent_id, resource, consume)
-            self._check_speculative_failure(child_result, consume, now_ms)
-            return None
-        if not parent_result.success:
-            return self._handle_parallel_parent_failure(
-                entity_id, parent_id, resource, consume, child_result, parent_result, now_ms
-            )
-        entries: list[LeaseEntry] = []
-        for state in child_result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
-                continue
-            limit = Limit.from_bucket_state(state)
-            entries.append(
-                LeaseEntry(
-                    entity_id=state.entity_id,
-                    resource=state.resource,
-                    limit=limit,
-                    state=state,
-                    consumed=amount,
-                    _cascade=child_result.cascade,
-                    _parent_id=child_result.parent_id,
-                )
-            )
-        for state in parent_result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
-                continue
-            limit = Limit.from_bucket_state(state)
-            entries.append(
-                LeaseEntry(
-                    entity_id=state.entity_id,
-                    resource=state.resource,
-                    limit=limit,
-                    state=state,
-                    consumed=amount,
-                )
-            )
-        lease = SyncLease(
-            repository=self._repository,
-            entries=entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
-        )
-        lease._initial_committed = True
-        for entry in entries:
-            entry._initial_consumed = entry.consumed
-        return lease
-
-    def _handle_parallel_parent_failure(
+    def _handle_nested_parent_failure(
         self,
         entity_id: str,
-        parent_id: str,
         resource: str,
         consume: dict[str, int],
-        child_result: "SpeculativeResult",
-        parent_result: "SpeculativeResult",
+        result: "SpeculativeResult",
         now_ms: int,
     ) -> SyncLease | None:
-        """Handle parent failure in parallel speculative path (issue #318).
+        """Handle parent failure from nested SpeculativeResult (issue #318).
 
-        Child succeeded speculatively. Parent failed. Decides whether to
-        compensate child and fall back, try parent-only slow path, or
-        fast-reject.
+        Child succeeded speculatively (result.success=True).
+        Parent failed (result.parent_result.success=False).
+        Decides whether to compensate child and fall back, try parent-only
+        slow path, or fast-reject.
 
         Returns:
             SyncLease if parent-only slow path succeeded.
@@ -842,6 +777,10 @@ class SyncRateLimiter:
         Raises:
             RateLimitExceeded: If parent is truly exhausted.
         """
+        assert result.parent_result is not None
+        assert result.parent_id is not None
+        parent_result = result.parent_result
+        parent_id = result.parent_id
         if parent_result.old_buckets is None:
             self._compensate_child(entity_id, resource, consume)
             return None
@@ -863,11 +802,11 @@ class SyncRateLimiter:
                     requested=consume.get(s.limit_name, 0),
                     now_ms=now_ms,
                 )
-                for s in child_result.buckets
+                for s in result.buckets
             ]
             raise RateLimitExceeded(child_statuses + parent_statuses)
         entries: list[LeaseEntry] = []
-        for state in child_result.buckets:
+        for state in result.buckets:
             amount = consume.get(state.limit_name, 0)
             if amount == 0:
                 continue
@@ -879,8 +818,8 @@ class SyncRateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
-                    _cascade=child_result.cascade,
-                    _parent_id=child_result.parent_id,
+                    _cascade=result.cascade,
+                    _parent_id=result.parent_id,
                 )
             )
         try:
@@ -1023,12 +962,11 @@ class SyncRateLimiter:
             entity_id, resource, limits_override
         )
         entity, child_buckets = self._fetch_entity_and_buckets(entity_id, resource)
-        entity_cache = getattr(self._repository, "_entity_cache", None)
-        if entity_cache is not None:
+        if hasattr(self._repository, "cache_entity_metadata"):
             if entity:
-                entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+                self._repository.cache_entity_metadata(entity_id, entity.cascade, entity.parent_id)
             else:
-                entity_cache[entity_id] = (False, None)
+                self._repository.cache_entity_metadata(entity_id, False, None)
         entity_ids = [entity_id]
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
         entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}

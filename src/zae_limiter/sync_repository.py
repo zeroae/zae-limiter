@@ -96,6 +96,10 @@ class SyncRepository:
         self._config_cache = SyncConfigCache(ttl_seconds=config_cache_ttl)
         self._entity_cache: dict[str, tuple[bool, str | None]] = {}
 
+    def cache_entity_metadata(self, entity_id: str, cascade: bool, parent_id: str | None) -> None:
+        """Populate entity cache with metadata from slow path fetch."""
+        self._entity_cache[entity_id] = (cascade, parent_id)
+
     @property
     def capabilities(self) -> BackendCapabilities:
         """Declare which extended features this backend supports."""
@@ -906,10 +910,9 @@ class SyncRepository:
     ) -> "SpeculativeResult":
         """Attempt speculative UpdateItem with condition check.
 
-        Issues an UpdateItem with ``ADD -consumed`` and condition
-        ``attribute_exists(PK) AND tk >= consumed`` for each limit.
-        Uses ``ReturnValuesOnConditionCheckFailure=ALL_OLD`` to return
-        the current item state on failure.
+        Checks entity cache for cascade metadata. If cache hit + cascade,
+        issues child+parent UpdateItems concurrently via asyncio.gather
+        and returns nested parent_result.
 
         Args:
             entity_id: Entity owning the bucket
@@ -918,11 +921,41 @@ class SyncRepository:
             ttl_seconds: TTL in seconds from now, or None for no TTL change
 
         Returns:
-            SpeculativeResult with success flag and either:
-            - On success: buckets, cascade, parent_id from ALL_NEW
-            - On failure with ALL_OLD: old_buckets from ALL_OLD
-            - On failure without ALL_OLD: old_buckets is None (bucket missing)
+            SpeculativeResult with:
+            - On cache hit + cascade + both succeed: parent_result populated
+            - On cache miss or non-cascade: parent_result is None
+            - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
+        cache_entry = self._entity_cache.get(entity_id)
+        if cache_entry is not None:
+            cascade_cached, parent_id_cached = cache_entry
+            if cascade_cached and parent_id_cached:
+                child_result: SpeculativeResult
+                parent_result: SpeculativeResult
+                child_result, parent_result = self._run_in_executor(
+                    lambda: self._speculative_consume_single(
+                        entity_id, resource, consume, ttl_seconds
+                    ),
+                    lambda: self._speculative_consume_single(
+                        parent_id_cached, resource, consume, ttl_seconds
+                    ),
+                )
+                if child_result.success:
+                    self._entity_cache[entity_id] = (child_result.cascade, child_result.parent_id)
+                else:
+                    child_result.cascade = cascade_cached
+                    child_result.parent_id = parent_id_cached
+                child_result.parent_result = parent_result
+                return child_result
+        result = self._speculative_consume_single(entity_id, resource, consume, ttl_seconds)
+        if result.success:
+            self._entity_cache[entity_id] = (result.cascade, result.parent_id)
+        return result
+
+    def _speculative_consume_single(
+        self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
+    ) -> "SpeculativeResult":
+        """Single speculative UpdateItem (extracted for parallel reuse)."""
         client = self._get_client()
         add_parts: list[str] = []
         condition_parts: list[str] = ["attribute_exists(PK)"]
@@ -2309,6 +2342,20 @@ class SyncRepository:
     def get_cache_stats(self) -> CacheStats:
         """Get config cache performance statistics (ADR-122)."""
         return self._config_cache.get_stats()
+
+    @property
+    def _executor(self) -> Any:
+        executor = getattr(self, "_thread_executor", None)
+        if executor is None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            executor = ThreadPoolExecutor(max_workers=2)
+            self._thread_executor = executor
+        return executor
+
+    def _run_in_executor(self, *funcs: Any) -> Any:
+        futures = [self._executor.submit(fn) for fn in funcs]
+        return tuple(f.result() for f in futures)
 
 
 if TYPE_CHECKING:

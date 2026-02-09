@@ -37,6 +37,8 @@ class SpeculativeResult:
         parent_id: On success, the entity's parent_id (if any).
         old_buckets: On failure, deserialized BucketStates from ALL_OLD response.
             None if the bucket doesn't exist (first acquire).
+        parent_result: On cache hit + cascade, nested parent SpeculativeResult
+            from parallel UpdateItem. None for cache miss, non-cascade, or failure.
     """
 
     success: bool
@@ -44,6 +46,7 @@ class SpeculativeResult:
     cascade: bool = False
     parent_id: str | None = None
     old_buckets: "list[BucketState] | None" = None
+    parent_result: "SpeculativeResult | None" = None
 
 
 @runtime_checkable

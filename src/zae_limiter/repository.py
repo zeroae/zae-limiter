@@ -1,5 +1,6 @@
 """DynamoDB repository for rate limiter data."""
 
+import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -96,6 +97,15 @@ class Repository:
         # Entity metadata cache for parallel cascade writes (issue #318)
         # Stores {entity_id -> (cascade, parent_id)} — immutable, no TTL needed
         self._entity_cache: dict[str, tuple[bool, str | None]] = {}
+
+    def cache_entity_metadata(
+        self,
+        entity_id: str,
+        cascade: bool,
+        parent_id: str | None,
+    ) -> None:
+        """Populate entity cache with metadata from slow path fetch."""
+        self._entity_cache[entity_id] = (cascade, parent_id)
 
     @property
     def capabilities(self) -> BackendCapabilities:
@@ -1139,10 +1149,9 @@ class Repository:
     ) -> "SpeculativeResult":
         """Attempt speculative UpdateItem with condition check.
 
-        Issues an UpdateItem with ``ADD -consumed`` and condition
-        ``attribute_exists(PK) AND tk >= consumed`` for each limit.
-        Uses ``ReturnValuesOnConditionCheckFailure=ALL_OLD`` to return
-        the current item state on failure.
+        Checks entity cache for cascade metadata. If cache hit + cascade,
+        issues child+parent UpdateItems concurrently via asyncio.gather
+        and returns nested parent_result.
 
         Args:
             entity_id: Entity owning the bucket
@@ -1151,11 +1160,53 @@ class Repository:
             ttl_seconds: TTL in seconds from now, or None for no TTL change
 
         Returns:
-            SpeculativeResult with success flag and either:
-            - On success: buckets, cascade, parent_id from ALL_NEW
-            - On failure with ALL_OLD: old_buckets from ALL_OLD
-            - On failure without ALL_OLD: old_buckets is None (bucket missing)
+            SpeculativeResult with:
+            - On cache hit + cascade + both succeed: parent_result populated
+            - On cache miss or non-cascade: parent_result is None
+            - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
+        # Check entity cache for parallel cascade opportunity (issue #318)
+        cache_entry = self._entity_cache.get(entity_id)
+
+        if cache_entry is not None:
+            cascade_cached, parent_id_cached = cache_entry
+            if cascade_cached and parent_id_cached:
+                child_result: SpeculativeResult
+                parent_result: SpeculativeResult
+                child_result, parent_result = await asyncio.gather(
+                    self._speculative_consume_single(entity_id, resource, consume, ttl_seconds),
+                    self._speculative_consume_single(
+                        parent_id_cached, resource, consume, ttl_seconds
+                    ),
+                )
+                if child_result.success:
+                    self._entity_cache[entity_id] = (
+                        child_result.cascade,
+                        child_result.parent_id,
+                    )
+                else:
+                    # On failure, _speculative_consume_single doesn't return
+                    # cascade/parent_id (only in ALL_NEW). Use cached values
+                    # so the caller can compensate the parent.
+                    child_result.cascade = cascade_cached
+                    child_result.parent_id = parent_id_cached
+                child_result.parent_result = parent_result
+                return child_result
+
+        # Cache miss or non-cascade: single UpdateItem
+        result = await self._speculative_consume_single(entity_id, resource, consume, ttl_seconds)
+        if result.success:
+            self._entity_cache[entity_id] = (result.cascade, result.parent_id)
+        return result
+
+    async def _speculative_consume_single(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None = None,
+    ) -> "SpeculativeResult":
+        """Single speculative UpdateItem (extracted for parallel reuse)."""
         client = await self._get_client()
 
         # Build ADD expression for each limit
