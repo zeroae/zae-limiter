@@ -489,6 +489,112 @@ class TestOptimizationComparison:
 
         benchmark(operation)
 
+    @pytest.mark.benchmark(group="cascade-speculative-comparison")
+    def test_cascade_speculative_cache_cold(self, benchmark, sync_limiter):
+        """Baseline: cascade speculative writes with entity cache COLD.
+
+        Entity cache is cleared before each iteration, forcing the child-only
+        speculative path. The parent goes through the normal slow path
+        (BatchGetItem read + TransactWriteItems write).
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Setup hierarchy
+        sync_limiter.create_entity("spec-cmp-parent", name="Parent")
+        sync_limiter.create_entity(
+            "spec-cmp-child",
+            name="Child",
+            parent_id="spec-cmp-parent",
+            cascade=True,
+        )
+
+        # Pre-warm buckets + entity cache with first acquire
+        with sync_limiter.acquire(
+            entity_id="spec-cmp-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Enable speculative writes (default, but explicit for clarity)
+        sync_limiter._speculative_writes = True
+
+        # Second acquire warms speculative path (buckets now exist in DynamoDB)
+        with sync_limiter.acquire(
+            entity_id="spec-cmp-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        def operation():
+            # Clear entity cache to force cold path each iteration
+            sync_limiter._repository._entity_cache.clear()
+            with sync_limiter.acquire(
+                entity_id="spec-cmp-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="cascade-speculative-comparison")
+    def test_cascade_speculative_cache_warm(self, benchmark, sync_limiter):
+        """Optimized: cascade speculative writes with entity cache WARM.
+
+        Entity cache is pre-populated, enabling parallel speculative writes
+        for both child + parent via ThreadPoolExecutor.
+        Expected: Lower latency due to parallel DynamoDB writes.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        # Setup hierarchy
+        sync_limiter.create_entity("spec-warm-parent", name="Parent")
+        sync_limiter.create_entity(
+            "spec-warm-child",
+            name="Child",
+            parent_id="spec-warm-parent",
+            cascade=True,
+        )
+
+        # Pre-warm buckets + entity cache with first acquire
+        with sync_limiter.acquire(
+            entity_id="spec-warm-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Enable speculative writes (default, but explicit for clarity)
+        sync_limiter._speculative_writes = True
+
+        # Second acquire warms speculative path (buckets now exist in DynamoDB)
+        with sync_limiter.acquire(
+            entity_id="spec-warm-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Entity cache is now warm from the acquires above
+
+        def operation():
+            with sync_limiter.acquire(
+                entity_id="spec-warm-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
     @pytest.mark.benchmark(group="stored-limits-comparison")
     def test_stored_limits_cache_disabled(self, benchmark, sync_limiter_no_cache):
         """Baseline: stored limits lookup with cache DISABLED.
