@@ -10,9 +10,9 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 |-------------|----|----|
 | Entity metadata | `ENTITY#{id}` | `#META` |
 | Bucket | `ENTITY#{id}` | `#BUCKET#{resource}#{limit_name}` |
-| Entity limit config | `ENTITY#{id}` | `#LIMIT#{resource}#{limit_name}` |
-| Resource limit config | `RESOURCE#{resource}` | `#LIMIT#{resource}#{limit_name}` |
-| System limit config | `SYSTEM#` | `#LIMIT#{resource}#{limit_name}` |
+| Entity config | `ENTITY#{id}` | `#CONFIG#{resource}` |
+| Resource config | `RESOURCE#{resource}` | `#CONFIG` |
+| System config | `SYSTEM#` | `#CONFIG` |
 | Usage snapshot | `ENTITY#{id}` | `#USAGE#{resource}#{window_key}` |
 | System version | `SYSTEM#` | `#VERSION` |
 | Audit events | `AUDIT#{entity_id}` | `#AUDIT#{timestamp}` |
@@ -23,6 +23,7 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 |-------|---------|-------------|
 | **GSI1** | Parent → Children lookup | `GSI1PK=PARENT#{id}` → `GSI1SK=CHILD#{id}` |
 | **GSI2** | Resource aggregation | `GSI2PK=RESOURCE#{name}` → buckets/usage |
+| **GSI3** | Entity config queries (sparse) | `GSI3PK=ENTITY_CONFIG#{resource}` → `GSI3SK=entity_id` |
 
 ### Access Patterns
 
@@ -36,9 +37,10 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 | Get version | `PK=SYSTEM#, SK=#VERSION` |
 | Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
 | Get usage snapshots | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
-| Get system limits | `PK=SYSTEM#, SK begins_with #LIMIT#{resource}#` |
-| Get resource limits | `PK=RESOURCE#{resource}, SK begins_with #LIMIT#{resource}#` |
-| Get entity limits | `PK=ENTITY#{id}, SK begins_with #LIMIT#{resource}#` |
+| Get system config | `PK=SYSTEM#, SK=#CONFIG` |
+| Get resource config | `PK=RESOURCE#{resource}, SK=#CONFIG` |
+| Get entity config | `PK=ENTITY#{id}, SK=#CONFIG#{resource}` |
+| List entities with custom limits | GSI3: `GSI3PK=ENTITY_CONFIG#{resource}` |
 
 ### Optimized Read Patterns
 
@@ -140,30 +142,31 @@ aggregation, so they use a flat structure to enable single-call atomic updates.
 
 See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
 
-**Limit config records also use FLAT structure** (v0.5.0+):
+**Config records use composite items** (v0.8.0+, ADR-114). All limits for a config level are stored in a single item:
 
 ```python
-# System/Resource/Entity limit config (FLAT structure):
+# Resource config (composite, FLAT structure):
 {
     "PK": "RESOURCE#gpt-4",           # or SYSTEM# or ENTITY#{id}
-    "SK": "#LIMIT#gpt-4#tpm",
-    "resource": "gpt-4",               # Top-level
-    "limit_name": "tpm",               # Top-level
-    "capacity": 100000,                # Top-level
-    "burst": 100000,                   # Top-level
-    "refill_amount": 100000,           # Top-level
-    "refill_period_seconds": 60        # Top-level
+    "SK": "#CONFIG",                   # or #CONFIG#{resource} for entity level
+    "resource": "gpt-4",
+    "l_tpm_cp": 100000,               # capacity for tpm limit
+    "l_tpm_bx": 100000,               # burst for tpm limit
+    "l_tpm_ra": 100000,               # refill_amount for tpm limit
+    "l_tpm_rp": 60,                   # refill_period_seconds for tpm limit
+    "config_version": 1               # Atomic counter for cache invalidation
 }
 ```
 
-Limit configs use four-level precedence: **Entity (resource-specific) > Entity (_default_) > Resource > System > Constructor defaults**.
+Config records use four-level precedence: **Entity (resource-specific) > Entity (_default_) > Resource > System > Constructor defaults**.
 
 **Key builders:**
 
 - `pk_system()` - Returns `SYSTEM#`
 - `pk_resource(resource)` - Returns `RESOURCE#{resource}`
 - `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
-- `sk_limit(resource, limit_name)` - Returns `#LIMIT#{resource}#{limit_name}`
+- `sk_config()` - Returns `#CONFIG` (system/resource level)
+- `sk_config(resource)` - Returns `#CONFIG#{resource}` (entity level)
 
 **Audit entity IDs for config levels** (see [ADR-106](../adr/106-audit-entity-ids-for-config.md)):
 

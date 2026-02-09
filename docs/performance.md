@@ -695,14 +695,14 @@ print(f"TTL: {stats.ttl_seconds}s")
 
 Speculative writes (issue #315) enable a fast path for `acquire()` that skips the read round trip by issuing a conditional `UpdateItem` directly. This is most effective for pre-warmed buckets with sufficient capacity.
 
-### Enabling Speculative Writes
+### Configuring Speculative Writes
 
 ```python
 from zae_limiter import RateLimiter, Repository
 
 limiter = RateLimiter(
     repository=Repository(name="my-app", region="us-east-1"),
-    speculative_writes=True,  # Opt-in
+    speculative_writes=True,  # Default
 )
 ```
 
@@ -792,8 +792,8 @@ Track the ratio of speculative successes to fallbacks to determine if speculativ
 # - Higher WCU = more fallbacks (consider disabling)
 ```
 
-!!! tip "Start without speculative writes"
-    The default (`speculative_writes=False`) is the safest choice. Enable speculative writes only after establishing baseline performance and confirming that most requests succeed without needing token refill.
+!!! tip "Disabling speculative writes"
+    If most requests are from new entities or near-capacity buckets, disable with `speculative_writes=False` to avoid the extra WCU from failed speculative attempts.
 
 ---
 
