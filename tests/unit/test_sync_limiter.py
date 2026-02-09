@@ -2849,6 +2849,23 @@ class TestRateLimiterConfigCache:
             assert limiter._repository.get_cache_stats().size == 0
             limiter.close()
 
+    def test_resolve_on_unavailable_uses_cache(self, sync_limiter):
+        """resolve_on_unavailable() goes through config cache, not direct GetItem (#333)."""
+        from zae_limiter import OnUnavailable
+
+        sync_limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 100)], on_unavailable=OnUnavailable.ALLOW
+        )
+        result = sync_limiter._repository.resolve_on_unavailable()
+        assert result == "allow"
+        stats_after_first = sync_limiter._repository.get_cache_stats()
+        assert stats_after_first.misses == 1
+        result = sync_limiter._repository.resolve_on_unavailable()
+        assert result == "allow"
+        stats_after_second = sync_limiter._repository.get_cache_stats()
+        assert stats_after_second.hits == 1
+        assert stats_after_second.misses == 1
+
 
 class TestListEntitiesWithCustomLimits:
     """Tests for list_entities_with_custom_limits method."""

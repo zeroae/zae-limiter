@@ -1249,7 +1249,7 @@ class RateLimiter:
         """
         Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
 
-        Delegates system config lookup to repository.resolve_limits() (ADR-122).
+        Delegates system config lookup to repository.resolve_on_unavailable() (#333).
 
         Args:
             on_unavailable_param: Optional parameter override
@@ -1261,8 +1261,8 @@ class RateLimiter:
         if on_unavailable_param is not None:
             return on_unavailable_param
 
-        # Try System config via repository
-        _, on_unavailable_action = await self._repository.get_system_defaults()
+        # Try System config via repository (cached, ADR-122 / #333)
+        on_unavailable_action = await self._repository.resolve_on_unavailable()
         if on_unavailable_action is not None:
             return OnUnavailable(on_unavailable_action)
 

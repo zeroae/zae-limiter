@@ -856,6 +856,15 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def resolve_on_unavailable(self) -> "OnUnavailableAction | None":
+        """
+        Resolve on_unavailable from system config, using cache.
+
+        Returns:
+            The system-level on_unavailable action, or None if not configured.
+        """
+        ...
+
     async def invalidate_config_cache(self) -> None:
         """
         Invalidate all cached config entries.

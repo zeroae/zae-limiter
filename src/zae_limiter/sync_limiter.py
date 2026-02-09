@@ -1017,7 +1017,7 @@ class SyncRateLimiter:
         """
         Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
 
-        Delegates system config lookup to repository.resolve_limits() (ADR-122).
+        Delegates system config lookup to repository.resolve_on_unavailable() (#333).
 
         Args:
             on_unavailable_param: Optional parameter override
@@ -1027,7 +1027,7 @@ class SyncRateLimiter:
         """
         if on_unavailable_param is not None:
             return on_unavailable_param
-        _, on_unavailable_action = self._repository.get_system_defaults()
+        on_unavailable_action = self._repository.resolve_on_unavailable()
         if on_unavailable_action is not None:
             return OnUnavailable(on_unavailable_action)
         return self.on_unavailable

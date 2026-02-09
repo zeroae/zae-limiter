@@ -2912,6 +2912,13 @@ class Repository:
         # Nothing found
         return None, on_unavailable, None
 
+    async def resolve_on_unavailable(self) -> OnUnavailableAction | None:
+        """Resolve on_unavailable from system config, using cache."""
+        _, on_unavailable = await self._config_cache.get_system_defaults(
+            self.get_system_defaults,
+        )
+        return on_unavailable
+
     async def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""
         await self._config_cache.invalidate_async()
