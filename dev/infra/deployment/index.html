@@ -3356,7 +3356,7 @@
 <ul>
 <li><strong>DynamoDB Table</strong> - Stores rate limit state, entities, and usage data</li>
 <li><strong>DynamoDB Streams</strong> - Captures changes for usage aggregation</li>
-<li><strong>Lambda Function</strong> - Aggregates usage into hourly/daily snapshots and archives audit events</li>
+<li><strong>Lambda Function</strong> - Aggregates usage into hourly/daily snapshots, proactively refills token buckets for active entities, and archives audit events</li>
 <li><strong>S3 Bucket</strong> - Archives expired audit events (when audit archival is enabled)</li>
 <li><strong>IAM Policies</strong> - Least-privilege managed policies (AcquireOnly/FullAccess/ReadOnly)</li>
 <li><strong>CloudWatch Logs</strong> - Lambda function logs</li>

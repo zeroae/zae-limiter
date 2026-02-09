@@ -3089,7 +3089,7 @@
 <li><strong>Create roles with <code>--create-iam-roles</code></strong> - When you want pre-built roles that attach these policies</li>
 </ul>
 <h4 id="lambda-aggregator">Lambda Aggregator<a class="headerlink" href="#lambda-aggregator" title="Permanent link">&para;</a></h4>
-<p>The Lambda aggregator uses a separate execution role with least-privilege permissions:</p>
+<p>The Lambda aggregator processes DynamoDB Stream events for usage aggregation, proactive bucket refill, and audit archival. It uses a separate execution role with least-privilege permissions:</p>
 <ul>
 <li><code>dynamodb:GetItem</code>, <code>PutItem</code>, <code>UpdateItem</code>, <code>Query</code></li>
 <li><code>s3:PutObject</code> (when audit archival is enabled)</li>

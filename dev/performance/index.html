@@ -1530,6 +1530,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#aggregator-assisted-refill-issue-317" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregator-Assisted Refill (Issue #317)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#when-to-use-speculative-writes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3817,6 +3828,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#aggregator-assisted-refill-issue-317" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregator-Assisted Refill (Issue #317)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#when-to-use-speculative-writes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3955,6 +3977,12 @@
 <td>0</td>
 <td>+1 per entity</td>
 <td>Independent compensating writes (1 WCU each)</td>
+</tr>
+<tr>
+<td>Aggregator bucket refill (per active bucket)</td>
+<td>0</td>
+<td>1</td>
+<td>Proactive refill via Lambda; 0 WCU if lock lost</td>
 </tr>
 <tr>
 <td><code>acquire(limits=None)</code> with config cache miss</td>
@@ -4971,12 +4999,27 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 </tr>
 </tbody>
 </table>
+<h3 id="aggregator-assisted-refill-issue-317">Aggregator-Assisted Refill (Issue #317)<a class="headerlink" href="#aggregator-assisted-refill-issue-317" title="Permanent link">&para;</a></h3>
+<p>When the Lambda aggregator is enabled, it proactively refills token buckets for active entities between client requests. This keeps speculative writes on the fast path (1 RT, 0 RCU, 1 WCU) by ensuring buckets have sufficient tokens, reducing fallback to the slow path (3 RT, 1 RCU, 2 WCU).</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>The aggregator processes DynamoDB Stream events for bucket modifications</li>
+<li>For each active (entity, resource) bucket, it aggregates consumption deltas from the batch</li>
+<li>If projected tokens after natural refill are insufficient to cover the observed consumption rate, it writes a proactive refill</li>
+<li>The refill uses <code>ADD</code> (commutative with concurrent speculative writes) and an optimistic lock on <code>rf</code> to prevent double-refill</li>
+</ol>
+<p><strong>Cost:</strong> 1 WCU per refill written (0 WCU if another writer updated <code>rf</code> first). The cost is amortized across all stream records in a batch, so high-throughput workloads see fewer refills per request.</p>
+<div class="admonition tip">
+<p class="admonition-title">Aggregator refill + speculative writes</p>
+<p>The combination of aggregator-assisted refill and speculative writes provides the best latency and cost profile: the aggregator keeps buckets warm so speculative writes rarely fall back, achieving ~5-8ms p50 latency at $0.625/M requests (non-cascade).</p>
+</div>
 <h3 id="when-to-use-speculative-writes">When to Use Speculative Writes<a class="headerlink" href="#when-to-use-speculative-writes" title="Permanent link">&para;</a></h3>
 <p><strong>Good fit:</strong></p>
 <ul>
 <li>High-throughput workloads with pre-warmed buckets</li>
 <li>Buckets that rarely exhaust capacity (high capacity relative to request rate)</li>
 <li>Latency-sensitive applications where saving one round trip matters</li>
+<li>Deployments with the Lambda aggregator enabled (aggregator keeps buckets warm for speculative success)</li>
 </ul>
 <p><strong>Poor fit:</strong></p>
 <ul>
