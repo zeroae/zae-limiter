@@ -12,13 +12,9 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/103-config-caching/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/122-resolve-limits-on-repository/">
       
       
-        <link rel="prev" href="../102-config-hierarchy/">
-      
-      
-        <link rel="next" href="../104-stored-limits-default/">
       
       
         
@@ -29,7 +25,7 @@
     
     
       
-        <title>ADR-103 Config Caching - zae-limiter</title>
+        <title>ADR-122: Move Limit Resolution to Repository Protocol - zae-limiter</title>
       
     
     
@@ -84,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-103-client-side-config-caching-with-ttl" class="md-skip">
+        <a href="#adr-122-move-limit-resolution-to-repository-protocol" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +119,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-103 Config Caching
+              ADR-122: Move Limit Resolution to Repository Protocol
             
           </span>
         </div>
@@ -1349,20 +1345,18 @@
       
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
@@ -1383,7 +1377,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1845,20 +1839,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
         
           
           <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
@@ -1879,7 +1871,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1978,37 +1970,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-103 Config Caching
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../103-config-caching/" class="md-nav__link">
         
   
   
@@ -2024,109 +1989,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Alternatives Considered">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#no-caching" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        No Caching
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#distributed-cache-rediselasticache" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Distributed Cache (Redis/ElastiCache)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#dynamodb-streams-for-invalidation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DynamoDB Streams for Invalidation
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -2609,10 +2471,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#no-caching" class="md-nav__link">
+  <a href="#cachingrepository-decorator-composition-pattern" class="md-nav__link">
     <span class="md-ellipsis">
       
-        No Caching
+        CachingRepository decorator (composition pattern)
       
     </span>
   </a>
@@ -2620,10 +2482,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#distributed-cache-rediselasticache" class="md-nav__link">
+  <a href="#separate-configresolverprotocol" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Distributed Cache (Redis/ElastiCache)
+        Separate ConfigResolverProtocol
       
     </span>
   </a>
@@ -2631,10 +2493,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#dynamodb-streams-for-invalidation" class="md-nav__link">
+  <a href="#keep-caching-in-ratelimiter" class="md-nav__link">
     <span class="md-ellipsis">
       
-        DynamoDB Streams for Invalidation
+        Keep caching in RateLimiter
       
     </span>
   </a>
@@ -2665,7 +2527,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/103-config-caching.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/122-resolve-limits-on-repository.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2673,40 +2535,33 @@
   
 
 
-<h1 id="adr-103-client-side-config-caching-with-ttl">ADR-103: Client-Side Config Caching with TTL<a class="headerlink" href="#adr-103-client-side-config-caching-with-ttl" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Superseded by ADR-122
-<strong>Date:</strong> 2026-01-18
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/135">#135</a></p>
+<h1 id="adr-122-move-limit-resolution-to-repository-protocol">ADR-122: Move Limit Resolution to Repository Protocol<a class="headerlink" href="#adr-122-move-limit-resolution-to-repository-protocol" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Accepted
+<strong>Date:</strong> 2026-02-08
+<strong>Supersedes:</strong> ADR-103</p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>The three-level config hierarchy (ADR-102) requires fetching 3 DynamoDB items per <code>acquire()</code> call. Without caching:</p>
-<ul>
-<li><strong>Cost:</strong> 1.5 RCU per request (unacceptable at scale)</li>
-<li><strong>Latency:</strong> BatchGetItem round-trip on every request</li>
-</ul>
-<p>Config changes are infrequent (typically during deployment or admin operations), making aggressive caching appropriate.</p>
+<p>ADR-103 introduced client-side config caching as a <code>ConfigCache</code> class owned by <code>RateLimiter</code>. ADR-108 established the <code>RepositoryProtocol</code> for backend abstraction. Currently, <code>RateLimiter</code> orchestrates the 4-level hierarchy resolution (ADR-118) by threading repository fetch methods as callbacks into <code>ConfigCache</code>. This places data access orchestration logic — "fetch up to 4 keys, return the first hit" — in the business logic layer.</p>
+<p>Analysis of how other backends would implement this resolution reveals it is a universal data access pattern: SQL solves it with <code>UNION ALL + ORDER BY + LIMIT 1</code> in one query, Redis with a Lua script evaluating multiple keys server-side, Cosmos DB with a stored procedure, and Firestore with <code>getAll()</code> + priority scan. Every backend resolves it in one round-trip using native caching (query cache, DAX, built-in TTL, offline persistence). The current design forces all backends to share a Python-side <code>ConfigCache</code> that only makes sense for DynamoDB.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Implement <strong>in-memory TTL caching</strong> per RateLimiter instance with 60-second TTL and <strong>negative caching</strong>.</p>
-<p><strong>Negative caching:</strong> Cache "no entity config exists" to avoid repeated misses for the 95%+ of users without custom limits.</p>
-<p><strong>Cache invalidation:</strong>
-- Automatic: TTL expiry (60s)
-- Manual: <code>repo.invalidate_config_cache()</code> method (on Repository, not RateLimiter)</p>
-<p><strong>No distributed invalidation:</strong> Config changes propagate via TTL expiry (max 60s staleness). This avoids infrastructure complexity (SNS/EventBridge) for infrequent operations.</p>
+<p>Add <code>resolve_limits()</code> to <code>RepositoryProtocol</code>. Each backend implementation must resolve the 4-level config hierarchy (ADR-118) and manage its own caching strategy. <code>ConfigCache</code> becomes an internal implementation detail of the DynamoDB <code>Repository</code>, not a limiter-owned component. Cache management methods (<code>invalidate_config_cache()</code>, <code>get_cache_stats()</code>) move to the repository protocol.</p>
+<p><code>RateLimiter</code> must not implement config resolution logic or own caching state. It calls <code>repository.resolve_limits(entity_id, resource)</code> and receives the effective limits, the <code>on_unavailable</code> action, and the config source.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- High-frequency traffic: 99.98% cache hit rate (100 req/sec × 60s = 6K hits per miss)
-- Negligible amortized cost: +0.00025 RCU per request at scale
-- Negative caching reduces cost for sparse traffic patterns</p>
+- Backends use native resolution and caching (SQL query cache, Redis TTL, DAX, Firestore offline persistence)
+- <code>RateLimiter</code> loses ~100 lines of orchestration code and the <code>config_cache_ttl</code> constructor parameter
+- New backends implement one method instead of understanding the <code>ConfigCache</code> callback protocol
+- Caching strategy becomes a backend concern — DynamoDB uses in-memory TTL, Redis needs none</p>
 <p><strong>Negative:</strong>
-- Max 60s staleness for config changes
-- No cross-process invalidation (each instance has independent cache)
-- Memory usage scales with unique entity×resource combinations</p>
+- Every backend must implement the 4-level hierarchy correctly (testable via protocol conformance tests)
+- <code>config_cache_ttl</code> moves from <code>RateLimiter</code> to <code>Repository</code> constructor (breaking change)
+- <code>invalidate_config_cache()</code> semantics vary by backend (no-op for Redis, meaningful for DynamoDB)</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="no-caching">No Caching<a class="headerlink" href="#no-caching" title="Permanent link">&para;</a></h3>
-<p>Rejected: 1.5 RCU per acquire is unacceptable; poor latency.</p>
-<h3 id="distributed-cache-rediselasticache">Distributed Cache (Redis/ElastiCache)<a class="headerlink" href="#distributed-cache-rediselasticache" title="Permanent link">&para;</a></h3>
-<p>Rejected: Adds infrastructure dependency; 60s staleness is acceptable for config.</p>
-<h3 id="dynamodb-streams-for-invalidation">DynamoDB Streams for Invalidation<a class="headerlink" href="#dynamodb-streams-for-invalidation" title="Permanent link">&para;</a></h3>
-<p>Rejected: Requires Lambda infrastructure; complexity not justified for config updates.</p>
+<h3 id="cachingrepository-decorator-composition-pattern">CachingRepository decorator (composition pattern)<a class="headerlink" href="#cachingrepository-decorator-composition-pattern" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Forces a Python-side cache on all backends, even those with native caching; adds an abstraction layer that most backends don't need.</p>
+<h3 id="separate-configresolverprotocol">Separate ConfigResolverProtocol<a class="headerlink" href="#separate-configresolverprotocol" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Introduces a second protocol for users to understand; resolution is fundamentally a data access operation that belongs on the repository.</p>
+<h3 id="keep-caching-in-ratelimiter">Keep caching in RateLimiter<a class="headerlink" href="#keep-caching-in-ratelimiter" title="Permanent link">&para;</a></h3>
+<p>Rejected because: Forces every backend to expose 4 individual fetch methods and accept the Python-side caching strategy, preventing use of native backend capabilities.</p>
 
 
 
@@ -2738,44 +2593,6 @@
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../102-config-hierarchy/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-102 Config Hierarchy">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                ADR-102 Config Hierarchy
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../104-stored-limits-default/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-104 Stored Limits Default">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-104 Stored Limits Default
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">
