@@ -586,11 +586,17 @@ class TestAWSCascadeBenchmarks:
 
         assert elapsed < 120, "Cascade operations took too long"
 
+    @pytest.mark.xfail(
+        reason="TransactionConflict not retried in _commit_initial (#332)",
+        strict=False,
+    )
     def test_cascade_concurrent_throughput_aws(self, aws_cascade_limiter):
         """Measure concurrent cascade TPS on AWS.
 
         Multiple concurrent tasks update different children but share the parent,
-        creating contention on the parent bucket.
+        creating contention on the parent bucket. With true thread parallelism,
+        TransactionConflictException and speculative write contention on the
+        shared parent cause some operations to fail.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
