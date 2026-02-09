@@ -20,7 +20,7 @@ from .bucket import (
     try_consume,
     would_refill_satisfy,
 )
-from .config_cache import ConfigSource
+from .config_cache import CacheStats, ConfigSource
 from .exceptions import (
     IncompatibleSchemaError,
     RateLimiterUnavailable,
@@ -360,6 +360,24 @@ class RateLimiter:
 
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
+
+    # -------------------------------------------------------------------------
+    # Config cache delegation (ADR-122)
+    # -------------------------------------------------------------------------
+
+    async def invalidate_config_cache(self) -> None:
+        """Invalidate all cached config entries.
+
+        Delegates to ``repository.invalidate_config_cache()``.
+        """
+        await self._repository.invalidate_config_cache()
+
+    def get_cache_stats(self) -> CacheStats:
+        """Get config cache performance statistics.
+
+        Delegates to ``repository.get_cache_stats()``.
+        """
+        return self._repository.get_cache_stats()
 
     async def is_available(self, timeout: float = 1.0) -> bool:
         """
