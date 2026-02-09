@@ -366,7 +366,7 @@ When `speculative_writes=True`, `acquire()` adds a fast path before the normal r
 |------------|--------|----------|----------|-----------|
 | Speculative consumption | `speculative_consume()` | Conditional `UpdateItem` | 1 WCU (success) or 0 WCU (reject) | Single item |
 | Speculative compensation | `_compensate_speculative()` via `write_each()` | `UpdateItem` | 1 WCU | Single item |
-| Parallel speculative (issue #318) | `_try_parallel_speculative()` via `asyncio.gather` | 2x `UpdateItem` | 2 WCU | Independent items |
+| Parallel speculative (issue #318) | `speculative_consume()` via `asyncio.gather` | 2x `UpdateItem` | 2 WCU | Independent items |
 | Parent-only slow path | `_try_parent_only_acquire()` via `_commit_initial()` | `UpdateItem` | 1 WCU | Single item |
 
 The speculative path uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to inspect bucket state
@@ -414,11 +414,13 @@ only compensated when the parent-only path also fails.
 
 **Entity metadata cache (issue #318):** `Repository._entity_cache` stores
 `{entity_id: (cascade, parent_id)}` as immutable metadata (no TTL). After the first acquire
-populates the cache, `_try_parallel_speculative()` issues child and parent speculative writes
-concurrently via `asyncio.gather`. This reduces cascade latency from 2 sequential round trips
-to 1 parallel round trip. In the sync codepath, `asyncio.gather(a, b)` is transformed to
-`(a, b)` (sequential tuple) by the code generator. The `_compensate_speculative()` method
-handles compensation for either child or parent when one side of the parallel write fails.
+populates the cache, `speculative_consume()` issues child and parent speculative writes
+concurrently via `asyncio.gather`. This reduces cascade latency
+from 2 sequential round trips to 1 parallel round trip. In the sync codepath,
+`asyncio.gather(a, b)` is transformed to `self._run_in_executor(lambda: a, lambda: b)` using
+a lazy `ThreadPoolExecutor(max_workers=2)` for true parallel execution.
+The `_compensate_speculative()` method handles compensation for either child or parent when
+one side of the parallel write fails.
 
 ### Optimistic Locking
 

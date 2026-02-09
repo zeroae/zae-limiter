@@ -44,7 +44,7 @@ uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 
 ### Sync Code Generation
 
-Native sync code is generated from async source via AST transformation (see ADR-121). The transformer handles `asyncio.gather(a, b)` by converting it to a sequential tuple `(a, b)` in sync code.
+Native sync code is generated from async source via AST transformation (see ADR-121). The transformer handles `asyncio.gather(a, b)` by converting it to `self._run_in_executor(lambda: a, lambda: b)`, which uses a lazy `ThreadPoolExecutor(max_workers=2)` injected into `SyncRepository` for true parallel execution.
 
 ```bash
 # Generate sync code after modifying async source
@@ -504,7 +504,7 @@ Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/
 **Entity metadata cache (issue #318):**
 - `Repository._entity_cache` stores `{entity_id: (cascade, parent_id)}` -- immutable metadata, no TTL needed
 - Populated from speculative result (ALL_NEW on success) or slow path (entity META record)
-- On cache hit with `cascade=True`, `_try_parallel_speculative()` issues child + parent speculative writes concurrently via `asyncio.gather`
+- On cache hit with `cascade=True`, `speculative_consume()` issues child + parent speculative writes concurrently via `asyncio.gather`
 - Reduces cascade latency from 2 sequential round trips to 1 parallel round trip (same WCU cost)
 - First acquire for an entity always uses sequential path (populates cache); subsequent acquires use parallel path
 
