@@ -251,6 +251,16 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             # Return just the first argument (the coroutine), skip timeout
             return node.args[0]
 
+        # Handle asyncio.gather(a, b, ...) -> (a, b, ...) (sequential tuple)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "asyncio"
+            and node.func.attr == "gather"
+        ):
+            # Convert gather args to a tuple of sequential calls
+            return ast.copy_location(ast.Tuple(elts=node.args, ctx=ast.Load()), node)
+
         # Handle boto3/aioboto3 client context manager pattern:
         # session.client("dynamodb", ...)__aenter__() -> session.client("dynamodb", ...)
         # After __aenter__ -> __enter__ rewrite, we get .__enter__() which we need to remove

@@ -94,6 +94,7 @@ class SyncRepository:
             supports_batch_operations=True,
         )
         self._config_cache = SyncConfigCache(ttl_seconds=config_cache_ttl)
+        self._entity_cache: dict[str, tuple[bool, str | None]] = {}
 
     @property
     def capabilities(self) -> BackendCapabilities:

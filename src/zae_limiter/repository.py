@@ -93,6 +93,10 @@ class Repository:
         # Config cache for resolve_limits() (ADR-122)
         self._config_cache = ConfigCache(ttl_seconds=config_cache_ttl)
 
+        # Entity metadata cache for parallel cascade writes (issue #318)
+        # Stores {entity_id -> (cascade, parent_id)} — immutable, no TTL needed
+        self._entity_cache: dict[str, tuple[bool, str | None]] = {}
+
     @property
     def capabilities(self) -> BackendCapabilities:
         """Declare which extended features this backend supports."""

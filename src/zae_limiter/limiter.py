@@ -11,7 +11,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 if TYPE_CHECKING:
-    from .repository_protocol import RepositoryProtocol
+    from .repository_protocol import RepositoryProtocol, SpeculativeResult
 
 from .bucket import (
     build_limit_status,
@@ -734,10 +734,8 @@ class RateLimiter:
     ) -> Lease | None:
         """Try the speculative fast path for acquire (issue #315).
 
-        Issues a speculative UpdateItem with condition check. On success,
-        returns a pre-committed Lease. On failure, checks if refill would
-        help and either raises RateLimitExceeded (fast rejection) or returns
-        None to signal fallback to the slow path.
+        Uses entity cache (issue #318) to enable parallel child+parent
+        speculative writes when cascade is known from a prior acquire.
 
         Returns:
             Lease if speculative write succeeded (already committed).
@@ -750,29 +748,35 @@ class RateLimiter:
         """
         now_ms = int(time.time() * 1000)
 
-        # Speculative write for child entity
+        # Check entity cache for cascade info (issue #318)
+        cache_entry = getattr(self._repository, "_entity_cache", {}).get(entity_id)
+
+        if cache_entry is not None:
+            cascade, parent_id = cache_entry
+            if cascade and parent_id:
+                # Cache hit with cascade — try parallel speculative writes
+                return await self._try_parallel_speculative(
+                    entity_id, parent_id, resource, consume, now_ms
+                )
+
+        # Cache miss or non-cascade — sequential speculative path
         child_result = await self._repository.speculative_consume(
             entity_id=entity_id,
             resource=resource,
             consume=consume,
         )
 
+        # Populate entity cache from speculative result (issue #318)
+        if child_result.success:
+            entity_cache = getattr(self._repository, "_entity_cache", None)
+            if entity_cache is not None:
+                entity_cache[entity_id] = (
+                    child_result.cascade,
+                    child_result.parent_id,
+                )
+
         if not child_result.success:
-            # Check if refill would help
-            if child_result.old_buckets is None:
-                # Bucket missing (first acquire) — slow path creates it
-                return None
-
-            # Check requested limits exist in the bucket
-            bucket_names = {b.limit_name for b in child_result.old_buckets}
-            if not all(name in bucket_names for name in consume):
-                # Config changed (new limit not in bucket) — slow path resolves
-                return None
-
-            would_help, statuses = would_refill_satisfy(child_result.old_buckets, consume, now_ms)
-            if not would_help:
-                raise RateLimitExceeded(statuses)
-            # Refill would help — fall back to slow path
+            self._check_speculative_failure(child_result, consume, now_ms)
             return None
 
         # Child speculative succeeded — build entries from ALL_NEW
@@ -794,7 +798,7 @@ class RateLimiter:
                 )
             )
 
-        # Handle cascade
+        # Handle cascade (sequential — first acquire populates cache for next time)
         if child_result.cascade and child_result.parent_id:
             parent_id = child_result.parent_id
             parent_result = await self._repository.speculative_consume(
@@ -804,7 +808,6 @@ class RateLimiter:
             )
 
             if parent_result.success:
-                # Parent succeeded — add parent entries
                 for state in parent_result.buckets:
                     amount = consume.get(state.limit_name, 0)
                     if amount == 0:
@@ -820,19 +823,12 @@ class RateLimiter:
                         )
                     )
             else:
-                # Parent failed — defer child compensation (issue #315 optimization).
-                # Check parent ALL_OLD before compensating to avoid unnecessary
-                # compensation + re-read + transactional write when parent refill
-                # would succeed.
-
                 if parent_result.old_buckets is None:
-                    # Parent bucket missing — must compensate and full slow path
                     await self._compensate_child(entity_id, resource, consume)
                     return None
 
                 parent_names = {b.limit_name for b in parent_result.old_buckets}
                 if not all(name in parent_names for name in consume):
-                    # Config changed — must compensate and full slow path
                     await self._compensate_child(entity_id, resource, consume)
                     return None
 
@@ -840,7 +836,6 @@ class RateLimiter:
                     parent_result.old_buckets, consume, now_ms
                 )
                 if not would_help:
-                    # Parent truly exhausted — compensate child and fast reject
                     await self._compensate_child(entity_id, resource, consume)
                     child_statuses = [
                         build_limit_status(
@@ -855,20 +850,17 @@ class RateLimiter:
                     ]
                     raise RateLimitExceeded(child_statuses + parent_statuses)
 
-                # Refill would help — try parent-only slow path (keep child consumed)
                 try:
                     parent_lease = await self._try_parent_only_acquire(
                         parent_id, resource, consume, entries
                     )
                 except Exception:
-                    # Any failure — compensate child before propagating
                     await self._compensate_child(entity_id, resource, consume)
                     raise
 
                 if parent_lease is not None:
                     return parent_lease
 
-                # Parent-only slow path failed — compensate child and full slow path
                 await self._compensate_child(entity_id, resource, consume)
                 return None
 
@@ -883,6 +875,187 @@ class RateLimiter:
             entry._initial_consumed = entry.consumed
         return lease
 
+    async def _try_parallel_speculative(
+        self,
+        entity_id: str,
+        parent_id: str,
+        resource: str,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> Lease | None:
+        """Parallel speculative writes for cascade entities (issue #318).
+
+        Issues child and parent speculative UpdateItems concurrently via
+        asyncio.gather. On success, returns a pre-committed Lease with
+        both child and parent entries. On partial failure, compensates
+        the successful write and falls back.
+
+        Returns:
+            Lease if both writes succeeded (already committed).
+            None if slow path is needed.
+
+        Raises:
+            RateLimitExceeded: If the child bucket is truly exhausted
+                (refill wouldn't help).
+        """
+        child_result, parent_result = await asyncio.gather(
+            self._repository.speculative_consume(
+                entity_id=entity_id,
+                resource=resource,
+                consume=consume,
+            ),
+            self._repository.speculative_consume(
+                entity_id=parent_id,
+                resource=resource,
+                consume=consume,
+            ),
+        )
+
+        # Handle child failure first (most common rejection)
+        if not child_result.success:
+            if parent_result.success:
+                await self._compensate_speculative(parent_id, resource, consume)
+            self._check_speculative_failure(child_result, consume, now_ms)
+            return None
+
+        # Child succeeded — handle parent failure
+        if not parent_result.success:
+            return await self._handle_parallel_parent_failure(
+                entity_id,
+                parent_id,
+                resource,
+                consume,
+                child_result,
+                parent_result,
+                now_ms,
+            )
+
+        # Both succeeded — build combined pre-committed lease
+        entries: list[LeaseEntry] = []
+        for state in child_result.buckets:
+            amount = consume.get(state.limit_name, 0)
+            if amount == 0:
+                continue
+            limit = Limit.from_bucket_state(state)
+            entries.append(
+                LeaseEntry(
+                    entity_id=state.entity_id,
+                    resource=state.resource,
+                    limit=limit,
+                    state=state,
+                    consumed=amount,
+                    _cascade=child_result.cascade,
+                    _parent_id=child_result.parent_id,
+                )
+            )
+        for state in parent_result.buckets:
+            amount = consume.get(state.limit_name, 0)
+            if amount == 0:
+                continue
+            limit = Limit.from_bucket_state(state)
+            entries.append(
+                LeaseEntry(
+                    entity_id=state.entity_id,
+                    resource=state.resource,
+                    limit=limit,
+                    state=state,
+                    consumed=amount,
+                )
+            )
+
+        lease = Lease(
+            repository=self._repository,
+            entries=entries,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
+        )
+        lease._initial_committed = True
+        for entry in entries:
+            entry._initial_consumed = entry.consumed
+        return lease
+
+    async def _handle_parallel_parent_failure(
+        self,
+        entity_id: str,
+        parent_id: str,
+        resource: str,
+        consume: dict[str, int],
+        child_result: "SpeculativeResult",
+        parent_result: "SpeculativeResult",
+        now_ms: int,
+    ) -> Lease | None:
+        """Handle parent failure in parallel speculative path (issue #318).
+
+        Child succeeded speculatively. Parent failed. Decides whether to
+        compensate child and fall back, try parent-only slow path, or
+        fast-reject.
+
+        Returns:
+            Lease if parent-only slow path succeeded.
+            None if full slow path is needed.
+
+        Raises:
+            RateLimitExceeded: If parent is truly exhausted.
+        """
+        if parent_result.old_buckets is None:
+            await self._compensate_child(entity_id, resource, consume)
+            return None
+
+        parent_names = {b.limit_name for b in parent_result.old_buckets}
+        if not all(name in parent_names for name in consume):
+            await self._compensate_child(entity_id, resource, consume)
+            return None
+
+        would_help, parent_statuses = would_refill_satisfy(
+            parent_result.old_buckets, consume, now_ms
+        )
+        if not would_help:
+            await self._compensate_child(entity_id, resource, consume)
+            child_statuses = [
+                build_limit_status(
+                    entity_id=s.entity_id,
+                    resource=s.resource,
+                    limit=Limit.from_bucket_state(s),
+                    state=s,
+                    requested=consume.get(s.limit_name, 0),
+                    now_ms=now_ms,
+                )
+                for s in child_result.buckets
+            ]
+            raise RateLimitExceeded(child_statuses + parent_statuses)
+
+        # Refill would help — build child entries for parent-only slow path
+        entries: list[LeaseEntry] = []
+        for state in child_result.buckets:
+            amount = consume.get(state.limit_name, 0)
+            if amount == 0:
+                continue
+            limit = Limit.from_bucket_state(state)
+            entries.append(
+                LeaseEntry(
+                    entity_id=state.entity_id,
+                    resource=state.resource,
+                    limit=limit,
+                    state=state,
+                    consumed=amount,
+                    _cascade=child_result.cascade,
+                    _parent_id=child_result.parent_id,
+                )
+            )
+
+        try:
+            parent_lease = await self._try_parent_only_acquire(
+                parent_id, resource, consume, entries
+            )
+        except Exception:
+            await self._compensate_child(entity_id, resource, consume)
+            raise
+
+        if parent_lease is not None:
+            return parent_lease
+
+        await self._compensate_child(entity_id, resource, consume)
+        return None
+
     async def _compensate_child(
         self,
         entity_id: str,
@@ -890,13 +1063,44 @@ class RateLimiter:
         consume: dict[str, int],
     ) -> None:
         """Compensate a speculatively consumed child by adding tokens back."""
-        child_deltas = {name: -(amount * 1000) for name, amount in consume.items()}
+        await self._compensate_speculative(entity_id, resource, consume)
+
+    async def _compensate_speculative(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+    ) -> None:
+        """Compensate a speculative write by adding consumed tokens back."""
+        deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         compensate_item = self._repository.build_composite_adjust(
             entity_id=entity_id,
             resource=resource,
-            deltas=child_deltas,
+            deltas=deltas,
         )
         await self._repository.write_each([compensate_item])
+
+    @staticmethod
+    def _check_speculative_failure(
+        result: "SpeculativeResult",
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> None:
+        """Check a failed speculative result and raise if truly exhausted.
+
+        Raises RateLimitExceeded if refill won't help (fast rejection).
+        Returns normally if slow path should be attempted.
+        """
+        if result.old_buckets is None:
+            return
+
+        bucket_names = {b.limit_name for b in result.old_buckets}
+        if not all(name in bucket_names for name in consume):
+            return
+
+        would_help, statuses = would_refill_satisfy(result.old_buckets, consume, now_ms)
+        if not would_help:
+            raise RateLimitExceeded(statuses)
 
     async def _try_parent_only_acquire(
         self,
@@ -1023,6 +1227,14 @@ class RateLimiter:
         )
 
         entity, child_buckets = await self._fetch_entity_and_buckets(entity_id, resource)
+
+        # Populate entity cache from metadata (issue #318)
+        entity_cache = getattr(self._repository, "_entity_cache", None)
+        if entity_cache is not None:
+            if entity:
+                entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+            else:
+                entity_cache[entity_id] = (False, None)
 
         # Determine cascade
         entity_ids = [entity_id]
