@@ -59,7 +59,7 @@ async with limiter.acquire(
     Cascade mode adds overhead: +1 GetEntity + parent bucket operations. Only enable when hierarchical enforcement is needed. See [Batch Operation Patterns](../performance.md#cascade-optimization) for optimization strategies.
 
 !!! tip "Speculative Writes with Cascade"
-    With `speculative_writes=True`, cascade acquire completes in 2 round trips (0 RCU, 2 WCU) when both child and parent have sufficient tokens. If the parent needs refill, a deferred compensation optimization avoids unnecessary child compensation by attempting a parent-only slow path first. See [Speculative Writes](../performance.md#8-speculative-writes) for details.
+    With `speculative_writes=True`, the first cascade acquire completes in 2 sequential round trips (0 RCU, 2 WCU). After the first acquire populates the entity metadata cache, subsequent cascade acquires issue child and parent writes **in parallel** -- completing in just 1 round trip (0 RCU, 2 WCU) with the same cost but lower latency. If the parent needs refill, a deferred compensation optimization avoids unnecessary child compensation by attempting a parent-only slow path first. See [Speculative Writes](../performance.md#8-speculative-writes) for details.
 
 **What happens:**
 

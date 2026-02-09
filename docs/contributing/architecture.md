@@ -365,7 +365,8 @@ When `speculative_writes=True`, `acquire()` adds a fast path before the normal r
 | Write Path | Method | API Used | WCU Cost | Atomicity |
 |------------|--------|----------|----------|-----------|
 | Speculative consumption | `speculative_consume()` | Conditional `UpdateItem` | 1 WCU (success) or 0 WCU (reject) | Single item |
-| Speculative compensation | `_compensate_child()` via `write_each()` | `UpdateItem` | 1 WCU | Single item |
+| Speculative compensation | `_compensate_speculative()` via `write_each()` | `UpdateItem` | 1 WCU | Single item |
+| Parallel speculative (issue #318) | `_try_parallel_speculative()` via `asyncio.gather` | 2x `UpdateItem` | 2 WCU | Independent items |
 | Parent-only slow path | `_try_parent_only_acquire()` via `_commit_initial()` | `UpdateItem` | 1 WCU | Single item |
 
 The speculative path uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to inspect bucket state
@@ -373,22 +374,32 @@ on failure without a separate read. On success, `ReturnValues=ALL_NEW` provides 
 state including denormalized `cascade` and `parent_id` fields.
 
 ```
-Speculative flow:
+Speculative flow (first acquire — sequential, populates entity cache):
 1. UpdateItem with condition: attribute_exists(PK) AND tk >= consumed
-   +- SUCCESS -> Lease is pre-committed (_initial_committed=True)
+   +- SUCCESS -> Populate entity cache, Lease is pre-committed
    |  +- cascade=False -> DONE
-   |  +- cascade=True -> Speculative UpdateItem on parent
+   |  +- cascade=True -> Speculative UpdateItem on parent (sequential)
    |     +- SUCCESS -> DONE (child + parent both speculative)
-   |     +- FAIL -> Check parent ALL_OLD (child stays consumed)
-   |        +- No item / missing limit -> Compensate child, fall back
-   |        +- Refill won't help -> Compensate child, RateLimitExceeded
-   |        +- Refill would help -> Parent-only slow path (read + write parent)
-   |           +- SUCCESS -> DONE (child speculative + parent slow path)
-   |           +- FAIL -> Compensate child, fall back to full slow path
+   |     +- FAIL -> [parent failure handling]
    +- FAIL -> Check ALL_OLD
       +- No item (bucket missing) -> Fall back to normal path
       +- Refill would help -> Fall back to normal path
       +- Refill won't help -> RateLimitExceeded (fast rejection)
+
+Speculative flow (subsequent acquire — parallel, issue #318):
+1. Entity cache hit: cascade=True, parent_id known
+2. asyncio.gather(child_speculative, parent_speculative)
+   +- BOTH SUCCEED -> DONE (1 round trip, 0 RCU, 2 WCU)
+   +- CHILD FAILS, PARENT SUCCEEDS -> Compensate parent, check child
+   +- CHILD SUCCEEDS, PARENT FAILS -> [parent failure handling]
+   +- BOTH FAIL -> Check child ALL_OLD, fall back or fast-reject
+
+Parent failure handling (shared by sequential and parallel paths):
+   +- No ALL_OLD / missing limit -> Compensate child, fall back
+   +- Refill won't help -> Compensate child, RateLimitExceeded
+   +- Refill would help -> Parent-only slow path (read + write parent)
+      +- SUCCESS -> DONE (child speculative + parent slow path)
+      +- FAIL -> Compensate child, fall back to full slow path
 ```
 
 Cascade and `parent_id` are denormalized into composite bucket items (via `build_composite_create`)
@@ -400,6 +411,14 @@ path is attempted: read parent buckets (0.5 RCU), refill + try_consume, write vi
 UpdateItem (1 WCU). This avoids the cost of compensating the child (1 WCU), re-reading it
 (0.5 RCU), and using TransactWriteItems for the full cascade write (4 WCU). The child is
 only compensated when the parent-only path also fails.
+
+**Entity metadata cache (issue #318):** `Repository._entity_cache` stores
+`{entity_id: (cascade, parent_id)}` as immutable metadata (no TTL). After the first acquire
+populates the cache, `_try_parallel_speculative()` issues child and parent speculative writes
+concurrently via `asyncio.gather`. This reduces cascade latency from 2 sequential round trips
+to 1 parallel round trip. In the sync codepath, `asyncio.gather(a, b)` is transformed to
+`(a, b)` (sequential tuple) by the code generator. The `_compensate_speculative()` method
+handles compensation for either child or parent when one side of the parallel write fails.
 
 ### Optimistic Locking
 
@@ -453,6 +472,7 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 5. **Initial writes are atomic**: Multi-entity initial consumption uses `transact_write()` for cross-item atomicity
 6. **Adjustments and rollbacks use independent writes**: `write_each()` dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead for unconditional ADD operations
 7. **Speculative writes skip reads**: With `speculative_writes=True`, `acquire()` tries a conditional UpdateItem first, saving 1 round trip and 1 RCU when the bucket has sufficient tokens
+8. **Entity metadata cache enables parallel cascade**: `Repository._entity_cache` stores immutable `(cascade, parent_id)` per entity. After first acquire, cascade speculative writes run concurrently via `asyncio.gather`
 
 ## Next Steps
 

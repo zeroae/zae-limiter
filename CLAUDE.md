@@ -44,7 +44,7 @@ uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 
 ### Sync Code Generation
 
-Native sync code is generated from async source via AST transformation (see ADR-121):
+Native sync code is generated from async source via AST transformation (see ADR-121). The transformer handles `asyncio.gather(a, b)` by converting it to a sequential tuple `(a, b)` in sync code.
 
 ```bash
 # Generate sync code after modifying async source
@@ -362,6 +362,7 @@ Primary mitigation: cascade defaults to `False`.
 - Falls back to the normal read-write path when the bucket is missing, config changed, or refill would help
 - Fast rejection: if refill would not help, raises `RateLimitExceeded` immediately (0 RCU, 0 WCU)
 - Cascade/parent_id denormalized into bucket items to avoid entity metadata lookup on the fast path
+- **Parallel cascade writes (Issue #318):** After the first acquire populates the entity cache, subsequent cascade acquires issue child + parent speculative writes concurrently via `asyncio.gather`, reducing cascade latency from 2 sequential round trips to 1 parallel round trip
 
 ### Exception Design
 - `RateLimitExceeded` includes **ALL** limit statuses
@@ -451,6 +452,7 @@ docs/
 6. **Adjustments and rollbacks use independent writes**: `_commit_adjustments()` and `_rollback()` use `write_each()` (1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
 7. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources x limits) must stay within this limit
 8. **Speculative writes are pre-committed**: When the speculative path succeeds, `_commit_initial()` is a no-op because the UpdateItem already persisted the consumption. Rollback compensates with `build_composite_adjust` + `write_each`
+9. **Entity metadata cache is immutable**: `Repository._entity_cache` stores `{entity_id: (cascade, parent_id)}` with no TTL. Entity metadata (cascade, parent_id) is set once at `create_entity()` and never changes, so the cache never goes stale. Populated from speculative result (ALL_NEW) or slow path (entity META record)
 
 ## DynamoDB Pricing Reference
 
@@ -463,7 +465,8 @@ Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the pro
 Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~17% savings).
 Speculative fast rejection (exhausted) = 0 RCU + 0 WCU = **$0/M** (free).
 Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
-Speculative cascade (both succeed) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
+Speculative cascade (both succeed, sequential) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
+Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.25/M** (same cost, lower latency).
 Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
 Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/M** (child consumed + compensated).
 
@@ -497,6 +500,13 @@ Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/
 - Uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to return bucket state on failure without a separate read
 - Uses `ReturnValues=ALL_NEW` on success to reconstruct `BucketState`, `cascade`, and `parent_id` from the response
 - Cascade and parent_id are denormalized into bucket items (via `build_composite_create`) to avoid entity metadata lookup
+
+**Entity metadata cache (issue #318):**
+- `Repository._entity_cache` stores `{entity_id: (cascade, parent_id)}` -- immutable metadata, no TTL needed
+- Populated from speculative result (ALL_NEW on success) or slow path (entity META record)
+- On cache hit with `cascade=True`, `_try_parallel_speculative()` issues child + parent speculative writes concurrently via `asyncio.gather`
+- Reduces cascade latency from 2 sequential round trips to 1 parallel round trip (same WCU cost)
+- First acquire for an entity always uses sequential path (populates cache); subsequent acquires use parallel path
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
 
