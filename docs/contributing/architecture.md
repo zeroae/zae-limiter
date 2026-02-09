@@ -58,6 +58,18 @@ This optimization is particularly beneficial for cascade scenarios where both
 entity and parent buckets are fetched together, reducing latency from
 2×N round trips to 1.
 
+### Config Resolution (ADR-122)
+
+Config resolution uses the 4-level hierarchy: **Entity (resource-specific) > Entity (`_default_`) > Resource > System**. This logic lives on `Repository.resolve_limits()`, not on `RateLimiter`. Each backend can use native resolution strategies (e.g., SQL `UNION ALL`, Redis Lua scripts). The DynamoDB implementation uses `BatchGetItem` for all 4 config keys in a single round trip, with `ConfigCache` as an internal caching layer (60s TTL by default).
+
+```{.python .lint-only}
+# Repository resolves limits internally (ADR-122)
+limits, on_unavailable, config_source = await repo.resolve_limits(entity_id, resource)
+# config_source: "entity", "entity_default", "resource", "system", or None
+```
+
+Cache management methods (`invalidate_config_cache()`, `get_cache_stats()`) are on `Repository`, not `RateLimiter`. The `config_cache_ttl` parameter is on the `Repository` constructor.
+
 ### Item Structure
 
 All records use **flat schema** (v0.6.0+, top-level attributes, no nested `data.M`).
