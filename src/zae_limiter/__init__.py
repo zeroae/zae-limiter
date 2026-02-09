@@ -39,7 +39,7 @@ Example (old API - deprecated):
     )
 """
 
-from .config_cache import CacheStats
+from .config_cache import CacheStats, ConfigSource
 from .exceptions import (
     EntityError,
     EntityExistsError,
@@ -126,6 +126,7 @@ __all__ = [
     "BackendCapabilities",
     "Status",
     "CacheStats",
+    "ConfigSource",
     # Audit
     "AuditEvent",
     "AuditAction",

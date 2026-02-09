@@ -20,7 +20,7 @@ from .bucket import (
     try_consume,
     would_refill_satisfy,
 )
-from .config_cache import CacheStats, ConfigCache, ConfigSource
+from .config_cache import ConfigSource
 from .exceptions import (
     IncompatibleSchemaError,
     RateLimiterUnavailable,
@@ -104,7 +104,6 @@ class RateLimiter:
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
-        config_cache_ttl: int = 60,
         bucket_ttl_refill_multiplier: int = 7,
         speculative_writes: bool = True,
     ) -> None:
@@ -126,7 +125,6 @@ class RateLimiter:
             auto_update: Auto-update Lambda when version mismatch detected
             strict_version: Fail if version mismatch (when auto_update is False)
             skip_version_check: Skip all version checks (dangerous)
-            config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable)
             bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
                 TTL = max_refill_period_seconds × multiplier. Default: 7.
                 Set to 0 to disable TTL for buckets using default limits.
@@ -185,9 +183,6 @@ class RateLimiter:
         self._strict_version = strict_version
         self._skip_version_check = skip_version_check
         self._initialized = False
-
-        # Config cache (60s TTL by default, 0 disables)
-        self._config_cache = ConfigCache(ttl_seconds=config_cache_ttl)
 
         # Bucket TTL multiplier for default limit buckets (issue #271)
         self._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
@@ -365,47 +360,6 @@ class RateLimiter:
 
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
-
-    # -------------------------------------------------------------------------
-    # Config cache management
-    # -------------------------------------------------------------------------
-
-    async def invalidate_config_cache(self) -> None:
-        """
-        Invalidate all cached config entries.
-
-        Call this after modifying config (system defaults, resource defaults,
-        or entity limits) to force an immediate refresh. Without manual
-        invalidation, changes propagate within the TTL period (default: 60s).
-
-        Example:
-            # Update config and force refresh
-            await limiter.set_system_defaults([Limit.tpm(100000)])
-            await limiter.invalidate_config_cache()
-        """
-        await self._config_cache.invalidate_async()
-
-    def get_cache_stats(self) -> CacheStats:
-        """
-        Get config cache performance statistics.
-
-        Returns statistics useful for monitoring and debugging cache behavior:
-        - hits: Number of cache hits (avoided DynamoDB reads)
-        - misses: Number of cache misses (DynamoDB reads performed)
-        - size: Number of entries currently in cache
-        - ttl: Cache TTL in seconds
-
-        Returns:
-            CacheStats object with cache metrics
-
-        Example:
-            stats = limiter.get_cache_stats()
-            total = stats.hits + stats.misses
-            hit_rate = stats.hits / total if total > 0 else 0
-            print(f"Cache hit rate: {hit_rate:.1%}")
-            print(f"Cache entries: {stats.size}")
-        """
-        return self._config_cache.get_stats()
 
     async def is_available(self, timeout: float = 1.0) -> bool:
         """
@@ -1244,17 +1198,9 @@ class RateLimiter:
         """
         Resolve limits using four-tier hierarchy.
 
+        Delegates to repository.resolve_limits() for config resolution (ADR-122).
+
         Hierarchy: Entity > Entity Default > Resource > System > Override.
-
-        Resolution order:
-        1. Entity-level config for this specific resource
-        2. Entity-level _default_ config (fallback for all resources)
-        3. Resource-level defaults (if entity configs are empty)
-        4. System-level defaults (if resource config is empty)
-        5. Override parameter (if all configs are empty)
-        6. ValidationError (if no limits found anywhere)
-
-        Uses config cache to reduce DynamoDB reads.
 
         Args:
             entity_id: Entity to resolve limits for
@@ -1272,57 +1218,18 @@ class RateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        # Try batched resolution (1 BatchGetItem instead of up to 4 GetItem calls)
-        # Skip when limits are already provided as override - no need to fetch config
-        if limits_override is None and self._repository.capabilities.supports_batch_operations:
-            try:
-                limits, _, config_source = await self._config_cache.resolve_limits(
-                    entity_id,
-                    resource,
-                    self._repository.batch_get_configs,
-                )
-                if limits is not None and config_source is not None:
-                    return limits, config_source
-            except Exception:
-                logger.debug("Batched config resolution failed, falling back to sequential")
-
-        # Sequential fallback (or non-batch backend)
-        entity_limits = await self._config_cache.get_entity_limits(
-            entity_id,
-            resource,
-            self._repository.get_limits,
-        )
-        if entity_limits:
-            return entity_limits, "entity"
-
-        # Try Entity level _default_ (fallback for entities with no resource-specific config)
-        if resource != DEFAULT_RESOURCE:
-            entity_default_limits = await self._config_cache.get_entity_limits(
-                entity_id,
-                DEFAULT_RESOURCE,
-                self._repository.get_limits,
-            )
-            if entity_default_limits:
-                return entity_default_limits, "entity_default"
-
-        # Try Resource level (with caching)
-        resource_limits = await self._config_cache.get_resource_defaults(
-            resource,
-            self._repository.get_resource_defaults,
-        )
-        if resource_limits:
-            return resource_limits, "resource"
-
-        # Try System level (with caching)
-        system_limits, _ = await self._config_cache.get_system_defaults(
-            self._repository.get_system_defaults,
-        )
-        if system_limits:
-            return system_limits, "system"
-
-        # Try override parameter
+        # Try override parameter first (skip repository call)
         if limits_override is not None:
             return limits_override, "override"
+
+        # Delegate to repository (ADR-122)
+        limits, _, config_source = await self._repository.resolve_limits(
+            entity_id,
+            resource,
+        )
+
+        if limits is not None and config_source is not None:
+            return limits, config_source
 
         # No limits found anywhere
         raise ValidationError(
@@ -1342,7 +1249,7 @@ class RateLimiter:
         """
         Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
 
-        Uses config cache to reduce DynamoDB reads.
+        Delegates system config lookup to repository.resolve_on_unavailable() (#333).
 
         Args:
             on_unavailable_param: Optional parameter override
@@ -1354,10 +1261,8 @@ class RateLimiter:
         if on_unavailable_param is not None:
             return on_unavailable_param
 
-        # Try System config (with caching)
-        _, on_unavailable_action = await self._config_cache.get_system_defaults(
-            self._repository.get_system_defaults,
-        )
+        # Try System config via repository (cached, ADR-122 / #333)
+        on_unavailable_action = await self._repository.resolve_on_unavailable()
         if on_unavailable_action is not None:
             return OnUnavailable(on_unavailable_action)
 
@@ -1500,8 +1405,6 @@ class RateLimiter:
         """
         await self._ensure_initialized()
         await self._repository.set_limits(entity_id, limits, resource, principal=principal)
-        # Evict entity from config cache so next acquire() reads fresh config
-        self._config_cache.evict_entity(entity_id, resource)
 
     async def get_limits(
         self,
@@ -1544,11 +1447,8 @@ class RateLimiter:
         # Capture old entity limits before deletion (for stale detection)
         old_limits = await self._repository.get_limits(entity_id, resource)
 
-        # Delete entity config
+        # Delete entity config (auto-evicts config cache, ADR-122)
         await self._repository.delete_limits(entity_id, resource, principal=principal)
-
-        # Evict cache so resolve sees the deletion
-        self._config_cache.evict_entity(entity_id, resource)
 
         # Resolve effective fallback limits (entity config gone → resource/system)
         try:

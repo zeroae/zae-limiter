@@ -272,31 +272,30 @@ zae-limiter caches config data (system defaults, resource defaults, entity limit
 from zae_limiter import RateLimiter, Repository
 
 # Default: 60-second cache TTL
-limiter = RateLimiter(
-    repository=Repository(name="my-app", region="us-east-1"),
-    config_cache_ttl=60,
-)
+repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=60)
+limiter = RateLimiter(repository=repo)
 
 # Disable caching (for testing)
-limiter = RateLimiter(
-    repository=Repository(name="my-app", region="us-east-1"),
-    config_cache_ttl=0,
-)
+repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=0)
+limiter = RateLimiter(repository=repo)
 ```
+
+### Automatic Cache Eviction
+
+Config-modifying methods (`set_limits()`, `delete_limits()`) automatically evict relevant cache entries. Manual invalidation is only needed after external changes (e.g., direct DynamoDB writes).
 
 ### Manual Cache Invalidation
 
-After modifying config, force immediate refresh:
+After external config changes, force immediate refresh:
 
 ```python
-await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
-await limiter.invalidate_config_cache()  # Optional: force refresh
+await repo.invalidate_config_cache()
 ```
 
 ### Monitoring Cache Performance
 
 ```python
-stats = limiter.get_cache_stats()
+stats = repo.get_cache_stats()
 print(f"Hits: {stats.hits}, Misses: {stats.misses}")
 print(f"Cache entries: {stats.size}")
 ```
@@ -305,16 +304,16 @@ See [Config Cache Tuning](../performance.md#7-config-cache-tuning) for advanced 
 
 ## Speculative Writes
 
-For latency-sensitive workloads with pre-warmed buckets, enable speculative writes to skip the read round trip:
+Speculative writes are enabled by default, skipping the read round trip for pre-warmed buckets. To disable them:
 
 ```python
 limiter = RateLimiter(
     repository=Repository(name="my-app", region="us-east-1"),
-    speculative_writes=True,
+    speculative_writes=False,  # Disable speculative writes
 )
 ```
 
-When enabled, `acquire()` attempts a conditional UpdateItem directly instead of reading bucket state first. On success, this saves one DynamoDB round trip (0 RCU, 1 WCU instead of 1 RCU + 1 WCU). When the bucket is exhausted and refill would not help, it rejects immediately without any writes (0 RCU, 0 WCU).
+With speculative writes, `acquire()` attempts a conditional UpdateItem directly instead of reading bucket state first. On success, this saves one DynamoDB round trip (0 RCU, 1 WCU instead of 1 RCU + 1 WCU). When the bucket is exhausted and refill would not help, it rejects immediately without any writes (0 RCU, 0 WCU).
 
 The speculative path falls back to the normal read-write path when:
 
@@ -322,7 +321,7 @@ The speculative path falls back to the normal read-write path when:
 - A new limit was added that is not in the bucket
 - Token refill since last access would provide enough capacity
 
-See [Performance Tuning - Speculative Writes](../performance.md#8-speculative-writes) for detailed cost analysis and guidance on when to enable this feature.
+See [Performance Tuning - Speculative Writes](../performance.md#8-speculative-writes) for detailed cost analysis and guidance on when to disable this feature.
 
 ## Next Steps
 

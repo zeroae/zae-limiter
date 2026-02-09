@@ -6,6 +6,7 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -14,6 +15,7 @@ from botocore.exceptions import ClientError
 from ulid import ULID
 
 from . import schema
+from .config_cache import CacheStats as CacheStats
 from .exceptions import EntityExistsError
 from .limiter import OnUnavailable as OnUnavailable
 from .models import (
@@ -31,7 +33,10 @@ from .models import (
     validate_resource,
 )
 from .naming import normalize_stack_name
+from .sync_config_cache import ConfigSource, SyncConfigCache
 from .sync_repository_protocol import SpeculativeResult
+
+logger = logging.getLogger(__name__)
 
 
 class SyncRepository:
@@ -48,6 +53,8 @@ class SyncRepository:
         endpoint_url: Custom endpoint URL (e.g., LocalStack).
         stack_options: Configuration for CloudFormation infrastructure.
             Pass StackOptions to enable declarative infrastructure management.
+        config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable).
+            Controls caching of resolved limit configs in resolve_limits().
 
     Example:
         # Basic usage
@@ -67,6 +74,7 @@ class SyncRepository:
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
+        config_cache_ttl: int = 60,
     ) -> None:
         self.stack_name = normalize_stack_name(name)
         self.table_name = self.stack_name
@@ -85,6 +93,7 @@ class SyncRepository:
             supports_change_streams=True,
             supports_batch_operations=True,
         )
+        self._config_cache = SyncConfigCache(ttl_seconds=config_cache_ttl)
 
     @property
     def capabilities(self) -> BackendCapabilities:
@@ -1043,6 +1052,7 @@ class SyncRepository:
             else:
                 raise
         self._sync_bucket_params(entity_id, resource, limits, bucket_ttl_refill_multiplier=0)
+        self._config_cache.evict_entity(entity_id, resource)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=entity_id,
@@ -1271,6 +1281,7 @@ class SyncRepository:
             else:
                 raise
         self._cleanup_entity_config_registry(resource)
+        self._config_cache.evict_entity(entity_id, resource)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id=entity_id,
@@ -2232,6 +2243,71 @@ class SyncRepository:
                 )
             )
         return limits
+
+    def resolve_limits(
+        self, entity_id: str, resource: str
+    ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
+        """Resolve effective limits using the four-level config hierarchy.
+
+        Uses SyncConfigCache with batched fetch optimization. Falls back to
+        sequential individual GetItem calls if batch resolution fails.
+
+        Args:
+            entity_id: Entity to resolve limits for
+            resource: Resource being accessed
+
+        Returns:
+            Tuple of (limits, on_unavailable, config_source)
+        """
+        if self.capabilities.supports_batch_operations:
+            try:
+                return self._config_cache.resolve_limits(
+                    entity_id, resource, self.batch_get_configs
+                )
+            except Exception:
+                logger.debug("Batched config resolution failed, falling back to sequential")
+        return self._resolve_limits_sequential(entity_id, resource)
+
+    def _resolve_limits_sequential(
+        self, entity_id: str, resource: str
+    ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
+        """Sequential fallback for resolve_limits().
+
+        Queries each config level individually with caching.
+        """
+        entity_limits = self._config_cache.get_entity_limits(entity_id, resource, self.get_limits)
+        if entity_limits:
+            return (entity_limits, None, "entity")
+        if resource != schema.DEFAULT_RESOURCE:
+            entity_default_limits = self._config_cache.get_entity_limits(
+                entity_id, schema.DEFAULT_RESOURCE, self.get_limits
+            )
+            if entity_default_limits:
+                return (entity_default_limits, None, "entity_default")
+        resource_limits = self._config_cache.get_resource_defaults(
+            resource, self.get_resource_defaults
+        )
+        if resource_limits:
+            return (resource_limits, None, "resource")
+        system_limits, on_unavailable = self._config_cache.get_system_defaults(
+            self.get_system_defaults
+        )
+        if system_limits:
+            return (system_limits, on_unavailable, "system")
+        return (None, on_unavailable, None)
+
+    def resolve_on_unavailable(self) -> OnUnavailableAction | None:
+        """Resolve on_unavailable from system config, using cache."""
+        _, on_unavailable = self._config_cache.get_system_defaults(self.get_system_defaults)
+        return on_unavailable
+
+    def invalidate_config_cache(self) -> None:
+        """Invalidate all cached config entries (ADR-122)."""
+        self._config_cache.invalidate_async()
+
+    def get_cache_stats(self) -> CacheStats:
+        """Get config cache performance statistics (ADR-122)."""
+        return self._config_cache.get_stats()
 
 
 if TYPE_CHECKING:

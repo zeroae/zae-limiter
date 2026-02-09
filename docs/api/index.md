@@ -15,6 +15,7 @@ The main components of the API are:
 | [`Limit`](models.md#zae_limiter.models.Limit) | Rate limit configuration |
 | [`StackOptions`](models.md#zae_limiter.models.StackOptions) | Infrastructure deployment configuration |
 | [`CacheStats`](models.md#zae_limiter.config_cache.CacheStats) | Cache performance statistics |
+| [`ConfigSource`](models.md#zae_limiter.config_cache.ConfigSource) | Config resolution source identifier |
 | [`RateLimitExceeded`](exceptions.md#zae_limiter.exceptions.RateLimitExceeded) | Exception when limit is exceeded |
 
 ## Quick Reference
@@ -22,19 +23,16 @@ The main components of the API are:
 ### Creating a Limiter
 
 ```python
-from zae_limiter import RateLimiter, SyncRateLimiter
+from zae_limiter import RateLimiter, SyncRateLimiter, Repository
+from zae_limiter.sync_repository import SyncRepository
 
-# Async
-limiter = RateLimiter(
-    name="limiter",
-    region="us-east-1",
-)
+# Async (preferred)
+repo = Repository(name="my-app", region="us-east-1")
+limiter = RateLimiter(repository=repo)
 
-# Sync
-limiter = SyncRateLimiter(
-    name="limiter",
-    region="us-east-1",
-)
+# Sync (preferred)
+repo = SyncRepository(name="my-app", region="us-east-1")
+limiter = SyncRateLimiter(repository=repo)
 ```
 
 ### Defining Limits
@@ -142,10 +140,14 @@ from zae_limiter import (
     RateLimiter,
     SyncRateLimiter,
     Repository,
+    SyncRepository,
     RepositoryProtocol,
+    SyncRepositoryProtocol,
     Lease,
     SyncLease,
     StackManager,
+    SyncStackManager,
+    SyncConfigCache,
 
     # Models
     Limit,
@@ -162,6 +164,7 @@ from zae_limiter import (
     BackendCapabilities,
     Status,
     CacheStats,
+    ConfigSource,
 
     # Audit
     AuditEvent,

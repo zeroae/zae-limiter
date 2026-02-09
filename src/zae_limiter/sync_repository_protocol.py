@@ -9,6 +9,7 @@ Changes should be made to the source file, then regenerated.
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from .config_cache import CacheStats as CacheStats
 from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
         UsageSnapshot,
         UsageSummary,
     )
+    from .sync_config_cache import ConfigSource
 
 
 @dataclass
@@ -244,25 +246,6 @@ class SyncRepositoryProtocol(Protocol):
 
         Returns:
             Existing or newly created BucketState
-        """
-        ...
-
-    def batch_get_configs(
-        self, keys: list[tuple[str, str]]
-    ) -> "dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]":
-        """
-        Batch get config items in a single DynamoDB call.
-
-        Fetches config records (entity, resource, system level) in a single
-        BatchGetItem request and returns deserialized limits.
-
-        Args:
-            keys: List of (PK, SK) tuples identifying config items
-
-        Returns:
-            Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
-            on_unavailable is extracted from system config items (None for others).
-            Missing items are not included in the result.
         """
         ...
 
@@ -732,5 +715,71 @@ class SyncRepositoryProtocol(Protocol):
 
         Raises:
             ValueError: If neither entity_id nor resource is provided
+        """
+        ...
+
+    def resolve_limits(
+        self, entity_id: str, resource: str
+    ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
+        """
+        Resolve effective limits using the four-level config hierarchy.
+
+        Resolution order (first non-empty wins):
+        1. Entity-level config for this specific resource
+        2. Entity-level ``_default_`` config (fallback for all resources)
+        3. Resource-level defaults
+        4. System-level defaults
+
+        Backend implementations should use native caching and resolution
+        strategies. For DynamoDB, this uses SyncConfigCache with batched fetch
+        optimization.
+
+        Args:
+            entity_id: Entity to resolve limits for
+            resource: Resource being accessed
+
+        Returns:
+            Tuple of (limits, on_unavailable, config_source) where:
+            - limits: Resolved limits or None if nothing found at any level
+            - on_unavailable: System-level unavailability behavior (if any)
+            - config_source: "entity", "entity_default", "resource", "system",
+                or None if no config found
+        """
+        ...
+
+    def resolve_on_unavailable(self) -> "OnUnavailableAction | None":
+        """
+        Resolve on_unavailable from system config, using cache.
+
+        Returns:
+            The system-level on_unavailable action, or None if not configured.
+        """
+        ...
+
+    def invalidate_config_cache(self) -> None:
+        """
+        Invalidate all cached config entries.
+
+        Backends with caching should evict all entries. Backends without
+        caching (e.g., Redis with native TTL) should no-op.
+
+        Call after modifying config to force immediate refresh.
+        """
+        ...
+
+    def get_cache_stats(self) -> "CacheStats":
+        """
+        Get config cache performance statistics.
+
+        Returns statistics for monitoring cache behavior:
+        - hits: Cache hits (avoided backend reads)
+        - misses: Cache misses (backend reads performed)
+        - size: Current entry count
+        - ttl: TTL in seconds
+
+        Backends without caching should return zero-valued stats.
+
+        Returns:
+            CacheStats object with cache metrics
         """
         ...

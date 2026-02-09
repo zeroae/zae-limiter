@@ -1,6 +1,6 @@
 # ADR-103: Client-Side Config Caching with TTL
 
-**Status:** Proposed
+**Status:** Superseded by ADR-122
 **Date:** 2026-01-18
 **Issue:** [#135](https://github.com/zeroae/zae-limiter/issues/135)
 
@@ -21,7 +21,7 @@ Implement **in-memory TTL caching** per RateLimiter instance with 60-second TTL 
 
 **Cache invalidation:**
 - Automatic: TTL expiry (60s)
-- Manual: `limiter.invalidate_config_cache()` method
+- Manual: `repo.invalidate_config_cache()` method (on Repository, not RateLimiter)
 
 **No distributed invalidation:** Config changes propagate via TTL expiry (max 60s staleness). This avoids infrastructure complexity (SNS/EventBridge) for infrequent operations.
 

@@ -408,8 +408,9 @@ def doctest_globals(doctest_env):
     _daily_limit = Limit.per_day("rpd", 10_000)
 
     return {
-        # Pre-built limiter
+        # Pre-built limiter and repository
         "limiter": _limiter,
+        "repo": _limiter._repository,
         # Common classes
         "RateLimiter": RateLimiter,
         "SyncRateLimiter": SyncRateLimiter,

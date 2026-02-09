@@ -152,12 +152,11 @@ class TestCapacityConsumption:
 
         Expected calls (with META folded into BatchGetItem - issue #116, composite limits ADR-114):
         - GetItem for version lookup
-        - GetItem for limit resolution (entity #CONFIG, resource #CONFIG, system #CONFIG)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
         - 1 PutItem (single-item optimization, halves WCU cost)
 
-        Note: With composite limits (ADR-114), limit resolution uses GetItem on
-        #CONFIG records instead of Query operations.
+        Note: When limits parameter is provided, config resolution is skipped
+        (ADR-122: _resolve_limits short-circuits on explicit limits).
         """
         # Setup stored limits
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -187,8 +186,8 @@ class TestCapacityConsumption:
         assert len(capacity_counter.transact_write_items) == 0, (
             "Should not use TransactWriteItems for single-item write"
         )
-        # GetItem calls for limit resolution (composite limits use GetItem, not Query)
-        assert capacity_counter.get_item >= 3, "Should have GetItem calls for config resolution"
+        # Only version check GetItem (config resolution skipped when limits provided)
+        assert capacity_counter.get_item == 1, "Should have 1 GetItem (version check only)"
 
     def test_acquire_batched_config_resolution_capacity(self, sync_limiter, capacity_counter):
         """Verify: acquire() without limits override uses BatchGetItem for configs (#298).

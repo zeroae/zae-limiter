@@ -650,7 +650,7 @@ class TestE2ELocalStackFullWorkflow:
         5. Verify free user falls back to resource config
         """
         # Invalidate cache to ensure fresh config resolution
-        await e2e_limiter.invalidate_config_cache()
+        await e2e_limiter._repository.invalidate_config_cache()
 
         await e2e_limiter.create_entity("premium-user")
         await e2e_limiter.create_entity("free-user")

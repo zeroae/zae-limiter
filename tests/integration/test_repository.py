@@ -491,7 +491,7 @@ class TestBucketTTLDowngrade:
         await limiter.delete_limits("user-downgrade", resource="api")
 
         # Invalidate cache to ensure deleted config is recognized
-        await limiter.invalidate_config_cache()
+        await limiter._repository.invalidate_config_cache()
 
         # Acquire again - should now set TTL since entity uses defaults
         async with limiter.acquire(
