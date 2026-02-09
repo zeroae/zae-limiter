@@ -288,12 +288,12 @@ def sync_limiter_no_cache(mock_dynamodb):
     repo = SyncRepository(
         name="test-no-cache",
         region="us-east-1",
+        config_cache_ttl=0,  # Disable config cache
     )
     repo.create_table()
 
     limiter = SyncRateLimiter(
         repository=repo,
-        config_cache_ttl=0,  # Disable config cache
     )
 
     with limiter:
@@ -315,13 +315,14 @@ def sync_localstack_limiter_no_cache(localstack_endpoint, minimal_stack_options)
     unique_id = uuid.uuid4().hex[:4]
     name = f"bench-nc-{timestamp}-{unique_id}"
 
-    limiter = SyncRateLimiter(
+    repo = SyncRepository(
         name=name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=minimal_stack_options,
         config_cache_ttl=0,  # Disable config cache
     )
+    limiter = SyncRateLimiter(repository=repo)
 
     with limiter:
         yield limiter
