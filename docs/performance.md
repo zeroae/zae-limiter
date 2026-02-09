@@ -13,7 +13,8 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` | 1 | 1 | O(1) regardless of limit count (composite bucket items) |
 | `acquire()` with cascade | 2 | 4 | Entity + parent bucket reads and writes (TransactWriteItems, 2 WCU per item) |
 | `acquire()` speculative success | 0 | 1 | Skips read; conditional UpdateItem (issue #315) |
-| `acquire()` speculative success + cascade | 0 | 2 | Child + parent speculative UpdateItem |
+| `acquire()` speculative success + cascade (sequential) | 0 | 2 | Child then parent speculative UpdateItem |
+| `acquire()` speculative success + cascade (parallel) | 0 | 2 | Concurrent child + parent via entity cache (issue #318) |
 | `acquire()` speculative fast rejection | 0 | 0 | Exhausted bucket; rejected from ALL_OLD without write |
 | `acquire()` speculative fallback (non-cascade) | 1 | 2 | Failed speculative (1 WCU) + normal path (1 RCU + 1 WCU) |
 | `acquire()` speculative cascade fallback (parent refill helps) | 0.5 | 3 | Child stays consumed; parent-only read (0.5 RCU) + single-item write (1 WCU) |
@@ -709,24 +710,20 @@ limiter = RateLimiter(
 
 ### How It Works
 
-Instead of the normal read-then-write flow (BatchGetItem + UpdateItem), the speculative path attempts a conditional UpdateItem first:
+Instead of the normal read-then-write flow (BatchGetItem + UpdateItem), the speculative path attempts a conditional UpdateItem first.
+
+**First acquire (sequential, populates entity cache):**
 
 ```
 acquire(entity_id, resource, consume)
 |
 +- Speculative UpdateItem (condition: bucket exists AND has enough tokens)
    |
-   +- SUCCEEDS -> read cascade/parent_id from ALL_NEW
+   +- SUCCEEDS -> read cascade/parent_id from ALL_NEW, populate entity cache
    |  +- cascade=False -> DONE (1 RT, 0 RCU, 1 WCU)
-   |  +- cascade=True -> Parent speculative UpdateItem
+   |  +- cascade=True -> Parent speculative UpdateItem (sequential)
    |     +- SUCCEEDS -> DONE (2 RT, 0 RCU, 2 WCU)
-   |     +- FAILS -> Check parent ALL_OLD (child stays consumed)
-   |        +- No ALL_OLD (missing) -> Compensate child, SLOW PATH
-   |        +- Missing limit -> Compensate child, SLOW PATH
-   |        +- Refill won't help -> Compensate child, RateLimitExceeded
-   |        +- Refill would help -> Parent-only slow path (keep child)
-   |           +- Parent acquire succeeds -> DONE (4 RT, 0.5 RCU, 3 WCU)
-   |           +- Parent acquire fails -> Compensate child, SLOW PATH
+   |     +- FAILS -> [parent failure handling, see below]
    |
    +- FAILS (ConditionalCheckFailedException)
       +- No ALL_OLD (bucket missing) -> SLOW PATH (creates bucket)
@@ -735,9 +732,33 @@ acquire(entity_id, resource, consume)
       +- Refill won't help -> RateLimitExceeded (0 RCU, 0 WCU)
 ```
 
+**Subsequent acquires (parallel, issue #318):**
+
+When the entity cache contains `(cascade=True, parent_id)` from a prior acquire, child and parent speculative writes are issued concurrently:
+
+```
+acquire(entity_id, resource, consume)   [cache hit: cascade=True, parent_id known]
+|
++- asyncio.gather(child_speculative, parent_speculative)
+   |
+   +- BOTH SUCCEED -> DONE (1 RT, 0 RCU, 2 WCU)
+   +- CHILD FAILS, PARENT SUCCEEDS -> Compensate parent, check child ALL_OLD
+   |  +- [same child failure handling as sequential path]
+   +- CHILD SUCCEEDS, PARENT FAILS -> Check parent ALL_OLD (child stays consumed)
+   |  +- No ALL_OLD (missing) -> Compensate child, SLOW PATH
+   |  +- Missing limit -> Compensate child, SLOW PATH
+   |  +- Refill won't help -> Compensate child, RateLimitExceeded
+   |  +- Refill would help -> Parent-only slow path (keep child)
+   |     +- Parent acquire succeeds -> DONE (2 RT, 0.5 RCU, 3 WCU)
+   |     +- Parent acquire fails -> Compensate child, SLOW PATH
+   +- BOTH FAIL -> Check child ALL_OLD, fall back or fast-reject
+```
+
 The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current bucket state on failure, allowing the limiter to determine whether refill would help without an additional read.
 
 **Deferred cascade compensation:** When the child speculative write succeeds but the parent fails with "refill would help", the child's consumption is kept in place while a parent-only slow path is attempted. This avoids compensating the child (1 WCU), re-reading it (0.5 RCU), and using TransactWriteItems for the full cascade write (4 WCU). Instead, only the parent is read (0.5 RCU) and written via a single-item UpdateItem (1 WCU). Compensation only happens when the parent-only path also fails.
+
+**Entity metadata cache (issue #318):** `Repository._entity_cache` stores `{entity_id: (cascade, parent_id)}` as immutable metadata with no TTL. After the first acquire populates the cache (from `ALL_NEW` on speculative success or from the entity META record on slow path), subsequent cascade acquires fire child and parent speculative writes concurrently via `asyncio.gather` inside `speculative_consume()`. This reduces cascade latency from 2 sequential round trips to 1 parallel round trip while maintaining the same WCU cost. In sync mode, `asyncio.gather` is transformed to `self._run_in_executor(lambda: a, lambda: b)` using a lazy `ThreadPoolExecutor(max_workers=2)` for true parallel execution.
 
 ### Cost Comparison
 
@@ -748,9 +769,10 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | **Speculative fast rejection** (exhausted) | 1 | 0 | 0 | $0.00 |
 | **Speculative fallback** (refill helps) | 3 | 1 | 2 | $1.375 |
 | **Normal path** (cascade) | 3 | 2 | 4 | $1.75 |
-| **Speculative success** (cascade) | 2 | 0 | 2 | $1.25 |
-| **Speculative cascade fallback** (parent refill helps) | 4 | 0.5 | 3 | $2.00 |
-| **Speculative cascade fast rejection** (parent exhausted) | 2 | 0 | 2 | $1.25 |
+| **Speculative success** (cascade, sequential) | 2 | 0 | 2 | $1.25 |
+| **Speculative success** (cascade, parallel) | 1 | 0 | 2 | $1.25 |
+| **Speculative cascade fallback** (parent refill helps) | 2+ | 0.5 | 3 | $2.00 |
+| **Speculative cascade fast rejection** (parent exhausted) | 1 | 0 | 2 | $1.25 |
 
 !!! note "When speculative writes save money"
     The speculative path is cheaper than the normal path when most requests succeed without needing refill. If a high percentage of requests fall back to the slow path (new entities, near-capacity buckets, frequent config changes), the extra WCU from the failed speculative write makes it more expensive.
@@ -764,9 +786,10 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | Speculative fast rejection (exhausted) | 1 | 5-8ms |
 | Speculative fallback (refill helps) | 3 | 15-22ms |
 | Normal path (cascade) | 3 | 15-22ms |
-| Speculative success (cascade) | 2 | 8-12ms |
-| Speculative cascade fallback (parent refill helps) | 4 | 18-28ms |
-| Speculative cascade fast rejection (parent exhausted) | 2 | 8-12ms |
+| Speculative success (cascade, sequential) | 2 | 8-12ms |
+| Speculative success (cascade, parallel) | 1 | 5-8ms |
+| Speculative cascade fallback (parent refill helps) | 2+ | 12-20ms |
+| Speculative cascade fast rejection (parent exhausted) | 1 | 5-8ms |
 
 ### Aggregator-Assisted Refill (Issue #317)
 
@@ -791,6 +814,7 @@ When the Lambda aggregator is enabled, it proactively refills token buckets for 
 - High-throughput workloads with pre-warmed buckets
 - Buckets that rarely exhaust capacity (high capacity relative to request rate)
 - Latency-sensitive applications where saving one round trip matters
+- Cascade entities with repeated acquires (entity cache enables parallel writes after first acquire)
 - Deployments with the Lambda aggregator enabled (aggregator keeps buckets warm for speculative success)
 
 **Poor fit:**
@@ -798,6 +822,7 @@ When the Lambda aggregator is enabled, it proactively refills token buckets for 
 - New entities that have never been seen before (first acquire always falls back)
 - Near-capacity buckets that frequently exhaust (high fallback rate)
 - Workloads with frequent config changes (missing limits trigger fallback)
+- One-shot entities that are only acquired once (entity cache provides no benefit)
 
 ### Monitoring Speculative Effectiveness
 
@@ -824,7 +849,7 @@ Track the ratio of speculative successes to fallbacks to determine if speculativ
 | Throughput | Distribute load across entities to avoid contention |
 | Cost | Disable cascade/stored_limits when not needed |
 | Config Cache | Use default 60s TTL; invalidate manually for immediate changes |
-| Speculative Writes | Enable for pre-warmed high-throughput workloads; saves 1 round trip on success |
+| Speculative Writes | Enable for pre-warmed high-throughput workloads; saves 1 round trip on success; cascade entities get parallel writes after first acquire |
 | Monitoring | Set up CloudWatch alerts for capacity and cost anomalies |
 
 For detailed benchmark data, run:

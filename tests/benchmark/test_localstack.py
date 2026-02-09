@@ -392,6 +392,97 @@ class TestLocalStackOptimizationComparison:
         benchmark(operation)
 
 
+class TestLocalStackCascadeSpeculativeComparison:
+    """Compare cascade speculative writes with cold vs warm entity cache on LocalStack.
+
+    With the entity cache warm (issue #318), speculative_consume() fires child + parent
+    UpdateItems in parallel via ThreadPoolExecutor. With the cache cold, only the child
+    gets a speculative UpdateItem; the parent goes through the normal slow path.
+
+    LocalStack provides realistic network latency where the parallel path should show
+    measurable improvement over the sequential path.
+    """
+
+    @pytest.fixture
+    def speculative_hierarchy(self, sync_localstack_limiter):
+        """Setup hierarchy with pre-warmed buckets for speculative comparison."""
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        sync_localstack_limiter.create_entity("ls-spec-parent", name="Parent")
+        sync_localstack_limiter.create_entity(
+            "ls-spec-child",
+            name="Child",
+            parent_id="ls-spec-parent",
+            cascade=True,
+        )
+
+        # Pre-warm buckets + entity cache with first acquire
+        with sync_localstack_limiter.acquire(
+            entity_id="ls-spec-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        # Enable speculative writes (default, but explicit for clarity)
+        sync_localstack_limiter._speculative_writes = True
+
+        # Second acquire warms speculative path (buckets now exist in DynamoDB)
+        with sync_localstack_limiter.acquire(
+            entity_id="ls-spec-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        return sync_localstack_limiter
+
+    @pytest.mark.benchmark(group="localstack-cascade-speculative")
+    def test_cascade_speculative_cache_cold_localstack(self, benchmark, speculative_hierarchy):
+        """Baseline: cascade speculative writes with entity cache COLD on LocalStack.
+
+        Entity cache is cleared before each iteration, forcing the child-only
+        speculative path. The parent goes through the normal slow path
+        (BatchGetItem read + TransactWriteItems write) -- sequential round trips.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        def operation():
+            speculative_hierarchy._repository._entity_cache.clear()
+            with speculative_hierarchy.acquire(
+                entity_id="ls-spec-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+    @pytest.mark.benchmark(group="localstack-cascade-speculative")
+    def test_cascade_speculative_cache_warm_localstack(self, benchmark, speculative_hierarchy):
+        """Optimized: cascade speculative writes with entity cache WARM on LocalStack.
+
+        Entity cache is pre-populated, enabling parallel speculative writes
+        for both child + parent via ThreadPoolExecutor. With real network
+        latency, this should show measurable improvement over the cold path.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+
+        def operation():
+            with speculative_hierarchy.acquire(
+                entity_id="ls-spec-child",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        benchmark(operation)
+
+
 class TestLambdaColdStartBenchmarks:
     """Benchmarks for Lambda cold start latency with aggregator.
 
