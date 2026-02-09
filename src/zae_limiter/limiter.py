@@ -1139,13 +1139,6 @@ class RateLimiter:
 
         entity, child_buckets = await self._fetch_entity_and_buckets(entity_id, resource)
 
-        # Populate entity cache from metadata (issue #318)
-        if hasattr(self._repository, "cache_entity_metadata"):
-            if entity:
-                self._repository.cache_entity_metadata(entity_id, entity.cascade, entity.parent_id)
-            else:
-                self._repository.cache_entity_metadata(entity_id, False, None)
-
         # Determine cascade
         entity_ids = [entity_id]
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)

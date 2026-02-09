@@ -98,15 +98,6 @@ class Repository:
         # Stores {entity_id -> (cascade, parent_id)} — immutable, no TTL needed
         self._entity_cache: dict[str, tuple[bool, str | None]] = {}
 
-    def cache_entity_metadata(
-        self,
-        entity_id: str,
-        cascade: bool,
-        parent_id: str | None,
-    ) -> None:
-        """Populate entity cache with metadata from slow path fetch."""
-        self._entity_cache[entity_id] = (cascade, parent_id)
-
     @property
     def capabilities(self) -> BackendCapabilities:
         """Declare which extended features this backend supports."""
@@ -382,9 +373,12 @@ class Repository:
 
         item = response.get("Item")
         if not item:
+            self._entity_cache[entity_id] = (False, None)
             return None
 
-        return self._deserialize_entity(item)
+        entity = self._deserialize_entity(item)
+        self._entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+        return entity
 
     async def delete_entity(
         self,
@@ -650,6 +644,12 @@ class Repository:
                     for bucket in self._deserialize_composite_bucket(item):
                         key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                         buckets[key] = bucket
+
+        # Populate entity cache transparently (issue #318)
+        if entity is not None:
+            self._entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+        else:
+            self._entity_cache[entity_id] = (False, None)
 
         return entity, buckets
 

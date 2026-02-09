@@ -962,11 +962,6 @@ class SyncRateLimiter:
             entity_id, resource, limits_override
         )
         entity, child_buckets = self._fetch_entity_and_buckets(entity_id, resource)
-        if hasattr(self._repository, "cache_entity_metadata"):
-            if entity:
-                self._repository.cache_entity_metadata(entity_id, entity.cascade, entity.parent_id)
-            else:
-                self._repository.cache_entity_metadata(entity_id, False, None)
         entity_ids = [entity_id]
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
         entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}

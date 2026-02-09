@@ -96,10 +96,6 @@ class SyncRepository:
         self._config_cache = SyncConfigCache(ttl_seconds=config_cache_ttl)
         self._entity_cache: dict[str, tuple[bool, str | None]] = {}
 
-    def cache_entity_metadata(self, entity_id: str, cascade: bool, parent_id: str | None) -> None:
-        """Populate entity cache with metadata from slow path fetch."""
-        self._entity_cache[entity_id] = (cascade, parent_id)
-
     @property
     def capabilities(self) -> BackendCapabilities:
         """Declare which extended features this backend supports."""
@@ -326,8 +322,11 @@ class SyncRepository:
         )
         item = response.get("Item")
         if not item:
+            self._entity_cache[entity_id] = (False, None)
             return None
-        return self._deserialize_entity(item)
+        entity = self._deserialize_entity(item)
+        self._entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+        return entity
 
     def delete_entity(self, entity_id: str, principal: str | None = None) -> None:
         """
@@ -509,6 +508,10 @@ class SyncRepository:
                     for bucket in self._deserialize_composite_bucket(item):
                         key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                         buckets[key] = bucket
+        if entity is not None:
+            self._entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+        else:
+            self._entity_cache[entity_id] = (False, None)
         return (entity, buckets)
 
     def batch_get_configs(

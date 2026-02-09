@@ -6356,3 +6356,260 @@ class TestCascadeEntityCache:
                 assert "tpm" not in child_limit_names
         finally:
             limiter._repository._speculative_consume_single = original_single
+
+    async def test_parallel_both_succeed_parent_skips_zero_amount(self, limiter):
+        """Parallel both succeed: parent bucket with zero consume amount is skipped."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        limiter._speculative_writes = True
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        now_ms = int(__import__("time").time() * 1000)
+        child_rpm = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        parent_rpm = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        parent_tpm = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="tpm",
+            tokens_milli=50_000_000,
+            last_refill_ms=now_ms,
+            capacity_milli=100_000_000,
+            burst_milli=100_000_000,
+            refill_amount_milli=100_000_000,
+            refill_period_ms=60_000,
+        )
+        original_single = limiter._repository._speculative_consume_single
+
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+            if entity_id == "child-1":
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_rpm],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if entity_id == "parent-1":
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[parent_rpm, parent_tpm],
+                    cascade=False,
+                    parent_id=None,
+                )
+            return await original_single(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository._speculative_consume_single = mock_single
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entries = [e for e in lease.entries if e.entity_id == "parent-1"]
+                parent_limit_names = {e.limit.name for e in parent_entries}
+                assert "rpm" in parent_limit_names
+                assert "tpm" not in parent_limit_names
+        finally:
+            limiter._repository._speculative_consume_single = original_single
+
+    async def test_nested_parent_failure_missing_limit_names(self, limiter):
+        """Nested parent failure: old_buckets don't include all consume keys."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        limiter._speculative_writes = True
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        parent_old_tpm_only = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="tpm",
+            tokens_milli=50_000_000,
+            last_refill_ms=now_ms,
+            capacity_milli=100_000_000,
+            burst_milli=100_000_000,
+            refill_amount_milli=100_000_000,
+            refill_period_ms=60_000,
+        )
+        original_single = limiter._repository._speculative_consume_single
+
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+            if entity_id == "child-1":
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if entity_id == "parent-1":
+                return SpeculativeResult(success=False, old_buckets=[parent_old_tpm_only])
+            return await original_single(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository._speculative_consume_single = mock_single
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            limiter._repository._speculative_consume_single = original_single
+
+    async def test_nested_parent_only_acquire_exception_compensates(self, limiter):
+        """Nested parent failure: exception during parent-only acquire compensates child."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        limiter._speculative_writes = True
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        parent_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=500_000,
+            last_refill_ms=now_ms - 30_000,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        original_single = limiter._repository._speculative_consume_single
+        original_parent_acquire = limiter._try_parent_only_acquire
+
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+            if entity_id == "child-1":
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if entity_id == "parent-1":
+                return SpeculativeResult(success=False, old_buckets=[parent_old])
+            return await original_single(entity_id, resource, consume, ttl_seconds)
+
+        async def mock_parent_acquire(*args, **kwargs):
+            raise RuntimeError("simulated parent acquire failure")
+
+        limiter._repository._speculative_consume_single = mock_single
+        limiter._try_parent_only_acquire = mock_parent_acquire
+        try:
+            with pytest.raises(RateLimiterUnavailable):
+                async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+                    pass
+        finally:
+            limiter._repository._speculative_consume_single = original_single
+            limiter._try_parent_only_acquire = original_parent_acquire
+
+    async def test_nested_parent_only_acquire_returns_none_compensates(self, limiter):
+        """Nested parent failure: parent-only acquire returns None compensates child."""
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        limiter._speculative_writes = True
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        parent_old = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=500_000,
+            last_refill_ms=now_ms - 30_000,
+            capacity_milli=1_000_000,
+            burst_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        original_single = limiter._repository._speculative_consume_single
+        original_parent_acquire = limiter._try_parent_only_acquire
+
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+            if entity_id == "child-1":
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if entity_id == "parent-1":
+                return SpeculativeResult(success=False, old_buckets=[parent_old])
+            return await original_single(entity_id, resource, consume, ttl_seconds)
+
+        async def mock_parent_acquire(*args, **kwargs):
+            return None
+
+        limiter._repository._speculative_consume_single = mock_single
+        limiter._try_parent_only_acquire = mock_parent_acquire
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert len(lease.entries) > 0
+        finally:
+            limiter._repository._speculative_consume_single = original_single
+            limiter._try_parent_only_acquire = original_parent_acquire
