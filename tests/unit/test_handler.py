@@ -105,6 +105,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=1,
             snapshots_updated=1,
+            refills_written=0,
             errors=[],
         )
 
@@ -114,6 +115,7 @@ class TestHandler:
         assert result["statusCode"] == 200
         assert result["body"]["processed"] == 1
         assert result["body"]["snapshots_updated"] == 1
+        assert result["body"]["refills_written"] == 0
         assert result["body"]["events_archived"] == 0
         assert result["body"]["errors"] == []
 
@@ -135,6 +137,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=2,
             snapshots_updated=1,
+            refills_written=0,
             errors=[],
         )
         mock_archive.return_value = MagicMock(
@@ -182,6 +185,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=2,
             snapshots_updated=0,
+            refills_written=0,
             errors=["snapshot error 1"],
         )
         mock_archive.return_value = MagicMock(
@@ -211,6 +215,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=1,
             snapshots_updated=1,
+            refills_written=0,
             errors=[],
         )
 
@@ -233,6 +238,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=1,
             snapshots_updated=1,
+            refills_written=0,
             errors=[],
         )
 

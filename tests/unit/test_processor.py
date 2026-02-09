@@ -6,16 +6,21 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from zae_limiter_aggregator.processor import (
+    BucketRefillState,
     ConsumptionDelta,
+    LimitRefillInfo,
     ProcessResult,
     StructuredLogger,
+    aggregate_bucket_states,
     calculate_snapshot_ttl,
     extract_deltas,
     get_window_end,
     get_window_key,
     process_stream_records,
+    try_refill_bucket,
     update_snapshot,
 )
 
@@ -48,11 +53,13 @@ class TestProcessResult:
         result = ProcessResult(
             processed_count=10,
             snapshots_updated=5,
+            refills_written=3,
             errors=["error1", "error2"],
         )
 
         assert result.processed_count == 10
         assert result.snapshots_updated == 5
+        assert result.refills_written == 3
         assert result.errors == ["error1", "error2"]
 
 
@@ -844,13 +851,578 @@ class TestStructuredLoggingIntegration:
         logs = [json.loads(line) for line in lines]
         debug_logs = [log for log in logs if log["level"] == "DEBUG"]
 
-        assert len(debug_logs) == 1
-        debug_log = debug_logs[0]
+        # Find the snapshot debug log (refill skip logs may also appear)
+        snapshot_logs = [log for log in debug_logs if log["message"] == "Snapshot updated"]
+        assert len(snapshot_logs) == 1
+        debug_log = snapshot_logs[0]
 
-        assert debug_log["message"] == "Snapshot updated"
         assert debug_log["entity_id"] == "entity-1"
         assert debug_log["resource"] == "gpt-4"
         assert debug_log["limit_name"] == "tpm"
         assert debug_log["window"] == "hourly"
         assert "window_key" in debug_log
         assert "tokens_delta" in debug_log
+
+
+class TestAggregateBucketStates:
+    """Tests for aggregate_bucket_states function."""
+
+    def _make_bucket_record(
+        self,
+        entity_id: str = "entity-1",
+        resource: str = "gpt-4",
+        rf: int = 1704067200000,
+        limits: dict[str, dict[str, int]] | None = None,
+    ) -> dict:
+        """Helper to create a composite bucket stream record with full config.
+
+        Args:
+            limits: Dict of limit_name -> {old_tc, new_tc, tk, cp, bx, ra, rp}
+        """
+        if limits is None:
+            limits = {
+                "tpm": {
+                    "old_tc": 0,
+                    "new_tc": 5000000,
+                    "tk": 95000000,
+                    "cp": 100000000,
+                    "bx": 100000000,
+                    "ra": 100000000,
+                    "rp": 60000,
+                },
+            }
+
+        new_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": f"#BUCKET#{resource}"},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf)},
+        }
+        old_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": f"#BUCKET#{resource}"},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf - 1000)},
+        }
+
+        for name, fields in limits.items():
+            if "new_tc" in fields:
+                new_image[f"b_{name}_tc"] = {"N": str(fields["new_tc"])}
+            if "old_tc" in fields:
+                old_image[f"b_{name}_tc"] = {"N": str(fields["old_tc"])}
+            for attr in ("tk", "cp", "bx", "ra", "rp"):
+                if attr in fields:
+                    new_image[f"b_{name}_{attr}"] = {"N": str(fields[attr])}
+
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {"NewImage": new_image, "OldImage": old_image},
+        }
+
+    def test_single_record_single_limit(self) -> None:
+        """Aggregates a single record with one limit."""
+        records = [self._make_bucket_record()]
+        states = aggregate_bucket_states(records)
+
+        assert len(states) == 1
+        key = ("entity-1", "gpt-4")
+        assert key in states
+        state = states[key]
+        assert state.entity_id == "entity-1"
+        assert state.resource == "gpt-4"
+        assert "tpm" in state.limits
+        info = state.limits["tpm"]
+        assert info.tc_delta == 5000000
+        assert info.tk_milli == 95000000
+        assert info.ra_milli == 100000000
+        assert info.rp_ms == 60000
+
+    def test_single_record_multiple_limits(self) -> None:
+        """Aggregates a composite record with multiple limits."""
+        records = [
+            self._make_bucket_record(
+                limits={
+                    "tpm": {
+                        "old_tc": 0,
+                        "new_tc": 5000000,
+                        "tk": 95000000,
+                        "cp": 100000000,
+                        "bx": 100000000,
+                        "ra": 100000000,
+                        "rp": 60000,
+                    },
+                    "rpm": {
+                        "old_tc": 0,
+                        "new_tc": 1000,
+                        "tk": 999000,
+                        "cp": 1000000,
+                        "bx": 1000000,
+                        "ra": 1000000,
+                        "rp": 60000,
+                    },
+                },
+            ),
+        ]
+        states = aggregate_bucket_states(records)
+
+        assert len(states) == 1
+        state = states[("entity-1", "gpt-4")]
+        assert len(state.limits) == 2
+        assert state.limits["tpm"].tc_delta == 5000000
+        assert state.limits["rpm"].tc_delta == 1000
+
+    def test_multiple_records_same_bucket_aggregates_deltas(self) -> None:
+        """Multiple events for the same bucket accumulate tc deltas."""
+        records = [
+            self._make_bucket_record(
+                rf=1704067200000,
+                limits={
+                    "tpm": {
+                        "old_tc": 0,
+                        "new_tc": 2000000,
+                        "tk": 98000000,
+                        "cp": 100000000,
+                        "bx": 100000000,
+                        "ra": 100000000,
+                        "rp": 60000,
+                    }
+                },
+            ),
+            self._make_bucket_record(
+                rf=1704067201000,
+                limits={
+                    "tpm": {
+                        "old_tc": 2000000,
+                        "new_tc": 5000000,
+                        "tk": 95000000,
+                        "cp": 100000000,
+                        "bx": 100000000,
+                        "ra": 100000000,
+                        "rp": 60000,
+                    }
+                },
+            ),
+        ]
+        states = aggregate_bucket_states(records)
+
+        state = states[("entity-1", "gpt-4")]
+        assert state.limits["tpm"].tc_delta == 5000000  # 2M + 3M
+        # Last event's values
+        assert state.limits["tpm"].tk_milli == 95000000
+        assert state.rf_ms == 1704067201000
+
+    def test_different_buckets_separate_keys(self) -> None:
+        """Different entity+resource pairs get separate entries."""
+        records = [
+            self._make_bucket_record(entity_id="e1", resource="gpt-4"),
+            self._make_bucket_record(entity_id="e2", resource="gpt-4"),
+        ]
+        states = aggregate_bucket_states(records)
+        assert len(states) == 2
+        assert ("e1", "gpt-4") in states
+        assert ("e2", "gpt-4") in states
+
+    def test_non_modify_events_skipped(self) -> None:
+        """INSERT and REMOVE events are ignored."""
+        record = self._make_bucket_record()
+        record["eventName"] = "INSERT"
+        states = aggregate_bucket_states([record])
+        assert len(states) == 0
+
+    def test_non_bucket_records_skipped(self) -> None:
+        """Non-bucket SK records are ignored."""
+        record = self._make_bucket_record()
+        record["dynamodb"]["NewImage"]["SK"]["S"] = "#META"
+        states = aggregate_bucket_states([record])
+        assert len(states) == 0
+
+    def test_missing_tc_counter_skips_limit(self) -> None:
+        """Limits without tc counter in both images are skipped."""
+        records = [
+            self._make_bucket_record(
+                limits={
+                    "tpm": {
+                        "tk": 95000000,
+                        "cp": 100000000,
+                        "bx": 100000000,
+                        "ra": 100000000,
+                        "rp": 60000,
+                        # no old_tc or new_tc
+                    }
+                },
+            ),
+        ]
+        states = aggregate_bucket_states(records)
+        # Key created but no limits populated
+        assert len(states) == 0 or len(states[("entity-1", "gpt-4")].limits) == 0
+
+
+class TestTryRefillBucket:
+    """Tests for try_refill_bucket function."""
+
+    def _make_state(
+        self,
+        entity_id: str = "entity-1",
+        resource: str = "gpt-4",
+        rf_ms: int = 1704067200000,
+        limits: dict[str, LimitRefillInfo] | None = None,
+    ) -> BucketRefillState:
+        """Helper to create a BucketRefillState."""
+        if limits is None:
+            limits = {
+                "tpm": LimitRefillInfo(
+                    tc_delta=5000000,
+                    tk_milli=50000000,  # 50% of capacity
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,  # 100k tokens/min
+                    rp_ms=60000,
+                ),
+            }
+        return BucketRefillState(
+            entity_id=entity_id,
+            resource=resource,
+            rf_ms=rf_ms,
+            limits=limits,
+        )
+
+    def test_refill_written_when_projected_tokens_insufficient(self) -> None:
+        """Writes refill when projected tokens < consumption estimate."""
+        mock_table = MagicMock()
+        # Low tokens, high consumption, 5 seconds elapsed for refill
+        state = self._make_state(
+            rf_ms=1704067195000,  # 5s ago
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,  # consumed 20k tokens this window
+                    tk_milli=5000000,  # only 5k tokens left
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,  # 100k/min refill
+                    rp_ms=60000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        result = try_refill_bucket(mock_table, state, now_ms)
+
+        assert result is True
+        mock_table.update_item.assert_called_once()
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert "rf = :expected_rf" in call_kwargs["ConditionExpression"]
+        assert "ADD" in call_kwargs["UpdateExpression"]
+        assert "SET rf = :new_rf" in call_kwargs["UpdateExpression"]
+
+    def test_refill_skipped_when_tokens_sufficient(self) -> None:
+        """Skips refill when projected tokens >= consumption."""
+        mock_table = MagicMock()
+        # High tokens, low consumption
+        state = self._make_state(
+            rf_ms=1704067199000,  # 1s ago
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=1000000,  # consumed 1k tokens
+                    tk_milli=90000000,  # 90k tokens remaining
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        result = try_refill_bucket(mock_table, state, now_ms)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_refill_skipped_when_no_elapsed_time(self) -> None:
+        """Skips refill when no time has elapsed (no tokens to add)."""
+        mock_table = MagicMock()
+        state = self._make_state(rf_ms=1704067200000)
+        now_ms = 1704067200000  # same as rf
+
+        result = try_refill_bucket(mock_table, state, now_ms)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_conditional_check_failure_returns_false(self) -> None:
+        """ConditionalCheckFailedException is caught and returns False."""
+        mock_table = MagicMock()
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        state = self._make_state(
+            rf_ms=1704067195000,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,
+                    tk_milli=5000000,
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        result = try_refill_bucket(mock_table, state, now_ms)
+
+        assert result is False
+        mock_table.update_item.assert_called_once()
+
+    def test_other_client_error_re_raised(self) -> None:
+        """Non-conditional ClientErrors are re-raised."""
+        mock_table = MagicMock()
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": "bad"}},
+            "UpdateItem",
+        )
+        state = self._make_state(
+            rf_ms=1704067195000,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,
+                    tk_milli=5000000,
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        with pytest.raises(ClientError):
+            try_refill_bucket(mock_table, state, now_ms)
+
+    def test_empty_limits_returns_false(self) -> None:
+        """Bucket with no limits returns False."""
+        mock_table = MagicMock()
+        state = self._make_state(limits={})
+
+        result = try_refill_bucket(mock_table, state, 1704067200000)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_multiple_limits_single_update(self) -> None:
+        """Multiple limits needing refill produce a single UpdateItem."""
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,  # 5s ago
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,
+                    tk_milli=5000000,
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+                "rpm": LimitRefillInfo(
+                    tc_delta=200,
+                    tk_milli=10,
+                    cp_milli=1000,
+                    bx_milli=1000,
+                    ra_milli=1000,
+                    rp_ms=60000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        result = try_refill_bucket(mock_table, state, now_ms)
+
+        assert result is True
+        # Single UpdateItem call for both limits
+        mock_table.update_item.assert_called_once()
+        call_kwargs = mock_table.update_item.call_args[1]
+        update_expr = call_kwargs["UpdateExpression"]
+        # Both limits should have ADD clauses
+        assert "b_tpm_tk" in update_expr
+        assert "b_rpm_tk" in update_expr
+
+    def test_uses_add_not_set_for_tokens(self) -> None:
+        """Verifies ADD is used for token deltas (commutative with speculative writes)."""
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,
+                    tk_milli=5000000,
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        try_refill_bucket(mock_table, state, now_ms)
+
+        call_kwargs = mock_table.update_item.call_args[1]
+        update_expr = call_kwargs["UpdateExpression"]
+        # Token update must use ADD (not SET) for commutativity
+        assert "ADD b_tpm_tk" in update_expr
+        # rf uses SET (optimistic lock)
+        assert "SET rf = :new_rf" in update_expr
+        # Refill delta should be positive
+        refill_delta = call_kwargs["ExpressionAttributeValues"][":rd_tpm"]
+        assert refill_delta > 0
+
+    def test_negative_tc_delta_skips_refill(self) -> None:
+        """Negative tc delta (refund) means no consumption pressure, skip refill."""
+        mock_table = MagicMock()
+        state = self._make_state(
+            rf_ms=1704067195000,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=-5000000,  # tokens were returned
+                    tk_milli=50000000,
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        result = try_refill_bucket(mock_table, state, now_ms)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+
+class TestProcessStreamRecordsRefill:
+    """Tests for refill integration in process_stream_records."""
+
+    def _make_bucket_record(
+        self,
+        entity_id: str = "entity-1",
+        resource: str = "gpt-4",
+        rf: int = 1704067200000,
+        limits: dict[str, dict[str, int]] | None = None,
+    ) -> dict:
+        """Helper to create a composite bucket stream record with full config."""
+        if limits is None:
+            limits = {
+                "tpm": {
+                    "old_tc": 0,
+                    "new_tc": 5000000,
+                    "tk": 95000000,
+                    "cp": 100000000,
+                    "bx": 100000000,
+                    "ra": 100000000,
+                    "rp": 60000,
+                },
+            }
+
+        new_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": f"#BUCKET#{resource}"},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf)},
+        }
+        old_image: dict = {
+            "PK": {"S": f"ENTITY#{entity_id}"},
+            "SK": {"S": f"#BUCKET#{resource}"},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf - 1000)},
+        }
+
+        for name, fields in limits.items():
+            if "new_tc" in fields:
+                new_image[f"b_{name}_tc"] = {"N": str(fields["new_tc"])}
+            if "old_tc" in fields:
+                old_image[f"b_{name}_tc"] = {"N": str(fields["old_tc"])}
+            for attr in ("tk", "cp", "bx", "ra", "rp"):
+                if attr in fields:
+                    new_image[f"b_{name}_{attr}"] = {"N": str(fields[attr])}
+
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {"NewImage": new_image, "OldImage": old_image},
+        }
+
+    def test_refills_written_in_result(self) -> None:
+        """ProcessResult includes refills_written count."""
+        # Low tokens + high consumption => refill should trigger
+        records = [
+            self._make_bucket_record(
+                rf=1704067195000,
+                limits={
+                    "tpm": {
+                        "old_tc": 0,
+                        "new_tc": 20000000,
+                        "tk": 5000000,
+                        "cp": 100000000,
+                        "bx": 100000000,
+                        "ra": 100000000,
+                        "rp": 60000,
+                    },
+                },
+            ),
+        ]
+
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
+            mock_table = MagicMock()
+            mock_boto.resource.return_value.Table.return_value = mock_table
+
+            with patch("zae_limiter_aggregator.processor.time_module") as mock_time:
+                mock_time.perf_counter.return_value = 0.0
+                mock_time.time.return_value = 1704067200.0
+
+                result = process_stream_records(records, "test_table", ["hourly"])
+
+        assert result.refills_written == 1
+
+    def test_refill_error_captured_in_errors(self) -> None:
+        """Errors during refill are logged but don't fail the batch."""
+        records = [
+            self._make_bucket_record(
+                rf=1704067195000,
+                limits={
+                    "tpm": {
+                        "old_tc": 0,
+                        "new_tc": 20000000,
+                        "tk": 5000000,
+                        "cp": 100000000,
+                        "bx": 100000000,
+                        "ra": 100000000,
+                        "rp": 60000,
+                    },
+                },
+            ),
+        ]
+
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
+            mock_table = MagicMock()
+            # First call succeeds (snapshot), subsequent calls fail (refill)
+            call_count = 0
+
+            def side_effect(**kwargs):
+                nonlocal call_count
+                call_count += 1
+                if "ConditionExpression" in kwargs:
+                    raise Exception("DynamoDB error")
+
+            mock_table.update_item.side_effect = side_effect
+            mock_boto.resource.return_value.Table.return_value = mock_table
+
+            with patch("zae_limiter_aggregator.processor.time_module") as mock_time:
+                mock_time.perf_counter.return_value = 0.0
+                mock_time.time.return_value = 1704067200.0
+
+                result = process_stream_records(records, "test_table", ["hourly"])
+
+        assert result.refills_written == 0
+        assert any("Error refilling bucket" in e for e in result.errors)

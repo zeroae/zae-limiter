@@ -3,7 +3,8 @@
 Uses aws-lambda-builders to install the ``[lambda]`` extra pip dependencies
 (aws-lambda-powertools) for the Lambda target platform (Linux x86_64), then
 copies the ``zae_limiter_aggregator`` package and a minimal ``zae_limiter``
-stub (only ``schema.py``) into the artifact.  This ensures:
+stub (``schema.py``, ``bucket.py``, ``models.py``, ``exceptions.py``) into the
+artifact.  This ensures:
 
 1. Cross-platform builds work (macOS/Windows host → Linux Lambda)
 2. The deployed code matches what's installed locally (dev versions work)
@@ -51,6 +52,9 @@ def build_lambda_package() -> bytes:
     - ``zae_limiter_aggregator/`` (all .py files)
     - ``zae_limiter/__init__.py`` (empty stub — makes it a valid package)
     - ``zae_limiter/schema.py`` (full copy — no external deps)
+    - ``zae_limiter/bucket.py`` (refill math for aggregator refill)
+    - ``zae_limiter/models.py`` (dataclasses used by bucket.py)
+    - ``zae_limiter/exceptions.py`` (exceptions used by models.py)
 
     The full ``zae_limiter`` package is *not* included (it depends on
     aioboto3 which is not needed by the aggregator).
@@ -136,6 +140,15 @@ def build_lambda_package() -> bytes:
         # Full copy of schema.py — no external deps (only imports typing)
         schema_src = zae_limiter_path / "schema.py"
         shutil.copy2(schema_src, dest_zae_limiter / "schema.py")
+
+        # bucket.py — refill math for aggregator-assisted refill (Issue #317)
+        shutil.copy2(zae_limiter_path / "bucket.py", dest_zae_limiter / "bucket.py")
+
+        # models.py — dataclasses used by bucket.py (pure stdlib deps)
+        shutil.copy2(zae_limiter_path / "models.py", dest_zae_limiter / "models.py")
+
+        # exceptions.py — exceptions used by models.py (pure stdlib deps)
+        shutil.copy2(zae_limiter_path / "exceptions.py", dest_zae_limiter / "exceptions.py")
 
         # Create zip from artifacts
         zip_buffer = io.BytesIO()

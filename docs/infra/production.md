@@ -62,7 +62,7 @@ The stack creates three IAM managed policies by default:
 
 #### Lambda Aggregator
 
-The Lambda aggregator uses a separate execution role with least-privilege permissions:
+The Lambda aggregator processes DynamoDB Stream events for usage aggregation, proactive bucket refill, and audit archival. It uses a separate execution role with least-privilege permissions:
 
 - `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query`
 - `s3:PutObject` (when audit archival is enabled)
