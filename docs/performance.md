@@ -21,6 +21,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
 | `acquire()` with adjustments | 0 | +1 per entity | Independent writes via `write_each()` (1 WCU each) |
 | `acquire()` rollback (on exception) | 0 | +1 per entity | Independent compensating writes (1 WCU each) |
+| Aggregator bucket refill (per active bucket) | 0 | 1 | Proactive refill via Lambda; 0 WCU if lock lost |
 | `acquire(limits=None)` with config cache miss | +3 | 0 | +3 GetItem operations for config hierarchy |
 | `available()` | 1 | 0 | Read-only, single composite bucket item |
 | `get_limits()` | 1 | 0 | Query operation |
@@ -790,6 +791,22 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | Speculative cascade fallback (parent refill helps) | 2+ | 12-20ms |
 | Speculative cascade fast rejection (parent exhausted) | 1 | 5-8ms |
 
+### Aggregator-Assisted Refill (Issue #317)
+
+When the Lambda aggregator is enabled, it proactively refills token buckets for active entities between client requests. This keeps speculative writes on the fast path (1 RT, 0 RCU, 1 WCU) by ensuring buckets have sufficient tokens, reducing fallback to the slow path (3 RT, 1 RCU, 2 WCU).
+
+**How it works:**
+
+1. The aggregator processes DynamoDB Stream events for bucket modifications
+2. For each active (entity, resource) bucket, it aggregates consumption deltas from the batch
+3. If projected tokens after natural refill are insufficient to cover the observed consumption rate, it writes a proactive refill
+4. The refill uses `ADD` (commutative with concurrent speculative writes) and an optimistic lock on `rf` to prevent double-refill
+
+**Cost:** 1 WCU per refill written (0 WCU if another writer updated `rf` first). The cost is amortized across all stream records in a batch, so high-throughput workloads see fewer refills per request.
+
+!!! tip "Aggregator refill + speculative writes"
+    The combination of aggregator-assisted refill and speculative writes provides the best latency and cost profile: the aggregator keeps buckets warm so speculative writes rarely fall back, achieving ~5-8ms p50 latency at $0.625/M requests (non-cascade).
+
 ### When to Use Speculative Writes
 
 **Good fit:**
@@ -798,6 +815,7 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 - Buckets that rarely exhaust capacity (high capacity relative to request rate)
 - Latency-sensitive applications where saving one round trip matters
 - Cascade entities with repeated acquires (entity cache enables parallel writes after first acquire)
+- Deployments with the Lambda aggregator enabled (aggregator keeps buckets warm for speculative success)
 
 **Poor fit:**
 

@@ -122,7 +122,7 @@ zae-limiter lambda-export --output lambda.zip
 **Lambda Deployment Details:**
 - The CLI automatically builds a deployment package using `aws-lambda-builders` for cross-platform compatibility
 - Only `[lambda]` extra dependencies (aws-lambda-powertools) are pip-installed; `boto3` is provided by the Lambda runtime
-- The `zae_limiter_aggregator` package and a minimal `zae_limiter/schema.py` stub are copied into the zip
+- The `zae_limiter_aggregator` package and a minimal `zae_limiter` stub are copied into the zip: `schema.py`, `bucket.py` (refill math for aggregator-assisted refill), `models.py` (dataclasses used by bucket.py), and `exceptions.py` (exceptions used by models.py)
 - Lambda code is updated via AWS Lambda API after stack creation
 - No S3 bucket required - deployment package is uploaded directly
 - No Docker required - `aws-lambda-builders` handles platform-specific wheels
@@ -224,9 +224,9 @@ src/zae_limiter/
     └── cfn_template.yaml        # CloudFormation template
 
 src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
-├── __init__.py               # Re-exports handler, processor types
-├── handler.py                # Lambda entry point
-├── processor.py              # Stream processing logic for usage snapshots
+├── __init__.py               # Re-exports handler, processor types (ProcessResult, ConsumptionDelta, BucketRefillState, LimitRefillInfo, ParsedBucketRecord, ParsedBucketLimit)
+├── handler.py                # Lambda entry point (returns refills_written count)
+├── processor.py              # Stream processing: usage snapshots + bucket refill (Issue #317)
 └── archiver.py               # S3 audit archival (gzip JSONL)
 ```
 
@@ -363,6 +363,16 @@ Primary mitigation: cascade defaults to `False`.
 - Fast rejection: if refill would not help, raises `RateLimitExceeded` immediately (0 RCU, 0 WCU)
 - Cascade/parent_id denormalized into bucket items to avoid entity metadata lookup on the fast path
 - **Parallel cascade writes (Issue #318):** After the first acquire populates the entity cache, subsequent cascade acquires issue child + parent speculative writes concurrently via `asyncio.gather`, reducing cascade latency from 2 sequential round trips to 1 parallel round trip
+
+### Aggregator-Assisted Bucket Refill (Issue #317)
+- The Lambda aggregator proactively refills token buckets for active entities via DynamoDB Streams
+- Keeps speculative writes on the fast path (1 RT) by ensuring buckets have sufficient tokens, avoiding fallback to the slow path (3 RT)
+- Uses `aggregate_bucket_states()` to accumulate `tc` deltas and last NewImage per (entity_id, resource) across stream records in a batch
+- `try_refill_bucket()` computes refill via `refill_bucket()` from `bucket.py`, only writes if projected tokens are insufficient to cover the observed consumption rate
+- Uses `ADD` for token deltas (commutative with concurrent speculative writes) and an optimistic lock on the shared `rf` timestamp (`ConditionExpression: rf = :expected_rf`) to prevent double-refill with the client slow path
+- `ConditionalCheckFailedException` is silently skipped (another writer updated `rf` first)
+- New types: `ParsedBucketRecord`, `ParsedBucketLimit` (shared stream record parsing), `BucketRefillState`, `LimitRefillInfo` (per-bucket aggregated state for refill decisions)
+- `ProcessResult` includes `refills_written` field; handler response body includes the count
 
 ### Exception Design
 - `RateLimitExceeded` includes **ALL** limit statuses
@@ -507,6 +517,22 @@ Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/
 - On cache hit with `cascade=True`, `speculative_consume()` issues child + parent speculative writes concurrently via `asyncio.gather`
 - Reduces cascade latency from 2 sequential round trips to 1 parallel round trip (same WCU cost)
 - First acquire for an entity always uses sequential path (populates cache); subsequent acquires use parallel path
+
+**Aggregator refill write pattern (issue #317):**
+- `try_refill_bucket()` issues an `UpdateItem` with `ADD b_{limit}_tk +refill_delta SET rf = :now` and condition `rf = :expected_rf`
+- Uses `ADD` for token deltas so it commutes with concurrent speculative writes (no read required)
+- Optimistic lock on `rf` prevents double-refill with the client slow path or another aggregator invocation
+- On `ConditionalCheckFailedException`, the refill is silently skipped (another writer updated `rf` first)
+
+**DynamoDB writer table:**
+
+| Writer | UpdateExpression | Condition | Touches `rf`? |
+|--------|-----------------|-----------|---------------|
+| Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed` | No |
+| Normal path (initial) | `SET rf = :new_rf ADD tk -consumed` | `rf = :expected_rf` | Yes (optimistic lock) |
+| Normal path (retry) | `ADD tk -consumed` | `tk >= consumed` | No (skips refill) |
+| Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
+| Aggregator refill | `ADD tk +refill SET rf = :now` | `rf = :expected_rf` | Yes (optimistic lock) |
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
 

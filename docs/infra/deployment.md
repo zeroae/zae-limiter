@@ -8,7 +8,7 @@ zae-limiter uses CloudFormation to deploy:
 
 - **DynamoDB Table** - Stores rate limit state, entities, and usage data
 - **DynamoDB Streams** - Captures changes for usage aggregation
-- **Lambda Function** - Aggregates usage into hourly/daily snapshots and archives audit events
+- **Lambda Function** - Aggregates usage into hourly/daily snapshots, proactively refills token buckets for active entities, and archives audit events
 - **S3 Bucket** - Archives expired audit events (when audit archival is enabled)
 - **IAM Policies** - Least-privilege managed policies (AcquireOnly/FullAccess/ReadOnly)
 - **CloudWatch Logs** - Lambda function logs

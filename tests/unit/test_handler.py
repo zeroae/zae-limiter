@@ -31,37 +31,36 @@ class TestHandler:
         old_counter: int = 0,
         new_counter: int = 1000000,
     ) -> dict:
-        """Create a mock DynamoDB stream MODIFY record for a bucket."""
+        """Create a mock DynamoDB stream MODIFY record for a composite bucket.
+
+        Uses flat schema (v0.6.0+, ADR-111) with b_{limit}_{field} attributes.
+        """
         return {
             "eventName": "MODIFY",
             "dynamodb": {
                 "OldImage": {
                     "PK": {"S": f"ENTITY#{entity_id}"},
-                    "SK": {"S": f"#BUCKET#{resource}#{limit_name}"},
+                    "SK": {"S": f"#BUCKET#{resource}"},
                     "entity_id": {"S": entity_id},
-                    "total_consumed_milli": {"N": str(old_counter)},
-                    "data": {
-                        "M": {
-                            "resource": {"S": resource},
-                            "limit_name": {"S": limit_name},
-                            "tokens_milli": {"N": "10000000"},
-                            "last_refill_ms": {"N": "1705329000000"},
-                        }
-                    },
+                    "rf": {"N": "1705329000000"},
+                    f"b_{limit_name}_tc": {"N": str(old_counter)},
+                    f"b_{limit_name}_tk": {"N": "10000000"},
+                    f"b_{limit_name}_cp": {"N": "10000000"},
+                    f"b_{limit_name}_bx": {"N": "10000000"},
+                    f"b_{limit_name}_ra": {"N": "10000000"},
+                    f"b_{limit_name}_rp": {"N": "60000"},
                 },
                 "NewImage": {
                     "PK": {"S": f"ENTITY#{entity_id}"},
-                    "SK": {"S": f"#BUCKET#{resource}#{limit_name}"},
+                    "SK": {"S": f"#BUCKET#{resource}"},
                     "entity_id": {"S": entity_id},
-                    "total_consumed_milli": {"N": str(new_counter)},
-                    "data": {
-                        "M": {
-                            "resource": {"S": resource},
-                            "limit_name": {"S": limit_name},
-                            "tokens_milli": {"N": "9000000"},
-                            "last_refill_ms": {"N": "1705329000000"},
-                        }
-                    },
+                    "rf": {"N": "1705329000000"},
+                    f"b_{limit_name}_tc": {"N": str(new_counter)},
+                    f"b_{limit_name}_tk": {"N": "9000000"},
+                    f"b_{limit_name}_cp": {"N": "10000000"},
+                    f"b_{limit_name}_bx": {"N": "10000000"},
+                    f"b_{limit_name}_ra": {"N": "10000000"},
+                    f"b_{limit_name}_rp": {"N": "60000"},
                 },
             },
         }
@@ -73,7 +72,10 @@ class TestHandler:
         action: str = "entity_created",
         timestamp: str = "2024-01-15T14:30:00Z",
     ) -> dict:
-        """Create a mock DynamoDB stream REMOVE record for audit."""
+        """Create a mock DynamoDB stream REMOVE record for audit.
+
+        Uses flat schema (v0.6.0+, ADR-111).
+        """
         return {
             "eventName": "REMOVE",
             "dynamodb": {
@@ -81,16 +83,11 @@ class TestHandler:
                     "PK": {"S": f"AUDIT#{entity_id}"},
                     "SK": {"S": f"#AUDIT#{event_id}"},
                     "entity_id": {"S": entity_id},
-                    "data": {
-                        "M": {
-                            "event_id": {"S": event_id},
-                            "entity_id": {"S": entity_id},
-                            "action": {"S": action},
-                            "timestamp": {"S": timestamp},
-                            "principal": {"S": "arn:aws:iam::123456789012:user/test"},
-                            "details": {"M": {}},
-                        }
-                    },
+                    "event_id": {"S": event_id},
+                    "action": {"S": action},
+                    "timestamp": {"S": timestamp},
+                    "principal": {"S": "arn:aws:iam::123456789012:user/test"},
+                    "details": {"M": {}},
                 },
             },
         }
@@ -105,6 +102,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=1,
             snapshots_updated=1,
+            refills_written=0,
             errors=[],
         )
 
@@ -114,6 +112,7 @@ class TestHandler:
         assert result["statusCode"] == 200
         assert result["body"]["processed"] == 1
         assert result["body"]["snapshots_updated"] == 1
+        assert result["body"]["refills_written"] == 0
         assert result["body"]["events_archived"] == 0
         assert result["body"]["errors"] == []
 
@@ -135,6 +134,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=2,
             snapshots_updated=1,
+            refills_written=0,
             errors=[],
         )
         mock_archive.return_value = MagicMock(
@@ -182,6 +182,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=2,
             snapshots_updated=0,
+            refills_written=0,
             errors=["snapshot error 1"],
         )
         mock_archive.return_value = MagicMock(
@@ -211,6 +212,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=1,
             snapshots_updated=1,
+            refills_written=0,
             errors=[],
         )
 
@@ -233,6 +235,7 @@ class TestHandler:
         mock_process.return_value = MagicMock(
             processed_count=1,
             snapshots_updated=1,
+            refills_written=0,
             errors=[],
         )
 
