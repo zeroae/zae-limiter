@@ -284,11 +284,12 @@ async with limiter.acquire(api_key_id, "llm-api", {"rpm": 1}, limits=limits):
 
 ```python
 # Config caching reduces RCUs (60s TTL by default)
-limiter = RateLimiter(
+repo = Repository(
     name="rate-limits",
     region="us-east-1",
     config_cache_ttl=60,  # seconds (0 to disable)
 )
+limiter = RateLimiter(repository=repo)
 
 # Pass explicit limits to skip config resolution entirely
 async with limiter.acquire(
@@ -623,22 +624,16 @@ The config cache reduces DynamoDB reads by caching system defaults, resource def
 from zae_limiter import RateLimiter, Repository
 
 # Default: 60-second TTL (recommended for most workloads)
-limiter = RateLimiter(
-    repository=Repository(name="my-app", region="us-east-1"),
-    config_cache_ttl=60,  # Default
-)
+repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=60)
+limiter = RateLimiter(repository=repo)
 
 # High-frequency updates: Shorter TTL for faster propagation
-limiter = RateLimiter(
-    repository=Repository(name="my-app", region="us-east-1"),
-    config_cache_ttl=10,  # 10 seconds - faster updates, more cache misses
-)
+repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=10)
+limiter = RateLimiter(repository=repo)
 
 # Disable caching: For testing or when config changes must be immediate
-limiter = RateLimiter(
-    repository=Repository(name="my-app", region="us-east-1"),
-    config_cache_ttl=0,  # Disabled - every acquire reads from DynamoDB
-)
+repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=0)
+limiter = RateLimiter(repository=repo)
 ```
 
 ### Cost Impact
@@ -659,16 +654,16 @@ With caching (default):
 
 **Negative caching** also helps: When an entity has no custom config (95%+ of entities typically), the cache remembers this to avoid repeated lookups.
 
+### Automatic Cache Eviction
+
+Config-modifying methods (`set_limits()`, `delete_limits()`) automatically evict relevant cache entries. Manual invalidation is only needed after external changes (e.g., direct DynamoDB writes or changes from another process).
+
 ### Manual Invalidation
 
-After modifying config, you can force immediate refresh:
+After external config changes, force immediate refresh:
 
 ```python
-# Update config
-await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
-
-# Force immediate cache refresh (optional)
-await limiter.invalidate_config_cache()
+await repo.invalidate_config_cache()
 ```
 
 Without manual invalidation, changes propagate within the TTL period (max 60 seconds by default).
@@ -677,7 +672,7 @@ Without manual invalidation, changes propagate within the TTL period (max 60 sec
 
 ```python
 # Get cache statistics
-stats = limiter.get_cache_stats()
+stats = repo.get_cache_stats()
 total = stats.hits + stats.misses
 print(f"Cache hit rate: {stats.hits / total:.1%}" if total else "No requests yet")
 print(f"Cache entries: {stats.size}")

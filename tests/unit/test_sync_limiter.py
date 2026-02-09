@@ -764,15 +764,11 @@ class TestRateLimiterStoredLimits:
         """Test using stored limits in acquire."""
         stored_limits = [Limit.per_minute("rpm", 500)]
         sync_limiter.set_limits("key-1", stored_limits, resource="gpt-4")
-        default_limits = [Limit.per_minute("rpm", 100)]
-        with sync_limiter.acquire(
-            entity_id="key-1",
-            resource="gpt-4",
-            limits=default_limits,
-            consume={"rpm": 200},
-            use_stored_limits=True,
-        ):
-            pass
+        with pytest.deprecated_call():
+            with sync_limiter.acquire(
+                entity_id="key-1", resource="gpt-4", consume={"rpm": 200}, use_stored_limits=True
+            ):
+                pass
 
     def test_delete_limits(self, sync_limiter):
         """Test deleting stored limits."""
@@ -2811,15 +2807,15 @@ class TestLazyImports:
 
 
 class TestRateLimiterConfigCache:
-    """Tests for config cache management methods."""
+    """Tests for config cache management via SyncRepository (ADR-122)."""
 
     def test_get_cache_stats_returns_cache_stats(self, mock_dynamodb):
-        """Test get_cache_stats() returns CacheStats object."""
+        """Test SyncRepository.get_cache_stats() returns CacheStats object."""
         from tests.unit.conftest import _patch_aiobotocore_response
 
         with _patch_aiobotocore_response():
             limiter = SyncRateLimiter()
-            stats = limiter.get_cache_stats()
+            stats = limiter._repository.get_cache_stats()
             assert isinstance(stats, CacheStats)
             assert stats.hits == 0
             assert stats.misses == 0
@@ -2828,27 +2824,29 @@ class TestRateLimiterConfigCache:
             limiter.close()
 
     def test_get_cache_stats_with_custom_ttl(self, mock_dynamodb):
-        """Test get_cache_stats() reflects custom TTL."""
+        """Test SyncRepository.get_cache_stats() reflects custom TTL."""
         from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRepository
 
         with _patch_aiobotocore_response():
-            limiter = SyncRateLimiter(config_cache_ttl=120)
-            stats = limiter.get_cache_stats()
+            repo = SyncRepository(name="test-rate-limits", region="us-east-1", config_cache_ttl=120)
+            limiter = SyncRateLimiter(repository=repo)
+            stats = limiter._repository.get_cache_stats()
             assert stats.ttl_seconds == 120
             limiter.close()
 
     def test_invalidate_config_cache(self, mock_dynamodb):
-        """Test invalidate_config_cache() clears cache entries."""
+        """Test SyncRepository.invalidate_config_cache() clears cache entries."""
         from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.sync_config_cache import CacheEntry
 
         with _patch_aiobotocore_response():
             limiter = SyncRateLimiter()
             entry = CacheEntry(value=[], expires_at=9999999999.0)
-            limiter._config_cache._resource_defaults["gpt-4"] = entry
-            assert limiter.get_cache_stats().size == 1
-            limiter.invalidate_config_cache()
-            assert limiter.get_cache_stats().size == 0
+            limiter._repository._config_cache._resource_defaults["gpt-4"] = entry
+            assert limiter._repository.get_cache_stats().size == 1
+            limiter._repository.invalidate_config_cache()
+            assert limiter._repository.get_cache_stats().size == 0
             limiter.close()
 
 
@@ -3068,7 +3066,7 @@ class TestLeaseCommitTTL:
         with sync_limiter.acquire(entity_id="user-1", resource="api", consume={"rpm": 1}):
             pass
         sync_limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
-        sync_limiter.invalidate_config_cache()
+        sync_limiter._repository.invalidate_config_cache()
         with sync_limiter.acquire(entity_id="user-1", resource="api", consume={"rpm": 1}):
             pass
         from zae_limiter.schema import pk_entity, sk_bucket
@@ -3167,7 +3165,7 @@ class TestLeaseCommitTTL:
         assert item is not None
         assert "ttl" not in item
         sync_limiter.delete_limits("user-1", resource="api")
-        sync_limiter.invalidate_config_cache()
+        sync_limiter._repository.invalidate_config_cache()
         with sync_limiter.acquire(entity_id="user-1", resource="api", consume={"rpm": 1}):
             pass
         item = sync_limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
@@ -3353,7 +3351,7 @@ class TestBucketReconciliation:
 
         sync_limiter.set_resource_defaults("api", [Limit.per_minute("rpm", 100)])
         sync_limiter.set_limits("user-del", [Limit.per_minute("rpm", 500)], resource="api")
-        sync_limiter.invalidate_config_cache()
+        sync_limiter._repository.invalidate_config_cache()
         with sync_limiter.acquire(entity_id="user-del", resource="api", consume={"rpm": 1}):
             pass
         item = sync_limiter._repository._get_item(pk_entity("user-del"), sk_bucket("api"))
@@ -3379,7 +3377,7 @@ class TestBucketReconciliation:
             [Limit.per_minute("rpm", 500), Limit.per_minute("tpm", 50000)],
             resource="api",
         )
-        sync_limiter.invalidate_config_cache()
+        sync_limiter._repository.invalidate_config_cache()
         with sync_limiter.acquire(
             entity_id="user-stale", resource="api", consume={"rpm": 1, "tpm": 100}
         ):
@@ -3401,7 +3399,7 @@ class TestBucketReconciliation:
         from zae_limiter.schema import pk_entity, sk_bucket
 
         sync_limiter.set_limits("user-orphan", [Limit.per_minute("rpm", 100)], resource="api")
-        sync_limiter.invalidate_config_cache()
+        sync_limiter._repository.invalidate_config_cache()
         with sync_limiter.acquire(entity_id="user-orphan", resource="api", consume={"rpm": 1}):
             pass
         item_before = sync_limiter._repository._get_item(pk_entity("user-orphan"), sk_bucket("api"))
@@ -3423,7 +3421,7 @@ class TestBucketReconciliation:
         with sync_limiter.acquire(entity_id="user-cache", resource="api", consume={"rpm": 1}):
             pass
         sync_limiter.set_limits("user-cache", [Limit.per_minute("rpm", 200)], resource="api")
-        assert ("user-cache", "api") not in sync_limiter._config_cache._entity_limits
+        assert ("user-cache", "api") not in sync_limiter._repository._config_cache._entity_limits
 
     def test_delete_limits_evicts_config_cache(self, sync_limiter):
         """delete_limits() evicts stale entity config from cache."""
@@ -3431,13 +3429,13 @@ class TestBucketReconciliation:
 
         sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
         sync_limiter.set_limits("user-dcache", [Limit.per_minute("rpm", 200)], resource="api")
-        sync_limiter.invalidate_config_cache()
+        sync_limiter._repository.invalidate_config_cache()
         with sync_limiter.acquire(entity_id="user-dcache", resource="api", consume={"rpm": 1}):
             pass
-        entry = sync_limiter._config_cache._entity_limits.get(("user-dcache", "api"))
+        entry = sync_limiter._repository._config_cache._entity_limits.get(("user-dcache", "api"))
         assert entry is not None and entry.value is not _NO_CONFIG
         sync_limiter.delete_limits("user-dcache", resource="api")
-        entry = sync_limiter._config_cache._entity_limits.get(("user-dcache", "api"))
+        entry = sync_limiter._repository._config_cache._entity_limits.get(("user-dcache", "api"))
         assert entry is None or entry.value is _NO_CONFIG, (
             "Cache should not contain stale entity limits after delete"
         )

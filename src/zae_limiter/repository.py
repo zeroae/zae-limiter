@@ -1,5 +1,6 @@
 """DynamoDB repository for rate limiter data."""
 
+import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -8,6 +9,7 @@ from botocore.exceptions import ClientError
 from ulid import ULID
 
 from . import schema
+from .config_cache import CacheStats, ConfigCache, ConfigSource
 from .exceptions import EntityExistsError
 from .models import (
     AuditAction,
@@ -26,6 +28,8 @@ from .models import (
 from .naming import normalize_stack_name
 from .repository_protocol import SpeculativeResult
 
+logger = logging.getLogger(__name__)
+
 
 class Repository:
     """
@@ -41,6 +45,8 @@ class Repository:
         endpoint_url: Custom endpoint URL (e.g., LocalStack).
         stack_options: Configuration for CloudFormation infrastructure.
             Pass StackOptions to enable declarative infrastructure management.
+        config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable).
+            Controls caching of resolved limit configs in resolve_limits().
 
     Example:
         # Basic usage
@@ -60,6 +66,7 @@ class Repository:
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
+        config_cache_ttl: int = 60,
     ) -> None:
         # Validate and normalize name
         self.stack_name = normalize_stack_name(name)
@@ -82,6 +89,9 @@ class Repository:
             supports_change_streams=True,
             supports_batch_operations=True,
         )
+
+        # Config cache for resolve_limits() (ADR-122)
+        self._config_cache = ConfigCache(ttl_seconds=config_cache_ttl)
 
     @property
     def capabilities(self) -> BackendCapabilities:
@@ -1311,6 +1321,9 @@ class Repository:
         # Entity config = no TTL (bucket_ttl_refill_multiplier=0 → REMOVE ttl)
         await self._sync_bucket_params(entity_id, resource, limits, bucket_ttl_refill_multiplier=0)
 
+        # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
+        self._config_cache.evict_entity(entity_id, resource)
+
         # Log audit event
         await self._log_audit_event(
             action=AuditAction.LIMITS_SET,
@@ -1587,6 +1600,9 @@ class Repository:
 
         # Cleanup: remove registry attribute if count <= 0
         await self._cleanup_entity_config_registry(resource)
+
+        # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
+        self._config_cache.evict_entity(entity_id, resource)
 
         # Log audit event
         await self._log_audit_event(
@@ -2814,6 +2830,95 @@ class Repository:
             )
 
         return limits
+
+    # -------------------------------------------------------------------------
+    # Config resolution (ADR-122)
+    # -------------------------------------------------------------------------
+
+    async def resolve_limits(
+        self,
+        entity_id: str,
+        resource: str,
+    ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
+        """Resolve effective limits using the four-level config hierarchy.
+
+        Uses ConfigCache with batched fetch optimization. Falls back to
+        sequential individual GetItem calls if batch resolution fails.
+
+        Args:
+            entity_id: Entity to resolve limits for
+            resource: Resource being accessed
+
+        Returns:
+            Tuple of (limits, on_unavailable, config_source)
+        """
+        # Try batched resolution (1 BatchGetItem instead of up to 4 GetItem calls)
+        if self.capabilities.supports_batch_operations:
+            try:
+                return await self._config_cache.resolve_limits(
+                    entity_id,
+                    resource,
+                    self.batch_get_configs,
+                )
+            except Exception:
+                logger.debug("Batched config resolution failed, falling back to sequential")
+
+        # Sequential fallback (or non-batch backend)
+        return await self._resolve_limits_sequential(entity_id, resource)
+
+    async def _resolve_limits_sequential(
+        self,
+        entity_id: str,
+        resource: str,
+    ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
+        """Sequential fallback for resolve_limits().
+
+        Queries each config level individually with caching.
+        """
+        # Entity-level config for specific resource
+        entity_limits = await self._config_cache.get_entity_limits(
+            entity_id,
+            resource,
+            self.get_limits,
+        )
+        if entity_limits:
+            return entity_limits, None, "entity"
+
+        # Entity-level _default_ config
+        if resource != schema.DEFAULT_RESOURCE:
+            entity_default_limits = await self._config_cache.get_entity_limits(
+                entity_id,
+                schema.DEFAULT_RESOURCE,
+                self.get_limits,
+            )
+            if entity_default_limits:
+                return entity_default_limits, None, "entity_default"
+
+        # Resource-level defaults
+        resource_limits = await self._config_cache.get_resource_defaults(
+            resource,
+            self.get_resource_defaults,
+        )
+        if resource_limits:
+            return resource_limits, None, "resource"
+
+        # System-level defaults (includes on_unavailable)
+        system_limits, on_unavailable = await self._config_cache.get_system_defaults(
+            self.get_system_defaults,
+        )
+        if system_limits:
+            return system_limits, on_unavailable, "system"
+
+        # Nothing found
+        return None, on_unavailable, None
+
+    async def invalidate_config_cache(self) -> None:
+        """Invalidate all cached config entries (ADR-122)."""
+        await self._config_cache.invalidate_async()
+
+    def get_cache_stats(self) -> CacheStats:
+        """Get config cache performance statistics (ADR-122)."""
+        return self._config_cache.get_stats()
 
 
 # Type assertion: Repository implements RepositoryProtocol

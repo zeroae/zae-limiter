@@ -272,31 +272,30 @@ zae-limiter caches config data (system defaults, resource defaults, entity limit
 from zae_limiter import RateLimiter, Repository
 
 # Default: 60-second cache TTL
-limiter = RateLimiter(
-    repository=Repository(name="my-app", region="us-east-1"),
-    config_cache_ttl=60,
-)
+repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=60)
+limiter = RateLimiter(repository=repo)
 
 # Disable caching (for testing)
-limiter = RateLimiter(
-    repository=Repository(name="my-app", region="us-east-1"),
-    config_cache_ttl=0,
-)
+repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=0)
+limiter = RateLimiter(repository=repo)
 ```
+
+### Automatic Cache Eviction
+
+Config-modifying methods (`set_limits()`, `delete_limits()`) automatically evict relevant cache entries. Manual invalidation is only needed after external changes (e.g., direct DynamoDB writes).
 
 ### Manual Cache Invalidation
 
-After modifying config, force immediate refresh:
+After external config changes, force immediate refresh:
 
 ```python
-await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
-await limiter.invalidate_config_cache()  # Optional: force refresh
+await repo.invalidate_config_cache()
 ```
 
 ### Monitoring Cache Performance
 
 ```python
-stats = limiter.get_cache_stats()
+stats = repo.get_cache_stats()
 print(f"Hits: {stats.hits}, Misses: {stats.misses}")
 print(f"Cache entries: {stats.size}")
 ```

@@ -556,7 +556,7 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 - `config_version` (int): Atomic counter for cache invalidation
 - `on_unavailable` (string): "allow" or "block" (system level only)
 
-**Caching:** 60s TTL in-memory cache per RateLimiter instance (configurable via `config_cache_ttl` parameter, 0 to disable). Use `invalidate_config_cache()` for immediate refresh. Use `get_cache_stats()` for monitoring. Negative caching for entities without custom config.
+**Caching:** 60s TTL in-memory cache per Repository instance (configurable via `config_cache_ttl` parameter on Repository constructor, 0 to disable). Use `repo.invalidate_config_cache()` for immediate refresh. Use `repo.get_cache_stats()` for monitoring. `set_limits()` and `delete_limits()` auto-evict relevant cache entries. Negative caching for entities without custom config. Config resolution is handled by `repo.resolve_limits()` (ADR-122).
 
 **Cost impact:** 1.5 RCU per cache miss (one GetItem per level, reduced from 2 RCU with per-limit items). With caching, `acquire()` costs 1-2 RCU per request regardless of limit count (O(1) via composite items, ADR-114/115).
 

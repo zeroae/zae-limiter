@@ -14,7 +14,6 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from .config_cache import CacheStats as CacheStats
 from .limiter import OnUnavailable as OnUnavailable
 
 if TYPE_CHECKING:
@@ -51,7 +50,7 @@ from .models import (
     validate_resource,
 )
 from .schema import DEFAULT_RESOURCE
-from .sync_config_cache import ConfigSource, SyncConfigCache
+from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
 
@@ -98,7 +97,6 @@ class SyncRateLimiter:
         auto_update: bool = True,
         strict_version: bool = True,
         skip_version_check: bool = False,
-        config_cache_ttl: int = 60,
         bucket_ttl_refill_multiplier: int = 7,
         speculative_writes: bool = True,
     ) -> None:
@@ -120,7 +118,6 @@ class SyncRateLimiter:
             auto_update: Auto-update Lambda when version mismatch detected
             strict_version: Fail if version mismatch (when auto_update is False)
             skip_version_check: Skip all version checks (dangerous)
-            config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable)
             bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
                 TTL = max_refill_period_seconds × multiplier. Default: 7.
                 Set to 0 to disable TTL for buckets using default limits.
@@ -168,7 +165,6 @@ class SyncRateLimiter:
         self._strict_version = strict_version
         self._skip_version_check = skip_version_check
         self._initialized = False
-        self._config_cache = SyncConfigCache(ttl_seconds=config_cache_ttl)
         self._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
         self._speculative_writes = speculative_writes
 
@@ -315,43 +311,6 @@ class SyncRateLimiter:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
-
-    def invalidate_config_cache(self) -> None:
-        """
-        Invalidate all cached config entries.
-
-        Call this after modifying config (system defaults, resource defaults,
-        or entity limits) to force an immediate refresh. Without manual
-        invalidation, changes propagate within the TTL period (default: 60s).
-
-        Example:
-            # Update config and force refresh
-            await limiter.set_system_defaults([Limit.tpm(100000)])
-            await limiter.invalidate_config_cache()
-        """
-        self._config_cache.invalidate_async()
-
-    def get_cache_stats(self) -> CacheStats:
-        """
-        Get config cache performance statistics.
-
-        Returns statistics useful for monitoring and debugging cache behavior:
-        - hits: Number of cache hits (avoided DynamoDB reads)
-        - misses: Number of cache misses (DynamoDB reads performed)
-        - size: Number of entries currently in cache
-        - ttl: Cache TTL in seconds
-
-        Returns:
-            CacheStats object with cache metrics
-
-        Example:
-            stats = limiter.get_cache_stats()
-            total = stats.hits + stats.misses
-            hit_rate = stats.hits / total if total > 0 else 0
-            print(f"Cache hit rate: {hit_rate:.1%}")
-            print(f"Cache entries: {stats.size}")
-        """
-        return self._config_cache.get_stats()
 
     def is_available(self, timeout: float = 1.0) -> bool:
         """
@@ -1023,17 +982,9 @@ class SyncRateLimiter:
         """
         Resolve limits using four-tier hierarchy.
 
+        Delegates to repository.resolve_limits() for config resolution (ADR-122).
+
         Hierarchy: Entity > Entity Default > Resource > System > Override.
-
-        Resolution order:
-        1. Entity-level config for this specific resource
-        2. Entity-level _default_ config (fallback for all resources)
-        3. Resource-level defaults (if entity configs are empty)
-        4. System-level defaults (if resource config is empty)
-        5. Override parameter (if all configs are empty)
-        6. ValidationError (if no limits found anywhere)
-
-        Uses config cache to reduce DynamoDB reads.
 
         Args:
             entity_id: Entity to resolve limits for
@@ -1051,38 +1002,11 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        if limits_override is None and self._repository.capabilities.supports_batch_operations:
-            try:
-                limits, _, config_source = self._config_cache.resolve_limits(
-                    entity_id, resource, self._repository.batch_get_configs
-                )
-                if limits is not None and config_source is not None:
-                    return (limits, config_source)
-            except Exception:
-                logger.debug("Batched config resolution failed, falling back to sequential")
-        entity_limits = self._config_cache.get_entity_limits(
-            entity_id, resource, self._repository.get_limits
-        )
-        if entity_limits:
-            return (entity_limits, "entity")
-        if resource != DEFAULT_RESOURCE:
-            entity_default_limits = self._config_cache.get_entity_limits(
-                entity_id, DEFAULT_RESOURCE, self._repository.get_limits
-            )
-            if entity_default_limits:
-                return (entity_default_limits, "entity_default")
-        resource_limits = self._config_cache.get_resource_defaults(
-            resource, self._repository.get_resource_defaults
-        )
-        if resource_limits:
-            return (resource_limits, "resource")
-        system_limits, _ = self._config_cache.get_system_defaults(
-            self._repository.get_system_defaults
-        )
-        if system_limits:
-            return (system_limits, "system")
         if limits_override is not None:
             return (limits_override, "override")
+        limits, _, config_source = self._repository.resolve_limits(entity_id, resource)
+        if limits is not None and config_source is not None:
+            return (limits, config_source)
         raise ValidationError(
             field="limits",
             value=f"entity={entity_id}, resource={resource}",
@@ -1093,7 +1017,7 @@ class SyncRateLimiter:
         """
         Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
 
-        Uses config cache to reduce DynamoDB reads.
+        Delegates system config lookup to repository.resolve_limits() (ADR-122).
 
         Args:
             on_unavailable_param: Optional parameter override
@@ -1103,9 +1027,7 @@ class SyncRateLimiter:
         """
         if on_unavailable_param is not None:
             return on_unavailable_param
-        _, on_unavailable_action = self._config_cache.get_system_defaults(
-            self._repository.get_system_defaults
-        )
+        _, on_unavailable_action = self._repository.get_system_defaults()
         if on_unavailable_action is not None:
             return OnUnavailable(on_unavailable_action)
         return self.on_unavailable
@@ -1224,7 +1146,6 @@ class SyncRateLimiter:
         """
         self._ensure_initialized()
         self._repository.set_limits(entity_id, limits, resource, principal=principal)
-        self._config_cache.evict_entity(entity_id, resource)
 
     def get_limits(self, entity_id: str, resource: str = DEFAULT_RESOURCE) -> list[Limit]:
         """
@@ -1258,7 +1179,6 @@ class SyncRateLimiter:
         self._ensure_initialized()
         old_limits = self._repository.get_limits(entity_id, resource)
         self._repository.delete_limits(entity_id, resource, principal=principal)
-        self._config_cache.evict_entity(entity_id, resource)
         try:
             effective_limits, _ = self._resolve_limits(entity_id, resource, limits_override=None)
         except ValidationError:
