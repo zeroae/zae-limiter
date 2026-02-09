@@ -6619,10 +6619,9 @@ success is acceptable.</p>
     <div class="doc doc-contents ">
 
         <p>Attempt speculative UpdateItem with condition check.</p>
-<p>Issues an UpdateItem with <code>ADD -consumed</code> and condition
-<code>attribute_exists(PK) AND tk &gt;= consumed</code> for each limit.
-Uses <code>ReturnValuesOnConditionCheckFailure=ALL_OLD</code> to return
-the current item state on failure.</p>
+<p>Checks entity cache for cascade metadata. If cache hit + cascade,
+issues child+parent UpdateItems concurrently via asyncio.gather
+and returns nested parent_result.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6724,7 +6723,7 @@ the current item state on failure.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>SpeculativeResult with success flag and either:</p>
+                <p>SpeculativeResult with:</p>
               </div>
             </td>
           </tr>
@@ -6740,7 +6739,7 @@ the current item state on failure.</p>
             <td>
               <div class="doc-md-description">
                 <ul>
-<li>On success: buckets, cascade, parent_id from ALL_NEW</li>
+<li>On cache hit + cascade + both succeed: parent_result populated</li>
 </ul>
               </div>
             </td>
@@ -6757,7 +6756,7 @@ the current item state on failure.</p>
             <td>
               <div class="doc-md-description">
                 <ul>
-<li>On failure with ALL_OLD: old_buckets from ALL_OLD</li>
+<li>On cache miss or non-cascade: parent_result is None</li>
 </ul>
               </div>
             </td>
@@ -6774,7 +6773,7 @@ the current item state on failure.</p>
             <td>
               <div class="doc-md-description">
                 <ul>
-<li>On failure without ALL_OLD: old_buckets is None (bucket missing)</li>
+<li>On failure: old_buckets from ALL_OLD (or None if bucket missing)</li>
 </ul>
               </div>
             </td>

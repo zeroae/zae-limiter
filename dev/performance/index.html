@@ -3937,10 +3937,16 @@
 <td>Skips read; conditional UpdateItem (issue #315)</td>
 </tr>
 <tr>
-<td><code>acquire()</code> speculative success + cascade</td>
+<td><code>acquire()</code> speculative success + cascade (sequential)</td>
 <td>0</td>
 <td>2</td>
-<td>Child + parent speculative UpdateItem</td>
+<td>Child then parent speculative UpdateItem</td>
+</tr>
+<tr>
+<td><code>acquire()</code> speculative success + cascade (parallel)</td>
+<td>0</td>
+<td>2</td>
+<td>Concurrent child + parent via entity cache (issue #318)</td>
 </tr>
 <tr>
 <td><code>acquire()</code> speculative fast rejection</td>
@@ -4848,31 +4854,45 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 </span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
-<p>Instead of the normal read-then-write flow (BatchGetItem + UpdateItem), the speculative path attempts a conditional UpdateItem first:</p>
+<p>Instead of the normal read-then-write flow (BatchGetItem + UpdateItem), the speculative path attempts a conditional UpdateItem first.</p>
+<p><strong>First acquire (sequential, populates entity cache):</strong></p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>acquire(entity_id, resource, consume)
 </span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>|
 </span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>+- Speculative UpdateItem (condition: bucket exists AND has enough tokens)
 </span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>   |
-</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>   +- SUCCEEDS -&gt; read cascade/parent_id from ALL_NEW
+</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>   +- SUCCEEDS -&gt; read cascade/parent_id from ALL_NEW, populate entity cache
 </span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>   |  +- cascade=False -&gt; DONE (1 RT, 0 RCU, 1 WCU)
-</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a>   |  +- cascade=True -&gt; Parent speculative UpdateItem
+</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a>   |  +- cascade=True -&gt; Parent speculative UpdateItem (sequential)
 </span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>   |     +- SUCCEEDS -&gt; DONE (2 RT, 0 RCU, 2 WCU)
-</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a>   |     +- FAILS -&gt; Check parent ALL_OLD (child stays consumed)
-</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a>   |        +- No ALL_OLD (missing) -&gt; Compensate child, SLOW PATH
-</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a>   |        +- Missing limit -&gt; Compensate child, SLOW PATH
-</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a>   |        +- Refill won&#39;t help -&gt; Compensate child, RateLimitExceeded
-</span><span id="__span-29-13"><a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>   |        +- Refill would help -&gt; Parent-only slow path (keep child)
-</span><span id="__span-29-14"><a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>   |           +- Parent acquire succeeds -&gt; DONE (4 RT, 0.5 RCU, 3 WCU)
-</span><span id="__span-29-15"><a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a>   |           +- Parent acquire fails -&gt; Compensate child, SLOW PATH
-</span><span id="__span-29-16"><a id="__codelineno-29-16" name="__codelineno-29-16" href="#__codelineno-29-16"></a>   |
-</span><span id="__span-29-17"><a id="__codelineno-29-17" name="__codelineno-29-17" href="#__codelineno-29-17"></a>   +- FAILS (ConditionalCheckFailedException)
-</span><span id="__span-29-18"><a id="__codelineno-29-18" name="__codelineno-29-18" href="#__codelineno-29-18"></a>      +- No ALL_OLD (bucket missing) -&gt; SLOW PATH (creates bucket)
-</span><span id="__span-29-19"><a id="__codelineno-29-19" name="__codelineno-29-19" href="#__codelineno-29-19"></a>      +- Missing limit in ALL_OLD -&gt; SLOW PATH
-</span><span id="__span-29-20"><a id="__codelineno-29-20" name="__codelineno-29-20" href="#__codelineno-29-20"></a>      +- Refill would help -&gt; SLOW PATH
-</span><span id="__span-29-21"><a id="__codelineno-29-21" name="__codelineno-29-21" href="#__codelineno-29-21"></a>      +- Refill won&#39;t help -&gt; RateLimitExceeded (0 RCU, 0 WCU)
+</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a>   |     +- FAILS -&gt; [parent failure handling, see below]
+</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a>   |
+</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a>   +- FAILS (ConditionalCheckFailedException)
+</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a>      +- No ALL_OLD (bucket missing) -&gt; SLOW PATH (creates bucket)
+</span><span id="__span-29-13"><a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>      +- Missing limit in ALL_OLD -&gt; SLOW PATH
+</span><span id="__span-29-14"><a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>      +- Refill would help -&gt; SLOW PATH
+</span><span id="__span-29-15"><a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a>      +- Refill won&#39;t help -&gt; RateLimitExceeded (0 RCU, 0 WCU)
+</span></code></pre></div>
+<p><strong>Subsequent acquires (parallel, issue #318):</strong></p>
+<p>When the entity cache contains <code>(cascade=True, parent_id)</code> from a prior acquire, child and parent speculative writes are issued concurrently:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>acquire(entity_id, resource, consume)   [cache hit: cascade=True, parent_id known]
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>|
+</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>+- asyncio.gather(child_speculative, parent_speculative)
+</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a>   |
+</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>   +- BOTH SUCCEED -&gt; DONE (1 RT, 0 RCU, 2 WCU)
+</span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>   +- CHILD FAILS, PARENT SUCCEEDS -&gt; Compensate parent, check child ALL_OLD
+</span><span id="__span-30-7"><a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a>   |  +- [same child failure handling as sequential path]
+</span><span id="__span-30-8"><a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a>   +- CHILD SUCCEEDS, PARENT FAILS -&gt; Check parent ALL_OLD (child stays consumed)
+</span><span id="__span-30-9"><a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a>   |  +- No ALL_OLD (missing) -&gt; Compensate child, SLOW PATH
+</span><span id="__span-30-10"><a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a>   |  +- Missing limit -&gt; Compensate child, SLOW PATH
+</span><span id="__span-30-11"><a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a>   |  +- Refill won&#39;t help -&gt; Compensate child, RateLimitExceeded
+</span><span id="__span-30-12"><a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a>   |  +- Refill would help -&gt; Parent-only slow path (keep child)
+</span><span id="__span-30-13"><a id="__codelineno-30-13" name="__codelineno-30-13" href="#__codelineno-30-13"></a>   |     +- Parent acquire succeeds -&gt; DONE (2 RT, 0.5 RCU, 3 WCU)
+</span><span id="__span-30-14"><a id="__codelineno-30-14" name="__codelineno-30-14" href="#__codelineno-30-14"></a>   |     +- Parent acquire fails -&gt; Compensate child, SLOW PATH
+</span><span id="__span-30-15"><a id="__codelineno-30-15" name="__codelineno-30-15" href="#__codelineno-30-15"></a>   +- BOTH FAIL -&gt; Check child ALL_OLD, fall back or fast-reject
 </span></code></pre></div>
 <p>The <code>ReturnValuesOnConditionCheckFailure=ALL_OLD</code> response provides the current bucket state on failure, allowing the limiter to determine whether refill would help without an additional read.</p>
 <p><strong>Deferred cascade compensation:</strong> When the child speculative write succeeds but the parent fails with "refill would help", the child's consumption is kept in place while a parent-only slow path is attempted. This avoids compensating the child (1 WCU), re-reading it (0.5 RCU), and using TransactWriteItems for the full cascade write (4 WCU). Instead, only the parent is read (0.5 RCU) and written via a single-item UpdateItem (1 WCU). Compensation only happens when the parent-only path also fails.</p>
+<p><strong>Entity metadata cache (issue #318):</strong> <code>Repository._entity_cache</code> stores <code>{entity_id: (cascade, parent_id)}</code> as immutable metadata with no TTL. After the first acquire populates the cache (from <code>ALL_NEW</code> on speculative success or from the entity META record on slow path), subsequent cascade acquires fire child and parent speculative writes concurrently via <code>asyncio.gather</code> inside <code>speculative_consume()</code>. This reduces cascade latency from 2 sequential round trips to 1 parallel round trip while maintaining the same WCU cost. In sync mode, <code>asyncio.gather</code> is transformed to <code>self._run_in_executor(lambda: a, lambda: b)</code> using a lazy <code>ThreadPoolExecutor(max_workers=2)</code> for true parallel execution.</p>
 <h3 id="cost-comparison">Cost Comparison<a class="headerlink" href="#cost-comparison" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -4921,22 +4941,29 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <td>$1.75</td>
 </tr>
 <tr>
-<td><strong>Speculative success</strong> (cascade)</td>
+<td><strong>Speculative success</strong> (cascade, sequential)</td>
 <td>2</td>
 <td>0</td>
 <td>2</td>
 <td>$1.25</td>
 </tr>
 <tr>
+<td><strong>Speculative success</strong> (cascade, parallel)</td>
+<td>1</td>
+<td>0</td>
+<td>2</td>
+<td>$1.25</td>
+</tr>
+<tr>
 <td><strong>Speculative cascade fallback</strong> (parent refill helps)</td>
-<td>4</td>
+<td>2+</td>
 <td>0.5</td>
 <td>3</td>
 <td>$2.00</td>
 </tr>
 <tr>
 <td><strong>Speculative cascade fast rejection</strong> (parent exhausted)</td>
-<td>2</td>
+<td>1</td>
 <td>0</td>
 <td>2</td>
 <td>$1.25</td>
@@ -4983,19 +5010,24 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <td>15-22ms</td>
 </tr>
 <tr>
-<td>Speculative success (cascade)</td>
+<td>Speculative success (cascade, sequential)</td>
 <td>2</td>
 <td>8-12ms</td>
+</tr>
+<tr>
+<td>Speculative success (cascade, parallel)</td>
+<td>1</td>
+<td>5-8ms</td>
 </tr>
 <tr>
 <td>Speculative cascade fallback (parent refill helps)</td>
-<td>4</td>
-<td>18-28ms</td>
+<td>2+</td>
+<td>12-20ms</td>
 </tr>
 <tr>
 <td>Speculative cascade fast rejection (parent exhausted)</td>
-<td>2</td>
-<td>8-12ms</td>
+<td>1</td>
+<td>5-8ms</td>
 </tr>
 </tbody>
 </table>
@@ -5019,6 +5051,7 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <li>High-throughput workloads with pre-warmed buckets</li>
 <li>Buckets that rarely exhaust capacity (high capacity relative to request rate)</li>
 <li>Latency-sensitive applications where saving one round trip matters</li>
+<li>Cascade entities with repeated acquires (entity cache enables parallel writes after first acquire)</li>
 <li>Deployments with the Lambda aggregator enabled (aggregator keeps buckets warm for speculative success)</li>
 </ul>
 <p><strong>Poor fit:</strong></p>
@@ -5026,13 +5059,14 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <li>New entities that have never been seen before (first acquire always falls back)</li>
 <li>Near-capacity buckets that frequently exhaust (high fallback rate)</li>
 <li>Workloads with frequent config changes (missing limits trigger fallback)</li>
+<li>One-shot entities that are only acquired once (entity cache provides no benefit)</li>
 </ul>
 <h3 id="monitoring-speculative-effectiveness">Monitoring Speculative Effectiveness<a class="headerlink" href="#monitoring-speculative-effectiveness" title="Permanent link">&para;</a></h3>
 <p>Track the ratio of speculative successes to fallbacks to determine if speculative writes are beneficial for your workload:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="c1"># Speculative writes work transparently with acquire()</span>
-</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a><span class="c1"># Monitor DynamoDB ConsumedWriteCapacityUnits to observe:</span>
-</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a><span class="c1"># - Lower WCU = more speculative successes</span>
-</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="c1"># - Higher WCU = more fallbacks (consider disabling)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="c1"># Speculative writes work transparently with acquire()</span>
+</span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a><span class="c1"># Monitor DynamoDB ConsumedWriteCapacityUnits to observe:</span>
+</span><span id="__span-31-3"><a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="c1"># - Lower WCU = more speculative successes</span>
+</span><span id="__span-31-4"><a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a><span class="c1"># - Higher WCU = more fallbacks (consider disabling)</span>
 </span></code></pre></div>
 <div class="admonition tip">
 <p class="admonition-title">Disabling speculative writes</p>
@@ -5070,7 +5104,7 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 </tr>
 <tr>
 <td>Speculative Writes</td>
-<td>Enable for pre-warmed high-throughput workloads; saves 1 round trip on success</td>
+<td>Enable for pre-warmed high-throughput workloads; saves 1 round trip on success; cascade entities get parallel writes after first acquire</td>
 </tr>
 <tr>
 <td>Monitoring</td>
@@ -5079,7 +5113,7 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 </tbody>
 </table>
 <p>For detailed benchmark data, run:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
 </span></code></pre></div></p>
 
 

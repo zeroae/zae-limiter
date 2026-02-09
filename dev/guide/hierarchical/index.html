@@ -2848,7 +2848,7 @@
 </div>
 <div class="admonition tip">
 <p class="admonition-title">Speculative Writes with Cascade</p>
-<p>With <code>speculative_writes=True</code>, cascade acquire completes in 2 round trips (0 RCU, 2 WCU) when both child and parent have sufficient tokens. If the parent needs refill, a deferred compensation optimization avoids unnecessary child compensation by attempting a parent-only slow path first. See <a href="../../performance/#8-speculative-writes">Speculative Writes</a> for details.</p>
+<p>With <code>speculative_writes=True</code>, the first cascade acquire completes in 2 sequential round trips (0 RCU, 2 WCU). After the first acquire populates the entity metadata cache, subsequent cascade acquires issue child and parent writes <strong>in parallel</strong> -- completing in just 1 round trip (0 RCU, 2 WCU) with the same cost but lower latency. If the parent needs refill, a deferred compensation optimization avoids unnecessary child compensation by attempting a parent-only slow path first. See <a href="../../performance/#8-speculative-writes">Speculative Writes</a> for details.</p>
 </div>
 <p><strong>What happens:</strong></p>
 <ol>
