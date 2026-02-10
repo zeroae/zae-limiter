@@ -1820,7 +1820,7 @@ class TestDisplayCalibrationResults:
         captured = capsys.readouterr()
 
         assert "Calibration Results (threshold: 80%)" in captured.out
-        assert "Reqs" in captured.out
+        assert "Reqs/s" in captured.out
         assert "(baseline)" in captured.out
         assert "<- optimal (>= 80%)" in captured.out
         assert "Optimal: 7 users per worker" in captured.out
