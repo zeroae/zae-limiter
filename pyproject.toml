@@ -62,7 +62,7 @@ plot = [
 local = [
     "docker>=7.0.0",
 ]
-stress = [
+bench = [
     "docker>=7.0.0",
     "locust>=2.20",
     "gevent>=23.0",

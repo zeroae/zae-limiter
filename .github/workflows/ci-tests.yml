@@ -295,7 +295,7 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
-        run: uv sync --extra dev --extra plot --extra stress
+        run: uv sync --extra dev --extra plot --extra bench
       - name: Run AWS benchmarks
         run: uv run pytest tests/benchmark/test_aws.py --run-aws --benchmark-enable --benchmark-json=benchmark-aws.json -n 0
         env:

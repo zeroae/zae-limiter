@@ -3803,6 +3803,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+bench = [
+    { name = "docker" },
+    { name = "gevent" },
+    { name = "locust" },
+]
 cdk = [
     { name = "aws-cdk-lib" },
     { name = "constructs" },
@@ -3843,11 +3848,6 @@ local = [
 plot = [
     { name = "asciichartpy" },
 ]
-stress = [
-    { name = "docker" },
-    { name = "gevent" },
-    { name = "locust" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -3862,10 +3862,10 @@ requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "constructs", marker = "extra == 'cdk'", specifier = ">=10.0.0" },
     { name = "diff-cover", marker = "extra == 'dev'", specifier = ">=9.0.0" },
+    { name = "docker", marker = "extra == 'bench'", specifier = ">=7.0.0" },
     { name = "docker", marker = "extra == 'local'", specifier = ">=7.0.0" },
-    { name = "docker", marker = "extra == 'stress'", specifier = ">=7.0.0" },
-    { name = "gevent", marker = "extra == 'stress'", specifier = ">=23.0" },
-    { name = "locust", marker = "extra == 'stress'", specifier = ">=2.20" },
+    { name = "gevent", marker = "extra == 'bench'", specifier = ">=23.0" },
+    { name = "locust", marker = "extra == 'bench'", specifier = ">=2.20" },
     { name = "mike", marker = "extra == 'docs'", specifier = ">=2.1.0" },
     { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.6.0" },
     { name = "mkdocs-click", marker = "extra == 'docs'", specifier = ">=0.8.0" },
@@ -3890,7 +3890,7 @@ requires-dist = [
     { name = "types-docker", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "types-gevent", marker = "extra == 'dev'", specifier = ">=24.0.0" },
 ]
-provides-extras = ["cdk", "dev", "docs", "lambda", "local", "plot", "stress"]
+provides-extras = ["bench", "cdk", "dev", "docs", "lambda", "local", "plot"]
 
 [[package]]
 name = "zipp"
