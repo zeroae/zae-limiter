@@ -1248,11 +1248,15 @@ def _calibrate_lambda(
         click.echo("Error: Baseline p50 is zero — cannot compute efficiency.", err=True)
         sys.exit(1)
 
+    baseline_p95 = float(baseline_stats.get("p95", 0))
+    baseline_p99 = float(baseline_stats.get("p99", 0))
     steps.append(
         {
             "users": 1,
             "rps": baseline_rps,
             "p50": baseline_p50,
+            "p95": baseline_p95,
+            "p99": baseline_p99,
             "efficiency": 1.0,
             "requests": baseline_reqs,
         }
@@ -1261,7 +1265,8 @@ def _calibrate_lambda(
     step_duration = current_baseline_duration
 
     click.echo(
-        f"  Baseline: p50={baseline_p50:.0f}ms, RPS={baseline_rps:.1f}, "
+        f"  Baseline: p50={baseline_p50:.0f}ms, p95={baseline_p95:.0f}ms, "
+        f"p99={baseline_p99:.0f}ms, RPS={baseline_rps:.1f}, "
         f"duration={step_duration}s, requests={baseline_reqs}"
     )
 
@@ -1269,6 +1274,8 @@ def _calibrate_lambda(
     upper_stats = run_step(max_users, step_duration, "upper")
     upper_reqs = int(upper_stats.get("total_requests", 0))
     upper_p50 = float(upper_stats.get("p50", 0))
+    upper_p95 = float(upper_stats.get("p95", 0))
+    upper_p99 = float(upper_stats.get("p99", 0))
     upper_rps = float(upper_stats.get("requests_per_second", 0))
     upper_eff = baseline_p50 / upper_p50 if upper_p50 > 0 else 0.0
     steps.append(
@@ -1276,13 +1283,16 @@ def _calibrate_lambda(
             "users": max_users,
             "rps": upper_rps,
             "p50": upper_p50,
+            "p95": upper_p95,
+            "p99": upper_p99,
             "efficiency": upper_eff,
             "requests": upper_reqs,
         }
     )
     click.echo(
-        f"  Upper ({max_users} users): p50={upper_p50:.0f}ms, "
-        f"RPS={upper_rps:.1f}, efficiency={upper_eff:.0%}, requests={upper_reqs}"
+        f"  Upper ({max_users} users): p50={upper_p50:.0f}ms, p95={upper_p95:.0f}ms, "
+        f"p99={upper_p99:.0f}ms, RPS={upper_rps:.1f}, efficiency={upper_eff:.0%}, "
+        f"requests={upper_reqs}"
     )
 
     if upper_eff >= threshold:
@@ -1300,9 +1310,11 @@ def _calibrate_lambda(
         optimal_rps = baseline_rps
 
         while high - low > 1:
-            # Interpolate: where does threshold fall between eff_high and eff_low?
+            # Interpolate: where does threshold fall between eff_low and eff_high?
+            # eff_low >= threshold > eff_high, so the optimal point is closer to low.
+            # t=0 at low (eff_low), t=1 at high (eff_high).
             if eff_low != eff_high:
-                t = (threshold - eff_high) / (eff_low - eff_high)
+                t = (eff_low - threshold) / (eff_low - eff_high)
                 mid = low + round(t * (high - low))
                 mid = max(low + 1, min(mid, high - 1))
             else:
@@ -1310,6 +1322,8 @@ def _calibrate_lambda(
             mid_stats = run_step(mid, step_duration, "search")
             mid_reqs = int(mid_stats.get("total_requests", 0))
             mid_p50 = float(mid_stats.get("p50", 0))
+            mid_p95 = float(mid_stats.get("p95", 0))
+            mid_p99 = float(mid_stats.get("p99", 0))
             mid_rps = float(mid_stats.get("requests_per_second", 0))
             mid_eff = baseline_p50 / mid_p50 if mid_p50 > 0 else 0.0
             steps.append(
@@ -1317,13 +1331,16 @@ def _calibrate_lambda(
                     "users": mid,
                     "rps": mid_rps,
                     "p50": mid_p50,
+                    "p95": mid_p95,
+                    "p99": mid_p99,
                     "efficiency": mid_eff,
                     "requests": mid_reqs,
                 }
             )
             click.echo(
-                f"  Search ({mid} users): p50={mid_p50:.0f}ms, "
-                f"RPS={mid_rps:.1f}, efficiency={mid_eff:.0%}, requests={mid_reqs}"
+                f"  Search ({mid} users): p50={mid_p50:.0f}ms, p95={mid_p95:.0f}ms, "
+                f"p99={mid_p99:.0f}ms, RPS={mid_rps:.1f}, efficiency={mid_eff:.0%}, "
+                f"requests={mid_reqs}"
             )
 
             if mid_eff >= threshold:
@@ -1356,12 +1373,17 @@ def _display_calibration_results(
     import math
 
     click.echo(f"Calibration Results (threshold: {threshold:.0%}):")
-    click.echo(f"  {'Users':>5}  {'RPS':>7}  {'p50':>7}  {'Reqs':>7}  {'Efficiency':>10}")
+    click.echo(
+        f"  {'Users':>5}  {'RPS':>7}  {'p50':>7}  {'p95':>7}  {'p99':>7}"
+        f"  {'Reqs':>7}  {'Efficiency':>10}"
+    )
 
     for step in steps:
         users = step["users"]
         rps = float(step.get("rps", 0))
         p50 = float(step.get("p50", 0))
+        p95 = float(step.get("p95", 0))
+        p99 = float(step.get("p99", 0))
         reqs = int(step.get("requests", 0))
         eff = float(step.get("efficiency", 0))
         marker = ""
@@ -1369,11 +1391,22 @@ def _display_calibration_results(
             marker = " (baseline)"
         elif users == optimal_users and optimal_users != 1:
             marker = f" <- optimal (>= {threshold:.0%})"
-        click.echo(f"  {users:>5}  {rps:>7.1f}  {p50:>5.0f}ms  {reqs:>7,}  {eff:>9.0%}{marker}")
+        click.echo(
+            f"  {users:>5}  {rps:>7.1f}  {p50:>5.0f}ms  {p95:>5.0f}ms  {p99:>5.0f}ms"
+            f"  {reqs:>7,}  {eff:>9.0%}{marker}"
+        )
+
+    # Find baseline percentiles for the summary
+    baseline_step = next(s for s in steps if s["users"] == 1)
+    baseline_p95 = float(baseline_step.get("p95", 0))
+    baseline_p99 = float(baseline_step.get("p99", 0))
 
     click.echo()
     click.echo(f"Optimal: {optimal_users} users per worker")
-    click.echo(f"  Floor latency: {baseline_p50:.0f}ms (p50)")
+    click.echo(
+        f"  Floor latency: p50={baseline_p50:.0f}ms, "
+        f"p95={baseline_p95:.0f}ms, p99={baseline_p99:.0f}ms"
+    )
     click.echo(f"  Throughput per worker: {optimal_rps:.1f} RPS")
 
     click.echo()

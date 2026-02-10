@@ -1802,12 +1802,60 @@ class TestDisplayCalibrationResults:
         from zae_limiter.load.cli import _display_calibration_results
 
         steps = [
-            {"users": 1, "rps": 47.0, "p50": 20.0, "efficiency": 1.0, "requests": 705},
-            {"users": 40, "rps": 381.0, "p50": 95.0, "efficiency": 0.21, "requests": 11430},
-            {"users": 20, "rps": 383.0, "p50": 47.0, "efficiency": 0.43, "requests": 11490},
-            {"users": 10, "rps": 357.0, "p50": 26.0, "efficiency": 0.77, "requests": 10710},
-            {"users": 5, "rps": 200.0, "p50": 22.0, "efficiency": 0.91, "requests": 6000},
-            {"users": 7, "rps": 280.0, "p50": 24.0, "efficiency": 0.83, "requests": 8400},
+            {
+                "users": 1,
+                "rps": 47.0,
+                "p50": 20.0,
+                "p95": 30.0,
+                "p99": 40.0,
+                "efficiency": 1.0,
+                "requests": 705,
+            },
+            {
+                "users": 40,
+                "rps": 381.0,
+                "p50": 95.0,
+                "p95": 140.0,
+                "p99": 190.0,
+                "efficiency": 0.21,
+                "requests": 11430,
+            },
+            {
+                "users": 20,
+                "rps": 383.0,
+                "p50": 47.0,
+                "p95": 70.0,
+                "p99": 94.0,
+                "efficiency": 0.43,
+                "requests": 11490,
+            },
+            {
+                "users": 10,
+                "rps": 357.0,
+                "p50": 26.0,
+                "p95": 39.0,
+                "p99": 52.0,
+                "efficiency": 0.77,
+                "requests": 10710,
+            },
+            {
+                "users": 5,
+                "rps": 200.0,
+                "p50": 22.0,
+                "p95": 33.0,
+                "p99": 44.0,
+                "efficiency": 0.91,
+                "requests": 6000,
+            },
+            {
+                "users": 7,
+                "rps": 280.0,
+                "p50": 24.0,
+                "p95": 36.0,
+                "p99": 48.0,
+                "efficiency": 0.83,
+                "requests": 8400,
+            },
         ]
 
         _display_calibration_results(
@@ -1821,11 +1869,13 @@ class TestDisplayCalibrationResults:
 
         assert "Calibration Results (threshold: 80%)" in captured.out
         assert "RPS" in captured.out
+        assert "p95" in captured.out
+        assert "p99" in captured.out
         assert "Reqs" in captured.out
         assert "(baseline)" in captured.out
         assert "<- optimal (>= 80%)" in captured.out
         assert "Optimal: 7 users per worker" in captured.out
-        assert "Floor latency: 20ms (p50)" in captured.out
+        assert "Floor latency: p50=20ms, p95=30ms, p99=40ms" in captured.out
         assert "Throughput per worker: 280.0 RPS" in captured.out
         assert "Distributed recommendations" in captured.out
         assert "load run --mode distributed" in captured.out
@@ -1834,8 +1884,24 @@ class TestDisplayCalibrationResults:
         from zae_limiter.load.cli import _display_calibration_results
 
         steps = [
-            {"users": 1, "rps": 50.0, "p50": 20.0, "efficiency": 1.0, "requests": 500},
-            {"users": 10, "rps": 350.0, "p50": 25.0, "efficiency": 0.80, "requests": 10500},
+            {
+                "users": 1,
+                "rps": 50.0,
+                "p50": 20.0,
+                "p95": 30.0,
+                "p99": 40.0,
+                "efficiency": 1.0,
+                "requests": 500,
+            },
+            {
+                "users": 10,
+                "rps": 350.0,
+                "p50": 25.0,
+                "p95": 37.0,
+                "p99": 50.0,
+                "efficiency": 0.80,
+                "requests": 10500,
+            },
         ]
 
         _display_calibration_results(

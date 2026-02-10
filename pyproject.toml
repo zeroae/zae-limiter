@@ -29,6 +29,7 @@ dependencies = [
     "click>=8.0.0",
     "pip",
     "python-ulid>=3.0.0",
+    "questionary>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +51,7 @@ dev = [
     "ruff>=0.1.0",
     "types-aiobotocore[dynamodb,s3]>=2.0.0",
     "types-docker>=7.0.0",
+    "types-gevent>=24.0.0",
 ]
 lambda = [
     "aws-lambda-powertools>=2.0.0",
@@ -61,10 +63,9 @@ local = [
     "docker>=7.0.0",
 ]
 stress = [
-    "asyncio-gevent>=0.2.5",
+    "docker>=7.0.0",
     "locust>=2.20",
     "gevent>=23.0",
-    "questionary>=2.0",
 ]
 cdk = [
     "aws-cdk-lib>=2.0.0",
@@ -149,9 +150,8 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["locust.*", "gevent.*", "locustfile", "questionary"]
+module = ["locust.*", "locustfile"]
 ignore_missing_imports = true
-follow_untyped_imports = false
 
 [tool.coverage.run]
 omit = [

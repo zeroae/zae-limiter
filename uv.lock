@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -204,19 +204,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/41/3a/b01436be647f881515ec2f253616bf4a40c1d27d02a69e7f038e27fcdf81/asciichartpy-1.5.25.tar.gz", hash = "sha256:63a305302b2aad51da288b58226009b7b0313eba7d8e2452d5a21a13fcf44d74", size = 8201, upload-time = "2020-08-17T02:07:18.292Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/d0/7b958df957e4827837b590944008f0b28078f552b451f7407b4b3d54f574/asciichartpy-1.5.25-py2.py3-none-any.whl", hash = "sha256:33c417a3c8ef7d0a11b98eb9ea6dd9b2c1b17559e539b207a17d26d4302d0258", size = 7228, upload-time = "2020-08-17T02:07:16.386Z" },
-]
-
-[[package]]
-name = "asyncio-gevent"
-version = "0.2.5"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "gevent" },
-    { name = "greenlet" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f9/ea/d4dab9008982523e4b0f1e7b926f497dffccdba0df6f2a3ac20fbb4c1e7a/asyncio_gevent-0.2.5.tar.gz", hash = "sha256:0933e62405257f345c67bce754d4b2811cf8688317599b0b9b571d97184ead90", size = 20000, upload-time = "2025-07-14T11:36:38.122Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/b7/8cefd286ddf46740d006731a2066de7d7e8ad1ec1683406f8680f53e6638/asyncio_gevent-0.2.5-py3-none-any.whl", hash = "sha256:3249ab9da1e8ee19f13a72a4121d0de970566a40e50263420921e29028f91c96", size = 23725, upload-time = "2025-07-14T11:36:36.941Z" },
 ]
 
 [[package]]
@@ -3427,6 +3414,28 @@ wheels = [
 ]
 
 [[package]]
+name = "types-gevent"
+version = "25.9.0.20251228"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "types-greenlet" },
+    { name = "types-psutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/06/85/c5043c4472f82c8ee3d9e0673eb4093c7d16770a26541a137a53a1d096f6/types_gevent-25.9.0.20251228.tar.gz", hash = "sha256:423ef9891d25c5a3af236c3e9aace4c444c86ff773fe13ef22731bc61d59abef", size = 38063, upload-time = "2025-12-28T03:28:28.651Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/b7/a2d6b652ab5a26318b68cafd58c46fafb9b15c5313d2d76a70b838febb4b/types_gevent-25.9.0.20251228-py3-none-any.whl", hash = "sha256:e2e225af4fface9241c16044983eb2fc3993f2d13d801f55c2932848649b7f2f", size = 55486, upload-time = "2025-12-28T03:28:27.382Z" },
+]
+
+[[package]]
+name = "types-greenlet"
+version = "3.3.0.20251206"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/d3/23f4ab29a5ce239935bb3c157defcf50df8648c16c65965fae03980d67f3/types_greenlet-3.3.0.20251206.tar.gz", hash = "sha256:3e1ab312ab7154c08edc2e8110fbf00d9920323edc1144ad459b7b0052063055", size = 8901, upload-time = "2025-12-06T03:01:38.634Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/8f/aabde1b6e49b25a6804c12a707829e44ba0f5520563c09271f05d3196142/types_greenlet-3.3.0.20251206-py3-none-any.whl", hash = "sha256:8d11041c0b0db545619e8c8a1266aa4aaa4ebeae8ae6b4b7049917a6045a5590", size = 8809, upload-time = "2025-12-06T03:01:37.651Z" },
+]
+
+[[package]]
 name = "types-paramiko"
 version = "4.0.0.20250822"
 source = { registry = "https://pypi.org/simple" }
@@ -3436,6 +3445,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b7/b8/c6ff3b10c2f7b9897650af746f0dc6c5cddf054db857bc79d621f53c7d22/types_paramiko-4.0.0.20250822.tar.gz", hash = "sha256:1b56b0cbd3eec3d2fd123c9eb2704e612b777e15a17705a804279ea6525e0c53", size = 28730, upload-time = "2025-08-22T03:03:43.262Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/79/a1/b3774ed924a66ee2c041224d89c36f0c21f4f6cf75036d6ee7698bf8a4b9/types_paramiko-4.0.0.20250822-py3-none-any.whl", hash = "sha256:55bdb14db75ca89039725ec64ae3fa26b8d57b6991cfb476212fa8f83a59753c", size = 38833, upload-time = "2025-08-22T03:03:42.072Z" },
+]
+
+[[package]]
+name = "types-psutil"
+version = "7.2.2.20260130"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/14/fc5fb0a6ddfadf68c27e254a02ececd4d5c7fdb0efcb7e7e917a183497fb/types_psutil-7.2.2.20260130.tar.gz", hash = "sha256:15b0ab69c52841cf9ce3c383e8480c620a4d13d6a8e22b16978ebddac5590950", size = 26535, upload-time = "2026-01-30T03:58:14.116Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/17/d7/60974b7e31545d3768d1770c5fe6e093182c3bfd819429b33133ba6b3e89/types_psutil-7.2.2.20260130-py3-none-any.whl", hash = "sha256:15523a3caa7b3ff03ac7f9b78a6470a59f88f48df1d74a39e70e06d2a99107da", size = 32876, upload-time = "2026-01-30T03:58:13.172Z" },
 ]
 
 [[package]]
@@ -3781,6 +3799,7 @@ dependencies = [
     { name = "click" },
     { name = "pip" },
     { name = "python-ulid" },
+    { name = "questionary" },
 ]
 
 [package.optional-dependencies]
@@ -3806,6 +3825,7 @@ dev = [
     { name = "ruff" },
     { name = "types-aiobotocore", extra = ["dynamodb", "s3"] },
     { name = "types-docker" },
+    { name = "types-gevent" },
 ]
 docs = [
     { name = "mike" },
@@ -3824,17 +3844,15 @@ plot = [
     { name = "asciichartpy" },
 ]
 stress = [
-    { name = "asyncio-gevent" },
+    { name = "docker" },
     { name = "gevent" },
     { name = "locust" },
-    { name = "questionary" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aioboto3", specifier = ">=12.0.0" },
     { name = "asciichartpy", marker = "extra == 'plot'", specifier = ">=1.5.25" },
-    { name = "asyncio-gevent", marker = "extra == 'stress'", specifier = ">=0.2.5" },
     { name = "aws-cdk-lib", marker = "extra == 'cdk'", specifier = ">=2.0.0" },
     { name = "aws-lambda-builders", specifier = ">=1.40.0" },
     { name = "aws-lambda-powertools", marker = "extra == 'lambda'", specifier = ">=2.0.0" },
@@ -3845,6 +3863,7 @@ requires-dist = [
     { name = "constructs", marker = "extra == 'cdk'", specifier = ">=10.0.0" },
     { name = "diff-cover", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "docker", marker = "extra == 'local'", specifier = ">=7.0.0" },
+    { name = "docker", marker = "extra == 'stress'", specifier = ">=7.0.0" },
     { name = "gevent", marker = "extra == 'stress'", specifier = ">=23.0" },
     { name = "locust", marker = "extra == 'stress'", specifier = ">=2.20" },
     { name = "mike", marker = "extra == 'docs'", specifier = ">=2.1.0" },
@@ -3865,10 +3884,11 @@ requires-dist = [
     { name = "pytest-repeat", marker = "extra == 'dev'", specifier = ">=0.9.4" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.5.0" },
     { name = "python-ulid", specifier = ">=3.0.0" },
-    { name = "questionary", marker = "extra == 'stress'", specifier = ">=2.0" },
+    { name = "questionary", specifier = ">=2.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "types-aiobotocore", extras = ["dynamodb", "s3"], marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "types-docker", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "types-gevent", marker = "extra == 'dev'", specifier = ">=24.0.0" },
 ]
 provides-extras = ["cdk", "dev", "docs", "lambda", "local", "plot", "stress"]
 
