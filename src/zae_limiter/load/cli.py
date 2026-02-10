@@ -999,9 +999,9 @@ def run_cmd(
 )
 @click.option(
     "--baseline-duration",
-    default=15,
+    default=60,
     type=int,
-    help="Seconds for baseline phase (default: 15)",
+    help="Seconds for baseline phase (default: 60)",
 )
 @click.option(
     "--spawn-rate",
