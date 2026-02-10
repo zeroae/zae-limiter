@@ -148,6 +148,10 @@ module = [
 ]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["locust.*", "locustfile"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 omit = [
     # Generated sync files - coverage measured on async source only
