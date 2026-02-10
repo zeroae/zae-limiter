@@ -83,6 +83,13 @@ class RateLimiterSession:
         request_event: Any,
         user: RateLimiterUser,
     ) -> None:
+        """Initialize the session.
+
+        Args:
+            limiter: Shared SyncRateLimiter instance.
+            request_event: Locust environment request event hook.
+            user: The RateLimiterUser that owns this session.
+        """
         self._limiter = limiter
         self.request_event = request_event
         self.user = user
@@ -199,6 +206,13 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> None:
+        """Set system-level default limits, firing a Locust event with timing.
+
+        Args:
+            limits: Default limits to apply system-wide.
+            on_unavailable: Behavior when the rate limiter is unavailable.
+            name: Locust stats name (defaults to "system").
+        """
         stat_name = name or "system"
         start = time.perf_counter()
         try:
@@ -213,6 +227,14 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> tuple[list[Limit], OnUnavailable | None]:
+        """Retrieve system-level default limits, firing a Locust event with timing.
+
+        Args:
+            name: Locust stats name (defaults to "system").
+
+        Returns:
+            Tuple of (limits, on_unavailable).
+        """
         stat_name = name or "system"
         start = time.perf_counter()
         try:
@@ -228,6 +250,11 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> None:
+        """Delete system-level default limits, firing a Locust event with timing.
+
+        Args:
+            name: Locust stats name (defaults to "system").
+        """
         stat_name = name or "system"
         start = time.perf_counter()
         try:
@@ -248,6 +275,13 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> None:
+        """Set resource-level default limits, firing a Locust event with timing.
+
+        Args:
+            resource: Resource name.
+            limits: Default limits for the resource.
+            name: Locust stats name (defaults to resource).
+        """
         stat_name = name or resource
         start = time.perf_counter()
         try:
@@ -263,6 +297,15 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> list[Limit]:
+        """Retrieve resource-level default limits, firing a Locust event with timing.
+
+        Args:
+            resource: Resource name.
+            name: Locust stats name (defaults to resource).
+
+        Returns:
+            List of limits configured for the resource.
+        """
         stat_name = name or resource
         start = time.perf_counter()
         try:
@@ -279,6 +322,12 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> None:
+        """Delete resource-level default limits, firing a Locust event with timing.
+
+        Args:
+            resource: Resource name.
+            name: Locust stats name (defaults to resource).
+        """
         stat_name = name or resource
         start = time.perf_counter()
         try:
@@ -293,6 +342,14 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> list[str]:
+        """List resources that have default limits, firing a Locust event with timing.
+
+        Args:
+            name: Locust stats name (defaults to "system").
+
+        Returns:
+            List of resource names with configured defaults.
+        """
         stat_name = name or "system"
         start = time.perf_counter()
         try:
@@ -314,6 +371,16 @@ class RateLimiterSession:
         name: str | None = None,
         **kwargs: Any,
     ) -> Entity:
+        """Create an entity, firing a Locust event with timing.
+
+        Args:
+            entity_id: Entity identifier.
+            name: Locust stats name (defaults to entity_id).
+            **kwargs: Additional arguments passed to SyncRateLimiter.create_entity().
+
+        Returns:
+            The created Entity.
+        """
         stat_name = name or entity_id
         start = time.perf_counter()
         try:
@@ -330,6 +397,15 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> Entity | None:
+        """Retrieve an entity, firing a Locust event with timing.
+
+        Args:
+            entity_id: Entity identifier.
+            name: Locust stats name (defaults to entity_id).
+
+        Returns:
+            The Entity if found, or None.
+        """
         stat_name = name or entity_id
         start = time.perf_counter()
         try:
@@ -346,6 +422,12 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> None:
+        """Delete an entity, firing a Locust event with timing.
+
+        Args:
+            entity_id: Entity identifier.
+            name: Locust stats name (defaults to entity_id).
+        """
         stat_name = name or entity_id
         start = time.perf_counter()
         try:
@@ -361,6 +443,15 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> list[Entity]:
+        """Retrieve child entities of a parent, firing a Locust event with timing.
+
+        Args:
+            parent_id: Parent entity identifier.
+            name: Locust stats name (defaults to parent_id).
+
+        Returns:
+            List of child Entity objects.
+        """
         stat_name = name or parent_id
         start = time.perf_counter()
         try:
@@ -383,6 +474,14 @@ class RateLimiterSession:
         resource: str = "_default_",
         name: str | None = None,
     ) -> None:
+        """Set entity-level limits, firing a Locust event with timing.
+
+        Args:
+            entity_id: Entity identifier.
+            limits: Limits to set.
+            resource: Resource name (defaults to "_default_").
+            name: Locust stats name (defaults to resource).
+        """
         stat_name = name or resource
         start = time.perf_counter()
         try:
@@ -399,6 +498,16 @@ class RateLimiterSession:
         resource: str = "_default_",
         name: str | None = None,
     ) -> list[Limit]:
+        """Retrieve entity-level limits, firing a Locust event with timing.
+
+        Args:
+            entity_id: Entity identifier.
+            resource: Resource name (defaults to "_default_").
+            name: Locust stats name (defaults to resource).
+
+        Returns:
+            List of limits configured for the entity.
+        """
         stat_name = name or resource
         start = time.perf_counter()
         try:
@@ -416,6 +525,13 @@ class RateLimiterSession:
         resource: str = "_default_",
         name: str | None = None,
     ) -> None:
+        """Delete entity-level limits, firing a Locust event with timing.
+
+        Args:
+            entity_id: Entity identifier.
+            resource: Resource name (defaults to "_default_").
+            name: Locust stats name (defaults to resource).
+        """
         stat_name = name or resource
         start = time.perf_counter()
         try:
@@ -437,6 +553,17 @@ class RateLimiterSession:
         *,
         name: str | None = None,
     ) -> float:
+        """Check time until capacity is available, firing a Locust event with timing.
+
+        Args:
+            entity_id: Entity to check.
+            resource: Resource name.
+            needed: Dict of limit_name -> required capacity.
+            name: Locust stats name (defaults to resource).
+
+        Returns:
+            Seconds until the requested capacity is available (0.0 if already available).
+        """
         stat_name = name or resource
         start = time.perf_counter()
         try:
@@ -457,6 +584,15 @@ class RateLimiterSession:
         timeout: float = 1.0,
         name: str | None = None,
     ) -> bool:
+        """Check if the rate limiter backend is available, firing a Locust event with timing.
+
+        Args:
+            timeout: Timeout in seconds for the availability check.
+            name: Locust stats name (defaults to "system").
+
+        Returns:
+            True if the backend is reachable within the timeout.
+        """
         stat_name = name or "system"
         start = time.perf_counter()
         try:

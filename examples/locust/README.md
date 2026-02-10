@@ -14,7 +14,9 @@ examples/locust/
 │   └── distribution.py         # TrafficDistributor (whale/spike/powerlaw)
 ├── locustfiles/                # Scenario files
 │   ├── simple.py               # Single resource, single limit
+│   ├── max_rps.py              # Zero-wait max throughput benchmark
 │   ├── llm_gateway.py          # LLM gateway with lease adjustments
+│   ├── llm_production.py       # Production LLM traffic with load shapes
 │   └── stress.py               # Whale/spike/power-law distribution
 └── README.md
 ```
@@ -24,7 +26,9 @@ examples/locust/
 | Scenario | Resources | Limits | Entities | Pattern |
 |----------|-----------|--------|----------|---------|
 | `simple` | 1 (`api`) | RPM | Many anonymous | `acquire` only |
+| `max_rps` | 1 (`api`) | RPM | Many anonymous | Zero-wait back-to-back `acquire` |
 | `llm_gateway` | 8 LLM models | RPM + TPM | Many anonymous | `acquire` → `adjust` → `commit` |
+| `llm_production` | 8 LLM models | RPM + TPM | Many anonymous | Weighted tasks + custom load shapes |
 | `stress` | 8 APIs | RPM + TPM | 16K (whale/spike/powerlaw) | Hot partition + burst testing |
 
 ## Running Locally
@@ -35,8 +39,14 @@ Run from this directory (`examples/locust/`):
 # Simple: single resource, single limit
 locust -f locustfiles/simple.py --host <stack-name>
 
+# Max RPS: zero-wait throughput benchmark
+locust -f locustfiles/max_rps.py --host <stack-name>
+
 # LLM Gateway: multiple models with lease adjustments
 locust -f locustfiles/llm_gateway.py --host <stack-name>
+
+# LLM Production: realistic traffic with daily/spike load shapes
+locust -f locustfiles/llm_production.py --host <stack-name>
 
 # Stress: whale/spike/power-law traffic
 locust -f locustfiles/stress.py --host <stack-name>

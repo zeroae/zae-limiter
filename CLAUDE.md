@@ -10,7 +10,7 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 - Hierarchical limits exist (API key → project, tenant → user)
 - Cost matters (~$0.75/1M requests)
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`, `local`. See `release-planning.md` for area labels.
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`, `local`, `load`. See `release-planning.md` for area labels.
 
 ## Build & Development
 
@@ -206,6 +206,7 @@ src/zae_limiter/
 ├── sync_limiter.py              # Generated: SyncRateLimiter
 ├── sync_lease.py                # Generated: SyncLease
 ├── sync_config_cache.py         # Generated: SyncConfigCache
+├── locust.py          # Locust load testing integration (RateLimiterUser, RateLimiterSession)
 ├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, local)
 ├── version.py         # Version tracking and compatibility
 ├── migrations/        # Schema migration framework
@@ -655,6 +656,8 @@ limiter = RateLimiter(
 - `[docs]`: MkDocs documentation generation
 - `[cdk]`: AWS CDK constructs
 - `[lambda]`: Lambda Powertools (aws-lambda-powertools)
+- `[local]`: `docker` for LocalStack management commands
+- `[bench]`: `locust`, `gevent`, `docker` for load testing (see `examples/locust/`)
 
 ## Releasing
 
