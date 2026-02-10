@@ -347,6 +347,32 @@ class TestCreateBuildContext:
             assert "userfiles/locustfile.py" in names
             assert "userfiles/subdir/nested.py" in names
 
+    def test_context_includes_orchestrator_when_present(self, tmp_path):
+        """Build context includes orchestrator.py when it exists."""
+        wheel = tmp_path / "zae_limiter-0.8.0.whl"
+        wheel.write_bytes(b"fake wheel")
+
+        locustfile_dir = tmp_path / "locust"
+        locustfile_dir.mkdir()
+        (locustfile_dir / "locustfile.py").write_text("# locust")
+
+        orchestrator = Path(__file__).parent / "fake_orchestrator.py"
+        try:
+            # Create orchestrator at the path _get_orchestrator_path() returns
+            with patch(
+                "zae_limiter.loadtest.builder._get_orchestrator_path",
+                return_value=tmp_path / "orchestrator.py",
+            ):
+                (tmp_path / "orchestrator.py").write_text("# orchestrator")
+                context = _create_build_context(wheel, locustfile_dir)
+
+            with tarfile.open(fileobj=context, mode="r:gz") as tar:
+                names = tar.getnames()
+                assert "orchestrator.py" in names
+        finally:
+            if orchestrator.exists():
+                orchestrator.unlink()
+
     def test_context_detects_user_requirements(self, tmp_path):
         """Build context Dockerfile includes user requirements install."""
         wheel = tmp_path / "zae_limiter-0.8.0.whl"
