@@ -116,6 +116,7 @@ zae_limiter/
 ├── bucket.py              # Token bucket algorithm
 ├── schema.py              # DynamoDB key builders
 ├── naming.py              # Resource name validation
+├── locust.py              # Locust load testing integration (RateLimiterUser, RateLimiterSession)
 ├── local.py               # LocalStack management commands
 ├── cli.py                 # CLI commands
 └── infra/

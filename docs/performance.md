@@ -840,6 +840,67 @@ Track the ratio of speculative successes to fallbacks to determine if speculativ
 
 ---
 
+## 9. Load Testing with Locust
+
+For realistic, multi-user load testing against a live DynamoDB stack, zae-limiter provides a Locust integration module (`zae_limiter.locust`). It exposes `RateLimiterUser` and `RateLimiterSession`, analogous to Locust's built-in `HttpUser` and `HttpSession`, so that every `acquire()`, `available()`, and management call fires Locust request events with timing.
+
+### Installation
+
+Install the `[bench]` extra to pull in Locust and its dependencies:
+
+```{.python .requires-external}
+# pip install zae-limiter[bench]
+```
+
+### Quick Start
+
+```{.python .requires-external}
+from locust import task
+from zae_limiter.locust import RateLimiterUser
+
+class MyUser(RateLimiterUser):
+    stack_name = "my-limiter"
+
+    @task
+    def do_acquire(self):
+        with self.client.acquire(
+            entity_id="user-123",
+            resource="gpt-4",
+            consume={"rpm": 1, "tpm": 500},
+            name="gpt-4/baseline",
+        ):
+            pass  # simulate work
+```
+
+Run with:
+
+```bash
+locust -f locustfile.py --host <stack-name>
+```
+
+### Key Design Points
+
+- **Shared limiter:** A single `SyncRateLimiter` instance is shared across all Locust user greenlets (thread-safe via boto3).
+- **Connection pool:** `_configure_boto3_pool()` automatically enlarges the boto3 connection pool (default 1000, override with `BOTO3_MAX_POOL` env var) to prevent pool exhaustion under high concurrency.
+- **Event types:** `ACQUIRE`, `COMMIT`, `RATE_LIMITED`, `AVAILABLE`, and management operations (`SET_SYSTEM_DEFAULTS`, `CREATE_ENTITY`, etc.) appear as distinct request types in the Locust UI.
+- **Rate limit handling:** `RateLimitExceeded` is tracked as `RATE_LIMITED` (not counted as a failure), so Locust statistics cleanly separate infrastructure errors from expected rate limiting.
+
+### Example Scenarios
+
+Pre-built locustfiles are available in `examples/locust/locustfiles/`:
+
+| Scenario | File | Description |
+|----------|------|-------------|
+| Simple | `simple.py` | Single resource, single limit, basic `acquire` |
+| Max RPS | `max_rps.py` | Zero-wait back-to-back `acquire` for throughput ceiling |
+| LLM Gateway | `llm_gateway.py` | 8 LLM models with RPM + TPM and lease adjustments |
+| LLM Production | `llm_production.py` | Weighted tasks with custom daily/spike load shapes |
+| Stress | `stress.py` | 16K entities with whale/spike/power-law traffic patterns |
+
+See `examples/locust/README.md` for full usage instructions including distributed execution on AWS.
+
+---
+
 ## Summary
 
 | Optimization Area | Key Recommendations |
@@ -850,6 +911,7 @@ Track the ratio of speculative successes to fallbacks to determine if speculativ
 | Cost | Disable cascade/stored_limits when not needed |
 | Config Cache | Use default 60s TTL; invalidate manually for immediate changes |
 | Speculative Writes | Enable for pre-warmed high-throughput workloads; saves 1 round trip on success; cascade entities get parallel writes after first acquire |
+| Load Testing | Use `zae_limiter.locust` with `RateLimiterUser` for realistic multi-user load tests; see `examples/locust/` |
 | Monitoring | Set up CloudWatch alerts for capacity and cost anomalies |
 
 For detailed benchmark data, run:
