@@ -447,11 +447,16 @@ class TestAWSCascadeSpeculativeComparison:
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
-    @pytest.fixture(scope="class")
-    def aws_speculative_limiter(self, aws_speculative_stack):
-        """Create default SyncRateLimiter for baseline tests (auto mode)."""
+    @pytest.fixture(scope="class", params=[False, True], ids=["baseline", "speculative"])
+    def aws_speculative_limiter(self, request, aws_speculative_stack):
+        """Create SyncRateLimiter for non-cascade and cache-cold tests.
+
+        Parametrized to run each test twice: baseline (speculative_writes=False)
+        and speculative (speculative_writes=True) for side-by-side comparison.
+        """
+        speculative = request.param
         repo = SyncRepository(name=aws_speculative_stack, region="us-east-1")
-        limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
 
         # Warm entity cache
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -567,12 +572,14 @@ class TestAWSCascadeBenchmarks:
     """Cascade-specific benchmarks on real AWS.
 
     Cascade operations have higher contention potential since
-    multiple children share the same parent bucket.
+    multiple children share the same parent bucket. The concurrent
+    test is parametrized by parallel_mode to measure how internal
+    cascade parallelism interacts with external thread contention.
     """
 
     @pytest.fixture(scope="class")
-    def aws_cascade_limiter(self, aws_unique_name):
-        """Create SyncRateLimiter for cascade tests."""
+    def aws_cascade_stack(self, aws_unique_name):
+        """Deploy stack and create cascade hierarchy for benchmark tests."""
         table_name = f"{aws_unique_name}-cas"
 
         stack_options = StackOptions(
@@ -600,12 +607,76 @@ class TestAWSCascadeBenchmarks:
                     parent_id="aws-cascade-root",
                     cascade=True,
                 )
-            yield limiter
+
+            # Pre-warm buckets
+            limits = [Limit.per_minute("rpm", 1_000_000)]
+            for i in range(10):
+                with limiter.acquire(
+                    entity_id=f"aws-cascade-child-{i}",
+                    resource="api",
+                    limits=limits,
+                    consume={"rpm": 1},
+                ):
+                    pass
+
+            yield table_name
 
         try:
             limiter.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.fixture(scope="class")
+    def aws_cascade_limiter(self, aws_cascade_stack):
+        """Create default SyncRateLimiter for sequential cascade tests."""
+        repo = SyncRepository(name=aws_cascade_stack, region="us-east-1")
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
+
+        # Warm entity cache
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+        with limiter.acquire(
+            entity_id="aws-cascade-child-0",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        yield limiter
+        repo.close()
+
+    @pytest.fixture(
+        params=[
+            "serial",
+            pytest.param(
+                "gevent",
+                marks=pytest.mark.skipif(
+                    not _has_gevent() or not os.environ.get("GEVENT"),
+                    reason="gevent requires GEVENT=1 env var for monkey-patching",
+                ),
+            ),
+            "threadpool",
+        ]
+    )
+    def parallel_mode_cascade_limiter(self, request, aws_cascade_stack):
+        """Create SyncRateLimiter with specific parallel_mode for concurrent tests."""
+        mode = request.param
+        repo = SyncRepository(name=aws_cascade_stack, region="us-east-1", parallel_mode=mode)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
+
+        # Warm entity cache for all children
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+        for i in range(10):
+            with limiter.acquire(
+                entity_id=f"aws-cascade-child-{i}",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        yield limiter
+        repo.close()
 
     def test_cascade_sequential_throughput_aws(self, aws_cascade_limiter):
         """Measure sequential cascade TPS on AWS.
@@ -639,17 +710,18 @@ class TestAWSCascadeBenchmarks:
         reason="TransactionConflict not retried in _commit_initial (#332)",
         strict=False,
     )
-    def test_cascade_concurrent_throughput_aws(self, aws_cascade_limiter):
-        """Measure concurrent cascade TPS on AWS.
+    def test_cascade_concurrent_throughput_aws(self, parallel_mode_cascade_limiter):
+        """Measure concurrent cascade TPS on AWS, parametrized by parallel_mode.
 
         Multiple concurrent tasks update different children but share the parent,
-        creating contention on the parent bucket. With true thread parallelism,
-        TransactionConflictException and speculative write contention on the
-        shared parent cause some operations to fail.
+        creating contention on the parent bucket. Tests how internal cascade
+        parallelism (serial/gevent/threadpool) interacts with external thread
+        contention.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
         iterations_per_task = 5
+        mode = parallel_mode_cascade_limiter._repository._parallel_mode
 
         def worker(task_id: int) -> int:
             """Execute cascade operations on dedicated child."""
@@ -658,7 +730,7 @@ class TestAWSCascadeBenchmarks:
 
             for _ in range(iterations_per_task):
                 try:
-                    with aws_cascade_limiter.acquire(
+                    with parallel_mode_cascade_limiter.acquire(
                         entity_id=child_id,
                         resource="api",
                         limits=limits,
@@ -666,7 +738,7 @@ class TestAWSCascadeBenchmarks:
                     ):
                         successes += 1
                 except Exception as e:
-                    print(f"Task {task_id} cascade error: {e}")
+                    print(f"Task {task_id} cascade error ({mode}): {e}")
 
             return successes
 
@@ -680,7 +752,7 @@ class TestAWSCascadeBenchmarks:
 
         tps = total_successes / total_elapsed
 
-        print(f"\nAWS Cascade Concurrent TPS: {tps:.2f} ops/sec")
+        print(f"\nAWS Cascade Concurrent TPS ({mode}): {tps:.2f} ops/sec")
         print(f"Total successes: {total_successes}/{total_iterations}")
 
         # All operations should succeed (internal retries handle parent contention)
