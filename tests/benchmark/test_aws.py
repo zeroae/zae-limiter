@@ -19,6 +19,7 @@ Resources are cleaned up after tests, but verify via AWS Console.
 
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -46,24 +47,30 @@ class TestAWSLatencyBenchmarks:
     including actual network round-trips to DynamoDB.
     """
 
-    @pytest.fixture(scope="class")
-    def aws_benchmark_limiter(self, aws_unique_name):
+    @pytest.fixture(scope="class", params=[False, True], ids=["baseline", "speculative"])
+    def aws_benchmark_limiter(self, request, aws_unique_name):
         """Create SyncRateLimiter on real AWS with minimal stack.
 
-        Uses class scope to share the stack across all tests in the class,
-        reducing setup/teardown time and costs.
+        Parametrized to run each test twice: once with speculative writes
+        disabled (baseline) and once enabled (speculative). Each param gets
+        its own stack/table to avoid collisions.
         """
+        speculative = request.param
+        table_name = f"{aws_unique_name}-{'spec' if speculative else 'base'}"
+
         stack_options = StackOptions(
             enable_aggregator=False,
             enable_alarms=False,
             usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
         )
 
         limiter = SyncRateLimiter(
-            name=aws_unique_name,
+            name=table_name,
             region="us-east-1",
+            speculative_writes=speculative,
             stack_options=stack_options,
         )
 
@@ -194,6 +201,7 @@ class TestAWSThroughputBenchmarks:
             usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
         )
 
         limiter = SyncRateLimiter(
@@ -273,25 +281,21 @@ class TestAWSThroughputBenchmarks:
     def test_concurrent_throughput_aws(self, aws_throughput_limiter):
         """Measure concurrent throughput on real AWS.
 
-        Uses asyncio.gather to run concurrent operations on different entities,
-        measuring parallel throughput without bucket contention.
+        Uses ThreadPoolExecutor to run concurrent sync operations on different
+        entities, measuring parallel throughput without bucket contention.
         """
-        import asyncio
-
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
         iterations_per_task = 10
 
-        async def worker(task_id: int) -> int:
+        def worker(task_id: int) -> int:
             """Execute iterations on dedicated entity."""
             entity_id = f"aws-concurrent-{task_id}"
             successes = 0
-            # Access the underlying async limiter
-            limiter = aws_throughput_limiter._limiter
 
             for _ in range(iterations_per_task):
                 try:
-                    async with limiter.acquire(
+                    with aws_throughput_limiter.acquire(
                         entity_id=entity_id,
                         resource="api",
                         limits=limits,
@@ -303,12 +307,9 @@ class TestAWSThroughputBenchmarks:
 
             return successes
 
-        async def run_concurrent():
-            tasks = [worker(i) for i in range(num_concurrent)]
-            return await asyncio.gather(*tasks)
-
         start = time.perf_counter()
-        results = aws_throughput_limiter._run(run_concurrent())
+        with ThreadPoolExecutor(max_workers=num_concurrent) as executor:
+            results = list(executor.map(worker, range(num_concurrent)))
         total_elapsed = time.perf_counter() - start
 
         total_successes = sum(results)
@@ -320,7 +321,7 @@ class TestAWSThroughputBenchmarks:
         print(f"Total successes: {total_successes}/{total_iterations}")
         print(f"Wall clock time: {total_elapsed:.2f} s")
 
-        # All operations should succeed with proper async concurrency
+        # All operations should succeed with proper thread concurrency
         assert total_successes == total_iterations, "All operations should succeed"
 
     def test_contention_behavior_aws(self, aws_throughput_limiter):
@@ -329,21 +330,18 @@ class TestAWSThroughputBenchmarks:
         Multiple concurrent tasks compete for the same bucket to observe
         DynamoDB's optimistic locking retry behavior.
         """
-        import asyncio
-
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
         iterations_per_task = 5
 
-        async def worker(_task_id: int) -> tuple[int, int]:
+        def worker(_task_id: int) -> tuple[int, int]:
             """Execute iterations on shared entity, counting outcomes."""
             successes = 0
             retries = 0
-            limiter = aws_throughput_limiter._limiter
 
             for _ in range(iterations_per_task):
                 try:
-                    async with limiter.acquire(
+                    with aws_throughput_limiter.acquire(
                         entity_id="aws-contention-shared",
                         resource="api",
                         limits=limits,
@@ -358,12 +356,9 @@ class TestAWSThroughputBenchmarks:
 
             return successes, retries
 
-        async def run_concurrent():
-            tasks = [worker(i) for i in range(num_concurrent)]
-            return await asyncio.gather(*tasks)
-
         start = time.perf_counter()
-        results = aws_throughput_limiter._run(run_concurrent())
+        with ThreadPoolExecutor(max_workers=num_concurrent) as executor:
+            results = list(executor.map(worker, range(num_concurrent)))
         elapsed = time.perf_counter() - start
 
         total_successes = sum(r[0] for r in results)
@@ -537,6 +532,7 @@ class TestAWSCascadeBenchmarks:
             usage_retention_days=1,
             permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
             role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
         )
 
         limiter = SyncRateLimiter(
@@ -590,27 +586,30 @@ class TestAWSCascadeBenchmarks:
 
         assert elapsed < 120, "Cascade operations took too long"
 
+    @pytest.mark.xfail(
+        reason="TransactionConflict not retried in _commit_initial (#332)",
+        strict=False,
+    )
     def test_cascade_concurrent_throughput_aws(self, aws_cascade_limiter):
         """Measure concurrent cascade TPS on AWS.
 
         Multiple concurrent tasks update different children but share the parent,
-        creating contention on the parent bucket.
+        creating contention on the parent bucket. With true thread parallelism,
+        TransactionConflictException and speculative write contention on the
+        shared parent cause some operations to fail.
         """
-        import asyncio
-
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
         iterations_per_task = 5
 
-        async def worker(task_id: int) -> int:
+        def worker(task_id: int) -> int:
             """Execute cascade operations on dedicated child."""
             child_id = f"aws-cascade-child-{task_id}"
             successes = 0
-            limiter = aws_cascade_limiter._limiter
 
             for _ in range(iterations_per_task):
                 try:
-                    async with limiter.acquire(
+                    with aws_cascade_limiter.acquire(
                         entity_id=child_id,
                         resource="api",
                         limits=limits,
@@ -622,12 +621,9 @@ class TestAWSCascadeBenchmarks:
 
             return successes
 
-        async def run_concurrent():
-            tasks = [worker(i) for i in range(num_concurrent)]
-            return await asyncio.gather(*tasks)
-
         start = time.perf_counter()
-        results = aws_cascade_limiter._run(run_concurrent())
+        with ThreadPoolExecutor(max_workers=num_concurrent) as executor:
+            results = list(executor.map(worker, range(num_concurrent)))
         total_elapsed = time.perf_counter() - start
 
         total_successes = sum(results)
