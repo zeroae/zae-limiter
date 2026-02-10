@@ -1356,19 +1356,20 @@ def _display_calibration_results(
     import math
 
     click.echo(f"Calibration Results (threshold: {threshold:.0%}):")
-    click.echo(f"  {'Users':>5}  {'Reqs/s':>7}  {'p50':>7}  {'Efficiency':>10}")
+    click.echo(f"  {'Users':>5}  {'RPS':>7}  {'p50':>7}  {'Reqs':>7}  {'Efficiency':>10}")
 
     for step in steps:
         users = step["users"]
         rps = float(step.get("rps", 0))
         p50 = float(step.get("p50", 0))
+        reqs = int(step.get("requests", 0))
         eff = float(step.get("efficiency", 0))
         marker = ""
         if users == 1:
             marker = " (baseline)"
         elif users == optimal_users and optimal_users != 1:
             marker = f" <- optimal (>= {threshold:.0%})"
-        click.echo(f"  {users:>5}  {rps:>7.1f}  {p50:>5.0f}ms  {eff:>9.0%}{marker}")
+        click.echo(f"  {users:>5}  {rps:>7.1f}  {p50:>5.0f}ms  {reqs:>7,}  {eff:>9.0%}{marker}")
 
     click.echo()
     click.echo(f"Optimal: {optimal_users} users per worker")
