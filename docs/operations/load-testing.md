@@ -129,7 +129,7 @@ zae-limiter load calibrate --name my-limiter --region us-east-1 \
 | `--max-users` | Upper bound for binary search | 40 |
 | `--threshold` | Target efficiency ratio (baseline_p50 / observed_p50) | 0.80 |
 | `--step-duration` | Seconds per calibration step | 30 |
-| `--baseline-duration` | Seconds for baseline phase (1 user) | 15 |
+| `--baseline-duration` | Seconds for baseline phase (1 user) | 60 |
 | `--spawn-rate` | User spawn rate per second | 10 |
 | `--user-classes` | Comma-separated User class names | all |
 

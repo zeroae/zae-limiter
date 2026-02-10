@@ -768,13 +768,16 @@ limiter = RateLimiter(
 - `aws-lambda-builders`: Cross-platform Lambda packaging (see ADR-113)
 - `boto3`: Sync DynamoDB (for Lambda aggregator)
 - `pip`: Required by `aws-lambda-builders` for dependency resolution
+- `questionary`: Interactive prompts for CLI workflows
 
 **Optional extras:**
 - `[plot]`: `asciichartpy` for ASCII chart visualization of usage snapshots
-- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit)
+- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit, types-gevent)
 - `[docs]`: MkDocs documentation generation
 - `[cdk]`: AWS CDK constructs
 - `[lambda]`: Lambda Powertools (aws-lambda-powertools)
+- `[local]`: `docker` for LocalStack container management
+- `[bench]`: `docker`, `locust`, `gevent` for load testing and benchmarks
 
 ## Releasing
 
