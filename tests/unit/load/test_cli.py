@@ -635,6 +635,87 @@ class TestDeployCommand:
             params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
             assert params["CapacityProvider"] == "FARGATE_SPOT"
 
+    def test_ssm_endpoint_passed_to_cloudformation(self, runner, tmp_path):
+        """Deploy passes --ssm-endpoint to CloudFormation as CreateSsmEndpoint."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
+            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
+            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+        ):
+            mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
+            mock_client.side_effect = client_factory
+
+            mock_source.return_value = "0.8.0"
+            mock_build.return_value = "123.dkr.ecr.us-east-1.amazonaws.com/test:latest"
+            zip_path = tmp_path / "lambda.zip"
+            zip_path.write_bytes(b"fake zip")
+            mock_lambda_pkg.return_value = zip_path
+
+            result = runner.invoke(
+                load,
+                [
+                    "deploy",
+                    "--name",
+                    "my-app",
+                    "--vpc-id",
+                    "vpc-123",
+                    "--subnet-ids",
+                    "subnet-a,subnet-b",
+                    "--ssm-endpoint",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+
+            call_kwargs = mock_cfn.create_stack.call_args[1]
+            params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
+            assert params["CreateSsmEndpoint"] == "true"
+
+    def test_no_dynamodb_endpoint_skips_route_table_discovery(self, runner, tmp_path):
+        """Deploy with --no-dynamodb-endpoint skips route table discovery."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
+            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
+            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.load.cli._discover_route_tables") as mock_discover_rt,
+        ):
+            mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
+            mock_client.side_effect = client_factory
+
+            mock_source.return_value = "0.8.0"
+            mock_build.return_value = "123.dkr.ecr.us-east-1.amazonaws.com/test:latest"
+            zip_path = tmp_path / "lambda.zip"
+            zip_path.write_bytes(b"fake zip")
+            mock_lambda_pkg.return_value = zip_path
+
+            result = runner.invoke(
+                load,
+                [
+                    "deploy",
+                    "--name",
+                    "my-app",
+                    "--vpc-id",
+                    "vpc-123",
+                    "--subnet-ids",
+                    "subnet-a,subnet-b",
+                    "--no-dynamodb-endpoint",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+
+            # Route table discovery should not be called
+            mock_discover_rt.assert_not_called()
+
+            # PrivateRouteTableIds should be empty
+            call_kwargs = mock_cfn.create_stack.call_args[1]
+            params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
+            assert params["PrivateRouteTableIds"] == ""
+
     def test_update_reraises_other_errors(self, runner, tmp_path):
         """Deploy re-raises non-'no updates' errors during update."""
         with (
@@ -666,8 +747,8 @@ class TestDeployCommand:
             assert result.exit_code != 0
 
 
-class TestTeardownCommand:
-    """Tests for the teardown command."""
+class TestDeleteCommand:
+    """Tests for the delete command."""
 
     def test_deletes_stack(self, runner):
         """Teardown deletes the load test stack."""
@@ -686,7 +767,7 @@ class TestTeardownCommand:
 
             result = runner.invoke(
                 load,
-                ["teardown", "--name", "my-app", "--yes"],
+                ["delete", "--name", "my-app", "--yes"],
             )
             assert result.exit_code == 0
             mock_cfn.delete_stack.assert_called_once_with(StackName="my-app-load")
@@ -697,7 +778,7 @@ class TestTeardownCommand:
         with patch("boto3.client"):
             result = runner.invoke(
                 load,
-                ["teardown", "--name", "my-app"],
+                ["delete", "--name", "my-app"],
                 input="n\n",
             )
             assert result.exit_code != 0  # Aborted
@@ -720,7 +801,7 @@ class TestTeardownCommand:
 
             result = runner.invoke(
                 load,
-                ["teardown", "--name", "my-app", "--yes"],
+                ["delete", "--name", "my-app", "--yes"],
             )
             assert result.exit_code == 0
             assert "Stack deleted" in result.output

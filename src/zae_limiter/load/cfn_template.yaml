@@ -62,7 +62,7 @@ Parameters:
     Default: ''
     Description: Private route table IDs for DynamoDB gateway endpoint (optional)
 
-  CreateVpcEndpoints:
+  CreateSsmEndpoint:
     Type: String
     Default: 'false'
     AllowedValues:
@@ -99,8 +99,8 @@ Conditions:
     - !Equals
       - !Join ['', !Ref PrivateRouteTableIds]
       - ''
-  ShouldCreateVpcEndpoints: !Equals
-    - !Ref CreateVpcEndpoints
+  ShouldCreateSsmEndpoint: !Equals
+    - !Ref CreateSsmEndpoint
     - 'true'
   IsFargateSpot: !Equals
     - !Ref CapacityProvider
@@ -151,7 +151,7 @@ Resources:
 
   VpcEndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    Condition: ShouldCreateVpcEndpoints
+    Condition: ShouldCreateSsmEndpoint
     Properties:
       GroupDescription: VPC endpoint security group
       VpcId: !Ref VpcId
@@ -174,7 +174,7 @@ Resources:
 
   SsmEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: ShouldCreateVpcEndpoints
+    Condition: ShouldCreateSsmEndpoint
     Properties:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
       VpcId: !Ref VpcId
@@ -186,7 +186,7 @@ Resources:
 
   SsmMessagesEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: ShouldCreateVpcEndpoints
+    Condition: ShouldCreateSsmEndpoint
     Properties:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
       VpcId: !Ref VpcId
@@ -198,7 +198,7 @@ Resources:
 
   Ec2MessagesEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: ShouldCreateVpcEndpoints
+    Condition: ShouldCreateSsmEndpoint
     Properties:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
       VpcId: !Ref VpcId

@@ -147,9 +147,14 @@ def load() -> None:
     help="ECS capacity provider (default: FARGATE_SPOT)",
 )
 @click.option(
-    "--create-vpc-endpoints",
-    is_flag=True,
+    "--ssm-endpoint/--no-ssm-endpoint",
+    default=False,
     help="Create VPC endpoints for SSM (not needed if VPC has NAT gateway)",
+)
+@click.option(
+    "--dynamodb-endpoint/--no-dynamodb-endpoint",
+    default=True,
+    help="Create DynamoDB gateway endpoint (auto-discovers route tables)",
 )
 @click.option(
     "-C",
@@ -170,7 +175,8 @@ def deploy(
     lambda_timeout: int,
     lambda_memory: int,
     capacity_provider: str,
-    create_vpc_endpoints: bool,
+    ssm_endpoint: bool,
+    dynamodb_endpoint: bool,
     locustfile_dir: Path,
 ) -> None:
     """Deploy load test infrastructure."""
@@ -226,23 +232,25 @@ def deploy(
     subnet_list = [s.strip() for s in subnet_ids.split(",")]
 
     # Auto-discover route tables for DynamoDB gateway endpoint
-    ec2 = boto3.client("ec2", region_name=region)
-    route_table_ids = _discover_route_tables(ec2, subnet_list)
-    if route_table_ids:
-        # Check if a DynamoDB gateway endpoint already exists for this VPC
-        existing = ec2.describe_vpc_endpoints(
-            Filters=[
-                {"Name": "vpc-id", "Values": [vpc_id]},
-                {"Name": "service-name", "Values": [f"com.amazonaws.{region}.dynamodb"]},
-                {"Name": "vpc-endpoint-state", "Values": ["available"]},
-            ]
-        )
-        if existing["VpcEndpoints"]:
-            ep_id = existing["VpcEndpoints"][0]["VpcEndpointId"]
-            click.echo(f"  DynamoDB endpoint already exists: {ep_id}")
-            route_table_ids = ""
-        else:
-            click.echo(f"  Route tables for DynamoDB endpoint: {route_table_ids}")
+    route_table_ids = ""
+    if dynamodb_endpoint:
+        ec2 = boto3.client("ec2", region_name=region)
+        route_table_ids = _discover_route_tables(ec2, subnet_list)
+        if route_table_ids:
+            # Check if a DynamoDB gateway endpoint already exists for this VPC
+            existing = ec2.describe_vpc_endpoints(
+                Filters=[
+                    {"Name": "vpc-id", "Values": [vpc_id]},
+                    {"Name": "service-name", "Values": [f"com.amazonaws.{region}.dynamodb"]},
+                    {"Name": "vpc-endpoint-state", "Values": ["available"]},
+                ]
+            )
+            if existing["VpcEndpoints"]:
+                ep_id = existing["VpcEndpoints"][0]["VpcEndpointId"]
+                click.echo(f"  DynamoDB endpoint already exists: {ep_id}")
+                route_table_ids = ""
+            else:
+                click.echo(f"  Route tables for DynamoDB endpoint: {route_table_ids}")
 
     # Build parameters list
     stack_params = [
@@ -256,7 +264,7 @@ def deploy(
         {"ParameterKey": "LambdaTimeout", "ParameterValue": str(lambda_timeout * 60)},
         {"ParameterKey": "LambdaMemory", "ParameterValue": str(lambda_memory)},
         {"ParameterKey": "CapacityProvider", "ParameterValue": capacity_provider.upper()},
-        {"ParameterKey": "CreateVpcEndpoints", "ParameterValue": str(create_vpc_endpoints).lower()},
+        {"ParameterKey": "CreateSsmEndpoint", "ParameterValue": str(ssm_endpoint).lower()},
         {"ParameterKey": "PrivateRouteTableIds", "ParameterValue": route_table_ids},
         {"ParameterKey": "PermissionBoundary", "ParameterValue": permission_boundary},
         {"ParameterKey": "RoleNameFormat", "ParameterValue": role_name_format},
@@ -337,11 +345,11 @@ def deploy(
     click.echo(f"\nStack ready: {stack_name}")
 
 
-@load.command()
+@load.command("delete")
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
-def teardown(name: str, region: str | None, yes: bool) -> None:
+def delete(name: str, region: str | None, yes: bool) -> None:
     """Delete load test infrastructure."""
     stack_name = f"{name}-load"
     if not yes:

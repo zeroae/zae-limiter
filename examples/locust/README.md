@@ -84,7 +84,8 @@ Additional flags:
 |------|---------|-------------|
 | `--max-workers` | 100 | Maximum Lambda worker concurrency |
 | `--lambda-timeout` | 5 | Lambda worker timeout in minutes |
-| `--create-vpc-endpoints` | off | Create VPC endpoints for SSM (skip if VPC has NAT) |
+| `--ssm-endpoint / --no-ssm-endpoint` | off | Create VPC endpoints for SSM (not needed if VPC has NAT gateway) |
+| `--dynamodb-endpoint / --no-dynamodb-endpoint` | on | Create DynamoDB gateway endpoint (auto-discovers route tables) |
 
 ### 2. Set Up Test Data (stress scenario only)
 
@@ -111,8 +112,8 @@ and opens an SSM tunnel to http://localhost:8089.
 | `--port` | 8089 | Local port for the Locust UI |
 | `--destroy` | off | Stop Fargate task on disconnect |
 
-### 4. Tear Down
+### 4. Delete Infrastructure
 
 ```bash
-zae-limiter load teardown -n <stack-name> --yes
+zae-limiter load delete -n <stack-name> --yes
 ```
