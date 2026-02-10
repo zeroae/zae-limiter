@@ -1286,14 +1286,23 @@ def _calibrate_lambda(
         optimal_users = max_users
         optimal_rps = upper_rps
     else:
-        # Step 3: Binary search between [1, max_users]
+        # Step 3: Weighted bisection between [1, max_users]
+        # Use linear interpolation of efficiency to pick the midpoint
         low = 1
         high = max_users
+        eff_low = 1.0  # baseline efficiency
+        eff_high = upper_eff
         optimal_users = 1
         optimal_rps = baseline_rps
 
         while high - low > 1:
-            mid = (low + high) // 2
+            # Interpolate: where does threshold fall between eff_high and eff_low?
+            if eff_low != eff_high:
+                t = (threshold - eff_high) / (eff_low - eff_high)
+                mid = low + round(t * (high - low))
+                mid = max(low + 1, min(mid, high - 1))
+            else:
+                mid = (low + high) // 2
             mid_stats = run_step(mid, step_duration, "search")
             mid_reqs = int(mid_stats.get("total_requests", 0))
             mid_p50 = float(mid_stats.get("p50", 0))
@@ -1315,10 +1324,12 @@ def _calibrate_lambda(
 
             if mid_eff >= threshold:
                 low = mid
+                eff_low = mid_eff
                 optimal_users = mid
                 optimal_rps = mid_rps
             else:
                 high = mid
+                eff_high = mid_eff
 
     click.echo()
     _display_calibration_results(
