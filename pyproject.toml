@@ -29,6 +29,7 @@ dependencies = [
     "click>=8.0.0",
     "pip",
     "python-ulid>=3.0.0",
+    "questionary>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,571 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  zae-limiter stress test infrastructure - Fargate Spot master with Lambda workers.
+
+Parameters:
+  TargetStackName:
+    Type: String
+    Description: Name of the zae-limiter stack to test against
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for stress test resources
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for Fargate and Lambda
+
+  MaxWorkers:
+    Type: Number
+    Default: 100
+    Description: Maximum Lambda worker concurrency
+    MinValue: 1
+    MaxValue: 1000
+
+  UsersPerWorker:
+    Type: Number
+    Default: 10
+    Description: Max users per Lambda worker for auto-scaling
+    MinValue: 1
+    MaxValue: 1000
+
+  MinWorkers:
+    Type: Number
+    Default: 1
+    Description: Minimum workers to maintain (auto-scaling mode)
+    MinValue: 0
+    MaxValue: 1000
+
+  StartupLeadTime:
+    Type: Number
+    Default: 20
+    Description: Seconds to predict ahead for proactive scaling
+    MinValue: 0
+    MaxValue: 120
+
+  LambdaTimeout:
+    Type: Number
+    Default: 300
+    Description: Lambda worker timeout in seconds
+    MinValue: 60
+    MaxValue: 900
+
+  LambdaMemory:
+    Type: Number
+    Default: 1769
+    Description: Lambda worker memory in MB (CPU scales proportionally; 1769 MB = 1 vCPU)
+    MinValue: 128
+    MaxValue: 10240
+
+  PrivateRouteTableIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: Private route table IDs for DynamoDB gateway endpoint (optional)
+
+  CreateSsmEndpoint:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Create VPC endpoints for SSM (not needed if VPC has NAT gateway)
+
+  PermissionBoundary:
+    Type: String
+    Default: ''
+    Description: Permission boundary ARN for IAM roles (optional)
+
+  CapacityProvider:
+    Type: String
+    Default: FARGATE_SPOT
+    AllowedValues:
+      - FARGATE_SPOT
+      - FARGATE
+    Description: ECS capacity provider for Fargate tasks
+
+  RoleNameFormat:
+    Type: String
+    Default: '{}'
+    Description: >
+      Format string for IAM role names. Use {} as placeholder for the role suffix.
+      Example: 'PowerUserPB-{}' produces 'PowerUserPB-stress-test-exec'
+
+Conditions:
+  HasPermissionBoundary: !Not
+    - !Equals
+      - !Ref PermissionBoundary
+      - ''
+  HasPrivateRouteTables: !Not
+    - !Equals
+      - !Join ['', !Ref PrivateRouteTableIds]
+      - ''
+  ShouldCreateSsmEndpoint: !Equals
+    - !Ref CreateSsmEndpoint
+    - 'true'
+  IsFargateSpot: !Equals
+    - !Ref CapacityProvider
+    - FARGATE_SPOT
+
+Resources:
+  # ===========================================================================
+  # Security Groups
+  # ===========================================================================
+
+  MasterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Locust master security group
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Locust worker connection ports
+        - IpProtocol: tcp
+          FromPort: 5557
+          ToPort: 5558
+          SourceSecurityGroupId: !Ref WorkerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-master-sg
+
+  # Self-referencing rule for Web UI (separate to avoid circular dependency)
+  MasterSecurityGroupSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref MasterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8089
+      ToPort: 8089
+      SourceSecurityGroupId: !Ref MasterSecurityGroup
+      Description: Web UI access via SSM
+
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda worker security group
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-worker-sg
+
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ShouldCreateSsmEndpoint
+    Properties:
+      GroupDescription: VPC endpoint security group
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref MasterSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref WorkerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-vpce-sg
+
+  # ===========================================================================
+  # VPC Endpoints for SSM (ECS Exec) - Optional, not needed if VPC has NAT
+  # ===========================================================================
+
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateSsmEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateSsmEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  Ec2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateSsmEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # ===========================================================================
+  # VPC Gateway Endpoint for DynamoDB - Optional, free (no per-hour charge)
+  # ===========================================================================
+
+  DynamoDbEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: HasPrivateRouteTables
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
+      VpcId: !Ref VpcId
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref PrivateRouteTableIds
+
+  # ===========================================================================
+  # ECR Repository
+  # ===========================================================================
+
+  LocustRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${AWS::StackName}-locust
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only 5 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": {"type": "expire"}
+              }
+            ]
+          }
+
+  # ===========================================================================
+  # ECS Cluster
+  # ===========================================================================
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}
+      CapacityProviders: !If
+        - IsFargateSpot
+        - - FARGATE_SPOT
+          - FARGATE
+        - - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: !Ref CapacityProvider
+          Weight: 1
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  # ===========================================================================
+  # ECS Task Definition
+  # ===========================================================================
+
+  LocustMasterTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}-master
+      Cpu: '1024'
+      Memory: '2048'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt EcsExecutionRole.Arn
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: locust-master
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LocustRepository}:latest
+          Essential: true
+          # Command is not specified - uses Dockerfile ENTRYPOINT which reads LOCUSTFILE env var
+          # LOCUSTFILE must be provided at runtime via container env override
+          PortMappings:
+            - ContainerPort: 5557
+              Protocol: tcp
+            - ContainerPort: 5558
+              Protocol: tcp
+            - ContainerPort: 8089
+              Protocol: tcp
+          Environment:
+            - Name: TARGET_STACK_NAME
+              Value: !Ref TargetStackName
+            - Name: TARGET_REGION
+              Value: !Ref AWS::Region
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MasterLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: master
+        - Name: worker-orchestrator
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LocustRepository}:latest
+          Essential: true
+          EntryPoint:
+            - python
+            - /mnt/orchestrator.py
+          Command: []
+          Environment:
+            - Name: USERS_PER_WORKER
+              Value: !Ref UsersPerWorker
+            - Name: MIN_WORKERS
+              Value: !Ref MinWorkers
+            - Name: MAX_WORKERS
+              Value: !Ref MaxWorkers
+            - Name: STARTUP_LEAD_TIME
+              Value: !Ref StartupLeadTime
+            - Name: WORKER_FUNCTION_NAME
+              Value: !Sub ${AWS::StackName}-worker
+            - Name: MASTER_PORT
+              Value: '5557'
+            - Name: LAMBDA_TIMEOUT
+              Value: !Ref LambdaTimeout
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MasterLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: orchestrator
+          DependsOn:
+            - ContainerName: locust-master
+              Condition: START
+
+  # ===========================================================================
+  # ECS Service
+  # ===========================================================================
+
+  LocustMasterService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${AWS::StackName}-master
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref LocustMasterTaskDefinition
+      DesiredCount: 0
+      EnableExecuteCommand: true
+      CapacityProviderStrategy:
+        - CapacityProvider: !Ref CapacityProvider
+          Weight: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref MasterSecurityGroup
+          AssignPublicIp: DISABLED
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 0
+
+  # ===========================================================================
+  # Lambda Functions
+  # ===========================================================================
+
+  WorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-worker
+      Runtime: python3.12
+      Handler: load_lambda.worker.handler
+      Timeout: !Ref LambdaTimeout
+      MemorySize: !Ref LambdaMemory
+      Role: !GetAtt LambdaWorkerRole.Arn
+      ReservedConcurrentExecutions: !Ref MaxWorkers
+      VpcConfig:
+        SubnetIds: !Ref PrivateSubnetIds
+        SecurityGroupIds:
+          - !Ref WorkerSecurityGroup
+      Environment:
+        Variables:
+          TARGET_STACK_NAME: !Ref TargetStackName
+          TARGET_REGION: !Ref AWS::Region
+          METRICS_NAMESPACE: ZaeLimiter/StressTest
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise RuntimeError(
+                  "Placeholder code. Run 'zae-limiter loadtest deploy' to upload real code."
+              )
+
+  # ===========================================================================
+  # CloudWatch Log Groups
+  # ===========================================================================
+
+  MasterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/ecs/${AWS::StackName}-master
+      RetentionInDays: 7
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-worker
+      RetentionInDays: 7
+
+  # ===========================================================================
+  # IAM Roles
+  # ===========================================================================
+
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub
+        - '${Prefix}${AWS::StackName}-exec${Suffix}'
+        - Prefix: !Select [0, !Split ['{}', !Ref RoleNameFormat]]
+          Suffix: !Select [1, !Split ['{}', !Ref RoleNameFormat]]
+      PermissionsBoundary: !If
+        - HasPermissionBoundary
+        - !Ref PermissionBoundary
+        - !Ref AWS::NoValue
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRPull
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                Resource: !GetAtt LocustRepository.Arn
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub
+        - '${Prefix}${AWS::StackName}-task${Suffix}'
+        - Prefix: !Select [0, !Split ['{}', !Ref RoleNameFormat]]
+          Suffix: !Select [1, !Split ['{}', !Ref RoleNameFormat]]
+      PermissionsBoundary: !If
+        - HasPermissionBoundary
+        - !Ref PermissionBoundary
+        - !Ref AWS::NoValue
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !ImportValue
+            Fn::Sub: ${TargetStackName}-FullAccessPolicyArn
+      Policies:
+        - PolicyName: EcsExec
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:StartSession
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: '*'
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt WorkerFunction.Arn
+
+  LambdaWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub
+        - '${Prefix}${AWS::StackName}-worker${Suffix}'
+        - Prefix: !Select [0, !Split ['{}', !Ref RoleNameFormat]]
+          Suffix: !Select [1, !Split ['{}', !Ref RoleNameFormat]]
+      PermissionsBoundary: !If
+        - HasPermissionBoundary
+        - !Ref PermissionBoundary
+        - !Ref AWS::NoValue
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - !ImportValue
+            Fn::Sub: ${TargetStackName}-FullAccessPolicyArn
+      Policies:
+        - PolicyName: StressTestMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: ZaeLimiter/StressTest
+
+Outputs:
+  ClusterArn:
+    Description: ECS cluster ARN
+    Value: !GetAtt EcsCluster.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-ClusterArn
+
+  MasterServiceName:
+    Description: Locust master ECS service name
+    Value: !GetAtt LocustMasterService.Name
+    Export:
+      Name: !Sub ${AWS::StackName}-MasterServiceName
+
+  LocustRepositoryUri:
+    Description: ECR repository URI for Locust image
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${LocustRepository}
+    Export:
+      Name: !Sub ${AWS::StackName}-LocustRepositoryUri
+
+  WorkerFunctionArn:
+    Description: Worker Lambda function ARN
+    Value: !GetAtt WorkerFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-WorkerFunctionArn
+
+  MasterSecurityGroupId:
+    Description: Security group ID for Locust master
+    Value: !Ref MasterSecurityGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-MasterSecurityGroupId

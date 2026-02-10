@@ -59,20 +59,20 @@ Then open http://localhost:8089 to configure users and start the test.
 
 ## Running on AWS (Distributed)
 
-The `zae-limiter load` commands deploy a distributed Locust cluster using
+The `zae-limiter loadtest` commands deploy a distributed Locust cluster using
 ECS Fargate (master) + Lambda (workers).
 
 ### 1. Deploy Infrastructure
 
 ```bash
 # Simple scenario
-zae-limiter load deploy -n <stack-name> -C examples/locust -f locustfiles/simple.py
+zae-limiter loadtest deploy -n <stack-name> -C examples/locust -f locustfiles/simple.py
 
 # LLM Gateway scenario
-zae-limiter load deploy -n <stack-name> -C examples/locust -f locustfiles/llm_gateway.py
+zae-limiter loadtest deploy -n <stack-name> -C examples/locust -f locustfiles/llm_gateway.py
 
 # Stress scenario (set up test data first — see step 2)
-zae-limiter load deploy -n <stack-name> -C examples/locust -f locustfiles/stress.py
+zae-limiter loadtest deploy -n <stack-name> -C examples/locust -f locustfiles/stress.py
 ```
 
 The deploy command will interactively prompt for VPC and subnet selection if not
@@ -84,14 +84,15 @@ Additional flags:
 |------|---------|-------------|
 | `--max-workers` | 100 | Maximum Lambda worker concurrency |
 | `--lambda-timeout` | 5 | Lambda worker timeout in minutes |
-| `--create-vpc-endpoints` | off | Create VPC endpoints for SSM (skip if VPC has NAT) |
+| `--ssm-endpoint / --no-ssm-endpoint` | off | Create VPC endpoints for SSM (not needed if VPC has NAT gateway) |
+| `--dynamodb-endpoint / --no-dynamodb-endpoint` | on | Create DynamoDB gateway endpoint (auto-discovers route tables) |
 
 ### 2. Set Up Test Data (stress scenario only)
 
 The stress scenario expects pre-configured entities and limits:
 
 ```bash
-zae-limiter load setup -n <stack-name> --apis 8 --custom-limits 300
+zae-limiter loadtest setup -n <stack-name> --apis 8 --custom-limits 300
 ```
 
 The simple and llm_gateway scenarios configure their own limits via `on_start()`,
@@ -100,7 +101,7 @@ so no setup step is needed.
 ### 3. Connect to Locust UI
 
 ```bash
-zae-limiter load connect -n <stack-name>
+zae-limiter loadtest connect -n <stack-name>
 ```
 
 This starts a Fargate task (if not running), waits for SSM agent readiness,
@@ -111,8 +112,8 @@ and opens an SSM tunnel to http://localhost:8089.
 | `--port` | 8089 | Local port for the Locust UI |
 | `--destroy` | off | Stop Fargate task on disconnect |
 
-### 4. Tear Down
+### 4. Delete Infrastructure
 
 ```bash
-zae-limiter load teardown -n <stack-name> --yes
+zae-limiter loadtest delete -n <stack-name> --yes
 ```

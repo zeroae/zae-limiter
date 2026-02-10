@@ -24,5 +24,6 @@ Used for commit scopes and `area/*` labels:
 | `aggregator` | `area/aggregator` | Lambda aggregator function |
 | `ci` | `area/ci` | CI/CD workflows |
 | `local` | `area/local` | LocalStack local development commands |
+| `loadtest` | `area/loadtest` | Load testing infrastructure and tooling |
 
 **Additional commit-only scopes:** `bucket`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`
