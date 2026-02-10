@@ -253,22 +253,25 @@ curl -X GET http://localhost:8089/stop
 zae-limiter load connect --name load-test --region us-east-1 --destroy \
   -f locustfiles/simple.py
 
-# 7. Automated benchmark (no manual Locust UI needed)
+# 7. Calibrate optimal per-worker user count (binary search):
+zae-limiter load calibrate --name load-test --region us-east-1 \
+  -f locustfiles/max_rps.py --step-duration 30
+
+# Cascade calibration:
+zae-limiter load calibrate --name load-test --region us-east-1 \
+  -f locustfiles/max_rps.py --user-classes MaxRpsCascadeUser --step-duration 30
+
+# 8. Single run (Lambda, Fargate, or distributed):
 # Lambda (single invocation):
-zae-limiter load benchmark --name load-test --region us-east-1 \
+zae-limiter load run --name load-test --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
-# Cascade benchmark (select specific User class):
-zae-limiter load benchmark --name load-test --region us-east-1 \
-  -f locustfiles/max_rps.py --users 10 --duration 60 \
-  --user-classes MaxRpsCascadeUser
-
 # Fargate standalone:
-zae-limiter load benchmark --name load-test --region us-east-1 \
+zae-limiter load run --name load-test --region us-east-1 \
   --mode fargate -f locustfiles/max_rps.py --users 10 --duration 60
 
 # Distributed (Fargate master + Lambda workers):
-zae-limiter load benchmark --name load-test --region us-east-1 \
+zae-limiter load run --name load-test --region us-east-1 \
   --mode distributed --workers 2 -f locustfiles/max_rps.py --users 20 --duration 60
 ```
 
@@ -282,7 +285,7 @@ zae-limiter load benchmark --name load-test --region us-east-1 \
 **Key parameters:**
 - `--lambda-timeout`: Worker timeout in minutes (default: 5, triggers proactive replacement at 80%)
 - `-C`: Directory containing locustfiles
-- `-f`: Locustfile path relative to `-C` (required on `connect` and `benchmark`)
+- `-f`: Locustfile path relative to `-C` (required on `connect`, `run`, and `calibrate`)
 - `--user-classes`: Comma-separated User class names to run (e.g. `MaxRpsCascadeUser`)
 
 **Architecture:**

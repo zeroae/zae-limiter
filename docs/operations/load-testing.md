@@ -106,40 +106,78 @@ zae-limiter load connect --name my-limiter --region us-east-1 --destroy
 | `--users-per-worker` | Auto-scaling ratio | 10 |
 | `--startup-lead-time` | Predictive scaling lookahead (seconds) | 20 |
 
-## Automated Benchmarks
+## Calibration
 
-The `load benchmark` command runs a self-contained, headless test and reports results — no manual Locust UI interaction needed. Supports both Lambda and Fargate runtimes.
+The `load calibrate` command uses Little's Law to binary-search for the optimal per-worker user count, then recommends distributed run configuration.
 
 ### Usage
 
 ```bash
-# Lambda benchmark (default) — invokes a single Lambda worker
-zae-limiter load benchmark --name my-limiter --region us-east-1 \
+# Calibrate optimal per-worker user count
+zae-limiter load calibrate --name my-limiter --region us-east-1 \
+  -f locustfiles/max_rps.py --step-duration 30
+
+# Cascade calibration
+zae-limiter load calibrate --name my-limiter --region us-east-1 \
+  -f locustfiles/max_rps.py --user-classes MaxRpsCascadeUser --step-duration 30
+```
+
+### Calibration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--max-users` | Upper bound for binary search | 40 |
+| `--threshold` | Target efficiency ratio (baseline_p50 / observed_p50) | 0.80 |
+| `--step-duration` | Seconds per calibration step | 30 |
+| `--baseline-duration` | Seconds for baseline phase (1 user) | 15 |
+| `--spawn-rate` | User spawn rate per second | 10 |
+| `--user-classes` | Comma-separated User class names | all |
+
+### How It Works
+
+1. **Baseline**: Invokes Lambda with 1 user to measure floor latency (baseline_p50)
+2. **Upper bound check**: Invokes with max_users — if efficiency >= threshold, done
+3. **Binary search**: Bisects [1, max_users] measuring efficiency at each midpoint
+4. **Report**: Displays calibration table and distributed recommendations
+
+**Efficiency** = `baseline_p50 / observed_p50` — what fraction of response time is actual DynamoDB work vs. GIL queuing. Expected ~6-7 Lambda invocations for the default [1, 40] range.
+
+## Automated Runs
+
+The `load run` command runs a self-contained, headless test and reports results — no manual Locust UI interaction needed. Supports Lambda, Fargate, and distributed runtimes.
+
+### Usage
+
+```bash
+# Lambda run (default) — invokes a single Lambda worker
+zae-limiter load run --name my-limiter --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
-# Fargate benchmark — starts a Fargate task in standalone headless mode
-zae-limiter load benchmark --name my-limiter --region us-east-1 \
+# Fargate run — starts a Fargate task in standalone headless mode
+zae-limiter load run --name my-limiter --region us-east-1 \
   --mode fargate \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
 # Fargate with custom CPU/memory
-zae-limiter load benchmark --name my-limiter --region us-east-1 \
+zae-limiter load run --name my-limiter --region us-east-1 \
   --mode fargate --cpu 2048 --memory 4096 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 ```
 
-### Benchmark Options
+### Run Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--mode [lambda\|fargate]` | Runtime to benchmark | `lambda` |
+| `--mode [lambda\|fargate\|distributed]` | Runtime mode | `lambda` |
 | `--users` | Number of simulated users | 20 |
 | `--duration` | Test duration in seconds | 60 |
 | `--spawn-rate` | User spawn rate per second | 10 |
-| `-f` | Override locustfile | from deploy |
+| `-f` | Locustfile path | — |
 | `--cpu` | Fargate task CPU units (Fargate mode only) | from task def |
 | `--memory` | Fargate task memory in MB (Fargate mode only) | from task def |
 | `--port` | Local port for SSM tunnel (Fargate mode only) | 8089 |
+| `--workers` | Number of Lambda workers (distributed mode) | 1 |
+| `--user-classes` | Comma-separated User class names | all |
 
 ### How Each Mode Works
 
@@ -151,9 +189,9 @@ zae-limiter load benchmark --name my-limiter --region us-east-1 \
 
 Benchmarks run on the `load-test` stack (DynamoDB on-demand, us-east-1). Three modes compared:
 
-- **Lambda standalone**: `load benchmark --mode lambda` — single Lambda invocation, headless
-- **Distributed (1 Lambda)**: `load benchmark --mode distributed --workers 1` — Fargate master + 1 Lambda worker
-- **Fargate standalone**: `load benchmark --mode fargate` — single Fargate task, no workers
+- **Lambda standalone**: `load run --mode lambda` — single Lambda invocation, headless
+- **Distributed (1 Lambda)**: `load run --mode distributed --workers 1` — Fargate master + 1 Lambda worker
+- **Fargate standalone**: `load run --mode fargate` — single Fargate task, no workers
 
 **max_rps.py (zero wait between requests) — 10 users, 60s:**
 
@@ -196,21 +234,21 @@ aws sso login --profile zeroae-code/AWSPowerUserAccess
 
 # 2. Lambda standalone benchmark
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
-  uv run zae-limiter load benchmark \
+  uv run zae-limiter load run \
   --name <target> --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
 # 3. Fargate standalone benchmark
 #    (don't run simultaneously — they share the same DynamoDB table)
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
-  uv run zae-limiter load benchmark \
+  uv run zae-limiter load run \
   --name <target> --region us-east-1 \
   --mode fargate \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
 # 4. Distributed benchmark (1 Lambda worker)
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
-  uv run zae-limiter load benchmark \
+  uv run zae-limiter load run \
   --name <target> --region us-east-1 \
   --mode distributed --workers 1 \
   -f locustfiles/max_rps.py --users 10 --duration 60

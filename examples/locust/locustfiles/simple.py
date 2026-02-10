@@ -7,6 +7,11 @@ Each Locust user simulates a unique API consumer hitting a single
 resource ("api") with a single rate limit (RPM). System-level defaults
 define the limit so entities need no individual configuration.
 
+Optimal per-Lambda concurrency: 40+ users (calibrated at 90% efficiency).
+The wait_time=between(0.1, 1.0) means users spend most of their time
+sleeping, so there is no GIL contention even at high concurrency.
+p50 stays at floor latency (8-9ms) regardless of user count.
+
 Two user classes are available (select via --class-picker or Locust UI):
 - SimpleUser: standalone entities, no cascade
 - SimpleCascadeUser: child entities with cascade=True to a shared parent
@@ -91,9 +96,8 @@ class SimpleCascadeUser(RateLimiterUser):
 
     def on_start(self) -> None:
         """Create a child entity under the shared cascade parent."""
-        limiter = _make_limiter(self.environment)
         self.entity_id = f"user-{uuid.uuid4().hex[:8]}"
-        limiter.create_entity(
+        self.client._limiter.create_entity(
             self.entity_id,
             parent_id=_cascade_parent,
             cascade=True,

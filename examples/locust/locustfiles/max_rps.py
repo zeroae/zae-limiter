@@ -7,6 +7,10 @@ Same as simple.py but with zero wait time. Each user fires acquire()
 back-to-back as fast as possible to find the maximum RPS and lowest
 latency the system can sustain.
 
+Optimal per-Lambda concurrency: 3 users (calibrated at 90% efficiency).
+At 3 users/worker the p50 stays at floor latency (7ms) with ~371 RPS
+per worker. Above 3 users, GIL contention degrades p50 sharply.
+
 Two user classes are available (select via --class-picker or Locust UI):
 - MaxRpsUser: standalone entities, no cascade
 - MaxRpsCascadeUser: child entities with cascade=True to a shared parent
@@ -92,9 +96,8 @@ class MaxRpsCascadeUser(RateLimiterUser):
 
     def on_start(self) -> None:
         """Create a child entity under the shared cascade parent."""
-        limiter = _make_limiter(self.environment)
         self.entity_id = f"user-{uuid.uuid4().hex[:8]}"
-        limiter.create_entity(
+        self.client._limiter.create_entity(
             self.entity_id,
             parent_id=_cascade_parent,
             cascade=True,

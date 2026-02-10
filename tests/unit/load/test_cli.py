@@ -1447,3 +1447,408 @@ class TestGetServiceNetworkConfig:
 
         with pytest.raises(click.ClickException, match="Service not found"):
             _get_service_network_config(mock_ecs, "my-cluster", "nonexistent-service")
+
+
+# ---------------------------------------------------------------------------
+# Invoke Lambda Headless helper
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeLambdaHeadless:
+    """Tests for _invoke_lambda_headless helper."""
+
+    def test_returns_stats_on_success(self):
+        import json
+
+        from zae_limiter.load.cli import _invoke_lambda_headless
+
+        mock_lambda = MagicMock()
+        payload_data = {
+            "total_requests": 500,
+            "requests_per_second": 50.0,
+            "p50": 20,
+            "p95": 35,
+            "p99": 50,
+        }
+        mock_lambda.invoke.return_value = {
+            "Payload": MagicMock(read=MagicMock(return_value=json.dumps(payload_data).encode()))
+        }
+
+        result = _invoke_lambda_headless(
+            lambda_client=mock_lambda,
+            func_name="test-func",
+            users=10,
+            duration=30,
+            spawn_rate=10,
+            locustfile="locustfiles/max_rps.py",
+        )
+        assert result["total_requests"] == 500
+        assert result["p50"] == 20
+
+    def test_passes_user_classes(self):
+        import json
+
+        from zae_limiter.load.cli import _invoke_lambda_headless
+
+        mock_lambda = MagicMock()
+        mock_lambda.invoke.return_value = {
+            "Payload": MagicMock(read=MagicMock(return_value=json.dumps({"p50": 10}).encode()))
+        }
+
+        _invoke_lambda_headless(
+            lambda_client=mock_lambda,
+            func_name="test-func",
+            users=5,
+            duration=15,
+            spawn_rate=5,
+            locustfile="locustfiles/max_rps.py",
+            user_classes="MaxRpsCascadeUser",
+        )
+
+        call_payload = json.loads(mock_lambda.invoke.call_args[1]["Payload"])
+        assert call_payload["config"]["user_classes"] == "MaxRpsCascadeUser"
+
+    def test_raises_on_lambda_error(self):
+        import json
+
+        from zae_limiter.load.cli import _invoke_lambda_headless
+
+        mock_lambda = MagicMock()
+        error_payload = {
+            "errorMessage": "Task timed out",
+            "stackTrace": ["line 1", "line 2"],
+        }
+        mock_lambda.invoke.return_value = {
+            "Payload": MagicMock(read=MagicMock(return_value=json.dumps(error_payload).encode()))
+        }
+
+        with pytest.raises(click.ClickException, match="Task timed out"):
+            _invoke_lambda_headless(
+                lambda_client=mock_lambda,
+                func_name="test-func",
+                users=10,
+                duration=30,
+                spawn_rate=10,
+                locustfile="locustfiles/max_rps.py",
+            )
+
+    def test_raises_on_error_without_trace(self):
+        import json
+
+        from zae_limiter.load.cli import _invoke_lambda_headless
+
+        mock_lambda = MagicMock()
+        error_payload = {"errorMessage": "Out of memory"}
+        mock_lambda.invoke.return_value = {
+            "Payload": MagicMock(read=MagicMock(return_value=json.dumps(error_payload).encode()))
+        }
+
+        with pytest.raises(click.ClickException, match="Out of memory"):
+            _invoke_lambda_headless(
+                lambda_client=mock_lambda,
+                func_name="test-func",
+                users=10,
+                duration=30,
+                spawn_rate=10,
+                locustfile="locustfiles/max_rps.py",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Run command (renamed from benchmark)
+# ---------------------------------------------------------------------------
+
+
+class TestRunCommand:
+    """Tests for the run command (renamed from benchmark)."""
+
+    def test_run_command_exists(self, runner):
+        """The 'run' subcommand is registered on the load group."""
+        result = runner.invoke(load, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "Run a single load test execution" in result.output
+
+    def test_run_lambda_mode(self, runner):
+        """Run in lambda mode invokes Lambda and displays results."""
+        with (
+            patch("zae_limiter.load.cli._get_lambda_client_and_config") as mock_get_config,
+            patch("zae_limiter.load.cli._invoke_lambda_headless") as mock_invoke,
+        ):
+            mock_lambda = MagicMock()
+            mock_get_config.return_value = (mock_lambda, "test-load-worker", 1769, 300)
+            mock_invoke.return_value = {
+                "total_requests": 1000,
+                "total_failures": 0,
+                "failure_rate": 0,
+                "requests_per_second": 50.0,
+                "avg_response_time": 20,
+                "min_response_time": 10,
+                "max_response_time": 100,
+                "p50": 18,
+                "p95": 35,
+                "p99": 50,
+            }
+
+            result = runner.invoke(
+                load,
+                [
+                    "run",
+                    "--name",
+                    "test",
+                    "-f",
+                    "locustfiles/max_rps.py",
+                    "--users",
+                    "10",
+                    "--duration",
+                    "30",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert "Lambda Run" in result.output
+            assert "p50" in result.output
+
+    def test_benchmark_command_no_longer_exists(self, runner):
+        """The old 'benchmark' subcommand is removed."""
+        result = runner.invoke(load, ["benchmark", "--help"])
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Calibrate command
+# ---------------------------------------------------------------------------
+
+
+class TestCalibrateCommand:
+    """Tests for the calibrate command."""
+
+    def test_calibrate_help(self, runner):
+        """Calibrate command shows help text."""
+        result = runner.invoke(load, ["calibrate", "--help"])
+        assert result.exit_code == 0
+        assert "binary search" in result.output.lower()
+
+    def test_calibrate_basic(self, runner):
+        """Calibrate runs binary search and displays results."""
+        invoke_count = 0
+
+        def mock_invoke(
+            lambda_client, func_name, users, duration, spawn_rate, locustfile, user_classes=None
+        ):
+            nonlocal invoke_count
+            invoke_count += 1
+            # Simulate: 1 user = 20ms p50, scaling linearly with users
+            p50 = 20 * users
+            rps = 50 * users / (users**0.5)  # sub-linear scaling
+            reqs = max(int(rps * duration), 200)  # ensure >= min_requests
+            return {
+                "total_requests": reqs,
+                "requests_per_second": rps,
+                "p50": p50,
+                "p95": p50 * 1.5,
+                "p99": p50 * 2,
+            }
+
+        with (
+            patch("zae_limiter.load.cli._get_lambda_client_and_config") as mock_get_config,
+            patch(
+                "zae_limiter.load.cli._invoke_lambda_headless",
+                side_effect=mock_invoke,
+            ),
+        ):
+            mock_lambda = MagicMock()
+            mock_get_config.return_value = (mock_lambda, "test-load-worker", 1769, 300)
+
+            result = runner.invoke(
+                load,
+                [
+                    "calibrate",
+                    "--name",
+                    "test",
+                    "-f",
+                    "locustfiles/max_rps.py",
+                    "--max-users",
+                    "16",
+                    "--threshold",
+                    "0.50",
+                    "--step-duration",
+                    "10",
+                    "--baseline-duration",
+                    "5",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert "Calibration Results" in result.output
+            assert "Optimal" in result.output
+            assert "Distributed recommendations" in result.output
+            # Should have invoked Lambda multiple times
+            assert invoke_count >= 3  # baseline + upper + at least 1 search
+
+    def test_calibrate_efficiency_always_above_threshold(self, runner):
+        """When efficiency >= threshold at max_users, reports max_users as optimal."""
+
+        def mock_invoke(
+            lambda_client, func_name, users, duration, spawn_rate, locustfile, user_classes=None
+        ):
+            # Very low latency growth — efficiency always high
+            p50 = 20 + users * 0.1
+            return {"total_requests": 500, "requests_per_second": 50 * users, "p50": p50}
+
+        with (
+            patch("zae_limiter.load.cli._get_lambda_client_and_config") as mock_get_config,
+            patch(
+                "zae_limiter.load.cli._invoke_lambda_headless",
+                side_effect=mock_invoke,
+            ),
+        ):
+            mock_lambda = MagicMock()
+            mock_get_config.return_value = (mock_lambda, "test-load-worker", 1769, 300)
+
+            result = runner.invoke(
+                load,
+                [
+                    "calibrate",
+                    "--name",
+                    "test",
+                    "-f",
+                    "locustfiles/max_rps.py",
+                    "--max-users",
+                    "20",
+                    "--threshold",
+                    "0.50",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert "Optimal: 20 users per worker" in result.output
+
+    def test_calibrate_zero_baseline_p50_exits(self, runner):
+        """Calibrate exits with error if baseline p50 is zero."""
+
+        def mock_invoke(
+            lambda_client, func_name, users, duration, spawn_rate, locustfile, user_classes=None
+        ):
+            # Return enough requests to pass the min threshold but p50=0
+            return {"requests_per_second": 0, "p50": 0, "total_requests": 200}
+
+        with (
+            patch("zae_limiter.load.cli._get_lambda_client_and_config") as mock_get_config,
+            patch(
+                "zae_limiter.load.cli._invoke_lambda_headless",
+                side_effect=mock_invoke,
+            ),
+        ):
+            mock_lambda = MagicMock()
+            mock_get_config.return_value = (mock_lambda, "test-load-worker", 1769, 300)
+
+            result = runner.invoke(
+                load,
+                [
+                    "calibrate",
+                    "--name",
+                    "test",
+                    "-f",
+                    "locustfiles/max_rps.py",
+                ],
+            )
+            assert result.exit_code != 0
+
+    def test_calibrate_with_user_classes(self, runner):
+        """Calibrate passes --user-classes to Lambda invocations."""
+        captured_user_classes = []
+
+        def mock_invoke(
+            lambda_client, func_name, users, duration, spawn_rate, locustfile, user_classes=None
+        ):
+            captured_user_classes.append(user_classes)
+            p50 = 20 + users * 5
+            return {"requests_per_second": 50, "p50": p50, "total_requests": 500}
+
+        with (
+            patch("zae_limiter.load.cli._get_lambda_client_and_config") as mock_get_config,
+            patch(
+                "zae_limiter.load.cli._invoke_lambda_headless",
+                side_effect=mock_invoke,
+            ),
+        ):
+            mock_lambda = MagicMock()
+            mock_get_config.return_value = (mock_lambda, "test-load-worker", 1769, 300)
+
+            result = runner.invoke(
+                load,
+                [
+                    "calibrate",
+                    "--name",
+                    "test",
+                    "-f",
+                    "locustfiles/max_rps.py",
+                    "--user-classes",
+                    "MaxRpsCascadeUser",
+                    "--max-users",
+                    "4",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert all(uc == "MaxRpsCascadeUser" for uc in captured_user_classes)
+
+
+# ---------------------------------------------------------------------------
+# Display calibration results
+# ---------------------------------------------------------------------------
+
+
+class TestDisplayCalibrationResults:
+    """Tests for _display_calibration_results helper."""
+
+    def test_displays_table_and_recommendations(self, capsys):
+        from zae_limiter.load.cli import _display_calibration_results
+
+        steps = [
+            {"users": 1, "rps": 47.0, "p50": 20.0, "efficiency": 1.0, "requests": 705},
+            {"users": 40, "rps": 381.0, "p50": 95.0, "efficiency": 0.21, "requests": 11430},
+            {"users": 20, "rps": 383.0, "p50": 47.0, "efficiency": 0.43, "requests": 11490},
+            {"users": 10, "rps": 357.0, "p50": 26.0, "efficiency": 0.77, "requests": 10710},
+            {"users": 5, "rps": 200.0, "p50": 22.0, "efficiency": 0.91, "requests": 6000},
+            {"users": 7, "rps": 280.0, "p50": 24.0, "efficiency": 0.83, "requests": 8400},
+        ]
+
+        _display_calibration_results(
+            steps=steps,
+            baseline_p50=20.0,
+            optimal_users=7,
+            optimal_rps=280.0,
+            threshold=0.80,
+        )
+        captured = capsys.readouterr()
+
+        assert "Calibration Results (threshold: 80%)" in captured.out
+        assert "Reqs" in captured.out
+        assert "(baseline)" in captured.out
+        assert "<- optimal (>= 80%)" in captured.out
+        assert "Optimal: 7 users per worker" in captured.out
+        assert "Floor latency: 20ms (p50)" in captured.out
+        assert "Throughput per worker: 280.0 RPS" in captured.out
+        assert "Distributed recommendations" in captured.out
+        assert "load run --mode distributed" in captured.out
+
+    def test_recommendations_compute_workers_correctly(self, capsys):
+        from zae_limiter.load.cli import _display_calibration_results
+
+        steps = [
+            {"users": 1, "rps": 50.0, "p50": 20.0, "efficiency": 1.0, "requests": 500},
+            {"users": 10, "rps": 350.0, "p50": 25.0, "efficiency": 0.80, "requests": 10500},
+        ]
+
+        _display_calibration_results(
+            steps=steps,
+            baseline_p50=20.0,
+            optimal_users=10,
+            optimal_rps=350.0,
+            threshold=0.80,
+        )
+        captured = capsys.readouterr()
+
+        # 100 / 10 = 10 workers
+        assert "--workers 10 --users 100" in captured.out
+        # 500 / 10 = 50 workers
+        assert "--workers 50 --users 500" in captured.out
+        # 1000 / 10 = 100 workers
+        assert "--workers 100 --users 1000" in captured.out

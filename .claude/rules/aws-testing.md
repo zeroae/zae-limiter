@@ -71,11 +71,16 @@ AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load deploy \
 
 The load deploy inherits `PermissionBoundary` and `RoleNameFormat` from the limiter stack outputs.
 
-### Running benchmarks
+### Running calibration and benchmarks
 
 ```bash
-# Lambda mode (single invocation, simplest)
-AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load benchmark \
+# Calibrate optimal per-worker user count (binary search)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load calibrate \
+  --name load-test --region us-east-1 \
+  -f locustfiles/max_rps.py --step-duration 30
+
+# Single run, Lambda mode (simplest)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load run \
   --name load-test --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 ```

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -106,7 +107,7 @@ def _build_task_overrides(
     cpu: int | None = None,
     memory: int | None = None,
     pool_connections: int | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Build container overrides dict for run_task().
 
     Args:
@@ -156,7 +157,7 @@ def _build_task_overrides(
     if not master_env and not orchestrator_env and not cpu and not memory:
         return {}
 
-    result: dict[str, object] = {}
+    result: dict[str, Any] = {}
 
     container_overrides = []
 
@@ -185,7 +186,7 @@ def _build_task_overrides(
     return result
 
 
-def _display_benchmark_results(stats: dict[str, object]) -> None:
+def _display_benchmark_results(stats: dict[str, Any]) -> None:
     """Display benchmark results in a standard format.
 
     Args:
@@ -215,7 +216,7 @@ def _display_benchmark_results(stats: dict[str, object]) -> None:
     click.echo(f"  p99: {p99:.0f}ms")
 
 
-def _map_locust_stats(locust_json: dict[str, Any]) -> dict[str, object]:
+def _map_locust_stats(locust_json: dict[str, Any]) -> dict[str, Any]:
     """Map Locust /stats/requests JSON to standard benchmark stats format.
 
     Args:
@@ -254,7 +255,7 @@ def _map_locust_stats(locust_json: dict[str, Any]) -> dict[str, object]:
     }
 
 
-def _get_service_network_config(ecs_client: Any, cluster: str, service: str) -> dict[str, object]:
+def _get_service_network_config(ecs_client: Any, cluster: str, service: str) -> dict[str, Any]:
     """Get network configuration from an ECS service.
 
     Args:
@@ -273,7 +274,7 @@ def _get_service_network_config(ecs_client: Any, cluster: str, service: str) -> 
     if not services:
         raise click.ClickException(f"Service not found: {service} in cluster {cluster}")
     service_config = services[0]
-    return cast(dict[str, object], service_config["networkConfiguration"])
+    return cast(dict[str, Any], service_config["networkConfiguration"])
 
 
 @click.group()
@@ -623,7 +624,7 @@ def connect(
         """Start a new task with run_task(). Returns task ARN."""
         network_config = _get_service_network_config(ecs, stack_name, service_name)
 
-        run_kwargs: dict[str, object] = {
+        run_kwargs: dict[str, Any] = {
             "cluster": stack_name,
             "taskDefinition": task_definition,
             "networkConfiguration": network_config,
@@ -865,7 +866,7 @@ def list_cmd(region: str | None) -> None:
     asyncio.run(_list())
 
 
-@load.command()
+@load.command("run")
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option(
@@ -905,7 +906,7 @@ def list_cmd(region: str | None) -> None:
     default=None,
     help="Comma-separated User class names to run (e.g. MaxRpsCascadeUser)",
 )
-def benchmark(
+def run_cmd(
     name: str,
     region: str | None,
     mode: str,
@@ -919,7 +920,7 @@ def benchmark(
     workers: int,
     user_classes: str | None,
 ) -> None:
-    """Run a benchmark to measure per-worker capacity.
+    """Run a single load test execution.
 
     Lambda mode (default): Invokes a single Lambda worker in headless mode.
     Fargate mode: Starts a Fargate task in standalone headless mode and polls stats.
@@ -953,7 +954,7 @@ def benchmark(
             user_classes=user_classes,
         )
     else:
-        _benchmark_lambda(
+        _run_lambda(
             name=name,
             region=region,
             users=users,
@@ -964,7 +965,156 @@ def benchmark(
         )
 
 
-def _benchmark_lambda(
+@load.command()
+@click.option("--name", "-n", required=True, help="zae-limiter name")
+@click.option("--region", default=None, help="AWS region")
+@click.option(
+    "-f",
+    "--locustfile",
+    required=True,
+    help="Locustfile path (e.g. locustfiles/max_rps.py)",
+)
+@click.option(
+    "--user-classes",
+    default=None,
+    help="Comma-separated User class names to run (e.g. MaxRpsCascadeUser)",
+)
+@click.option(
+    "--max-users",
+    default=40,
+    type=int,
+    help="Upper bound for binary search (default: 40)",
+)
+@click.option(
+    "--threshold",
+    default=0.80,
+    type=float,
+    help="Target efficiency ratio (default: 0.80)",
+)
+@click.option(
+    "--step-duration",
+    default=30,
+    type=int,
+    help="Seconds per calibration step (default: 30)",
+)
+@click.option(
+    "--baseline-duration",
+    default=15,
+    type=int,
+    help="Seconds for baseline phase (default: 15)",
+)
+@click.option(
+    "--spawn-rate",
+    default=10,
+    type=int,
+    help="User spawn rate per second (default: 10)",
+)
+def calibrate(
+    name: str,
+    region: str | None,
+    locustfile: str,
+    user_classes: str | None,
+    max_users: int,
+    threshold: float,
+    step_duration: int,
+    baseline_duration: int,
+    spawn_rate: int,
+) -> None:
+    """Find optimal per-worker user count via binary search.
+
+    Uses Little's Law to binary-search for the optimal per-worker user count
+    by measuring efficiency (baseline_p50 / observed_p50) at different
+    concurrency levels. Lambda-only.
+    """
+    _calibrate_lambda(
+        name=name,
+        region=region,
+        locustfile=locustfile,
+        user_classes=user_classes,
+        max_users=max_users,
+        threshold=threshold,
+        step_duration=step_duration,
+        baseline_duration=baseline_duration,
+        spawn_rate=spawn_rate,
+    )
+
+
+def _invoke_lambda_headless(
+    lambda_client: Any,
+    func_name: str,
+    users: int,
+    duration: int,
+    spawn_rate: int,
+    locustfile: str,
+    user_classes: str | None = None,
+) -> dict[str, Any]:
+    """Invoke Lambda in headless mode and return stats dict.
+
+    Raises click.ClickException on Lambda error.
+    """
+    import json
+
+    config: dict[str, Any] = {
+        "mode": "headless",
+        "users": users,
+        "duration_seconds": duration,
+        "spawn_rate": spawn_rate,
+        "locustfile": locustfile,
+    }
+    if user_classes:
+        config["user_classes"] = user_classes
+    payload = {"config": config}
+
+    response = lambda_client.invoke(
+        FunctionName=func_name,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(payload),
+    )
+
+    response_payload = json.loads(response["Payload"].read())
+
+    if "errorMessage" in response_payload:
+        msg = response_payload["errorMessage"]
+        trace = response_payload.get("stackTrace", [])
+        detail = "\n  ".join(str(line) for line in trace)
+        raise click.ClickException(f"Lambda execution failed: {msg}\n  {detail}".rstrip())
+
+    return cast(dict[str, Any], response_payload)
+
+
+def _get_lambda_client_and_config(name: str, region: str | None) -> tuple[Any, str, int, int]:
+    """Get Lambda client (with extended timeout) and function config.
+
+    Returns (lambda_client, func_name, memory_mb, timeout_seconds).
+    """
+    from botocore.config import Config
+
+    stack_name = f"{name}-load"
+    func_name = f"{stack_name}-worker"
+
+    lambda_client = boto3.client("lambda", region_name=region)
+
+    try:
+        func_config = lambda_client.get_function_configuration(FunctionName=func_name)
+    except lambda_client.exceptions.ResourceNotFoundException:
+        click.echo(f"Error: Lambda function not found: {func_name}", err=True)
+        click.echo("Deploy first with: zae-limiter load deploy --name ...", err=True)
+        sys.exit(1)
+
+    memory_mb: int = func_config["MemorySize"]
+    timeout_seconds: int = func_config["Timeout"]
+
+    # Recreate client with read timeout matching Lambda timeout + buffer
+    lambda_client = boto3.client(
+        "lambda",
+        region_name=region,
+        config=Config(read_timeout=timeout_seconds + 30),
+    )
+
+    return lambda_client, func_name, memory_mb, timeout_seconds
+
+
+def _run_lambda(
     name: str,
     region: str | None,
     users: int,
@@ -973,34 +1123,11 @@ def _benchmark_lambda(
     locustfile: str,
     user_classes: str | None = None,
 ) -> None:
-    """Run Lambda benchmark (original behavior)."""
-    import json
-
-    stack_name = f"{name}-load"
-    func_name = f"{stack_name}-worker"
-
-    from botocore.config import Config
-
-    lambda_client = boto3.client("lambda", region_name=region)
-
-    # Get current function configuration
-    try:
-        func_config = lambda_client.get_function_configuration(FunctionName=func_name)
-    except lambda_client.exceptions.ResourceNotFoundException:
-        click.echo(f"Error: Lambda function not found: {func_name}", err=True)
-        click.echo("Deploy first with: zae-limiter load deploy --name ...", err=True)
-        sys.exit(1)
-
-    memory_mb = func_config["MemorySize"]
-    timeout_seconds = func_config["Timeout"]
-
-    # Recreate client with read timeout matching Lambda timeout + buffer
-    # Default boto3 read timeout (60s) is too short for synchronous invocations
-    lambda_client = boto3.client(
-        "lambda",
-        region_name=region,
-        config=Config(read_timeout=timeout_seconds + 30),
+    """Run Lambda benchmark (single invocation)."""
+    lambda_client, func_name, memory_mb, timeout_seconds = _get_lambda_client_and_config(
+        name, region
     )
+
     vcpu_estimate = memory_mb / 1769
 
     # Warn if duration exceeds available time (with 10% buffer)
@@ -1012,44 +1139,236 @@ def _benchmark_lambda(
             err=True,
         )
 
-    click.echo(f"\nLambda Benchmark: {func_name}")
+    click.echo(f"\nLambda Run: {func_name}")
     click.echo(f"  Memory: {memory_mb} MB (~{vcpu_estimate:.2f} vCPU)")
     click.echo(f"  Timeout: {timeout_seconds}s")
     click.echo(f"  Locustfile: {locustfile}")
     click.echo(f"  Users: {users}, Duration: {duration}s, Spawn Rate: {spawn_rate}/s")
     click.echo()
 
-    # Invoke Lambda synchronously in headless mode
-    config: dict[str, object] = {
-        "mode": "headless",
-        "users": users,
-        "duration_seconds": duration,
-        "spawn_rate": spawn_rate,
-        "locustfile": locustfile,
-    }
-    if user_classes:
-        config["user_classes"] = user_classes
-    payload = {"config": config}
-
     click.echo("Invoking Lambda (this may take a while)...")
-    response = lambda_client.invoke(
-        FunctionName=func_name,
-        InvocationType="RequestResponse",
-        Payload=json.dumps(payload),
-    )
-
-    # Parse response
-    response_payload = json.loads(response["Payload"].read())
-
-    if "errorMessage" in response_payload:
-        click.echo("\nError: Lambda execution failed:", err=True)
-        click.echo(f"  {response_payload['errorMessage']}", err=True)
-        if "stackTrace" in response_payload:
-            for line in response_payload["stackTrace"]:
-                click.echo(f"  {line}", err=True)
+    try:
+        stats = _invoke_lambda_headless(
+            lambda_client=lambda_client,
+            func_name=func_name,
+            users=users,
+            duration=duration,
+            spawn_rate=spawn_rate,
+            locustfile=locustfile,
+            user_classes=user_classes,
+        )
+    except click.ClickException as e:
+        click.echo(f"\nError: {e.format_message()}", err=True)
         sys.exit(1)
 
-    _display_benchmark_results(response_payload)
+    _display_benchmark_results(stats)
+
+
+def _calibrate_lambda(
+    name: str,
+    region: str | None,
+    locustfile: str,
+    user_classes: str | None,
+    max_users: int,
+    threshold: float,
+    step_duration: int,
+    baseline_duration: int,
+    spawn_rate: int,
+) -> None:
+    """Run binary search calibration to find optimal per-worker user count."""
+    lambda_client, func_name, memory_mb, timeout_seconds = _get_lambda_client_and_config(
+        name, region
+    )
+
+    vcpu_estimate = memory_mb / 1769
+
+    click.echo(f"\nLambda Calibration: {func_name}")
+    click.echo(f"  Memory: {memory_mb} MB (~{vcpu_estimate:.2f} vCPU)")
+    click.echo(f"  Timeout: {timeout_seconds}s")
+    click.echo(f"  Locustfile: {locustfile}")
+    click.echo(f"  Threshold: {threshold:.0%}")
+    click.echo(f"  Search range: [1, {max_users}]")
+    click.echo()
+
+    # Minimum requests for stable percentiles
+    min_requests = 100
+
+    # Collect calibration data: list of {users, rps, p50, efficiency, requests}
+    steps: list[dict[str, Any]] = []
+
+    def run_step(users: int, duration: int, label: str) -> dict[str, Any]:
+        click.echo(f"  [{label}] Invoking with {users} user(s) for {duration}s...")
+        try:
+            stats = _invoke_lambda_headless(
+                lambda_client=lambda_client,
+                func_name=func_name,
+                users=users,
+                duration=duration,
+                spawn_rate=spawn_rate,
+                locustfile=locustfile,
+                user_classes=user_classes,
+            )
+        except click.ClickException as e:
+            click.echo(f"\nError: {e.format_message()}", err=True)
+            sys.exit(1)
+        return stats
+
+    # Step 1: Baseline with 1 user (auto-extend if too few requests)
+    max_baseline_duration = timeout_seconds - 30  # leave headroom for Lambda overhead
+    current_baseline_duration = baseline_duration
+    while True:
+        baseline_stats = run_step(1, current_baseline_duration, "baseline")
+        baseline_reqs = int(baseline_stats.get("total_requests", 0))
+        baseline_p50 = float(baseline_stats.get("p50", 0))
+        baseline_rps = float(baseline_stats.get("requests_per_second", 0))
+
+        if baseline_reqs >= min_requests:
+            break
+
+        if baseline_reqs > 0:
+            # Extrapolate: how long to reach min_requests at observed rate
+            multiplier = math.ceil(min_requests / baseline_reqs)
+            new_duration = current_baseline_duration * multiplier
+        else:
+            new_duration = current_baseline_duration * 2
+        new_duration = min(new_duration, max_baseline_duration)
+        if new_duration <= current_baseline_duration:
+            click.echo(
+                f"  Baseline only {baseline_reqs} requests in {current_baseline_duration}s "
+                f"(cannot extend further)."
+            )
+            break
+        click.echo(
+            f"  Baseline too few requests ({baseline_reqs} < {min_requests}), "
+            f"retrying with {new_duration}s..."
+        )
+        current_baseline_duration = new_duration
+
+    if baseline_p50 <= 0:
+        click.echo("Error: Baseline p50 is zero — cannot compute efficiency.", err=True)
+        sys.exit(1)
+
+    steps.append(
+        {
+            "users": 1,
+            "rps": baseline_rps,
+            "p50": baseline_p50,
+            "efficiency": 1.0,
+            "requests": baseline_reqs,
+        }
+    )
+    click.echo(
+        f"  Baseline: p50={baseline_p50:.0f}ms, RPS={baseline_rps:.1f}, requests={baseline_reqs}"
+    )
+
+    # Step 2: Upper bound check
+    upper_stats = run_step(max_users, step_duration, "upper")
+    upper_reqs = int(upper_stats.get("total_requests", 0))
+    upper_p50 = float(upper_stats.get("p50", 0))
+    upper_rps = float(upper_stats.get("requests_per_second", 0))
+    upper_eff = baseline_p50 / upper_p50 if upper_p50 > 0 else 0.0
+    steps.append(
+        {
+            "users": max_users,
+            "rps": upper_rps,
+            "p50": upper_p50,
+            "efficiency": upper_eff,
+            "requests": upper_reqs,
+        }
+    )
+    click.echo(
+        f"  Upper ({max_users} users): p50={upper_p50:.0f}ms, "
+        f"RPS={upper_rps:.1f}, efficiency={upper_eff:.0%}, requests={upper_reqs}"
+    )
+
+    if upper_eff >= threshold:
+        click.echo(f"\n  Efficiency >= {threshold:.0%} even at max_users={max_users}.")
+        optimal_users = max_users
+        optimal_rps = upper_rps
+    else:
+        # Step 3: Binary search between [1, max_users]
+        low = 1
+        high = max_users
+        optimal_users = 1
+        optimal_rps = baseline_rps
+
+        while high - low > 1:
+            mid = (low + high) // 2
+            mid_stats = run_step(mid, step_duration, "search")
+            mid_reqs = int(mid_stats.get("total_requests", 0))
+            mid_p50 = float(mid_stats.get("p50", 0))
+            mid_rps = float(mid_stats.get("requests_per_second", 0))
+            mid_eff = baseline_p50 / mid_p50 if mid_p50 > 0 else 0.0
+            steps.append(
+                {
+                    "users": mid,
+                    "rps": mid_rps,
+                    "p50": mid_p50,
+                    "efficiency": mid_eff,
+                    "requests": mid_reqs,
+                }
+            )
+            click.echo(
+                f"  Search ({mid} users): p50={mid_p50:.0f}ms, "
+                f"RPS={mid_rps:.1f}, efficiency={mid_eff:.0%}, requests={mid_reqs}"
+            )
+
+            if mid_eff >= threshold:
+                low = mid
+                optimal_users = mid
+                optimal_rps = mid_rps
+            else:
+                high = mid
+
+    click.echo()
+    _display_calibration_results(
+        steps=steps,
+        baseline_p50=baseline_p50,
+        optimal_users=optimal_users,
+        optimal_rps=optimal_rps,
+        threshold=threshold,
+    )
+
+
+def _display_calibration_results(
+    steps: list[dict[str, Any]],
+    baseline_p50: float,
+    optimal_users: int,
+    optimal_rps: float,
+    threshold: float,
+) -> None:
+    """Display calibration table and distributed recommendations."""
+    import math
+
+    click.echo(f"Calibration Results (threshold: {threshold:.0%}):")
+    click.echo(f"  {'Users':>5}  {'RPS':>7}  {'p50':>7}  {'Reqs':>7}  {'Efficiency':>10}")
+
+    for step in steps:
+        users = step["users"]
+        rps = float(step.get("rps", 0))
+        p50 = float(step.get("p50", 0))
+        reqs = int(step.get("requests", 0))
+        eff = float(step.get("efficiency", 0))
+        marker = ""
+        if users == 1:
+            marker = " (baseline)"
+        elif users == optimal_users and optimal_users != 1:
+            marker = f" <- optimal (>= {threshold:.0%})"
+        click.echo(f"  {users:>5}  {rps:>7.1f}  {p50:>5.0f}ms  {reqs:>7,}  {eff:>9.0%}{marker}")
+
+    click.echo()
+    click.echo(f"Optimal: {optimal_users} users per worker")
+    click.echo(f"  Floor latency: {baseline_p50:.0f}ms (p50)")
+    click.echo(f"  Throughput per worker: {optimal_rps:.1f} RPS")
+
+    click.echo()
+    click.echo("Distributed recommendations:")
+    for target_users in [100, 500, 1000]:
+        workers = math.ceil(target_users / optimal_users)
+        click.echo(
+            f"  {target_users} users:  load run --mode distributed "
+            f"--workers {workers} --users {target_users}"
+        )
 
 
 def _benchmark_fargate(
@@ -1095,7 +1414,7 @@ def _benchmark_fargate(
         {"name": "MIN_WORKERS", "value": "0"},
     ]
 
-    overrides: dict[str, object] = {
+    overrides: dict[str, Any] = {
         "containerOverrides": [
             {"name": "locust-master", "environment": master_env},
             {"name": "worker-orchestrator", "environment": orchestrator_env},
@@ -1382,7 +1701,7 @@ def _benchmark_distributed(
 
     # Start Fargate task
     click.echo("Starting Fargate task...")
-    run_kwargs: dict[str, object] = {
+    run_kwargs: dict[str, Any] = {
         "cluster": stack_name,
         "taskDefinition": task_definition,
         "networkConfiguration": network_config,
