@@ -11,21 +11,34 @@ IMPORTANT: These tests require:
 2. The --run-aws pytest flag
 
 To run:
-    pytest tests/benchmark/test_aws.py --run-aws -v --benchmark-json=aws.json
+    pytest tests/benchmark/test_aws.py --run-aws -o "addopts=" -v --benchmark-json=aws.json
 
 WARNING: These tests create real AWS resources and may incur charges.
 Resources are cleaned up after tests, but verify via AWS Console.
+
+NOTE: The gevent param requires GEVENT=1 env var for monkey-patching (skipped otherwise).
+Example: GEVENT=1 pytest tests/benchmark/test_aws.py --run-aws -o "addopts=" -v
 """
 
+import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from zae_limiter import Limit, StackOptions, SyncRateLimiter
+from zae_limiter import Limit, StackOptions, SyncRateLimiter, SyncRepository
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.aws]
+
+
+def _has_gevent() -> bool:
+    try:
+        import gevent  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
 @pytest.fixture(scope="class")
@@ -376,19 +389,18 @@ class TestAWSThroughputBenchmarks:
 
 
 class TestAWSCascadeSpeculativeComparison:
-    """Compare cascade speculative writes with cold vs warm entity cache on real AWS.
+    """Compare cascade speculative writes across parallel modes on real AWS.
 
-    With the entity cache warm (issue #318), speculative_consume() fires child + parent
-    UpdateItems in parallel. With the cache cold, only the child gets a speculative
-    UpdateItem; the parent goes through the normal slow path.
+    Tests three parallel_mode strategies for cache-warm cascade speculative writes:
+    serial, gevent, and threadpool. Also includes non-cascade and cache-cold baselines.
 
     Real AWS DynamoDB provides the highest-fidelity measurement of the parallel
     speculative write optimization.
     """
 
     @pytest.fixture(scope="class")
-    def aws_speculative_limiter(self, aws_unique_name):
-        """Create SyncRateLimiter for speculative comparison tests."""
+    def aws_speculative_stack(self, aws_unique_name):
+        """Deploy stack and create entities for speculative comparison tests."""
         table_name = f"{aws_unique_name}-spc"
 
         stack_options = StackOptions(
@@ -418,39 +430,84 @@ class TestAWSCascadeSpeculativeComparison:
                 cascade=True,
             )
 
-            # Pre-warm buckets + entity cache with first acquire
-            with limiter.acquire(
-                entity_id="aws-spec-child",
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1},
-            ):
-                pass
+            # Pre-warm buckets with two acquires (creates bucket items in DynamoDB)
+            for _ in range(2):
+                with limiter.acquire(
+                    entity_id="aws-spec-child",
+                    resource="api",
+                    limits=limits,
+                    consume={"rpm": 1},
+                ):
+                    pass
 
-            # Enable speculative writes (default, but explicit for clarity)
-            limiter._speculative_writes = True
-
-            # Second acquire warms speculative path (buckets now exist in DynamoDB)
-            with limiter.acquire(
-                entity_id="aws-spec-child",
-                resource="api",
-                limits=limits,
-                consume={"rpm": 1},
-            ):
-                pass
-
-            yield limiter
+            yield table_name
 
         try:
             limiter.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
+    @pytest.fixture(scope="class", params=[False, True], ids=["baseline", "speculative"])
+    def aws_speculative_limiter(self, request, aws_speculative_stack):
+        """Create SyncRateLimiter for non-cascade and cache-cold tests.
+
+        Parametrized to run each test twice: baseline (speculative_writes=False)
+        and speculative (speculative_writes=True) for side-by-side comparison.
+        """
+        speculative = request.param
+        repo = SyncRepository(name=aws_speculative_stack, region="us-east-1")
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+
+        # Warm entity cache
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+        with limiter.acquire(
+            entity_id="aws-spec-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        yield limiter
+        repo.close()
+
+    @pytest.fixture(
+        params=[
+            "serial",
+            pytest.param(
+                "gevent",
+                marks=pytest.mark.skipif(
+                    not _has_gevent() or not os.environ.get("GEVENT"),
+                    reason="gevent requires GEVENT=1 env var for monkey-patching",
+                ),
+            ),
+            "threadpool",
+        ]
+    )
+    def parallel_mode_limiter(self, request, aws_speculative_stack):
+        """Create SyncRateLimiter with specific parallel_mode, cache warmed."""
+        mode = request.param
+        repo = SyncRepository(name=aws_speculative_stack, region="us-east-1", parallel_mode=mode)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
+
+        # Warm entity cache + speculative path
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+        with limiter.acquire(
+            entity_id="aws-spec-child",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        yield limiter
+        repo.close()
+
     @pytest.mark.benchmark(group="aws-cascade-speculative")
     def test_non_cascade_speculative_aws(self, benchmark, aws_speculative_limiter):
         """Reference: non-cascade speculative write on real AWS.
 
-        Single-entity speculative write (no parent, no ThreadPoolExecutor).
+        Single-entity speculative write (no parent).
         Provides a baseline to gauge the overhead of the parallel cascade path.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -473,8 +530,6 @@ class TestAWSCascadeSpeculativeComparison:
         Entity cache is cleared before each iteration, forcing the child-only
         speculative path. The parent goes through the normal slow path
         (BatchGetItem read + TransactWriteItems write) -- sequential round trips.
-
-        Expected: Higher latency due to sequential DynamoDB round trips.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
@@ -491,19 +546,17 @@ class TestAWSCascadeSpeculativeComparison:
         benchmark(operation)
 
     @pytest.mark.benchmark(group="aws-cascade-speculative")
-    def test_cascade_speculative_cache_warm_aws(self, benchmark, aws_speculative_limiter):
-        """Optimized: cascade speculative writes with entity cache WARM on real AWS.
+    def test_cascade_speculative_cache_warm_aws(self, benchmark, parallel_mode_limiter):
+        """Cache-warm cascade speculative writes, parametrized by parallel_mode.
 
         Entity cache is pre-populated, enabling parallel speculative writes
-        for both child + parent. With real AWS network latency (~5-20ms per
-        round trip), this should show significant improvement.
-
-        Expected: Lower latency due to parallel DynamoDB writes.
+        for both child + parent. Runs for each mode: serial, gevent, threadpool.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
+        mode = parallel_mode_limiter._repository._parallel_mode
 
         def operation():
-            with aws_speculative_limiter.acquire(
+            with parallel_mode_limiter.acquire(
                 entity_id="aws-spec-child",
                 resource="api",
                 limits=limits,
@@ -511,6 +564,7 @@ class TestAWSCascadeSpeculativeComparison:
             ):
                 pass
 
+        benchmark.extra_info["parallel_mode"] = mode
         benchmark(operation)
 
 
@@ -518,12 +572,14 @@ class TestAWSCascadeBenchmarks:
     """Cascade-specific benchmarks on real AWS.
 
     Cascade operations have higher contention potential since
-    multiple children share the same parent bucket.
+    multiple children share the same parent bucket. The concurrent
+    test is parametrized by parallel_mode to measure how internal
+    cascade parallelism interacts with external thread contention.
     """
 
     @pytest.fixture(scope="class")
-    def aws_cascade_limiter(self, aws_unique_name):
-        """Create SyncRateLimiter for cascade tests."""
+    def aws_cascade_stack(self, aws_unique_name):
+        """Deploy stack and create cascade hierarchy for benchmark tests."""
         table_name = f"{aws_unique_name}-cas"
 
         stack_options = StackOptions(
@@ -551,12 +607,76 @@ class TestAWSCascadeBenchmarks:
                     parent_id="aws-cascade-root",
                     cascade=True,
                 )
-            yield limiter
+
+            # Pre-warm buckets
+            limits = [Limit.per_minute("rpm", 1_000_000)]
+            for i in range(10):
+                with limiter.acquire(
+                    entity_id=f"aws-cascade-child-{i}",
+                    resource="api",
+                    limits=limits,
+                    consume={"rpm": 1},
+                ):
+                    pass
+
+            yield table_name
 
         try:
             limiter.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
+
+    @pytest.fixture(scope="class")
+    def aws_cascade_limiter(self, aws_cascade_stack):
+        """Create default SyncRateLimiter for sequential cascade tests."""
+        repo = SyncRepository(name=aws_cascade_stack, region="us-east-1")
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
+
+        # Warm entity cache
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+        with limiter.acquire(
+            entity_id="aws-cascade-child-0",
+            resource="api",
+            limits=limits,
+            consume={"rpm": 1},
+        ):
+            pass
+
+        yield limiter
+        repo.close()
+
+    @pytest.fixture(
+        params=[
+            "serial",
+            pytest.param(
+                "gevent",
+                marks=pytest.mark.skipif(
+                    not _has_gevent() or not os.environ.get("GEVENT"),
+                    reason="gevent requires GEVENT=1 env var for monkey-patching",
+                ),
+            ),
+            "threadpool",
+        ]
+    )
+    def parallel_mode_cascade_limiter(self, request, aws_cascade_stack):
+        """Create SyncRateLimiter with specific parallel_mode for concurrent tests."""
+        mode = request.param
+        repo = SyncRepository(name=aws_cascade_stack, region="us-east-1", parallel_mode=mode)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
+
+        # Warm entity cache for all children
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+        for i in range(10):
+            with limiter.acquire(
+                entity_id=f"aws-cascade-child-{i}",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ):
+                pass
+
+        yield limiter
+        repo.close()
 
     def test_cascade_sequential_throughput_aws(self, aws_cascade_limiter):
         """Measure sequential cascade TPS on AWS.
@@ -590,17 +710,18 @@ class TestAWSCascadeBenchmarks:
         reason="TransactionConflict not retried in _commit_initial (#332)",
         strict=False,
     )
-    def test_cascade_concurrent_throughput_aws(self, aws_cascade_limiter):
-        """Measure concurrent cascade TPS on AWS.
+    def test_cascade_concurrent_throughput_aws(self, parallel_mode_cascade_limiter):
+        """Measure concurrent cascade TPS on AWS, parametrized by parallel_mode.
 
         Multiple concurrent tasks update different children but share the parent,
-        creating contention on the parent bucket. With true thread parallelism,
-        TransactionConflictException and speculative write contention on the
-        shared parent cause some operations to fail.
+        creating contention on the parent bucket. Tests how internal cascade
+        parallelism (serial/gevent/threadpool) interacts with external thread
+        contention.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
         iterations_per_task = 5
+        mode = parallel_mode_cascade_limiter._repository._parallel_mode
 
         def worker(task_id: int) -> int:
             """Execute cascade operations on dedicated child."""
@@ -609,7 +730,7 @@ class TestAWSCascadeBenchmarks:
 
             for _ in range(iterations_per_task):
                 try:
-                    with aws_cascade_limiter.acquire(
+                    with parallel_mode_cascade_limiter.acquire(
                         entity_id=child_id,
                         resource="api",
                         limits=limits,
@@ -617,7 +738,7 @@ class TestAWSCascadeBenchmarks:
                     ):
                         successes += 1
                 except Exception as e:
-                    print(f"Task {task_id} cascade error: {e}")
+                    print(f"Task {task_id} cascade error ({mode}): {e}")
 
             return successes
 
@@ -631,7 +752,7 @@ class TestAWSCascadeBenchmarks:
 
         tps = total_successes / total_elapsed
 
-        print(f"\nAWS Cascade Concurrent TPS: {tps:.2f} ops/sec")
+        print(f"\nAWS Cascade Concurrent TPS ({mode}): {tps:.2f} ops/sec")
         print(f"Total successes: {total_successes}/{total_iterations}")
 
         # All operations should succeed (internal retries handle parent contention)

@@ -75,6 +75,7 @@ class SyncRepository:
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
         config_cache_ttl: int = 60,
+        parallel_mode: str = "auto",
     ) -> None:
         self.stack_name = normalize_stack_name(name)
         self.table_name = self.stack_name
@@ -95,6 +96,9 @@ class SyncRepository:
         )
         self._config_cache = SyncConfigCache(ttl_seconds=config_cache_ttl)
         self._entity_cache: dict[str, tuple[bool, str | None]] = {}
+        self._parallel_mode = parallel_mode
+        self._executor_fn = self._resolve_parallel_mode(parallel_mode)
+        self._thread_pool: Any = None
 
     @property
     def capabilities(self) -> BackendCapabilities:
@@ -115,6 +119,7 @@ class SyncRepository:
         if self._client is not None:
             self._client = None
             self._session = None
+        self._cleanup_thread_pool()
 
     def _get_item(self, pk: str, sk: str) -> dict[str, Any] | None:
         """Get a raw DynamoDB item by primary key (testing helper).
@@ -2346,19 +2351,81 @@ class SyncRepository:
         """Get config cache performance statistics (ADR-122)."""
         return self._config_cache.get_stats()
 
-    @property
-    def _executor(self) -> Any:
-        executor = getattr(self, "_thread_executor", None)
-        if executor is None:
-            from concurrent.futures import ThreadPoolExecutor
+    @staticmethod
+    def _resolve_parallel_mode(mode: str) -> Any:
+        if mode == "auto":
+            try:
+                from gevent import joinall, monkey, spawn
 
-            executor = ThreadPoolExecutor(max_workers=2)
-            self._thread_executor = executor
-        return executor
+                if monkey.is_module_patched("socket"):
+
+                    def _executor(funcs: Any) -> Any:
+                        greenlets = [spawn(fn) for fn in funcs]
+                        joinall(greenlets, raise_error=True)
+                        return tuple(g.value for g in greenlets)
+
+                    return _executor
+            except ImportError:
+                logger.debug("gevent not available; falling back to non-gevent strategy")
+            import os
+
+            if os.cpu_count() == 1:
+                return lambda funcs: tuple(fn() for fn in funcs)
+            return None
+        elif mode == "gevent":
+            from gevent import joinall, monkey, spawn
+
+            if not monkey.is_module_patched("socket"):
+                import warnings
+
+                warnings.warn(
+                    "parallel_mode='gevent' without monkey-patching runs like serial. Call gevent.monkey.patch_all() before creating SyncRepository, or use parallel_mode='auto'.",
+                    stacklevel=3,
+                )
+
+            def _executor(funcs: Any) -> Any:
+                greenlets = [spawn(fn) for fn in funcs]
+                joinall(greenlets, raise_error=True)
+                return tuple(g.value for g in greenlets)
+
+            return _executor
+        elif mode == "threadpool":
+            import os
+
+            if os.cpu_count() == 1:
+                import warnings
+
+                warnings.warn(
+                    "parallel_mode='threadpool' on a single-CPU host may cause GIL contention. Consider parallel_mode='auto' or 'serial'.",
+                    stacklevel=3,
+                )
+            return None
+        elif mode == "serial":
+            return lambda funcs: tuple(fn() for fn in funcs)
+        else:
+            raise ValueError(
+                f"Invalid parallel_mode: {mode!r}. Must be 'auto', 'gevent', 'threadpool', or 'serial'."
+            )
 
     def _run_in_executor(self, *funcs: Any) -> Any:
-        futures = [self._executor.submit(fn) for fn in funcs]
+        executor_fn = self._executor_fn
+        if executor_fn is not None:
+            return executor_fn(funcs)
+        if self._thread_pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._thread_pool = ThreadPoolExecutor(max_workers=2)
+        futures = [self._thread_pool.submit(fn) for fn in funcs]
         return tuple(f.result() for f in futures)
+
+    def _cleanup_thread_pool(self) -> None:
+        pool = getattr(self, "_thread_pool", None)
+        if pool is not None:
+            pool.shutdown(wait=False)
+            self._thread_pool = None
+
+    def __del__(self) -> None:
+        self._cleanup_thread_pool()
 
 
 if TYPE_CHECKING:

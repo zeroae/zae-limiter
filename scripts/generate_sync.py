@@ -5,6 +5,15 @@ This script transforms async code (aioboto3) to sync code (boto3) by:
 - Removing async/await keywords
 - Renaming classes (RateLimiter -> SyncRateLimiter)
 - Rewriting imports (aioboto3 -> boto3)
+- Converting asyncio.gather() to self._run_in_executor() with configurable parallel_mode
+- Injecting parallel_mode parameter and executor methods into SyncRepository
+
+parallel_mode controls the execution strategy for concurrent operations (e.g., cascade):
+- "auto" (default): gevent if monkey-patched, serial if single-CPU, threadpool if multi-CPU
+- "gevent": forces gevent greenlets; warns (not errors) if monkey-patching is not active
+- "threadpool": lazy ThreadPoolExecutor; warns on single-CPU hosts about GIL contention
+- "serial": sequential execution (no parallelism)
+All explicit modes warn on suboptimal conditions instead of raising errors.
 
 Generated files are committed to git and verified by CI.
 """
@@ -108,20 +117,88 @@ UNWRAP_SUBSCRIPTS = {"Awaitable", "Coroutine"}
 
 # Methods injected into SyncRepository for parallel execution (issue #318)
 # asyncio.gather() is transformed to self._run_in_executor(lambda: a, lambda: b)
-# and the executor + method are injected into SyncRepository by visit_ClassDef.
+# and the method is injected into SyncRepository by visit_ClassDef.
+# parallel_mode parameter ("auto", "gevent", "threadpool", "serial") controls strategy.
+# "auto" checks: gevent patched -> serial (single-CPU) -> threadpool (multi-CPU).
+# Explicit modes warn on suboptimal conditions (no errors).
+# Resolution happens once at __init__ time; threadpool is created lazily on first use.
 _EXECUTOR_METHODS = """\
-@property
-def _executor(self) -> Any:
-    executor = getattr(self, "_thread_executor", None)
-    if executor is None:
-        from concurrent.futures import ThreadPoolExecutor
-        executor = ThreadPoolExecutor(max_workers=2)
-        self._thread_executor = executor
-    return executor
+@staticmethod
+def _resolve_parallel_mode(mode: str) -> Any:
+    if mode == "auto":
+        try:
+            from gevent import monkey, spawn, joinall
+            if monkey.is_module_patched("socket"):
+                def _executor(funcs: Any) -> Any:
+                    greenlets = [spawn(fn) for fn in funcs]
+                    joinall(greenlets, raise_error=True)
+                    return tuple(g.value for g in greenlets)
+                return _executor
+        except ImportError:
+            logger.debug("gevent not available; falling back to non-gevent strategy")
+        import os
+        if os.cpu_count() == 1:
+            return lambda funcs: tuple(fn() for fn in funcs)  # serial on single-CPU
+        return None  # threadpool
+    elif mode == "gevent":
+        from gevent import monkey, spawn, joinall
+        if not monkey.is_module_patched("socket"):
+            import warnings
+            warnings.warn(
+                "parallel_mode='gevent' without monkey-patching runs like serial. "
+                "Call gevent.monkey.patch_all() before creating SyncRepository, "
+                "or use parallel_mode='auto'.",
+                stacklevel=3,
+            )
+        def _executor(funcs: Any) -> Any:
+            greenlets = [spawn(fn) for fn in funcs]
+            joinall(greenlets, raise_error=True)
+            return tuple(g.value for g in greenlets)
+        return _executor
+    elif mode == "threadpool":
+        import os
+        if os.cpu_count() == 1:
+            import warnings
+            warnings.warn(
+                "parallel_mode='threadpool' on a single-CPU host may cause GIL contention. "
+                "Consider parallel_mode='auto' or 'serial'.",
+                stacklevel=3,
+            )
+        return None  # sentinel: create ThreadPoolExecutor lazily
+    elif mode == "serial":
+        return lambda funcs: tuple(fn() for fn in funcs)
+    else:
+        raise ValueError(
+            f"Invalid parallel_mode: {mode!r}. "
+            "Must be 'auto', 'gevent', 'threadpool', or 'serial'."
+        )
 
 def _run_in_executor(self, *funcs: Any) -> Any:
-    futures = [self._executor.submit(fn) for fn in funcs]
+    executor_fn = self._executor_fn
+    if executor_fn is not None:
+        return executor_fn(funcs)
+    # Lazy ThreadPoolExecutor creation (threadpool mode only)
+    if self._thread_pool is None:
+        from concurrent.futures import ThreadPoolExecutor
+        self._thread_pool = ThreadPoolExecutor(max_workers=2)
+    futures = [self._thread_pool.submit(fn) for fn in funcs]
     return tuple(f.result() for f in futures)
+
+def _cleanup_thread_pool(self) -> None:
+    pool = getattr(self, "_thread_pool", None)
+    if pool is not None:
+        pool.shutdown(wait=False)
+        self._thread_pool = None
+
+def __del__(self) -> None:
+    self._cleanup_thread_pool()
+"""
+
+# Statements injected into SyncRepository.__init__ for parallel_mode support.
+_INIT_PARALLEL_STMTS = """\
+self._parallel_mode = parallel_mode
+self._executor_fn = self._resolve_parallel_mode(parallel_mode)
+self._thread_pool: Any = None
 """
 
 # Methods/functions to remove (already have sync equivalents)
@@ -417,8 +494,32 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         # Continue visiting children
         self.generic_visit(node)
 
-        # Inject _executor property and _run_in_executor method into SyncRepository
+        # Inject parallel_mode support and executor methods into SyncRepository
         if node.name == "SyncRepository":
+            # 1. Inject parallel_mode parameter into __init__
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "__init__":
+                    # Add parallel_mode: str = "auto" parameter
+                    item.args.args.append(
+                        ast.arg(
+                            arg="parallel_mode",
+                            annotation=ast.Name(id="str", ctx=ast.Load()),
+                        )
+                    )
+                    item.args.defaults.append(ast.Constant(value="auto"))
+                    # Add init body statements
+                    init_stmts = ast.parse(_INIT_PARALLEL_STMTS).body
+                    item.body.extend(init_stmts)
+                    break
+
+            # 2. Inject cleanup into close()
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "close":
+                    cleanup_stmts = ast.parse("self._cleanup_thread_pool()").body
+                    item.body.extend(cleanup_stmts)
+                    break
+
+            # 3. Inject executor methods
             executor_stmts = ast.parse(_EXECUTOR_METHODS).body
             node.body.extend(executor_stmts)
 
