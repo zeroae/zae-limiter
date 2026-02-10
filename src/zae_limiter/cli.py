@@ -11,6 +11,7 @@ import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
 from .infra.stack_manager import StackManager
+from .load.cli import load
 from .local import local
 from .models import StackOptions
 
@@ -1041,7 +1042,7 @@ def list_limiters(region: str | None, endpoint_url: str | None) -> None:
             async with InfrastructureDiscovery(
                 region=region, endpoint_url=endpoint_url
             ) as discovery:
-                limiters = await discovery.list_limiters()
+                limiters = await discovery.list_limiters(stack_type="limiter")
 
             if not limiters:
                 click.echo()
@@ -3393,6 +3394,7 @@ def entity_list_resources(
 # ---------------------------------------------------------------------------
 
 cli.add_command(local)
+cli.add_command(load)
 
 
 if __name__ == "__main__":

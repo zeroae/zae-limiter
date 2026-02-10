@@ -29,6 +29,7 @@ dependencies = [
     "click>=8.0.0",
     "pip",
     "python-ulid>=3.0.0",
+    "questionary>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -156,5 +157,7 @@ ignore_missing_imports = true
 omit = [
     # Generated sync files - coverage measured on async source only
     "*/sync_*.py",
+    # Load testing module - separate test infrastructure
+    "src/zae_limiter/load/*",
 ]
 
