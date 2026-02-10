@@ -26,6 +26,7 @@ SCHEMA_VERSION_TAG_KEY = f"{VERSION_TAG_PREFIX}schema-version"
 MANAGED_BY_TAG_KEY = "ManagedBy"
 MANAGED_BY_TAG_VALUE = "zae-limiter"
 NAME_TAG_KEY = f"{VERSION_TAG_PREFIX}name"
+TYPE_TAG_KEY = f"{VERSION_TAG_PREFIX}type"
 
 
 class StackManager:
@@ -143,6 +144,7 @@ class StackManager:
             "acquire_only_policy_name": "AcquireOnlyPolicyName",
             "full_access_policy_name": "FullAccessPolicyName",
             "readonly_policy_name": "ReadOnlyPolicyName",
+            "role_name_format": "RoleNameFormat",
             "enable_audit_archival": "EnableAuditArchival",
             "audit_archive_glacier_days": "AuditArchiveGlacierTransitionDays",
             "enable_tracing": "EnableTracing",
@@ -210,6 +212,7 @@ class StackManager:
         # Discovery tags (override user tags on collision)
         tag_dict[MANAGED_BY_TAG_KEY] = MANAGED_BY_TAG_VALUE
         tag_dict[NAME_TAG_KEY] = user_name
+        tag_dict[TYPE_TAG_KEY] = "limiter"
 
         # Version tags (override user tags on collision)
         for tag in self._get_version_tags():
