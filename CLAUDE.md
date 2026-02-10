@@ -10,7 +10,7 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 - Hierarchical limits exist (API key → project, tenant → user)
 - Cost matters (~$0.75/1M requests)
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`, `local`, `load`. See `release-planning.md` for area labels.
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`, `local`, `loadtest`. See `release-planning.md` for area labels.
 
 ## Build & Development
 
@@ -207,8 +207,14 @@ src/zae_limiter/
 ├── sync_lease.py                # Generated: SyncLease
 ├── sync_config_cache.py         # Generated: SyncConfigCache
 ├── locust.py          # Locust load testing integration (RateLimiterUser, RateLimiterSession)
-├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, local)
+├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, local, loadtest)
 ├── version.py         # Version tracking and compatibility
+├── loadtest/          # Load testing infrastructure (deploy, delete, list)
+│   ├── __init__.py
+│   ├── cli.py             # CLI commands for load test lifecycle
+│   ├── builder.py         # Docker image builder for Locust master
+│   ├── lambda_builder.py  # Lambda deployment package for load workers
+│   └── cfn_template.yaml  # CloudFormation template for load test stack
 ├── migrations/        # Schema migration framework
 │   └── __init__.py    # Migration registry and runner
 ├── visualization/     # Usage snapshot formatting and display

@@ -752,6 +752,7 @@ class TestDeployCommand:
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_ec2 = MagicMock()
+            mock_ec2.meta.region_name = "us-east-1"
 
             def full_client_factory(service, **kwargs):
                 if service == "ec2":
@@ -810,6 +811,7 @@ class TestDeployCommand:
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_ec2 = MagicMock()
+            mock_ec2.meta.region_name = "us-east-1"
 
             def full_client_factory(service, **kwargs):
                 if service == "ec2":
@@ -852,6 +854,60 @@ class TestDeployCommand:
             call_kwargs = mock_cfn.create_stack.call_args[1]
             params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
             assert params["PrivateRouteTableIds"] == "rtb-123"
+
+    def test_dynamodb_endpoint_uses_resolved_region(self, runner, tmp_path):
+        """Deploy uses ec2.meta.region_name for endpoint check, not raw --region."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
+        ):
+            mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
+            mock_ec2 = MagicMock()
+            mock_ec2.meta.region_name = "eu-west-1"
+
+            def full_client_factory(service, **kwargs):
+                if service == "ec2":
+                    return mock_ec2
+                return client_factory(service, **kwargs)
+
+            mock_client.side_effect = full_client_factory
+
+            mock_ec2.describe_route_tables.return_value = {
+                "RouteTables": [{"RouteTableId": "rtb-456"}]
+            }
+            mock_ec2.describe_vpc_endpoints.return_value = {"VpcEndpoints": []}
+
+            mock_source.return_value = "0.8.0"
+            mock_build.return_value = "123.dkr.ecr.eu-west-1.amazonaws.com/test:latest"
+            zip_path = tmp_path / "lambda.zip"
+            zip_path.write_bytes(b"fake zip")
+            mock_lambda_pkg.return_value = zip_path
+
+            result = runner.invoke(
+                loadtest,
+                [
+                    "deploy",
+                    "--name",
+                    "my-app",
+                    "--vpc-id",
+                    "vpc-123",
+                    "--subnet-ids",
+                    "subnet-a",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+
+            # Verify the filter used resolved region, not None
+            call_args = mock_ec2.describe_vpc_endpoints.call_args
+            filters = call_args[1]["Filters"]
+            svc_filter = next(f for f in filters if f["Name"] == "service-name")
+            assert svc_filter["Values"] == ["com.amazonaws.eu-west-1.dynamodb"]
 
     def test_update_reraises_other_errors(self, runner, tmp_path):
         """Deploy re-raises non-'no updates' errors during update."""

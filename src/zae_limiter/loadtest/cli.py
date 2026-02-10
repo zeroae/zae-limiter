@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mypy_boto3_cloudformation.type_defs import ParameterTypeDef
 
 import boto3
 import click
@@ -235,13 +238,17 @@ def deploy(
     route_table_ids = ""
     if dynamodb_endpoint:
         ec2 = boto3.client("ec2", region_name=region)
+        resolved_region: str = ec2.meta.region_name
         route_table_ids = _discover_route_tables(ec2, subnet_list)
         if route_table_ids:
             # Check if a DynamoDB gateway endpoint already exists for this VPC
             existing = ec2.describe_vpc_endpoints(
                 Filters=[
                     {"Name": "vpc-id", "Values": [vpc_id]},
-                    {"Name": "service-name", "Values": [f"com.amazonaws.{region}.dynamodb"]},
+                    {
+                        "Name": "service-name",
+                        "Values": [f"com.amazonaws.{resolved_region}.dynamodb"],
+                    },
                     {"Name": "vpc-endpoint-state", "Values": ["available"]},
                 ]
             )
@@ -253,7 +260,7 @@ def deploy(
                 click.echo(f"  Route tables for DynamoDB endpoint: {route_table_ids}")
 
     # Build parameters list
-    stack_params = [
+    stack_params: list[ParameterTypeDef] = [
         {"ParameterKey": "TargetStackName", "ParameterValue": name},
         {"ParameterKey": "VpcId", "ParameterValue": vpc_id},
         {"ParameterKey": "PrivateSubnetIds", "ParameterValue": ",".join(subnet_list)},
@@ -280,7 +287,7 @@ def deploy(
         cfn.create_stack(
             StackName=stack_name,
             TemplateBody=template_body,
-            Parameters=stack_params,  # type: ignore[arg-type]
+            Parameters=stack_params,
             Capabilities=["CAPABILITY_NAMED_IAM"],
             Tags=stack_tags,
         )
@@ -298,7 +305,7 @@ def deploy(
             cfn.update_stack(
                 StackName=stack_name,
                 TemplateBody=template_body,
-                Parameters=stack_params,  # type: ignore[arg-type]
+                Parameters=stack_params,
                 Capabilities=["CAPABILITY_NAMED_IAM"],
                 Tags=stack_tags,
             )
