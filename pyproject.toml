@@ -50,6 +50,7 @@ dev = [
     "ruff>=0.1.0",
     "types-aiobotocore[dynamodb,s3]>=2.0.0",
     "types-docker>=7.0.0",
+    "types-gevent>=24.0.0",
 ]
 lambda = [
     "aws-lambda-powertools>=2.0.0",
@@ -59,6 +60,11 @@ plot = [
 ]
 local = [
     "docker>=7.0.0",
+]
+bench = [
+    "docker>=7.0.0",
+    "locust>=2.20",
+    "gevent>=23.0",
 ]
 cdk = [
     "aws-cdk-lib>=2.0.0",
@@ -99,7 +105,7 @@ generate-sync = "python scripts/generate_sync.py"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-v --tb=short -n auto --dist loadscope --import-mode=importlib"
+addopts = "-v --tb=short -n auto --dist loadscope --import-mode=importlib --benchmark-disable"
 markers = [
     "integration: marks tests as integration tests (require Docker or AWS)",
     "benchmark: marks tests as performance benchmarks",
@@ -109,6 +115,7 @@ markers = [
     "monitoring: marks tests that verify CloudWatch alarms, metrics, DLQ",
     "snapshots: marks tests that verify usage snapshot creation",
     "doctest: marks tests that validate documentation code examples",
+    "gevent: marks tests that trigger gevent monkey-patching (incompatible with xdist)",
 ]
 
 [tool.ruff]
