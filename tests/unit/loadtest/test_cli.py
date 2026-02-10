@@ -740,6 +740,119 @@ class TestDeployCommand:
             params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
             assert params["PrivateRouteTableIds"] == ""
 
+    def test_dynamodb_endpoint_skips_when_already_exists(self, runner, tmp_path):
+        """Deploy clears route tables when DynamoDB endpoint already exists."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
+        ):
+            mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
+            mock_ec2 = MagicMock()
+
+            def full_client_factory(service, **kwargs):
+                if service == "ec2":
+                    return mock_ec2
+                return client_factory(service, **kwargs)
+
+            mock_client.side_effect = full_client_factory
+
+            # Route tables found, but endpoint already exists
+            mock_ec2.describe_route_tables.return_value = {
+                "RouteTables": [{"RouteTableId": "rtb-123"}]
+            }
+            mock_ec2.describe_vpc_endpoints.return_value = {
+                "VpcEndpoints": [{"VpcEndpointId": "vpce-ddb-existing"}]
+            }
+
+            mock_source.return_value = "0.8.0"
+            mock_build.return_value = "123.dkr.ecr.us-east-1.amazonaws.com/test:latest"
+            zip_path = tmp_path / "lambda.zip"
+            zip_path.write_bytes(b"fake zip")
+            mock_lambda_pkg.return_value = zip_path
+
+            result = runner.invoke(
+                loadtest,
+                [
+                    "deploy",
+                    "--name",
+                    "my-app",
+                    "--region",
+                    "us-east-1",
+                    "--vpc-id",
+                    "vpc-123",
+                    "--subnet-ids",
+                    "subnet-a,subnet-b",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert "already exists" in result.output.lower()
+
+            # PrivateRouteTableIds should be empty (cleared)
+            call_kwargs = mock_cfn.create_stack.call_args[1]
+            params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
+            assert params["PrivateRouteTableIds"] == ""
+
+    def test_dynamodb_endpoint_passes_route_tables_when_no_existing(self, runner, tmp_path):
+        """Deploy passes route tables when no DynamoDB endpoint exists."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
+        ):
+            mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
+            mock_ec2 = MagicMock()
+
+            def full_client_factory(service, **kwargs):
+                if service == "ec2":
+                    return mock_ec2
+                return client_factory(service, **kwargs)
+
+            mock_client.side_effect = full_client_factory
+
+            # Route tables found, no existing endpoint
+            mock_ec2.describe_route_tables.return_value = {
+                "RouteTables": [{"RouteTableId": "rtb-123"}]
+            }
+            mock_ec2.describe_vpc_endpoints.return_value = {"VpcEndpoints": []}
+
+            mock_source.return_value = "0.8.0"
+            mock_build.return_value = "123.dkr.ecr.us-east-1.amazonaws.com/test:latest"
+            zip_path = tmp_path / "lambda.zip"
+            zip_path.write_bytes(b"fake zip")
+            mock_lambda_pkg.return_value = zip_path
+
+            result = runner.invoke(
+                loadtest,
+                [
+                    "deploy",
+                    "--name",
+                    "my-app",
+                    "--region",
+                    "us-east-1",
+                    "--vpc-id",
+                    "vpc-123",
+                    "--subnet-ids",
+                    "subnet-a,subnet-b",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert "Route tables for DynamoDB endpoint" in result.output
+
+            call_kwargs = mock_cfn.create_stack.call_args[1]
+            params = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
+            assert params["PrivateRouteTableIds"] == "rtb-123"
+
     def test_update_reraises_other_errors(self, runner, tmp_path):
         """Deploy re-raises non-'no updates' errors during update."""
         with (
@@ -829,3 +942,83 @@ class TestDeleteCommand:
             )
             assert result.exit_code == 0
             assert "Stack deleted" in result.output
+
+
+class TestListCommand:
+    """Tests for the list command."""
+
+    def test_list_no_stacks(self, runner):
+        """List shows helpful message when no stacks found."""
+        mock_discovery = MagicMock()
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
+        mock_discovery.list_limiters = AsyncMock(return_value=[])
+
+        with patch(
+            "zae_limiter.infra.discovery.InfrastructureDiscovery",
+            return_value=mock_discovery,
+        ):
+            result = runner.invoke(loadtest, ["list"])
+            assert result.exit_code == 0
+            assert "No load test stacks found" in result.output
+            assert "zae-limiter loadtest deploy" in result.output
+
+    def test_list_shows_stacks(self, runner):
+        """List displays stacks in table format."""
+        mock_discovery = MagicMock()
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
+
+        mock_info = MagicMock()
+        mock_info.stack_name = "my-app-load"
+        mock_info.user_name = "my-app"
+        mock_info.stack_status = "CREATE_COMPLETE"
+        mock_info.creation_time = "2026-01-15T12:00:00Z"
+        mock_discovery.list_limiters = AsyncMock(return_value=[mock_info])
+
+        with patch(
+            "zae_limiter.infra.discovery.InfrastructureDiscovery",
+            return_value=mock_discovery,
+        ):
+            result = runner.invoke(loadtest, ["list"])
+            assert result.exit_code == 0
+            assert "my-app-load" in result.output
+            assert "my-app" in result.output
+            assert "CREATE_COMPLETE" in result.output
+            assert "Total: 1 stack(s)" in result.output
+
+    def test_list_handles_bad_creation_time(self, runner):
+        """List shows 'unknown' for unparseable creation times."""
+        mock_discovery = MagicMock()
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
+
+        mock_info = MagicMock()
+        mock_info.stack_name = "my-app-load"
+        mock_info.user_name = "my-app"
+        mock_info.stack_status = "CREATE_COMPLETE"
+        mock_info.creation_time = "not-a-date"
+        mock_discovery.list_limiters = AsyncMock(return_value=[mock_info])
+
+        with patch(
+            "zae_limiter.infra.discovery.InfrastructureDiscovery",
+            return_value=mock_discovery,
+        ):
+            result = runner.invoke(loadtest, ["list"])
+            assert result.exit_code == 0
+            assert "unknown" in result.output
+
+    def test_list_with_region(self, runner):
+        """List passes region and displays it."""
+        mock_discovery = MagicMock()
+        mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
+        mock_discovery.list_limiters = AsyncMock(return_value=[])
+
+        with patch(
+            "zae_limiter.infra.discovery.InfrastructureDiscovery",
+            return_value=mock_discovery,
+        ):
+            result = runner.invoke(loadtest, ["list", "--region", "eu-west-1"])
+            assert result.exit_code == 0
+            assert "eu-west-1" in result.output
