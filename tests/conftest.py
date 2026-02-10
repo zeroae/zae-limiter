@@ -1,6 +1,20 @@
-"""Shared pytest configuration and fixtures."""
+"""Shared pytest configuration and fixtures.
 
-import pytest
+Set GEVENT=1 to enable gevent monkey-patching before plugins import ssl/boto3.
+Must be combined with -n 0 or -o 'addopts=' (xdist incompatible with patching).
+
+Example:
+    GEVENT=1 pytest tests/benchmark/test_aws.py --run-aws -o "addopts=" -v
+"""
+
+import os
+
+if os.environ.get("GEVENT"):
+    import gevent.monkey
+
+    gevent.monkey.patch_all()
+
+import pytest  # noqa: E402
 
 
 def pytest_addoption(parser):
