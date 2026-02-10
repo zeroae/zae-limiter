@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from zae_limiter.load.builder import (
+from zae_limiter.loadtest.builder import (
     _build_wheel,
     _create_build_context,
     _generate_dockerfile,
@@ -20,7 +20,7 @@ class TestGetZaeLimiterSource:
 
     def test_returns_version_string_when_installed(self):
         """Returns version string when package is installed (not in dev mode)."""
-        with patch("zae_limiter.load.builder.Path.exists", return_value=False):
+        with patch("zae_limiter.loadtest.builder.Path.exists", return_value=False):
             with patch("importlib.metadata.version", return_value="0.8.0"):
                 result = get_zae_limiter_source()
                 assert result == "0.8.0"
@@ -32,8 +32,8 @@ class TestGetZaeLimiterSource:
         wheel.touch()
 
         with (
-            patch("zae_limiter.load.builder.Path.exists", return_value=True),
-            patch("zae_limiter.load.builder._build_wheel", return_value=wheel),
+            patch("zae_limiter.loadtest.builder.Path.exists", return_value=True),
+            patch("zae_limiter.loadtest.builder._build_wheel", return_value=wheel),
         ):
             result = get_zae_limiter_source()
             assert isinstance(result, Path)
@@ -101,7 +101,7 @@ class TestBuildAndPushLocustImage:
             patch.dict("sys.modules", {"docker": mock_docker}),
             patch("boto3.client") as mock_boto3_client,
             patch(
-                "zae_limiter.load.builder.get_zae_limiter_source",
+                "zae_limiter.loadtest.builder.get_zae_limiter_source",
             ) as mock_source,
         ):
             mock_ecr = MagicMock()

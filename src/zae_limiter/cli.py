@@ -11,7 +11,7 @@ import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
 from .infra.stack_manager import StackManager
-from .load.cli import load
+from .loadtest.cli import loadtest
 from .local import local
 from .models import StackOptions
 
@@ -3394,7 +3394,7 @@ def entity_list_resources(
 # ---------------------------------------------------------------------------
 
 cli.add_command(local)
-cli.add_command(load)
+cli.add_command(loadtest)
 
 
 if __name__ == "__main__":

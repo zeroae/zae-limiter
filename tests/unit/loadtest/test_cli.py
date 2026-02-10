@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from zae_limiter.load.cli import load
+from zae_limiter.loadtest.cli import loadtest
 
 
 @pytest.fixture()
@@ -24,7 +24,7 @@ class TestSelectName:
     """Tests for _select_name interactive selector."""
 
     def test_returns_selected_stack(self):
-        from zae_limiter.load.cli import _select_name
+        from zae_limiter.loadtest.cli import _select_name
 
         mock_discovery = MagicMock()
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
@@ -52,7 +52,7 @@ class TestSelectName:
             assert result == "my-app"
 
     def test_exits_when_no_stacks(self):
-        from zae_limiter.load.cli import _select_name
+        from zae_limiter.loadtest.cli import _select_name
 
         mock_discovery = MagicMock()
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
@@ -73,7 +73,7 @@ class TestSelectVpc:
     """Tests for _select_vpc interactive selector."""
 
     def test_returns_selected_vpc(self):
-        from zae_limiter.load.cli import _select_vpc
+        from zae_limiter.loadtest.cli import _select_vpc
 
         mock_questionary = MagicMock()
         mock_questionary.select.return_value.ask.return_value = "vpc-123"
@@ -93,7 +93,7 @@ class TestSelectVpc:
             assert result == "vpc-123"
 
     def test_exits_when_no_vpcs(self):
-        from zae_limiter.load.cli import _select_vpc
+        from zae_limiter.loadtest.cli import _select_vpc
 
         with patch("boto3.client") as mock_client:
             mock_ec2 = MagicMock()
@@ -103,7 +103,7 @@ class TestSelectVpc:
                 _select_vpc("us-east-1")
 
     def test_vpc_without_name_tag(self):
-        from zae_limiter.load.cli import _select_vpc
+        from zae_limiter.loadtest.cli import _select_vpc
 
         mock_questionary = MagicMock()
         mock_questionary.select.return_value.ask.return_value = "vpc-456"
@@ -123,7 +123,7 @@ class TestSelectSubnets:
     """Tests for _select_subnets interactive selector."""
 
     def test_returns_comma_separated_subnets(self):
-        from zae_limiter.load.cli import _select_subnets
+        from zae_limiter.loadtest.cli import _select_subnets
 
         mock_questionary = MagicMock()
         mock_questionary.checkbox.return_value.ask.return_value = [
@@ -147,7 +147,7 @@ class TestSelectSubnets:
             assert result == "subnet-a,subnet-b"
 
     def test_exits_when_no_subnets(self):
-        from zae_limiter.load.cli import _select_subnets
+        from zae_limiter.loadtest.cli import _select_subnets
 
         with patch("boto3.client") as mock_client:
             mock_ec2 = MagicMock()
@@ -157,7 +157,7 @@ class TestSelectSubnets:
                 _select_subnets("us-east-1", "vpc-123")
 
     def test_exits_when_fewer_than_two_selected(self):
-        from zae_limiter.load.cli import _select_subnets
+        from zae_limiter.loadtest.cli import _select_subnets
 
         mock_questionary = MagicMock()
         mock_questionary.checkbox.return_value.ask.return_value = ["subnet-a"]
@@ -237,7 +237,7 @@ class TestDeployCommand:
             mock_cfn.describe_stacks.side_effect = Exception("not found")
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -259,7 +259,7 @@ class TestDeployCommand:
             mock_cfn.describe_stacks.return_value = {"Stacks": [{"Outputs": []}]}
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -280,9 +280,11 @@ class TestDeployCommand:
 
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn = MagicMock()
             mock_lambda_client = MagicMock()
@@ -331,7 +333,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -353,10 +355,14 @@ class TestDeployCommand:
         """Deploy calls _select_name when --name not provided."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.cli._select_name", return_value="my-app") as mock_select_name,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch(
+                "zae_limiter.loadtest.cli._select_name", return_value="my-app"
+            ) as mock_select_name,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -368,7 +374,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--vpc-id",
@@ -386,13 +392,17 @@ class TestDeployCommand:
         """Deploy calls _select_vpc and _select_subnets when not provided."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.cli._select_vpc", return_value="vpc-123") as mock_select_vpc,
             patch(
-                "zae_limiter.load.cli._select_subnets", return_value="subnet-a,subnet-b"
+                "zae_limiter.loadtest.cli._select_vpc", return_value="vpc-123"
+            ) as mock_select_vpc,
+            patch(
+                "zae_limiter.loadtest.cli._select_subnets", return_value="subnet-a,subnet-b"
             ) as mock_select_subnets,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -404,7 +414,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -421,9 +431,11 @@ class TestDeployCommand:
         """Deploy shows permission boundary and role format from stack outputs."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -466,7 +478,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -487,9 +499,11 @@ class TestDeployCommand:
         """Deploy updates stack when it already exists."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -504,7 +518,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -525,9 +539,11 @@ class TestDeployCommand:
         """Deploy handles 'No updates are to be performed' gracefully."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -542,7 +558,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -562,9 +578,11 @@ class TestDeployCommand:
         """Deploy passes --capacity-provider to CloudFormation parameters."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -576,7 +594,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -602,9 +620,11 @@ class TestDeployCommand:
         """Deploy defaults --capacity-provider to FARGATE_SPOT."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -616,7 +636,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -639,9 +659,11 @@ class TestDeployCommand:
         """Deploy passes --ssm-endpoint to CloudFormation as CreateSsmEndpoint."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -653,7 +675,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -677,10 +699,12 @@ class TestDeployCommand:
         """Deploy with --no-dynamodb-endpoint skips route table discovery."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.build_and_push_locust_image") as mock_build,
-            patch("zae_limiter.load.lambda_builder.build_load_lambda_package") as mock_lambda_pkg,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
-            patch("zae_limiter.load.cli._discover_route_tables") as mock_discover_rt,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.cli._discover_route_tables") as mock_discover_rt,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -692,7 +716,7 @@ class TestDeployCommand:
             mock_lambda_pkg.return_value = zip_path
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -720,7 +744,7 @@ class TestDeployCommand:
         """Deploy re-raises non-'no updates' errors during update."""
         with (
             patch("boto3.client") as mock_client,
-            patch("zae_limiter.load.builder.get_zae_limiter_source") as mock_source,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
         ):
             mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
             mock_client.side_effect = client_factory
@@ -731,7 +755,7 @@ class TestDeployCommand:
             mock_source.return_value = "0.8.0"
 
             result = runner.invoke(
-                load,
+                loadtest,
                 [
                     "deploy",
                     "--name",
@@ -766,7 +790,7 @@ class TestDeleteCommand:
             mock_client.side_effect = client_factory
 
             result = runner.invoke(
-                load,
+                loadtest,
                 ["delete", "--name", "my-app", "--yes"],
             )
             assert result.exit_code == 0
@@ -777,7 +801,7 @@ class TestDeleteCommand:
         """Teardown asks for confirmation without --yes."""
         with patch("boto3.client"):
             result = runner.invoke(
-                load,
+                loadtest,
                 ["delete", "--name", "my-app"],
                 input="n\n",
             )
@@ -800,7 +824,7 @@ class TestDeleteCommand:
             mock_ecs.update_service.side_effect = Exception("service not found")
 
             result = runner.invoke(
-                load,
+                loadtest,
                 ["delete", "--name", "my-app", "--yes"],
             )
             assert result.exit_code == 0

@@ -4,7 +4,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from zae_limiter.load.lambda_builder import _generate_requirements
+from zae_limiter.loadtest.lambda_builder import _generate_requirements
 
 
 class TestGenerateRequirements:
@@ -47,7 +47,7 @@ class TestBuildLoadLambdaPackage:
 
     def test_creates_zip_file(self, tmp_path):
         """build_load_lambda_package creates a zip file."""
-        from zae_limiter.load.lambda_builder import build_load_lambda_package
+        from zae_limiter.loadtest.lambda_builder import build_load_lambda_package
 
         locustfile_dir = tmp_path / "locust"
         locustfile_dir.mkdir()
@@ -75,7 +75,7 @@ class TestBuildLoadLambdaPackage:
 
     def test_zip_includes_all_files_from_dir(self, tmp_path):
         """Built zip includes all files and subdirectories from locustfile_dir."""
-        from zae_limiter.load.lambda_builder import build_load_lambda_package
+        from zae_limiter.loadtest.lambda_builder import build_load_lambda_package
 
         locustfile_dir = tmp_path / "locust"
         locustfile_dir.mkdir()
@@ -115,7 +115,7 @@ class TestBuildLoadLambdaPackage:
 
     def test_default_output_dir(self, tmp_path, monkeypatch):
         """Uses build/ as default output_dir when not provided."""
-        from zae_limiter.load.lambda_builder import build_load_lambda_package
+        from zae_limiter.loadtest.lambda_builder import build_load_lambda_package
 
         locustfile_dir = tmp_path / "locust"
         locustfile_dir.mkdir()
@@ -146,7 +146,7 @@ class TestBuildLoadLambdaPackage:
 
     def test_removes_placeholder_init(self, tmp_path):
         """Removes __init__.py placeholder from artifacts."""
-        from zae_limiter.load.lambda_builder import build_load_lambda_package
+        from zae_limiter.loadtest.lambda_builder import build_load_lambda_package
 
         locustfile_dir = tmp_path / "locust"
         locustfile_dir.mkdir()

@@ -97,12 +97,12 @@ def _discover_route_tables(ec2: Any, subnet_ids: list[str]) -> str:
 
 
 @click.group()
-def load() -> None:
+def loadtest() -> None:
     """Load testing commands for zae-limiter."""
     pass
 
 
-@load.command()
+@loadtest.command()
 @click.option("--name", "-n", default=None, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--vpc-id", default=None, help="VPC ID for load test resources")
@@ -345,7 +345,7 @@ def deploy(
     click.echo(f"\nStack ready: {stack_name}")
 
 
-@load.command("delete")
+@loadtest.command("delete")
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
@@ -375,7 +375,7 @@ def delete(name: str, region: str | None, yes: bool) -> None:
     click.echo("  Stack deleted")
 
 
-@load.command("list")
+@loadtest.command("list")
 @click.option("--region", default=None, help="AWS region")
 def list_cmd(region: str | None) -> None:
     """List deployed load test stacks."""
@@ -394,7 +394,7 @@ def list_cmd(region: str | None) -> None:
             click.echo(f"  Region: {region or 'default'}")
             click.echo()
             click.echo("Deploy a load test with:")
-            click.echo("  zae-limiter load deploy --name my-app")
+            click.echo("  zae-limiter loadtest deploy --name my-app")
             return
 
         click.echo()
