@@ -1568,6 +1568,67 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#9-load-testing-with-locust" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Load Testing with Locust
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Load Testing with Locust">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-design-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Design Points
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-scenarios" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example Scenarios
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#summary" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3866,6 +3927,67 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#9-load-testing-with-locust" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Load Testing with Locust
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Load Testing with Locust">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-design-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Design Points
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-scenarios" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example Scenarios
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#summary" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5073,6 +5195,79 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <p>If most requests are from new entities or near-capacity buckets, disable with <code>speculative_writes=False</code> to avoid the extra WCU from failed speculative attempts.</p>
 </div>
 <hr />
+<h2 id="9-load-testing-with-locust">9. Load Testing with Locust<a class="headerlink" href="#9-load-testing-with-locust" title="Permanent link">&para;</a></h2>
+<p>For realistic, multi-user load testing against a live DynamoDB stack, zae-limiter provides a Locust integration module (<code>zae_limiter.locust</code>). It exposes <code>RateLimiterUser</code> and <code>RateLimiterSession</code>, analogous to Locust's built-in <code>HttpUser</code> and <code>HttpSession</code>, so that every <code>acquire()</code>, <code>available()</code>, and management call fires Locust request events with timing.</p>
+<h3 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h3>
+<p>Install the <code>[bench]</code> extra to pull in Locust and its dependencies:</p>
+<div class="language-python requires-external highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a><span class="c1"># pip install zae-limiter[bench]</span>
+</span></code></pre></div>
+<h3 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h3>
+<div class="language-python requires-external highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">locust</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
+</span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.locust</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiterUser</span>
+</span><span id="__span-33-3"><a id="__codelineno-33-3" name="__codelineno-33-3" href="#__codelineno-33-3"></a>
+</span><span id="__span-33-4"><a id="__codelineno-33-4" name="__codelineno-33-4" href="#__codelineno-33-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">MyUser</span><span class="p">(</span><span class="n">RateLimiterUser</span><span class="p">):</span>
+</span><span id="__span-33-5"><a id="__codelineno-33-5" name="__codelineno-33-5" href="#__codelineno-33-5"></a>    <span class="n">stack_name</span> <span class="o">=</span> <span class="s2">&quot;my-limiter&quot;</span>
+</span><span id="__span-33-6"><a id="__codelineno-33-6" name="__codelineno-33-6" href="#__codelineno-33-6"></a>
+</span><span id="__span-33-7"><a id="__codelineno-33-7" name="__codelineno-33-7" href="#__codelineno-33-7"></a>    <span class="nd">@task</span>
+</span><span id="__span-33-8"><a id="__codelineno-33-8" name="__codelineno-33-8" href="#__codelineno-33-8"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">do_acquire</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="__span-33-9"><a id="__codelineno-33-9" name="__codelineno-33-9" href="#__codelineno-33-9"></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-33-10"><a id="__codelineno-33-10" name="__codelineno-33-10" href="#__codelineno-33-10"></a>            <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
+</span><span id="__span-33-11"><a id="__codelineno-33-11" name="__codelineno-33-11" href="#__codelineno-33-11"></a>            <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-33-12"><a id="__codelineno-33-12" name="__codelineno-33-12" href="#__codelineno-33-12"></a>            <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
+</span><span id="__span-33-13"><a id="__codelineno-33-13" name="__codelineno-33-13" href="#__codelineno-33-13"></a>            <span class="n">name</span><span class="o">=</span><span class="s2">&quot;gpt-4/baseline&quot;</span><span class="p">,</span>
+</span><span id="__span-33-14"><a id="__codelineno-33-14" name="__codelineno-33-14" href="#__codelineno-33-14"></a>        <span class="p">):</span>
+</span><span id="__span-33-15"><a id="__codelineno-33-15" name="__codelineno-33-15" href="#__codelineno-33-15"></a>            <span class="k">pass</span>  <span class="c1"># simulate work</span>
+</span></code></pre></div>
+<p>Run with:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>locust<span class="w"> </span>-f<span class="w"> </span>locustfile.py<span class="w"> </span>--host<span class="w"> </span>&lt;stack-name&gt;
+</span></code></pre></div>
+<h3 id="key-design-points">Key Design Points<a class="headerlink" href="#key-design-points" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Shared limiter:</strong> A single <code>SyncRateLimiter</code> instance is shared across all Locust user greenlets (thread-safe via boto3).</li>
+<li><strong>Connection pool:</strong> <code>_configure_boto3_pool()</code> automatically enlarges the boto3 connection pool (default 1000, override with <code>BOTO3_MAX_POOL</code> env var) to prevent pool exhaustion under high concurrency.</li>
+<li><strong>Event types:</strong> <code>ACQUIRE</code>, <code>COMMIT</code>, <code>RATE_LIMITED</code>, <code>AVAILABLE</code>, and management operations (<code>SET_SYSTEM_DEFAULTS</code>, <code>CREATE_ENTITY</code>, etc.) appear as distinct request types in the Locust UI.</li>
+<li><strong>Rate limit handling:</strong> <code>RateLimitExceeded</code> is tracked as <code>RATE_LIMITED</code> (not counted as a failure), so Locust statistics cleanly separate infrastructure errors from expected rate limiting.</li>
+</ul>
+<h3 id="example-scenarios">Example Scenarios<a class="headerlink" href="#example-scenarios" title="Permanent link">&para;</a></h3>
+<p>Pre-built locustfiles are available in <code>examples/locust/locustfiles/</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>File</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Simple</td>
+<td><code>simple.py</code></td>
+<td>Single resource, single limit, basic <code>acquire</code></td>
+</tr>
+<tr>
+<td>Max RPS</td>
+<td><code>max_rps.py</code></td>
+<td>Zero-wait back-to-back <code>acquire</code> for throughput ceiling</td>
+</tr>
+<tr>
+<td>LLM Gateway</td>
+<td><code>llm_gateway.py</code></td>
+<td>8 LLM models with RPM + TPM and lease adjustments</td>
+</tr>
+<tr>
+<td>LLM Production</td>
+<td><code>llm_production.py</code></td>
+<td>Weighted tasks with custom daily/spike load shapes</td>
+</tr>
+<tr>
+<td>Stress</td>
+<td><code>stress.py</code></td>
+<td>16K entities with whale/spike/power-law traffic patterns</td>
+</tr>
+</tbody>
+</table>
+<p>See <code>examples/locust/README.md</code> for full usage instructions including distributed execution on AWS.</p>
+<hr />
 <h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -5107,13 +5302,17 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <td>Enable for pre-warmed high-throughput workloads; saves 1 round trip on success; cascade entities get parallel writes after first acquire</td>
 </tr>
 <tr>
+<td>Load Testing</td>
+<td>Use <code>zae_limiter.locust</code> with <code>RateLimiterUser</code> for realistic multi-user load tests; see <code>examples/locust/</code></td>
+</tr>
+<tr>
 <td>Monitoring</td>
 <td>Set up CloudWatch alerts for capacity and cost anomalies</td>
 </tr>
 </tbody>
 </table>
 <p>For detailed benchmark data, run:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
 </span></code></pre></div></p>
 
 
