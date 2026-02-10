@@ -135,7 +135,7 @@ def _resolve_parallel_mode(mode: str) -> Any:
                     return tuple(g.value for g in greenlets)
                 return _executor
         except ImportError:
-            pass
+            logger.debug("gevent not available; falling back to non-gevent strategy")
         import os
         if os.cpu_count() == 1:
             return lambda funcs: tuple(fn() for fn in funcs)  # serial on single-CPU

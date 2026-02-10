@@ -2366,7 +2366,7 @@ class SyncRepository:
 
                     return _executor
             except ImportError:
-                pass
+                logger.debug("gevent not available; falling back to non-gevent strategy")
             import os
 
             if os.cpu_count() == 1:
