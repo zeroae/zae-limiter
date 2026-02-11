@@ -214,6 +214,10 @@ src/zae_limiter/
 │   ├── cli.py             # CLI commands for load test lifecycle
 │   ├── builder.py         # Docker image builder for Locust master
 │   ├── lambda_builder.py  # Lambda deployment package for load workers
+│   ├── orchestrator.py    # ECS orchestrator for auto-scaling Lambda workers
+│   ├── lambda/
+│   │   ├── __init__.py
+│   │   └── worker.py      # Lambda worker handler (headless and distributed modes)
 │   └── cfn_template.yaml  # CloudFormation template for load test stack
 ├── migrations/        # Schema migration framework
 │   └── __init__.py    # Migration registry and runner
