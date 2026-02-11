@@ -5059,8 +5059,9 @@ creation date for each instance.</p>
 <p>Run a single load test execution.</p>
 <p>Lambda mode (default): Invokes a single Lambda worker in headless mode.
 Use --workers N to run distributed (Fargate master + Lambda workers).</p>
+<p>Optionally pass User class names to run specific classes (default: all).</p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-43-1"><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>zae-limiter loadtest run [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-43-1"><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>zae-limiter loadtest run [OPTIONS] [USER_CLASSES]...
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5134,12 +5135,6 @@ Use --workers N to run distributed (Fargate master + Lambda workers).</p>
 <td>None</td>
 </tr>
 <tr>
-<td><code>--user-classes</code></td>
-<td>text</td>
-<td>Comma-separated User class names to run (e.g. MaxRpsCascadeUser)</td>
-<td>None</td>
-</tr>
-<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -5152,8 +5147,9 @@ Use --workers N to run distributed (Fargate master + Lambda workers).</p>
 <p>Uses Little's Law to binary-search for the optimal per-worker user count
 by measuring efficiency (baseline_p50 / observed_p50) at different
 concurrency levels. Lambda-only.</p>
+<p>Optionally pass User class names to run specific classes (default: all).</p>
 <p><strong>Usage:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-44-1"><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>zae-limiter loadtest tune [OPTIONS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-44-1"><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>zae-limiter loadtest tune [OPTIONS] [USER_CLASSES]...
 </span></code></pre></div>
 <p><strong>Options:</strong></p>
 <table>
@@ -5183,12 +5179,6 @@ concurrency levels. Lambda-only.</p>
 <td>text</td>
 <td>Locustfile path (e.g. locustfiles/max_rps.py)</td>
 <td><code>Sentinel.UNSET</code></td>
-</tr>
-<tr>
-<td><code>--user-classes</code></td>
-<td>text</td>
-<td>Comma-separated User class names to run (e.g. MaxRpsCascadeUser)</td>
-<td>None</td>
 </tr>
 <tr>
 <td><code>--max-users</code></td>
@@ -5272,12 +5262,6 @@ concurrency levels. Lambda-only.</p>
 <td><code>--force</code></td>
 <td>boolean</td>
 <td>Stop existing task and restart with new config</td>
-<td><code>False</code></td>
-</tr>
-<tr>
-<td><code>--standalone</code></td>
-<td>boolean</td>
-<td>Run Locust without workers (single-process mode)</td>
 <td><code>False</code></td>
 </tr>
 <tr>
