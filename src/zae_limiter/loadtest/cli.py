@@ -582,7 +582,12 @@ def push(
 @click.option("--port", default=8089, type=int, help="Local port for Locust UI")
 @click.option("--destroy", is_flag=True, help="Stop Fargate on disconnect even if already running")
 @click.option("--force", is_flag=True, help="Stop existing task and restart with new config")
-@click.option("--standalone", is_flag=True, help="Run Locust without workers (single-process mode)")
+@click.option(
+    "--standalone",
+    is_flag=True,
+    hidden=True,
+    help="Run Locust without workers (single-process mode)",
+)
 @click.option(
     "-f",
     "--locustfile",
@@ -793,7 +798,8 @@ def ui_cmd(
             }
         )
 
-        click.echo(f"  Connecting to http://localhost:{port} ...")
+        url = f"http://localhost:{port}"
+        click.echo(f"  Connecting to {url} ...")
 
         region_args = ["--region", region] if region else []
         ssm_cmd = [
@@ -809,8 +815,20 @@ def ui_cmd(
             *region_args,
         ]
 
+        import webbrowser
+
         for attempt in range(5):
-            proc = subprocess.run(ssm_cmd)
+            proc = subprocess.Popen(
+                ssm_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            )
+            assert proc.stdout is not None
+            browser_opened = False
+            for line in proc.stdout:
+                click.echo(line, nl=False)
+                if not browser_opened and "Waiting for connections" in line:
+                    webbrowser.open(url)
+                    browser_opened = True
+            proc.wait()
             if proc.returncode == 0:
                 break
             if attempt < 4:
