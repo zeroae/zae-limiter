@@ -186,6 +186,51 @@ zae-limiter local down
 
 **Note:** CloudFormation is used for all deployments, including LocalStack. The `endpoint_url` parameter configures the AWS endpoint for all services. See `localstack-parity.md` for keeping CLI, `docker-compose.yml`, and CI in sync.
 
+### Load Testing
+
+The `zae-limiter loadtest` commands deploy a distributed Locust cluster using ECS Fargate (master) + Lambda (workers). See `examples/locust/` for locustfile scenarios.
+
+```bash
+# Deploy load test infrastructure
+zae-limiter loadtest deploy -n my-app -C examples/locust
+
+# Push updated locustfiles and Lambda code
+zae-limiter loadtest push -n my-app -C examples/locust
+
+# Open Locust web UI via SSM tunnel (auto-opens browser when ready)
+zae-limiter loadtest ui -n my-app -f locustfiles/simple.py
+
+# Run a headless load test (Lambda mode, default)
+zae-limiter loadtest run -n my-app -f locustfiles/max_rps.py --users 20 --duration 60
+
+# Run specific user classes (positional args, Locust native style)
+zae-limiter loadtest run -n my-app -f locustfiles/max_rps.py MaxRpsCascadeUser
+
+# Run distributed (Fargate master + Lambda workers)
+zae-limiter loadtest run -n my-app -f locustfiles/max_rps.py --workers 10 --users 100
+
+# Calibrate optimal per-worker concurrency
+zae-limiter loadtest tune -n my-app -f locustfiles/max_rps.py
+zae-limiter loadtest tune -n my-app -f locustfiles/max_rps.py MaxRpsCascadeUser
+
+# List / delete
+zae-limiter loadtest list
+zae-limiter loadtest delete -n my-app --yes
+```
+
+**User class selection:** The `loadtest run` and `loadtest tune` commands accept user class names as positional arguments to select which Locust user classes to run. When omitted, all classes in the locustfile are used.
+
+**Locustfile user classes:**
+
+| File | Class | Description |
+|------|-------|-------------|
+| `simple.py` | `SimpleUser` | Standalone entities, no cascade |
+| `simple.py` | `SimpleCascadeUser` | Child entities with `cascade=True` to shared parent |
+| `max_rps.py` | `MaxRpsUser` | Zero-wait standalone, max throughput |
+| `max_rps.py` | `MaxRpsCascadeUser` | Zero-wait cascade, measures cascade overhead |
+
+Cascade classes create child entities under a shared parent and set `cascade=True`, so every `acquire()` writes to both child and parent buckets. This is used to benchmark cascade overhead against standalone operation.
+
 ## Project Structure
 
 ```
