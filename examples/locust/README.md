@@ -92,7 +92,7 @@ Additional flags:
 The stress scenario expects pre-configured entities and limits:
 
 ```bash
-zae-limiter loadtest setup -n <stack-name> --apis 8 --custom-limits 300
+zae-limiter loadtest deploy -n <stack-name> --apis 8 --custom-limits 300
 ```
 
 The simple and llm_gateway scenarios configure their own limits via `on_start()`,
@@ -101,7 +101,7 @@ so no setup step is needed.
 ### 3. Connect to Locust UI
 
 ```bash
-zae-limiter loadtest connect -n <stack-name>
+zae-limiter loadtest ui -n <stack-name>
 ```
 
 This starts a Fargate task (if not running), waits for SSM agent readiness,

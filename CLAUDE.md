@@ -209,11 +209,15 @@ src/zae_limiter/
 ├── locust.py          # Locust load testing integration (RateLimiterUser, RateLimiterSession)
 ├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, local, loadtest)
 ├── version.py         # Version tracking and compatibility
-├── loadtest/          # Load testing infrastructure (deploy, delete, list)
+├── loadtest/          # Load testing infrastructure (deploy, push, ui, run, tune, delete, list)
 │   ├── __init__.py
 │   ├── cli.py             # CLI commands for load test lifecycle
 │   ├── builder.py         # Docker image builder for Locust master
 │   ├── lambda_builder.py  # Lambda deployment package for load workers
+│   ├── orchestrator.py    # ECS orchestrator for auto-scaling Lambda workers
+│   ├── lambda/
+│   │   ├── __init__.py
+│   │   └── worker.py      # Lambda worker handler (headless and distributed modes)
 │   └── cfn_template.yaml  # CloudFormation template for load test stack
 ├── migrations/        # Schema migration framework
 │   └── __init__.py    # Migration registry and runner
