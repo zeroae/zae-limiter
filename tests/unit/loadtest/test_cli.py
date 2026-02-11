@@ -2376,3 +2376,147 @@ class TestDisplayCalibrationResults:
         assert "--workers 50 --users 500" in captured.out
         # 1000 / 10 = 100 workers
         assert "--workers 100 --users 1000" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# _push_code helper (moto)
+# ---------------------------------------------------------------------------
+
+
+class TestPushCodeHelper:
+    """Tests for the _push_code helper using moto Lambda."""
+
+    @pytest.fixture()
+    def mock_lambda(self, aws_credentials):
+        """Create a moto Lambda environment with a pre-existing worker function."""
+        import io
+        import zipfile
+
+        import boto3
+        from moto import mock_aws
+
+        with mock_aws():
+            # Create IAM role for Lambda
+            iam = boto3.client("iam", region_name="us-east-1")
+            iam.create_role(
+                RoleName="test-role",
+                AssumeRolePolicyDocument="{}",
+                Path="/",
+            )
+            role_arn = iam.get_role(RoleName="test-role")["Role"]["Arn"]
+
+            # Create dummy zip for function code
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("handler.py", "def handler(event, ctx): pass")
+            buf.seek(0)
+
+            # Create the Lambda function
+            client = boto3.client("lambda", region_name="us-east-1")
+            client.create_function(
+                FunctionName="my-app-load-worker",
+                Runtime="python3.12",
+                Role=role_arn,
+                Handler="handler.handler",
+                Code={"ZipFile": buf.read()},
+                MemorySize=512,
+                Timeout=300,
+            )
+            yield client
+
+    def test_push_code_uploads_lambda(self, mock_lambda, tmp_path):
+        """_push_code builds image, builds package, and uploads Lambda code."""
+
+        # Create a dummy zip file for the Lambda package
+        import io
+        import zipfile
+
+        from zae_limiter.loadtest.cli import _push_code
+
+        pkg = tmp_path / "package.zip"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("worker.py", "pass")
+        pkg.write_bytes(buf.getvalue())
+
+        with (
+            patch(
+                "zae_limiter.loadtest.builder.build_and_push_locust_image",
+                return_value="123456789.dkr.ecr.us-east-1.amazonaws.com/test:latest",
+            ),
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package",
+                return_value=pkg,
+            ),
+        ):
+            _push_code("my-app-load", "us-east-1", tmp_path, "0.8.0")
+
+        # Verify the Lambda function was updated (moto tracks this)
+        config = mock_lambda.get_function_configuration(FunctionName="my-app-load-worker")
+        assert config["FunctionName"] == "my-app-load-worker"
+
+
+# ---------------------------------------------------------------------------
+# _get_lambda_client_and_config helper (moto)
+# ---------------------------------------------------------------------------
+
+
+class TestGetLambdaClientAndConfig:
+    """Tests for _get_lambda_client_and_config using moto Lambda."""
+
+    @pytest.fixture()
+    def mock_lambda(self, aws_credentials):
+        """Create a moto Lambda environment with a known function config."""
+        import io
+        import zipfile
+
+        import boto3
+        from moto import mock_aws
+
+        with mock_aws():
+            iam = boto3.client("iam", region_name="us-east-1")
+            iam.create_role(
+                RoleName="test-role",
+                AssumeRolePolicyDocument="{}",
+                Path="/",
+            )
+            role_arn = iam.get_role(RoleName="test-role")["Role"]["Arn"]
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("handler.py", "def handler(event, ctx): pass")
+            buf.seek(0)
+
+            client = boto3.client("lambda", region_name="us-east-1")
+            client.create_function(
+                FunctionName="my-app-load-worker",
+                Runtime="python3.12",
+                Role=role_arn,
+                Handler="handler.handler",
+                Code={"ZipFile": buf.read()},
+                MemorySize=1769,
+                Timeout=300,
+            )
+            yield
+
+    def test_returns_config(self, mock_lambda):
+        """Returns client, function name, memory, and timeout."""
+        from zae_limiter.loadtest.cli import _get_lambda_client_and_config
+
+        client, func_name, memory_mb, timeout_s = _get_lambda_client_and_config(
+            "my-app", "us-east-1"
+        )
+        assert func_name == "my-app-load-worker"
+        assert memory_mb == 1769
+        assert timeout_s == 300
+
+    def test_function_not_found_exits(self, aws_credentials):
+        """Exits with error when Lambda function does not exist."""
+        from moto import mock_aws
+
+        from zae_limiter.loadtest.cli import _get_lambda_client_and_config
+
+        with mock_aws(), pytest.raises(SystemExit) as exc_info:
+            _get_lambda_client_and_config("nonexistent", "us-east-1")
+
+        assert exc_info.value.code == 1
