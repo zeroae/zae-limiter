@@ -18,12 +18,69 @@ If the SSO session has expired, run the login command directly:
 aws sso login --profile zeroae-code/AWSPowerUserAccess
 ```
 
-## Permission Boundary for Lambda Stacks
+## Permission Boundary for IAM Resources
 
-The PowerUserAccess profile lacks `iam:CreateRole`. For stacks with Lambda, use:
+The PowerUserAccess profile lacks `iam:CreateRole` and `iam:CreatePolicy` by default. A conditional policy allows these actions **only when** the resource name matches `PowerUserPB-*` and a permission boundary is attached.
+
+**Always pass all three flags** when deploying stacks that create IAM resources (roles or policies):
 
 ```bash
---permission-boundary "arn:aws:iam::aws:policy/PowerUserAccess" --role-name-format "PowerUserPB-{}"
+--permission-boundary "arn:aws:iam::aws:policy/PowerUserAccess" \
+--role-name-format "PowerUserPB-{}" \
+--policy-name-format "PowerUserPB-{}"
 ```
 
-Without aggregator (no IAM role needed): `--no-aggregator`
+### Common mistakes
+
+| Mistake | Symptom | Fix |
+|---------|---------|-----|
+| Missing `--policy-name-format` | `iam:CreatePolicy` denied for policies like `load-test-acq` | Add `--policy-name-format "PowerUserPB-{}"` |
+| Using `--no-iam` | Load stack fails: missing `AcquireOnlyPolicyArn`, `FullAccessPolicyArn` outputs | Use the three flags above instead |
+| Using `--no-aggregator` alone | Works for limiter stack, but load stack still needs IAM policy ARNs | Use three flags + `--no-aggregator` only if aggregator is truly not needed |
+
+### Deploying a limiter stack for benchmarks
+
+```bash
+# With aggregator (full stack)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter deploy \
+  --name load-test --region us-east-1 \
+  --permission-boundary "arn:aws:iam::aws:policy/PowerUserAccess" \
+  --role-name-format "PowerUserPB-{}" \
+  --policy-name-format "PowerUserPB-{}"
+
+# Without aggregator (benchmark-only, no Lambda needed)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter deploy \
+  --name load-test --region us-east-1 \
+  --permission-boundary "arn:aws:iam::aws:policy/PowerUserAccess" \
+  --role-name-format "PowerUserPB-{}" \
+  --policy-name-format "PowerUserPB-{}" \
+  --no-aggregator
+```
+
+### Deploying load test infrastructure
+
+The load stack requires `AcquireOnlyPolicyArn` and `FullAccessPolicyArn` outputs from the limiter stack. The limiter stack **must** be deployed with IAM policies (not `--no-iam`).
+
+```bash
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter loadtest deploy \
+  --name load-test --region us-east-1 \
+  --vpc-id vpc-09fa0359f30c6efe4 \
+  --subnet-ids "subnet-0441a9342c2d605cf,subnet-0d607c058fe28230e" \
+  -C examples/locust/
+```
+
+The loadtest deploy inherits `PermissionBoundary` and `RoleNameFormat` from the limiter stack outputs.
+
+### Running tune and benchmarks
+
+```bash
+# Tune optimal per-worker user count (binary search)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter loadtest tune \
+  --name load-test --region us-east-1 \
+  -f locustfiles/max_rps.py --step-duration 30
+
+# Single run, Lambda mode (simplest)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter loadtest run \
+  --name load-test --region us-east-1 \
+  -f locustfiles/max_rps.py --users 10 --duration 60
+```

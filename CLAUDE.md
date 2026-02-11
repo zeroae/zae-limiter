@@ -44,7 +44,21 @@ uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 
 ### Sync Code Generation
 
-Native sync code is generated from async source via AST transformation (see ADR-121). The transformer handles `asyncio.gather(a, b)` by converting it to `self._run_in_executor(lambda: a, lambda: b)`, which uses a lazy `ThreadPoolExecutor(max_workers=2)` injected into `SyncRepository` for true parallel execution.
+Native sync code is generated from async source via AST transformation (see ADR-121). The transformer handles `asyncio.gather(a, b)` by converting it to `self._run_in_executor(lambda: a, lambda: b)`, with a configurable `parallel_mode` parameter on `SyncRepository` that controls the execution strategy:
+
+| Mode | Behavior |
+|------|----------|
+| `"auto"` (default) | Silently picks the best strategy: gevent (if monkey-patched) -> serial (if single-CPU) -> threadpool (multi-CPU) |
+| `"gevent"` | Forces gevent greenlets; **warns** if monkey-patching is not active (proceeds running like serial) |
+| `"threadpool"` | Lazy `ThreadPoolExecutor(max_workers=2)`, created on first cascade request; **warns** on single-CPU hosts about GIL contention |
+| `"serial"` | Sequential execution (no parallelism) |
+
+All explicit modes warn (not error) when conditions are suboptimal. Auto mode silently selects the best strategy without warnings. Resolution happens once at `SyncRepository.__init__` time (not per-call). Usage:
+
+```python
+repo = SyncRepository(name="my-app", region="us-east-1", parallel_mode="gevent")
+limiter = SyncRateLimiter(repository=repo)
+```
 
 ```bash
 # Generate sync code after modifying async source
@@ -418,7 +432,7 @@ Primary mitigation: cascade defaults to `False`.
 - Falls back to the normal read-write path when the bucket is missing, config changed, or refill would help
 - Fast rejection: if refill would not help, raises `RateLimitExceeded` immediately (0 RCU, 0 WCU)
 - Cascade/parent_id denormalized into bucket items to avoid entity metadata lookup on the fast path
-- **Parallel cascade writes (Issue #318):** After the first acquire populates the entity cache, subsequent cascade acquires issue child + parent speculative writes concurrently via `asyncio.gather`, reducing cascade latency from 2 sequential round trips to 1 parallel round trip
+- **Parallel cascade writes (Issue #318):** After the first acquire populates the entity cache, subsequent cascade acquires issue child + parent speculative writes concurrently via `asyncio.gather` (async) or `SyncRepository._run_in_executor` (sync, strategy controlled by `parallel_mode` parameter), reducing cascade latency from 2 sequential round trips to 1 parallel round trip
 
 ### Aggregator-Assisted Bucket Refill (Issue #317)
 - The Lambda aggregator proactively refills token buckets for active entities via DynamoDB Streams
@@ -570,9 +584,10 @@ Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/
 **Entity metadata cache (issue #318):**
 - `Repository._entity_cache` stores `{entity_id: (cascade, parent_id)}` -- immutable metadata, no TTL needed
 - Populated from speculative result (ALL_NEW on success) or slow path (entity META record)
-- On cache hit with `cascade=True`, `speculative_consume()` issues child + parent speculative writes concurrently via `asyncio.gather`
+- On cache hit with `cascade=True`, `speculative_consume()` issues child + parent speculative writes concurrently via `asyncio.gather` (async) or `self._run_in_executor` (sync, strategy controlled by `parallel_mode`)
 - Reduces cascade latency from 2 sequential round trips to 1 parallel round trip (same WCU cost)
 - First acquire for an entity always uses sequential path (populates cache); subsequent acquires use parallel path
+- **Sync parallel modes:** `"auto"` (default: gevent if patched, serial if single-CPU, threadpool otherwise), `"gevent"` (greenlets, warns if unpatched), `"threadpool"` (lazy ThreadPoolExecutor, warns on single-CPU), `"serial"` (sequential). Explicit modes warn on suboptimal conditions. Resolved once at `SyncRepository.__init__`
 
 **Aggregator refill write pattern (issue #317):**
 - `try_refill_bucket()` issues an `UpdateItem` with `ADD b_{limit}_tk +refill_delta SET rf = :now` and condition `rf = :expected_rf`
@@ -704,15 +719,16 @@ limiter = RateLimiter(
 - `aws-lambda-builders`: Cross-platform Lambda packaging (see ADR-113)
 - `boto3`: Sync DynamoDB (for Lambda aggregator)
 - `pip`: Required by `aws-lambda-builders` for dependency resolution
+- `questionary`: Interactive prompts for CLI workflows
 
 **Optional extras:**
 - `[plot]`: `asciichartpy` for ASCII chart visualization of usage snapshots
-- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit)
+- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit, types-gevent)
 - `[docs]`: MkDocs documentation generation
 - `[cdk]`: AWS CDK constructs
 - `[lambda]`: Lambda Powertools (aws-lambda-powertools)
-- `[local]`: `docker` for LocalStack management commands
-- `[bench]`: `locust`, `gevent`, `docker` for load testing (see `examples/locust/`)
+- `[local]`: `docker` for LocalStack container management
+- `[bench]`: `docker`, `locust`, `gevent` for load testing and benchmarks
 
 ## Releasing
 
