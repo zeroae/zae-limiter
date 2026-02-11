@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770767310277,
+  "lastUpdate": 1770777933627,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -8832,6 +8832,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.014190737867340814",
             "extra": "mean: 1.081573287600031 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e1e6e4066641b022a4b2092a644b137df213199c",
+          "message": "build(deps): bump cryptography from 46.0.3 to 46.0.5 (#358)\n\nBumps [cryptography](https://github.com/pyca/cryptography) from 46.0.3\nto 46.0.5.\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/pyca/cryptography/blob/main/CHANGELOG.rst\">cryptography's\nchangelog</a>.</em></p>\n<blockquote>\n<p>46.0.5 - 2026-02-10</p>\n<pre><code>\n* An attacker could create a malicious public key that reveals portions\nof your\nprivate key when using certain uncommon elliptic curves (binary curves).\nThis version now includes additional security checks to prevent this\nattack.\nThis issue only affects binary elliptic curves, which are rarely used in\nreal-world applications. Credit to **XlabAI Team of Tencent Xuanwu Lab\nand\nAtuin Automated Vulnerability Discovery Engine** for reporting the\nissue.\n  **CVE-2026-26007**\n* Support for ``SECT*`` binary elliptic curves is deprecated and will be\n  removed in the next release.\n<p>.. v46-0-4:</p>\n<p>46.0.4 - 2026-01-27<br />\n</code></pre></p>\n<ul>\n<li><code>Dropped support for win_arm64 wheels</code>_.</li>\n<li>Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL\n3.5.5.</li>\n</ul>\n<p>.. _v46-0-3:</p>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/pyca/cryptography/commit/06e120e682cb200e3f7050c02f0bcdac90c4c6ad\"><code>06e120e</code></a>\nbump version for 46.0.5 release (<a\nhref=\"https://redirect.github.com/pyca/cryptography/issues/14289\">#14289</a>)</li>\n<li><a\nhref=\"https://github.com/pyca/cryptography/commit/0eebb9dbb6343d9bc1d91e5a2482ed4e054a6d8c\"><code>0eebb9d</code></a>\nEC check key on cofactor &gt; 1 (<a\nhref=\"https://redirect.github.com/pyca/cryptography/issues/14287\">#14287</a>)</li>\n<li><a\nhref=\"https://github.com/pyca/cryptography/commit/bedf6e186b814f69a3f54f51252c23a71d44ed2e\"><code>bedf6e1</code></a>\nfix openssl version on 46 branch (<a\nhref=\"https://redirect.github.com/pyca/cryptography/issues/14220\">#14220</a>)</li>\n<li><a\nhref=\"https://github.com/pyca/cryptography/commit/e6f44fc8e6391f05d719fb9d369692325b87a471\"><code>e6f44fc</code></a>\nbump for 46.0.4 and drop win arm64 due to CI issues (<a\nhref=\"https://redirect.github.com/pyca/cryptography/issues/14217\">#14217</a>)</li>\n<li>See full diff in <a\nhref=\"https://github.com/pyca/cryptography/compare/46.0.3...46.0.5\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=cryptography&package-manager=uv&previous-version=46.0.3&new-version=46.0.5)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\nYou can disable automated security fix PRs for this repo from the\n[Security Alerts\npage](https://github.com/zeroae/zae-limiter/network/alerts).\n\n</details>",
+          "timestamp": "2026-02-10T21:29:36-05:00",
+          "tree_id": "9d06b4dd1b4714ef8d02c1da3c8036643a705788",
+          "url": "https://github.com/zeroae/zae-limiter/commit/e1e6e4066641b022a4b2092a644b137df213199c"
+        },
+        "date": 1770777932682,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 27.55128927922623,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008533315586447305",
+            "extra": "mean: 36.295942083334864 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.056159865960346,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010892925946208226",
+            "extra": "mean: 47.49204063636563 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 44.43315278133604,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004129104114668885",
+            "extra": "mean: 22.505717857141253 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 44.14138959577196,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003200327367915599",
+            "extra": "mean: 22.654474839998784 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 28.132666512540684,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004328883616525342",
+            "extra": "mean: 35.545866210521865 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 222.12440072085658,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006710623844813436",
+            "extra": "mean: 4.501981757765995 msec\nrounds: 161"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 29.10145238131487,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004413310380966926",
+            "extra": "mean: 34.36254613333555 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 29.62691025363401,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00555271277826779",
+            "extra": "mean: 33.75309782353497 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 29.899002616267573,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00584186462457547",
+            "extra": "mean: 33.44593172000714 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 28.257771901789198,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004417429585692899",
+            "extra": "mean: 35.388494304346864 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 29.75571614304118,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004914365181739218",
+            "extra": "mean: 33.606988156252626 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.800764204914504,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005492950983202086",
+            "extra": "mean: 37.31236886956486 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 33.42489114531914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0035786510769710914",
+            "extra": "mean: 29.91782368571876 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9395708229867503,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002618013810550537",
+            "extra": "mean: 515.5779764000044 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.929867050440019,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0058825237003457065",
+            "extra": "mean: 518.1704095999748 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9517084985407175,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007479002451640841",
+            "extra": "mean: 1.0507419042000037 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9320707554827092,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009973412704265215",
+            "extra": "mean: 1.0728799225999865 sec\nrounds: 5"
           }
         ]
       }
