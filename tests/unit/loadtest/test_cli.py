@@ -1141,6 +1141,42 @@ class TestUiCommand:
             assert result.exit_code == 0, result.output
             assert "Found running Fargate task" in result.output
 
+    def test_opens_browser_on_waiting_for_connections(self, runner):
+        """Connect opens browser when SSM outputs 'Waiting for connections'."""
+        with (
+            patch("boto3.client") as mock_client,
+            patch("subprocess.Popen") as mock_popen,
+            patch("time.sleep"),
+            patch("webbrowser.open") as mock_browser,
+        ):
+            mock_ecs = MagicMock()
+            mock_client.return_value = mock_ecs
+
+            mock_ecs.list_tasks.return_value = {
+                "taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]
+            }
+            mock_ecs.describe_tasks.return_value = self._make_task_response()
+
+            proc = MagicMock()
+            proc.stdout = iter(
+                [
+                    "Starting session...\n",
+                    "Port 8089 opened for sessionId abc.\n",
+                    "Waiting for connections...\n",
+                    "Connection accepted for session abc.\n",
+                ]
+            )
+            proc.wait.return_value = None
+            proc.returncode = 0
+            mock_popen.return_value = proc
+
+            result = runner.invoke(
+                loadtest,
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+            )
+            assert result.exit_code == 0, result.output
+            mock_browser.assert_called_once_with("http://localhost:8089")
+
     def test_task_not_running_status(self, runner):
         """Connect handles task that exists but isn't RUNNING."""
         with (
