@@ -2209,7 +2209,7 @@ class TestTuneCommand:
             assert result.exit_code != 0
 
     def test_tune_with_user_classes(self, runner):
-        """Tune passes --user-classes to Lambda invocations."""
+        """Tune passes user class positional args to Lambda invocations."""
         captured_user_classes = []
 
         def mock_invoke(
@@ -2237,10 +2237,9 @@ class TestTuneCommand:
                     "test",
                     "-f",
                     "locustfiles/max_rps.py",
-                    "--user-classes",
-                    "MaxRpsCascadeUser",
                     "--max-users",
                     "4",
+                    "MaxRpsCascadeUser",
                 ],
             )
             assert result.exit_code == 0, result.output
