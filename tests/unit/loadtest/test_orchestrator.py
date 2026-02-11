@@ -144,6 +144,20 @@ class TestWorkerPool:
         assert pool.pending_count == 0  # Pending moved to active
         assert pool.active_count == 3  # 1 from pending + 2 adopted
 
+    def test_connected_adopts_on_subsequent_poll(self):
+        """Non-first-poll adoption uses startup_lead_time age, not adoption_age."""
+        pool = WorkerPool(lambda_timeout=300, replacement_pct=0.8, startup_lead_time=20.0)
+        # First poll: 1 worker
+        pool.connected(actual_count=1, previous_count=0)
+        assert pool.active_count == 1
+
+        # Second poll: 3 workers (2 new untracked, adopted on non-first-poll path)
+        pool.connected(actual_count=3, previous_count=1)
+        assert pool.active_count == 3
+        # Non-first-poll adopted workers should NOT be expiring soon
+        # (they're only startup_lead_time=20s old, threshold is 300*0.8=240s)
+        assert pool.count_expiring_soon() <= 1  # At most the first-poll worker
+
 
 class TestGetTaskIp:
     """Tests for get_task_ip."""
@@ -368,6 +382,18 @@ class TestCalculateDesiredWorkers:
         # 11 users should need 2 workers (ceil(11/10) = 2)
         stats = LocustStats(user_count=11, total_rps=1, worker_count=1, state="running")
         assert calculate_desired_workers(stats, config) == 2
+
+    def test_predictive_scaling_with_increasing_users(self):
+        """Predictive scaling pre-provisions workers when user count is rising."""
+        config = ScalingConfig(users_per_worker=10, min_workers=1, startup_lead_time=20.0)
+        prev_stats = LocustStats(user_count=10, total_rps=10, worker_count=1, state="running")
+        stats = LocustStats(user_count=50, total_rps=50, worker_count=5, state="running")
+        # Current: ceil(50/10) = 5 workers
+        # user_rate = (50 - 10) / 5 = 8 users/sec
+        # predicted_users = 50 + 8 * 20 = 210
+        # predicted_workers = ceil(210/10) = 21
+        result = calculate_desired_workers(stats, config, prev_stats=prev_stats, time_delta=5.0)
+        assert result == 21
 
 
 class TestMain:
@@ -744,6 +770,88 @@ class TestMain:
 
             # Should have invoked 4 workers (40 users / 10 per worker)
             assert mock_lambda.invoke.call_count == 4
+
+    def test_idle_timeout_shuts_down(self):
+        """Main loop exits when idle timeout is reached."""
+        mock_lambda = MagicMock()
+        _real_sleep = time.sleep
+
+        def fake_get_stats():
+            # Test is stopped — triggers idle timeout check
+            return LocustStats(user_count=0, total_rps=0, worker_count=0, state="stopped")
+
+        env = {
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "MIN_WORKERS": "1",
+            "IDLE_TIMEOUT": "0.001",  # Tiny timeout
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("zae_limiter.loadtest.orchestrator.get_task_ip", return_value="10.0.0.1"),
+            patch("zae_limiter.loadtest.orchestrator.get_locust_stats", side_effect=fake_get_stats),
+            patch("zae_limiter.loadtest.orchestrator.boto3") as mock_boto3,
+            patch("time.sleep", side_effect=lambda _: _real_sleep(0.002)),
+            patch("signal.signal"),
+        ):
+            mock_boto3.client.return_value = mock_lambda
+
+            from zae_limiter.loadtest.orchestrator import main
+
+            # Should exit cleanly via idle timeout (no KeyboardInterrupt needed)
+            main()
+
+    def test_scale_down_lets_workers_expire(self):
+        """When scaling down, excess expiring workers are not replaced."""
+        mock_lambda = MagicMock()
+        call_count = 0
+
+        def fake_get_stats():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First poll: 10 connected, 10 users → desired=1.
+                # All 10 adopted as near-expiring. Need 1 replacement.
+                return LocustStats(user_count=10, total_rps=1, worker_count=10, state="running")
+            if call_count == 2:
+                # Second poll: still 10 connected (replacement not connected yet).
+                # 9 still expiring, pending=1. workers_after_expiry = 10-9+1=2.
+                # desired=1. replacements_needed = max(0,1-2) = 0.
+                # expiring (9) > replacements_needed (0) → scale-down elif branch.
+                return LocustStats(user_count=10, total_rps=1, worker_count=10, state="running")
+            return LocustStats(user_count=10, total_rps=1, worker_count=10, state="running")
+
+        env = {
+            "WORKER_FUNCTION_NAME": "test-worker",
+            "MASTER_PORT": "5557",
+            "POLL_INTERVAL": "0",
+            "PENDING_TIMEOUT": "30",
+            "USERS_PER_WORKER": "10",  # 10 users / 10 = 1 desired
+            "MIN_WORKERS": "1",
+            "ECS_CONTAINER_METADATA_URI_V4": "http://meta",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("zae_limiter.loadtest.orchestrator.get_task_ip", return_value="10.0.0.1"),
+            patch("zae_limiter.loadtest.orchestrator.get_locust_stats", side_effect=fake_get_stats),
+            patch("zae_limiter.loadtest.orchestrator.boto3") as mock_boto3,
+            patch("time.sleep", side_effect=[None, None, KeyboardInterrupt]),
+            patch("signal.signal"),
+        ):
+            mock_boto3.client.return_value = mock_lambda
+
+            from zae_limiter.loadtest.orchestrator import main
+
+            with pytest.raises(KeyboardInterrupt):
+                main()
+
+            # Poll 1: 1 replacement invoked. Poll 2: scale-down, no new invocations.
+            assert mock_lambda.invoke.call_count == 1
 
     def test_auto_scaling_scale_down(self):
         """Only needed workers are replaced when scaling down."""
