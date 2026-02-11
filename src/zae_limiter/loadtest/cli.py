@@ -958,11 +958,7 @@ def list_cmd(region: str | None) -> None:
     hidden=True,
     help="Run Locust in single-process Fargate mode",
 )
-@click.option(
-    "--user-classes",
-    default=None,
-    help="Comma-separated User class names to run (e.g. MaxRpsCascadeUser)",
-)
+@click.argument("user_classes", nargs=-1)
 def run_cmd(
     name: str,
     region: str | None,
@@ -975,13 +971,16 @@ def run_cmd(
     port: int,
     workers: int | None,
     standalone: bool,
-    user_classes: str | None,
+    user_classes: tuple[str, ...],
 ) -> None:
     """Run a single load test execution.
 
     Lambda mode (default): Invokes a single Lambda worker in headless mode.
     Use --workers N to run distributed (Fargate master + Lambda workers).
+
+    Optionally pass User class names to run specific classes (default: all).
     """
+    user_classes_str = ",".join(user_classes) or None
     if workers is not None:
         _benchmark_distributed(
             name=name,
@@ -994,7 +993,7 @@ def run_cmd(
             memory=memory,
             port=port,
             workers=workers,
-            user_classes=user_classes,
+            user_classes=user_classes_str,
         )
     elif standalone:
         _benchmark_fargate(
@@ -1007,7 +1006,7 @@ def run_cmd(
             cpu=cpu,
             memory=memory,
             port=port,
-            user_classes=user_classes,
+            user_classes=user_classes_str,
         )
     else:
         _run_lambda(
@@ -1017,7 +1016,7 @@ def run_cmd(
             duration=duration,
             spawn_rate=spawn_rate,
             locustfile=locustfile,
-            user_classes=user_classes,
+            user_classes=user_classes_str,
         )
 
 
@@ -1029,11 +1028,6 @@ def run_cmd(
     "--locustfile",
     required=True,
     help="Locustfile path (e.g. locustfiles/max_rps.py)",
-)
-@click.option(
-    "--user-classes",
-    default=None,
-    help="Comma-separated User class names to run (e.g. MaxRpsCascadeUser)",
 )
 @click.option(
     "--max-users",
@@ -1065,28 +1059,32 @@ def run_cmd(
     type=int,
     help="User spawn rate per second (default: 10)",
 )
+@click.argument("user_classes", nargs=-1)
 def tune(
     name: str,
     region: str | None,
     locustfile: str,
-    user_classes: str | None,
     max_users: int,
     threshold: float,
     step_duration: int,
     baseline_duration: int,
     spawn_rate: int,
+    user_classes: tuple[str, ...],
 ) -> None:
     """Find optimal per-worker user count via binary search.
 
     Uses Little's Law to binary-search for the optimal per-worker user count
     by measuring efficiency (baseline_p50 / observed_p50) at different
     concurrency levels. Lambda-only.
+
+    Optionally pass User class names to run specific classes (default: all).
     """
+    user_classes_str = ",".join(user_classes) or None
     _tune_lambda(
         name=name,
         region=region,
         locustfile=locustfile,
-        user_classes=user_classes,
+        user_classes=user_classes_str,
         max_users=max_users,
         threshold=threshold,
         step_duration=step_duration,
