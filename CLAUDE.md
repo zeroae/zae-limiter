@@ -209,7 +209,7 @@ src/zae_limiter/
 ├── locust.py          # Locust load testing integration (RateLimiterUser, RateLimiterSession)
 ├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, local, loadtest)
 ├── version.py         # Version tracking and compatibility
-├── loadtest/          # Load testing infrastructure (deploy, delete, list)
+├── loadtest/          # Load testing infrastructure (deploy, push, ui, run, tune, delete, list)
 │   ├── __init__.py
 │   ├── cli.py             # CLI commands for load test lifecycle
 │   ├── builder.py         # Docker image builder for Locust master
