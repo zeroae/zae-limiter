@@ -1081,8 +1081,8 @@ class TestListCommand:
             assert "eu-west-1" in result.output
 
 
-class TestConnectCommand:
-    """Tests for the connect command."""
+class TestUiCommand:
+    """Tests for the ui command."""
 
     def _make_task_response(
         self,
@@ -1128,7 +1128,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
             assert "Found running Fargate task" in result.output
@@ -1160,7 +1160,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
 
@@ -1191,7 +1191,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
 
@@ -1220,7 +1220,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
 
@@ -1238,7 +1238,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py"],
             )
             assert result.exit_code != 0
             assert "failed to start" in result.output.lower()
@@ -1262,7 +1262,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py"],
             )
             assert result.exit_code != 0
             assert "ssm agent failed" in result.output.lower()
@@ -1291,7 +1291,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
             assert mock_subprocess_run.call_count == 3
@@ -1317,7 +1317,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert mock_subprocess_run.call_count == 5
             assert "failed after 5 attempts" in result.output.lower()
@@ -1340,7 +1340,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert "Interrupted" in result.output
 
@@ -1365,7 +1365,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert "Warning" in result.output or "cannot stop" in result.output.lower()
 
@@ -1388,7 +1388,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py"],  # no --destroy
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py"],  # no --destroy
             )
             assert result.exit_code == 0, result.output
             assert "still running" in result.output.lower()
@@ -1449,7 +1449,7 @@ class TestConnectCommand:
 
             result = runner.invoke(
                 loadtest,
-                ["connect", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
+                ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
             # Should have called run_task
@@ -1493,7 +1493,7 @@ class TestConnectCommand:
             result = runner.invoke(
                 loadtest,
                 [
-                    "connect",
+                    "ui",
                     "--name",
                     "my-app",
                     "-f",
@@ -1553,7 +1553,7 @@ class TestConnectCommand:
             result = runner.invoke(
                 loadtest,
                 [
-                    "connect",
+                    "ui",
                     "--name",
                     "my-app",
                     "-f",
@@ -1592,7 +1592,7 @@ class TestConnectCommand:
             result = runner.invoke(
                 loadtest,
                 [
-                    "connect",
+                    "ui",
                     "--name",
                     "my-app",
                     "-f",
@@ -1643,7 +1643,7 @@ class TestConnectCommand:
             result = runner.invoke(
                 loadtest,
                 [
-                    "connect",
+                    "ui",
                     "--name",
                     "my-app",
                     "-f",
@@ -1966,23 +1966,126 @@ class TestRunCommand:
         result = runner.invoke(loadtest, ["benchmark", "--help"])
         assert result.exit_code != 0
 
+    def test_run_workers_triggers_distributed(self, runner):
+        """Run with --workers dispatches to distributed mode."""
+        with patch("zae_limiter.loadtest.cli._benchmark_distributed") as mock_dist:
+            result = runner.invoke(
+                loadtest,
+                [
+                    "run",
+                    "--name",
+                    "test",
+                    "-f",
+                    "locustfiles/max_rps.py",
+                    "--workers",
+                    "4",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            mock_dist.assert_called_once()
+            call_kwargs = mock_dist.call_args[1]
+            assert call_kwargs["workers"] == 4
+
+    def test_run_standalone_triggers_fargate(self, runner):
+        """Run with --standalone dispatches to fargate mode."""
+        with patch("zae_limiter.loadtest.cli._benchmark_fargate") as mock_fg:
+            result = runner.invoke(
+                loadtest,
+                [
+                    "run",
+                    "--name",
+                    "test",
+                    "-f",
+                    "locustfiles/max_rps.py",
+                    "--standalone",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            mock_fg.assert_called_once()
+
+    def test_run_help_does_not_show_standalone(self, runner):
+        """The --standalone flag is hidden from --help."""
+        result = runner.invoke(loadtest, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--standalone" not in result.output
+
+    def test_run_help_does_not_show_mode(self, runner):
+        """The old --mode option is removed."""
+        result = runner.invoke(loadtest, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--mode" not in result.output
+
 
 # ---------------------------------------------------------------------------
-# Calibrate command
+# Push command
 # ---------------------------------------------------------------------------
 
 
-class TestCalibrateCommand:
-    """Tests for the calibrate command."""
+class TestPushCommand:
+    """Tests for the push command."""
 
-    def test_calibrate_help(self, runner):
-        """Calibrate command shows help text."""
-        result = runner.invoke(loadtest, ["calibrate", "--help"])
+    def test_push_help(self, runner):
+        """Push command shows help text."""
+        result = runner.invoke(loadtest, ["push", "--help"])
+        assert result.exit_code == 0
+        assert "Rebuild and push" in result.output
+
+    def test_push_calls_push_code(self, runner, tmp_path):
+        """Push rebuilds and pushes code."""
+        with (
+            patch("zae_limiter.loadtest.cli._push_code") as mock_push_code,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source", return_value="0.8.0"),
+        ):
+            result = runner.invoke(
+                loadtest,
+                [
+                    "push",
+                    "--name",
+                    "my-app",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            mock_push_code.assert_called_once()
+            call_args = mock_push_code.call_args
+            assert call_args[0][0] == "my-app-load"  # stack_name
+
+    def test_push_interactive_name(self, runner, tmp_path):
+        """Push prompts for name when not provided."""
+        with (
+            patch("zae_limiter.loadtest.cli._push_code"),
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source", return_value="0.8.0"),
+            patch("zae_limiter.loadtest.cli._select_name", return_value="my-app") as mock_select,
+        ):
+            result = runner.invoke(
+                loadtest,
+                [
+                    "push",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            mock_select.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tune command
+# ---------------------------------------------------------------------------
+
+
+class TestTuneCommand:
+    """Tests for the tune command."""
+
+    def test_tune_help(self, runner):
+        """Tune command shows help text."""
+        result = runner.invoke(loadtest, ["tune", "--help"])
         assert result.exit_code == 0
         assert "binary search" in result.output.lower()
 
-    def test_calibrate_basic(self, runner):
-        """Calibrate runs binary search and displays results."""
+    def test_tune_basic(self, runner):
+        """Tune runs binary search and displays results."""
         invoke_count = 0
 
         def mock_invoke(
@@ -2015,7 +2118,7 @@ class TestCalibrateCommand:
             result = runner.invoke(
                 loadtest,
                 [
-                    "calibrate",
+                    "tune",
                     "--name",
                     "test",
                     "-f",
@@ -2037,7 +2140,7 @@ class TestCalibrateCommand:
             # Should have invoked Lambda multiple times
             assert invoke_count >= 3  # baseline + upper + at least 1 search
 
-    def test_calibrate_efficiency_always_above_threshold(self, runner):
+    def test_tune_efficiency_always_above_threshold(self, runner):
         """When efficiency >= threshold at max_users, reports max_users as optimal."""
 
         def mock_invoke(
@@ -2060,7 +2163,7 @@ class TestCalibrateCommand:
             result = runner.invoke(
                 loadtest,
                 [
-                    "calibrate",
+                    "tune",
                     "--name",
                     "test",
                     "-f",
@@ -2074,8 +2177,8 @@ class TestCalibrateCommand:
             assert result.exit_code == 0, result.output
             assert "Optimal: 20 users per worker" in result.output
 
-    def test_calibrate_zero_baseline_p50_exits(self, runner):
-        """Calibrate exits with error if baseline p50 is zero."""
+    def test_tune_zero_baseline_p50_exits(self, runner):
+        """Tune exits with error if baseline p50 is zero."""
 
         def mock_invoke(
             lambda_client, func_name, users, duration, spawn_rate, locustfile, user_classes=None
@@ -2096,7 +2199,7 @@ class TestCalibrateCommand:
             result = runner.invoke(
                 loadtest,
                 [
-                    "calibrate",
+                    "tune",
                     "--name",
                     "test",
                     "-f",
@@ -2105,8 +2208,8 @@ class TestCalibrateCommand:
             )
             assert result.exit_code != 0
 
-    def test_calibrate_with_user_classes(self, runner):
-        """Calibrate passes --user-classes to Lambda invocations."""
+    def test_tune_with_user_classes(self, runner):
+        """Tune passes --user-classes to Lambda invocations."""
         captured_user_classes = []
 
         def mock_invoke(
@@ -2129,7 +2232,7 @@ class TestCalibrateCommand:
             result = runner.invoke(
                 loadtest,
                 [
-                    "calibrate",
+                    "tune",
                     "--name",
                     "test",
                     "-f",
@@ -2232,7 +2335,7 @@ class TestDisplayCalibrationResults:
         assert "Floor latency: p50=20ms, p95=30ms, p99=40ms" in captured.out
         assert "Throughput per worker: 280.0 RPS" in captured.out
         assert "Distributed recommendations" in captured.out
-        assert "load run --mode distributed" in captured.out
+        assert "loadtest run" in captured.out
 
     def test_recommendations_compute_workers_correctly(self, capsys):
         from zae_limiter.loadtest.cli import _display_calibration_results

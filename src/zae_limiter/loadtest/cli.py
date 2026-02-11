@@ -364,8 +364,7 @@ def deploy(
     locustfile_dir: Path,
 ) -> None:
     """Deploy load test infrastructure."""
-    from .builder import build_and_push_locust_image, get_zae_limiter_source
-    from .lambda_builder import build_load_lambda_package
+    from .builder import get_zae_limiter_source
 
     # Interactive prompts for missing options
     if not name:
@@ -499,6 +498,21 @@ def deploy(
             else:
                 raise
 
+    _push_code(stack_name, region, locustfile_dir, zae_limiter_source)
+
+    click.echo(f"\nStack ready: {stack_name}")
+
+
+def _push_code(
+    stack_name: str,
+    region: str | None,
+    locustfile_dir: Path,
+    zae_limiter_source: Path | str,
+) -> None:
+    """Build and push Locust image and Lambda code for a load test stack."""
+    from .builder import build_and_push_locust_image
+    from .lambda_builder import build_load_lambda_package
+
     # Build and push Docker image
     click.echo("  Building Locust image...")
     image_uri = build_and_push_locust_image(
@@ -530,10 +544,39 @@ def deploy(
     )
     click.echo(f"  Lambda code uploaded: {func_name}")
 
-    click.echo(f"\nStack ready: {stack_name}")
+
+@loadtest.command()
+@click.option("--name", "-n", default=None, help="zae-limiter name")
+@click.option("--region", default=None, help="AWS region")
+@click.option(
+    "-C",
+    "locustfile_dir",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory containing locustfiles (default: current directory)",
+)
+def push(
+    name: str | None,
+    region: str | None,
+    locustfile_dir: Path,
+) -> None:
+    """Rebuild and push locustfiles and Lambda code."""
+    from .builder import get_zae_limiter_source
+
+    if not name:
+        name = _select_name(region)
+
+    stack_name = f"{name}-load"
+    zae_limiter_source = get_zae_limiter_source()
+    click.echo(f"Pushing code to {stack_name}")
+    click.echo(f"  zae-limiter source: {zae_limiter_source}")
+
+    _push_code(stack_name, region, locustfile_dir, zae_limiter_source)
+
+    click.echo(f"\nCode pushed: {stack_name}")
 
 
-@loadtest.command("connect")
+@loadtest.command("ui")
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option("--port", default=8089, type=int, help="Local port for Locust UI")
@@ -562,7 +605,7 @@ def deploy(
     default=None,
     help="Override boto3 connection pool size (default: 1000)",
 )
-def connect(
+def ui_cmd(
     name: str,
     region: str | None,
     port: int,
@@ -578,7 +621,7 @@ def connect(
     memory: int | None,
     pool_connections: int | None,
 ) -> None:
-    """Connect to Fargate master via SSM tunnel."""
+    """Open Locust web UI via SSM tunnel."""
     import json
     import subprocess
     import time
@@ -884,13 +927,6 @@ def list_cmd(region: str | None) -> None:
 @loadtest.command("run")
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
-@click.option(
-    "--mode",
-    type=click.Choice(["lambda", "fargate", "distributed"]),
-    default="lambda",
-    help="Runtime mode: lambda (default), fargate (standalone),"
-    " or distributed (Fargate master + Lambda workers)",
-)
 @click.option("--users", default=20, type=int, help="Number of simulated users (default: 20)")
 @click.option("--duration", default=60, type=int, help="Test duration in seconds (default: 60)")
 @click.option("--spawn-rate", default=10, type=int, help="User spawn rate per second (default: 10)")
@@ -912,9 +948,15 @@ def list_cmd(region: str | None) -> None:
 @click.option("--port", default=8089, type=int, help="Local port for SSM tunnel (Fargate mode)")
 @click.option(
     "--workers",
-    default=1,
+    default=None,
     type=int,
-    help="Number of Lambda workers (distributed mode, default: 1)",
+    help="Number of Lambda workers (implies distributed mode)",
+)
+@click.option(
+    "--standalone",
+    is_flag=True,
+    hidden=True,
+    help="Run Locust in single-process Fargate mode",
 )
 @click.option(
     "--user-classes",
@@ -924,7 +966,6 @@ def list_cmd(region: str | None) -> None:
 def run_cmd(
     name: str,
     region: str | None,
-    mode: str,
     users: int,
     duration: int,
     spawn_rate: int,
@@ -932,16 +973,16 @@ def run_cmd(
     cpu: int | None,
     memory: int | None,
     port: int,
-    workers: int,
+    workers: int | None,
+    standalone: bool,
     user_classes: str | None,
 ) -> None:
     """Run a single load test execution.
 
     Lambda mode (default): Invokes a single Lambda worker in headless mode.
-    Fargate mode: Starts a Fargate task in standalone headless mode and polls stats.
-    Distributed mode: Fargate master + Lambda workers, automated end-to-end.
+    Use --workers N to run distributed (Fargate master + Lambda workers).
     """
-    if mode == "distributed":
+    if workers is not None:
         _benchmark_distributed(
             name=name,
             region=region,
@@ -955,7 +996,7 @@ def run_cmd(
             workers=workers,
             user_classes=user_classes,
         )
-    elif mode == "fargate":
+    elif standalone:
         _benchmark_fargate(
             name=name,
             region=region,
@@ -980,7 +1021,7 @@ def run_cmd(
         )
 
 
-@loadtest.command()
+@loadtest.command("tune")
 @click.option("--name", "-n", required=True, help="zae-limiter name")
 @click.option("--region", default=None, help="AWS region")
 @click.option(
@@ -1010,7 +1051,7 @@ def run_cmd(
     "--step-duration",
     default=30,
     type=int,
-    help="Seconds per calibration step (default: 30)",
+    help="Seconds per tuning step (default: 30)",
 )
 @click.option(
     "--baseline-duration",
@@ -1024,7 +1065,7 @@ def run_cmd(
     type=int,
     help="User spawn rate per second (default: 10)",
 )
-def calibrate(
+def tune(
     name: str,
     region: str | None,
     locustfile: str,
@@ -1041,7 +1082,7 @@ def calibrate(
     by measuring efficiency (baseline_p50 / observed_p50) at different
     concurrency levels. Lambda-only.
     """
-    _calibrate_lambda(
+    _tune_lambda(
         name=name,
         region=region,
         locustfile=locustfile,
@@ -1179,7 +1220,7 @@ def _run_lambda(
     _display_benchmark_results(stats)
 
 
-def _calibrate_lambda(
+def _tune_lambda(
     name: str,
     region: str | None,
     locustfile: str,
@@ -1197,7 +1238,7 @@ def _calibrate_lambda(
 
     vcpu_estimate = memory_mb / 1769
 
-    click.echo(f"\nLambda Calibration: {func_name}")
+    click.echo(f"\nLambda Tune: {func_name}")
     click.echo(f"  Memory: {memory_mb} MB (~{vcpu_estimate:.2f} vCPU)")
     click.echo(f"  Timeout: {timeout_seconds}s")
     click.echo(f"  Locustfile: {locustfile}")
@@ -1429,8 +1470,7 @@ def _display_calibration_results(
     for target_users in [100, 500, 1000]:
         workers = math.ceil(target_users / optimal_users)
         click.echo(
-            f"  {target_users} users:  load run --mode distributed "
-            f"--workers {workers} --users {target_users}"
+            f"  {target_users} users:  loadtest run --workers {workers} --users {target_users}"
         )
 
 
