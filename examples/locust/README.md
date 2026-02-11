@@ -31,6 +31,22 @@ examples/locust/
 | `llm_production` | 8 LLM models | RPM + TPM | Many anonymous | Weighted tasks + custom load shapes |
 | `stress` | 8 APIs | RPM + TPM | 16K (whale/spike/powerlaw) | Hot partition + burst testing |
 
+### User Classes
+
+Each locustfile may define multiple user classes. Use positional arguments to select
+specific classes (default: all classes in the file).
+
+| File | Class | Cascade | Description |
+|------|-------|---------|-------------|
+| `simple.py` | `SimpleUser` | No | Standalone entities, system-level RPM limit |
+| `simple.py` | `SimpleCascadeUser` | Yes | Child entities under a shared parent |
+| `max_rps.py` | `MaxRpsUser` | No | Zero-wait standalone, max throughput |
+| `max_rps.py` | `MaxRpsCascadeUser` | Yes | Zero-wait cascade, measures cascade overhead |
+
+Cascade classes create child entities with `cascade=True` under a shared parent
+created in `on_test_start`. Every `acquire()` writes to both child and parent
+buckets, enabling direct comparison of cascade overhead vs standalone operation.
+
 ## Running Locally
 
 Run from this directory (`examples/locust/`):
@@ -41,6 +57,9 @@ locust -f locustfiles/simple.py --host <stack-name>
 
 # Max RPS: zero-wait throughput benchmark
 locust -f locustfiles/max_rps.py --host <stack-name>
+
+# Run only the cascade user class
+locust -f locustfiles/max_rps.py --host <stack-name> MaxRpsCascadeUser
 
 # LLM Gateway: multiple models with lease adjustments
 locust -f locustfiles/llm_gateway.py --host <stack-name>
@@ -101,18 +120,44 @@ so no setup step is needed.
 ### 3. Connect to Locust UI
 
 ```bash
-zae-limiter loadtest ui -n <stack-name>
+zae-limiter loadtest ui -n <stack-name> -f locustfiles/simple.py
 ```
 
 This starts a Fargate task (if not running), waits for SSM agent readiness,
-and opens an SSM tunnel to http://localhost:8089.
+opens an SSM tunnel to http://localhost:8089, and auto-opens the browser
+when the tunnel is ready.
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `-f` / `--locustfile` | (required) | Locustfile path relative to `-C` directory |
 | `--port` | 8089 | Local port for the Locust UI |
-| `--destroy` | off | Stop Fargate task on disconnect |
+| `--destroy` | off | Stop Fargate task on disconnect even if already running |
+| `--force` | off | Stop existing task and restart with new config |
+| `--max-workers` | (from deploy) | Override max Lambda workers |
+| `--min-workers` | (from deploy) | Override minimum workers |
+| `--users-per-worker` | (from deploy) | Override users per worker ratio |
 
-### 4. Delete Infrastructure
+### 4. Run Headless Tests
+
+```bash
+# Lambda mode (default): single Lambda invocation
+zae-limiter loadtest run -n <stack-name> -f locustfiles/max_rps.py --users 20 --duration 60
+
+# Run only cascade user class (positional args)
+zae-limiter loadtest run -n <stack-name> -f locustfiles/max_rps.py MaxRpsCascadeUser
+
+# Distributed mode: Fargate master + Lambda workers
+zae-limiter loadtest run -n <stack-name> -f locustfiles/max_rps.py --workers 10 --users 100
+
+# Calibrate optimal per-worker concurrency
+zae-limiter loadtest tune -n <stack-name> -f locustfiles/max_rps.py
+zae-limiter loadtest tune -n <stack-name> -f locustfiles/max_rps.py MaxRpsCascadeUser
+```
+
+User class names are passed as positional arguments (Locust native style).
+When omitted, all classes in the locustfile are used.
+
+### 5. Delete Infrastructure
 
 ```bash
 zae-limiter loadtest delete -n <stack-name> --yes
