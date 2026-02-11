@@ -6,7 +6,7 @@ Distributed load testing for zae-limiter using Locust on AWS (Fargate Spot maste
 
 ```mermaid
 flowchart LR
-    CLI[zae-limiter load]
+    CLI[zae-limiter loadtest]
     ECR[ECR Repository]
     ECS[Fargate Spot]
     LAMBDA[Lambda Workers]
@@ -31,7 +31,7 @@ flowchart LR
 ### 1. Deploy Infrastructure
 
 ```bash
-zae-limiter load deploy --name my-limiter --region us-east-1 \
+zae-limiter loadtest deploy --name my-limiter --region us-east-1 \
   --vpc-id vpc-xxx \
   --subnet-ids "subnet-aaa,subnet-bbb" \
   -C examples/locust/
@@ -49,13 +49,13 @@ The deploy command automatically:
 
 ```bash
 # Distributed mode (Fargate master + Lambda workers)
-zae-limiter load connect --name my-limiter --region us-east-1
+zae-limiter loadtest connect --name my-limiter --region us-east-1
 
 # Standalone mode (single process, no workers)
-zae-limiter load connect --name my-limiter --region us-east-1 --standalone
+zae-limiter loadtest connect --name my-limiter --region us-east-1 --standalone
 
 # Override resources at connect time
-zae-limiter load connect --name my-limiter --region us-east-1 \
+zae-limiter loadtest connect --name my-limiter --region us-east-1 \
   --standalone --cpu 1024 --memory 2048 --pool-connections 200
 ```
 
@@ -87,7 +87,7 @@ curl http://localhost:8089/stop
 ```bash
 # Ctrl+C disconnects SSM tunnel; task keeps running
 # To stop the Fargate task on disconnect:
-zae-limiter load connect --name my-limiter --region us-east-1 --destroy
+zae-limiter loadtest connect --name my-limiter --region us-east-1 --destroy
 ```
 
 ## Connect Options
@@ -108,17 +108,17 @@ zae-limiter load connect --name my-limiter --region us-east-1 --destroy
 
 ## Calibration
 
-The `load calibrate` command uses Little's Law to binary-search for the optimal per-worker user count, then recommends distributed run configuration.
+The `loadtest tune` command uses Little's Law to binary-search for the optimal per-worker user count, then recommends distributed run configuration.
 
 ### Usage
 
 ```bash
 # Calibrate optimal per-worker user count
-zae-limiter load calibrate --name my-limiter --region us-east-1 \
+zae-limiter loadtest tune --name my-limiter --region us-east-1 \
   -f locustfiles/max_rps.py --step-duration 30
 
 # Cascade calibration
-zae-limiter load calibrate --name my-limiter --region us-east-1 \
+zae-limiter loadtest tune --name my-limiter --region us-east-1 \
   -f locustfiles/max_rps.py --user-classes MaxRpsCascadeUser --step-duration 30
 ```
 
@@ -144,22 +144,22 @@ zae-limiter load calibrate --name my-limiter --region us-east-1 \
 
 ## Automated Runs
 
-The `load run` command runs a self-contained, headless test and reports results — no manual Locust UI interaction needed. Supports Lambda, Fargate, and distributed runtimes.
+The `loadtest run` command runs a self-contained, headless test and reports results — no manual Locust UI interaction needed. Supports Lambda, Fargate, and distributed runtimes.
 
 ### Usage
 
 ```bash
 # Lambda run (default) — invokes a single Lambda worker
-zae-limiter load run --name my-limiter --region us-east-1 \
+zae-limiter loadtest run --name my-limiter --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
 # Fargate run — starts a Fargate task in standalone headless mode
-zae-limiter load run --name my-limiter --region us-east-1 \
+zae-limiter loadtest run --name my-limiter --region us-east-1 \
   --mode fargate \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
 # Fargate with custom CPU/memory
-zae-limiter load run --name my-limiter --region us-east-1 \
+zae-limiter loadtest run --name my-limiter --region us-east-1 \
   --mode fargate --cpu 2048 --memory 4096 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 ```
@@ -189,9 +189,9 @@ zae-limiter load run --name my-limiter --region us-east-1 \
 
 Benchmarks run on the `load-test` stack (DynamoDB on-demand, us-east-1). Three modes compared:
 
-- **Lambda standalone**: `load run --mode lambda` — single Lambda invocation, headless
-- **Distributed (1 Lambda)**: `load run --mode distributed --workers 1` — Fargate master + 1 Lambda worker
-- **Fargate standalone**: `load run --mode fargate` — single Fargate task, no workers
+- **Lambda standalone**: `loadtest run --mode lambda` — single Lambda invocation, headless
+- **Distributed (1 Lambda)**: `loadtest run --mode distributed --workers 1` — Fargate master + 1 Lambda worker
+- **Fargate standalone**: `loadtest run --mode fargate` — single Fargate task, no workers
 
 **max_rps.py (zero wait between requests) — 10 users, 60s:**
 
@@ -227,28 +227,28 @@ Benchmarks run on the `load-test` stack (DynamoDB on-demand, us-east-1). Three m
 
 ```bash
 # Prerequisites: deployed load test stack
-# zae-limiter load deploy --name <target> --region us-east-1 ...
+# zae-limiter loadtest deploy --name <target> --region us-east-1 ...
 
 # 1. Login
 aws sso login --profile zeroae-code/AWSPowerUserAccess
 
 # 2. Lambda standalone benchmark
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
-  uv run zae-limiter load run \
+  uv run zae-limiter loadtest run \
   --name <target> --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
 # 3. Fargate standalone benchmark
 #    (don't run simultaneously — they share the same DynamoDB table)
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
-  uv run zae-limiter load run \
+  uv run zae-limiter loadtest run \
   --name <target> --region us-east-1 \
   --mode fargate \
   -f locustfiles/max_rps.py --users 10 --duration 60
 
 # 4. Distributed benchmark (1 Lambda worker)
 AWS_PROFILE=zeroae-code/AWSPowerUserAccess \
-  uv run zae-limiter load run \
+  uv run zae-limiter loadtest run \
   --name <target> --region us-east-1 \
   --mode distributed --workers 1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
@@ -441,7 +441,7 @@ Error: Task failed to start within 2 minutes
 Check for stale tasks and force restart:
 
 ```bash
-zae-limiter load connect --name my-limiter --force
+zae-limiter loadtest connect --name my-limiter --force
 ```
 
 ### Port Already in Use

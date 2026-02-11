@@ -62,25 +62,25 @@ AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter deploy \
 The load stack requires `AcquireOnlyPolicyArn` and `FullAccessPolicyArn` outputs from the limiter stack. The limiter stack **must** be deployed with IAM policies (not `--no-iam`).
 
 ```bash
-AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load deploy \
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter loadtest deploy \
   --name load-test --region us-east-1 \
   --vpc-id vpc-09fa0359f30c6efe4 \
   --subnet-ids "subnet-0441a9342c2d605cf,subnet-0d607c058fe28230e" \
   -C examples/locust/
 ```
 
-The load deploy inherits `PermissionBoundary` and `RoleNameFormat` from the limiter stack outputs.
+The loadtest deploy inherits `PermissionBoundary` and `RoleNameFormat` from the limiter stack outputs.
 
-### Running calibration and benchmarks
+### Running tune and benchmarks
 
 ```bash
-# Calibrate optimal per-worker user count (binary search)
-AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load calibrate \
+# Tune optimal per-worker user count (binary search)
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter loadtest tune \
   --name load-test --region us-east-1 \
   -f locustfiles/max_rps.py --step-duration 30
 
 # Single run, Lambda mode (simplest)
-AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter load run \
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run zae-limiter loadtest run \
   --name load-test --region us-east-1 \
   -f locustfiles/max_rps.py --users 10 --duration 60
 ```
