@@ -1109,11 +1109,19 @@ class TestUiCommand:
             ]
         }
 
+    @staticmethod
+    def _make_successful_proc():
+        proc = MagicMock()
+        proc.stdout = iter([])
+        proc.wait.return_value = None
+        proc.returncode = 0
+        return proc
+
     def test_task_already_running(self, runner):
         """Connect reuses existing running task."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1124,7 +1132,7 @@ class TestUiCommand:
                 "taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]
             }
             mock_ecs.describe_tasks.return_value = self._make_task_response()
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1137,7 +1145,7 @@ class TestUiCommand:
         """Connect handles task that exists but isn't RUNNING."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1156,7 +1164,7 @@ class TestUiCommand:
                 running_response,  # poll - RUNNING
                 running_response,  # ssm check
             ]
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1168,7 +1176,7 @@ class TestUiCommand:
         """Connect handles task without runtime ID."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1187,7 +1195,7 @@ class TestUiCommand:
                 with_runtime,
                 with_runtime,
             ]
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1199,7 +1207,7 @@ class TestUiCommand:
         """Connect waits for SSM agent to become ready."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1216,7 +1224,7 @@ class TestUiCommand:
                 no_ssm,  # ssm poll 1 - not ready
                 with_ssm,  # ssm poll 2 - ready
             ]
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1271,7 +1279,7 @@ class TestUiCommand:
         """Connect retries SSM connection on failure."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1283,25 +1291,28 @@ class TestUiCommand:
             mock_ecs.describe_tasks.return_value = self._make_task_response()
 
             # Fail first two attempts, succeed on third
-            mock_subprocess_run.side_effect = [
-                MagicMock(returncode=1),
-                MagicMock(returncode=1),
-                MagicMock(returncode=0),
-            ]
+            def make_proc(returncode):
+                proc = MagicMock()
+                proc.stdout = iter([])
+                proc.wait.return_value = None
+                proc.returncode = returncode
+                return proc
+
+            mock_popen.side_effect = [make_proc(1), make_proc(1), make_proc(0)]
 
             result = runner.invoke(
                 loadtest,
                 ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
             assert result.exit_code == 0, result.output
-            assert mock_subprocess_run.call_count == 3
+            assert mock_popen.call_count == 3
             assert "retrying" in result.output.lower()
 
     def test_ssm_all_retries_fail(self, runner):
         """Connect reports failure after all SSM retries exhausted."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1313,20 +1324,27 @@ class TestUiCommand:
             mock_ecs.describe_tasks.return_value = self._make_task_response()
 
             # All 5 attempts fail
-            mock_subprocess_run.return_value = MagicMock(returncode=1)
+            def make_failed_proc(*args, **kwargs):
+                proc = MagicMock()
+                proc.stdout = iter([])
+                proc.wait.return_value = None
+                proc.returncode = 1
+                return proc
+
+            mock_popen.side_effect = make_failed_proc
 
             result = runner.invoke(
                 loadtest,
                 ["ui", "--name", "my-app", "-f", "locustfiles/simple.py", "--destroy"],
             )
-            assert mock_subprocess_run.call_count == 5
+            assert mock_popen.call_count == 5
             assert "failed after 5 attempts" in result.output.lower()
 
     def test_keyboard_interrupt_during_connect(self, runner):
         """Connect handles KeyboardInterrupt gracefully."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1336,7 +1354,7 @@ class TestUiCommand:
                 "taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]
             }
             mock_ecs.describe_tasks.return_value = self._make_task_response()
-            mock_subprocess_run.side_effect = KeyboardInterrupt
+            mock_popen.side_effect = KeyboardInterrupt
 
             result = runner.invoke(
                 loadtest,
@@ -1348,7 +1366,7 @@ class TestUiCommand:
         """Connect handles exceptions when stopping task in finally."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1358,7 +1376,7 @@ class TestUiCommand:
                 "taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]
             }
             mock_ecs.describe_tasks.return_value = self._make_task_response()
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             # Make stop_task fail
             mock_ecs.stop_task.side_effect = Exception("cannot stop task")
@@ -1373,7 +1391,7 @@ class TestUiCommand:
         """Connect without --destroy keeps task running after disconnect."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1384,7 +1402,7 @@ class TestUiCommand:
                 "taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]
             }
             mock_ecs.describe_tasks.return_value = self._make_task_response()
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1397,7 +1415,7 @@ class TestUiCommand:
         """Connect starts task with run_task and SSM tunnel."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1445,7 +1463,7 @@ class TestUiCommand:
                 "tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/task-id"}]
             }
 
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1459,7 +1477,7 @@ class TestUiCommand:
         """Connect uses run_task with overrides instead of service scaling."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1488,7 +1506,7 @@ class TestUiCommand:
             mock_ecs.run_task.return_value = {
                 "tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/task-id"}]
             }
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1518,7 +1536,7 @@ class TestUiCommand:
         """Connect --force stops existing task and starts new one."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1548,7 +1566,7 @@ class TestUiCommand:
             mock_ecs.run_task.return_value = {
                 "tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/new-task"}]
             }
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1576,7 +1594,7 @@ class TestUiCommand:
         """Connect warns when task exists and overrides provided without --force."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1587,7 +1605,7 @@ class TestUiCommand:
                 "taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/task-id"]
             }
             mock_ecs.describe_tasks.return_value = self._make_task_response()
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
@@ -1610,7 +1628,7 @@ class TestUiCommand:
         """Connect --standalone overrides master command."""
         with (
             patch("boto3.client") as mock_client,
-            patch("subprocess.run") as mock_subprocess_run,
+            patch("subprocess.Popen") as mock_popen,
             patch("time.sleep"),
         ):
             mock_ecs = MagicMock()
@@ -1638,7 +1656,7 @@ class TestUiCommand:
             mock_ecs.run_task.return_value = {
                 "tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/task-id"}]
             }
-            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            mock_popen.return_value = self._make_successful_proc()
 
             result = runner.invoke(
                 loadtest,
