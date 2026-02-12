@@ -10,10 +10,11 @@ import warnings
 from typing import TYPE_CHECKING, Any
 
 from .exceptions import NamespaceNotFoundError
+from .limiter import OnUnavailable as OnUnavailable
 from .naming import normalize_stack_name
 
 if TYPE_CHECKING:
-    from .models import StackOptions
+    from .models import OnUnavailableAction, StackOptions
     from .sync_repository import SyncRepository
 
 
@@ -34,6 +35,7 @@ class SyncRepositoryBuilder:
         self._config_cache_ttl = 60
         self._auto_update = True
         self._bucket_ttl_multiplier = 7
+        self._on_unavailable: OnUnavailableAction | None = None
         self._infra_options: dict[str, Any] = {}
 
     def namespace(self, name: str) -> "SyncRepositoryBuilder":
@@ -54,6 +56,14 @@ class SyncRepositoryBuilder:
     def bucket_ttl_multiplier(self, value: int) -> "SyncRepositoryBuilder":
         """Set bucket TTL multiplier (default: 7, 0 to disable)."""
         self._bucket_ttl_multiplier = value
+        return self
+
+    def on_unavailable(self, value: "OnUnavailableAction") -> "SyncRepositoryBuilder":
+        """Set on_unavailable behavior for the namespace ("allow" or "block").
+
+        This is persisted as the system-level default via set_system_defaults().
+        """
+        self._on_unavailable = value
         return self
 
     def snapshot_windows(self, value: str) -> "SyncRepositoryBuilder":
@@ -223,6 +233,9 @@ class SyncRepositoryBuilder:
         repo._namespace_id = namespace_id
         repo._namespace_name = self._namespace_name
         repo._reinitialize_config_cache(namespace_id)
+        if self._on_unavailable is not None:
+            existing_limits, _ = repo.get_system_defaults()
+            repo.set_system_defaults(limits=existing_limits, on_unavailable=self._on_unavailable)
         if not self._endpoint_url:
             if self._auto_update:
                 repo._check_and_update_version_auto()

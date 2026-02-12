@@ -22,7 +22,7 @@ from .exceptions import NamespaceNotFoundError
 from .naming import normalize_stack_name
 
 if TYPE_CHECKING:
-    from .models import StackOptions
+    from .models import OnUnavailableAction, StackOptions
     from .repository import Repository
 
 
@@ -47,6 +47,7 @@ class RepositoryBuilder:
         self._config_cache_ttl = 60
         self._auto_update = True
         self._bucket_ttl_multiplier = 7
+        self._on_unavailable: OnUnavailableAction | None = None
         self._infra_options: dict[str, Any] = {}
 
     # -------------------------------------------------------------------------
@@ -71,6 +72,14 @@ class RepositoryBuilder:
     def bucket_ttl_multiplier(self, value: int) -> "RepositoryBuilder":
         """Set bucket TTL multiplier (default: 7, 0 to disable)."""
         self._bucket_ttl_multiplier = value
+        return self
+
+    def on_unavailable(self, value: "OnUnavailableAction") -> "RepositoryBuilder":
+        """Set on_unavailable behavior for the namespace ("allow" or "block").
+
+        This is persisted as the system-level default via set_system_defaults().
+        """
+        self._on_unavailable = value
         return self
 
     # -------------------------------------------------------------------------
@@ -262,6 +271,14 @@ class RepositoryBuilder:
         repo._namespace_id = namespace_id
         repo._namespace_name = self._namespace_name
         repo._reinitialize_config_cache(namespace_id)
+
+        # 5b. Persist on_unavailable as system config if set
+        if self._on_unavailable is not None:
+            existing_limits, _ = await repo.get_system_defaults()
+            await repo.set_system_defaults(
+                limits=existing_limits,
+                on_unavailable=self._on_unavailable,
+            )
 
         # 6. Version check (skip for local DynamoDB without CloudFormation)
         if not self._endpoint_url:

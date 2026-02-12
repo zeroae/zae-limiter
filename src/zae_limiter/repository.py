@@ -169,6 +169,7 @@ class Repository:
         self,
         name: str,
         *,
+        on_unavailable: "OnUnavailableAction | None" = None,
         bucket_ttl_multiplier: int | None = None,
     ) -> "Repository":
         """Return a scoped Repository for the given namespace.
@@ -180,6 +181,9 @@ class Repository:
 
         Args:
             name: Namespace name to resolve.
+            on_unavailable: Override on_unavailable behavior for this
+                namespace ("allow" or "block").  Persisted via
+                ``set_system_defaults()``.
             bucket_ttl_multiplier: Override bucket TTL multiplier for
                 this scoped repo.  Defaults to the parent's value.
 
@@ -226,6 +230,14 @@ class Repository:
         # Share mutable caches
         scoped._entity_cache = self._entity_cache
         scoped._namespace_cache = self._namespace_cache
+
+        # Persist on_unavailable as system config if set
+        if on_unavailable is not None:
+            existing_limits, _ = await scoped.get_system_defaults()
+            await scoped.set_system_defaults(
+                limits=existing_limits,
+                on_unavailable=on_unavailable,
+            )
 
         return scoped
 

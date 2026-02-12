@@ -131,12 +131,14 @@ class RepositoryProtocol(Protocol):
         self,
         name: str,
         *,
+        on_unavailable: "OnUnavailableAction | None" = None,
         bucket_ttl_multiplier: int | None = None,
     ) -> "RepositoryProtocol":
         """Return a scoped repository for the given namespace.
 
         Args:
             name: Namespace name to resolve.
+            on_unavailable: Override on_unavailable for this namespace.
             bucket_ttl_multiplier: Override bucket TTL multiplier.
 
         Returns:
