@@ -244,7 +244,7 @@ event = {
             "eventName": "MODIFY",
             "dynamodb": {
                 "NewImage": {
-                    "PK": {"S": "ENTITY#test-entity"},
+                    "PK": {"S": "default/ENTITY#test-entity"},
                     "SK": {"S": "#BUCKET#test-resource#rpm"},
                     "entity_id": {"S": "test-entity"},
                     "data": {
@@ -255,7 +255,7 @@ event = {
                     }
                 },
                 "OldImage": {
-                    "PK": {"S": "ENTITY#test-entity"},
+                    "PK": {"S": "default/ENTITY#test-entity"},
                     "SK": {"S": "#BUCKET#test-resource#rpm"},
                     "entity_id": {"S": "test-entity"},
                     "data": {

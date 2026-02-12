@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from zae_limiter.schema import AUDIT_PREFIX
+from zae_limiter.schema import AUDIT_PREFIX, parse_namespace
 
 from .processor import StructuredLogger
 
@@ -164,9 +164,10 @@ def extract_audit_event(record: dict[str, Any]) -> dict[str, Any] | None:
     dynamodb_data = record.get("dynamodb", {})
     old_image = dynamodb_data.get("OldImage", {})
 
-    # Check if this is an audit record
+    # Check if this is an audit record (namespaced: "default/AUDIT#...")
     pk = old_image.get("PK", {}).get("S", "")
-    if not pk.startswith(AUDIT_PREFIX):
+    _, remainder = parse_namespace(pk)
+    if not remainder.startswith(AUDIT_PREFIX):
         return None
 
     if "action" not in old_image or "S" not in old_image.get("action", {}):

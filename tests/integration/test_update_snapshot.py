@@ -88,7 +88,7 @@ class TestUpdateSnapshotIntegration:
         assert item["window_start"] == "2024-01-01T14:00:00Z"
         assert item["tpm"] == 5000  # millitokens / 1000
         assert item["total_events"] == 1
-        assert item["GSI2PK"] == "RESOURCE#gpt-4"
+        assert item["GSI2PK"] == "default/RESOURCE#gpt-4"
         assert "ttl" in item
 
     def test_second_snapshot_updates_counters(self, dynamodb_table) -> None:

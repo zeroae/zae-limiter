@@ -60,7 +60,7 @@ class TestExtractAuditEvent:
             "eventName": "REMOVE",
             "dynamodb": {
                 "OldImage": {
-                    "PK": {"S": "ENTITY#user-123"},
+                    "PK": {"S": "default/ENTITY#user-123"},
                     "SK": {"S": "#META"},
                     "data": {"M": {}},
                 }
@@ -77,7 +77,7 @@ class TestExtractAuditEvent:
             "eventName": "REMOVE",
             "dynamodb": {
                 "OldImage": {
-                    "PK": {"S": "AUDIT#user-123"},
+                    "PK": {"S": "default/AUDIT#user-123"},
                     "SK": {"S": "#AUDIT#01HQJK123456789"},
                     # No data.M and no flat action field
                 }
@@ -150,7 +150,7 @@ class TestExtractAuditEvent:
     ) -> dict:
         """Helper to create audit stream records (flat format v0.6.0+)."""
         old_image: dict = {
-            "PK": {"S": f"AUDIT#{entity_id}"},
+            "PK": {"S": f"default/AUDIT#{entity_id}"},
             "SK": {"S": f"#AUDIT#{event_id}"},
             "entity_id": {"S": entity_id},
             "event_id": {"S": event_id},
@@ -398,13 +398,13 @@ class TestArchiveAuditEvents:
             {
                 "eventName": "MODIFY",
                 "dynamodb": {
-                    "NewImage": {"PK": {"S": "ENTITY#user-1"}},
+                    "NewImage": {"PK": {"S": "default/ENTITY#user-1"}},
                 },
             },
             {
                 "eventName": "REMOVE",
                 "dynamodb": {
-                    "OldImage": {"PK": {"S": "ENTITY#user-2"}},
+                    "OldImage": {"PK": {"S": "default/ENTITY#user-2"}},
                 },
             },
         ]
@@ -426,7 +426,7 @@ class TestArchiveAuditEvents:
         records = [
             {
                 "eventName": "MODIFY",
-                "dynamodb": {"NewImage": {"PK": {"S": "ENTITY#user-1"}}},
+                "dynamodb": {"NewImage": {"PK": {"S": "default/ENTITY#user-1"}}},
             }
         ]
         s3_client = MagicMock()
@@ -607,7 +607,7 @@ class TestArchiveAuditEvents:
             "eventName": "REMOVE",
             "dynamodb": {
                 "OldImage": {
-                    "PK": {"S": f"AUDIT#{entity_id}"},
+                    "PK": {"S": f"default/AUDIT#{entity_id}"},
                     "SK": {"S": f"#AUDIT#{event_id}"},
                     "entity_id": {"S": entity_id},
                     "event_id": {"S": event_id},

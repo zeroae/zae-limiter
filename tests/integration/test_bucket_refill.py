@@ -69,7 +69,7 @@ def _seed_bucket(table, entity_id: str, resource: str, limits: dict, rf_ms: int)
         rf_ms: Shared refill timestamp
     """
     item = {
-        "PK": pk_entity(entity_id),
+        "PK": pk_entity("default", entity_id),
         "SK": sk_bucket(resource),
         "entity_id": entity_id,
         "rf": rf_ms,
@@ -89,7 +89,7 @@ def _get_bucket(table, entity_id: str, resource: str) -> dict:
     """Read a bucket item from DynamoDB."""
     response = table.get_item(
         Key={
-            "PK": pk_entity(entity_id),
+            "PK": pk_entity("default", entity_id),
             "SK": sk_bucket(resource),
         }
     )
@@ -115,7 +115,7 @@ def _make_stream_record(
 
     def _build_image(limits: dict, rf: int) -> dict:
         image = {
-            "PK": {"S": pk_entity(entity_id)},
+            "PK": {"S": pk_entity("default", entity_id)},
             "SK": {"S": sk_bucket(resource)},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf)},
@@ -323,7 +323,7 @@ class TestTryRefillBucketIntegration:
         # Simulate concurrent speculative consume (ADD -1000_000)
         dynamodb_table.update_item(
             Key={
-                "PK": pk_entity(entity_id),
+                "PK": pk_entity("default", entity_id),
                 "SK": sk_bucket(resource),
             },
             UpdateExpression="ADD b_tpm_tk :consumed, b_tpm_tc :consumed_tc",
