@@ -2976,3 +2976,291 @@ class TestCompositeNormalGuard:
         rpm_bucket = [b for b in buckets_after if b.limit_name == "rpm"][0]
         # tk was 20_000 after speculative, +50_000 refill -10_000 consume = 60_000
         assert rpm_bucket.tokens_milli == 60_000
+
+
+class TestGSI4Attributes:
+    """Test GSI4PK/GSI4SK on all creation paths."""
+
+    @pytest.mark.asyncio
+    async def test_create_entity_sets_gsi4(self, repo):
+        """create_entity() sets GSI4PK/GSI4SK on entity metadata."""
+        from zae_limiter import schema
+
+        await repo.create_entity(entity_id="gsi4-entity", name="Test")
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("default", "gsi4-entity")},
+                "SK": {"S": schema.sk_meta()},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_entity("default", "gsi4-entity")
+
+    @pytest.mark.asyncio
+    async def test_build_composite_create_sets_gsi4(self, repo):
+        """build_composite_create() sets GSI4PK/GSI4SK on bucket items."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.create_entity(entity_id="gsi4-bucket")
+        limits = [Limit.per_minute("rpm", 100)]
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("gsi4-bucket", "api", lim, now_ms) for lim in limits]
+
+        create_item = repo.build_composite_create(
+            entity_id="gsi4-bucket",
+            resource="api",
+            states=states,
+            now_ms=now_ms,
+        )
+        await repo.transact_write([create_item])
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("default", "gsi4-bucket")},
+                "SK": {"S": schema.sk_bucket("api")},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_entity("default", "gsi4-bucket")
+
+    @pytest.mark.asyncio
+    async def test_set_limits_sets_gsi4_on_config(self, repo):
+        """set_limits() sets GSI4PK/GSI4SK on entity config item."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.create_entity(entity_id="gsi4-config")
+        await repo.set_limits(
+            entity_id="gsi4-config",
+            limits=[Limit.per_minute("rpm", 100)],
+            resource="api",
+        )
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("default", "gsi4-config")},
+                "SK": {"S": sk_config("api")},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_entity("default", "gsi4-config")
+
+    @pytest.mark.asyncio
+    async def test_set_limits_sets_gsi4_on_entity_config_resources(self, repo):
+        """set_limits() sets GSI4PK/GSI4SK on entity config resources registry."""
+        from zae_limiter import schema
+
+        await repo.create_entity(entity_id="gsi4-ecr")
+        await repo.set_limits(
+            entity_id="gsi4-ecr",
+            limits=[Limit.per_minute("rpm", 100)],
+            resource="api",
+        )
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system("default")},
+                "SK": {"S": schema.sk_entity_config_resources()},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_system("default")
+
+    @pytest.mark.asyncio
+    async def test_set_resource_defaults_sets_gsi4_on_config(self, repo):
+        """set_resource_defaults() sets GSI4PK/GSI4SK on resource config."""
+        from zae_limiter import schema
+
+        await repo.set_resource_defaults(
+            resource="gpt-4",
+            limits=[Limit.per_minute("rpm", 100)],
+        )
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_resource("default", "gpt-4")},
+                "SK": {"S": sk_config()},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_resource("default", "gpt-4")
+
+    @pytest.mark.asyncio
+    async def test_set_resource_defaults_sets_gsi4_on_resource_registry(self, repo):
+        """set_resource_defaults() sets GSI4PK/GSI4SK on resource list."""
+        from zae_limiter import schema
+
+        await repo.set_resource_defaults(
+            resource="gpt-4",
+            limits=[Limit.per_minute("rpm", 100)],
+        )
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system("default")},
+                "SK": {"S": schema.sk_resources()},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_system("default")
+
+    @pytest.mark.asyncio
+    async def test_set_system_defaults_sets_gsi4(self, repo):
+        """set_system_defaults() sets GSI4PK/GSI4SK on system config."""
+        from zae_limiter import schema
+
+        await repo.set_system_defaults(
+            limits=[Limit.per_minute("rpm", 100)],
+        )
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system("default")},
+                "SK": {"S": sk_config()},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_system("default")
+
+    @pytest.mark.asyncio
+    async def test_set_version_record_sets_gsi4(self, repo):
+        """set_version_record() sets GSI4PK/GSI4SK on version record."""
+        from zae_limiter import schema
+
+        await repo.set_version_record(schema_version="1.0.0")
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_system("default")},
+                "SK": {"S": schema.sk_version()},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_system("default")
+
+    @pytest.mark.asyncio
+    async def test_log_audit_event_sets_gsi4(self, repo):
+        """_log_audit_event() sets GSI4PK/GSI4SK on audit records."""
+        from zae_limiter import schema
+
+        event = await repo._log_audit_event(
+            action="test_action",
+            entity_id="audit-entity",
+            principal="test-user",
+        )
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_audit("default", "audit-entity")},
+                "SK": {"S": schema.sk_audit(event.event_id)},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_audit("default", "audit-entity")
+
+    @pytest.mark.asyncio
+    async def test_speculative_consume_does_not_set_gsi4(self, repo):
+        """speculative_consume() does NOT set GSI4 (update path, not creation)."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.create_entity(entity_id="spec-gsi4")
+        limits = [Limit.per_minute("rpm", 100)]
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("spec-gsi4", "api", lim, now_ms) for lim in limits]
+        create_item = repo.build_composite_create(
+            entity_id="spec-gsi4",
+            resource="api",
+            states=states,
+            now_ms=now_ms,
+        )
+        await repo.transact_write([create_item])
+
+        # Speculative consume (may fail in moto, but we only care about GSI4)
+        await repo.speculative_consume(
+            entity_id="spec-gsi4",
+            resource="api",
+            consume={"rpm": 1_000},
+        )
+
+        # Verify GSI4 was NOT changed by speculative (still from create)
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("default", "spec-gsi4")},
+                "SK": {"S": schema.sk_bucket("api")},
+            },
+        )
+        item = response["Item"]
+        # GSI4 should exist from build_composite_create, not from speculative
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_entity("default", "spec-gsi4")
+
+    @pytest.mark.asyncio
+    async def test_adjust_does_not_set_gsi4(self, repo):
+        """build_composite_adjust() does NOT set GSI4 (update path, not creation)."""
+        from zae_limiter import schema
+        from zae_limiter.models import Limit
+
+        await repo.create_entity(entity_id="adj-gsi4")
+        limits = [Limit.per_minute("rpm", 100)]
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("adj-gsi4", "api", lim, now_ms) for lim in limits]
+        create_item = repo.build_composite_create(
+            entity_id="adj-gsi4",
+            resource="api",
+            states=states,
+            now_ms=now_ms,
+        )
+        await repo.transact_write([create_item])
+
+        # Adjust
+        adjust_item = repo.build_composite_adjust(
+            entity_id="adj-gsi4",
+            resource="api",
+            deltas={"rpm": -500},
+        )
+        await repo.write_each([adjust_item])
+
+        # Verify GSI4 still exists from create, was NOT modified
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity("default", "adj-gsi4")},
+                "SK": {"S": schema.sk_bucket("api")},
+            },
+        )
+        item = response["Item"]
+        assert item["GSI4PK"]["S"] == "default"
+        assert item["GSI4SK"]["S"] == schema.pk_entity("default", "adj-gsi4")
