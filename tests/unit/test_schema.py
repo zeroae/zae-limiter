@@ -181,6 +181,10 @@ class TestParseNamespace:
         with pytest.raises(ValueError):
             parse_namespace("noslash")
 
+    def test_empty_string_raises_value_error(self):
+        with pytest.raises(ValueError):
+            parse_namespace("")
+
     def test_resource_key(self):
         assert parse_namespace("default/RESOURCE#gpt-4") == ("default", "RESOURCE#gpt-4")
 
