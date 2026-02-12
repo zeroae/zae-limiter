@@ -6909,7 +6909,7 @@ calls to 1 GetItem call.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.reconcile_bucket_to_defaults" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reconcile_bucket_to_defaults</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">effective_limits</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="p">,</span> <span class="n">stale_limit_names</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reconcile_bucket_to_defaults</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">effective_limits</span><span class="p">,</span> <span class="n">stale_limit_names</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -6979,22 +6979,6 @@ stale limit attributes that no longer exist in the effective config.</p>
             <td>
               <div class="doc-md-description">
                 <p>The new effective limits (resource/system defaults)</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>bucket_ttl_refill_multiplier</code>
-            </td>
-            <td>
-                  <code><span title="int">int</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>TTL multiplier for default limits</p>
               </div>
             </td>
             <td>
@@ -10945,7 +10929,7 @@ the current item state on failure.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.reconcile_bucket_to_defaults" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reconcile_bucket_to_defaults</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">effective_limits</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="p">,</span> <span class="n">stale_limit_names</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reconcile_bucket_to_defaults</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">effective_limits</span><span class="p">,</span> <span class="n">stale_limit_names</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -11013,22 +10997,6 @@ stale limit attributes. No-op if bucket doesn't exist.</p>
             <td>
               <div class="doc-md-description">
                 <p>New effective limits (resource/system defaults)</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>bucket_ttl_refill_multiplier</code>
-            </td>
-            <td>
-                  <code><span title="int">int</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>TTL multiplier for default limits</p>
               </div>
             </td>
             <td>
