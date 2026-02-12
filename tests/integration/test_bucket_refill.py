@@ -170,6 +170,7 @@ class TestTryRefillBucketIntegration:
 
         # Build state as if aggregator parsed the stream
         state = BucketRefillState(
+            namespace_id="default",
             entity_id=entity_id,
             resource=resource,
             rf_ms=old_rf_ms,
@@ -220,6 +221,7 @@ class TestTryRefillBucketIntegration:
         )
 
         state = BucketRefillState(
+            namespace_id="default",
             entity_id=entity_id,
             resource=resource,
             rf_ms=old_rf_ms,
@@ -268,6 +270,7 @@ class TestTryRefillBucketIntegration:
         )
 
         state = BucketRefillState(
+            namespace_id="default",
             entity_id=entity_id,
             resource=resource,
             rf_ms=old_rf_ms,
@@ -336,6 +339,7 @@ class TestTryRefillBucketIntegration:
         # Now aggregator refills — the ADD should commute
         # tc_delta=10M ensures projected (~1.67M) < consumption (10M) → triggers refill
         state = BucketRefillState(
+            namespace_id="default",
             entity_id=entity_id,
             resource=resource,
             rf_ms=old_rf_ms,
@@ -396,6 +400,7 @@ class TestTryRefillBucketIntegration:
         )
 
         state = BucketRefillState(
+            namespace_id="default",
             entity_id=entity_id,
             resource=resource,
             rf_ms=old_rf_ms,
@@ -514,7 +519,7 @@ class TestAggregateAndRefillIntegration:
         bucket_states = aggregate_bucket_states(records)
         assert len(bucket_states) == 1
 
-        key = (entity_id, resource)
+        key = ("default", entity_id, resource)
         state = bucket_states[key]
 
         # Verify aggregation: tc_delta = 5k across both events
