@@ -19,6 +19,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    DEFAULT_NAMESPACE,
     SK_BUCKET,
     bucket_attr,
     gsi2_pk_resource,
@@ -516,7 +517,7 @@ def try_refill_bucket(
     try:
         table.update_item(
             Key={
-                "PK": pk_entity(state.entity_id),
+                "PK": pk_entity(DEFAULT_NAMESPACE, state.entity_id),
                 "SK": sk_bucket(state.resource),
             },
             UpdateExpression=update_expr,
@@ -640,7 +641,7 @@ def update_snapshot(
     # See: https://github.com/zeroae/zae-limiter/issues/168
     table.update_item(
         Key={
-            "PK": pk_entity(delta.entity_id),
+            "PK": pk_entity(DEFAULT_NAMESPACE, delta.entity_id),
             "SK": sk_usage(delta.resource, window_key),
         },
         UpdateExpression="""
@@ -667,7 +668,7 @@ def update_snapshot(
             ":resource": delta.resource,
             ":window": window,
             ":window_start": window_key,
-            ":gsi2pk": gsi2_pk_resource(delta.resource),
+            ":gsi2pk": gsi2_pk_resource(DEFAULT_NAMESPACE, delta.resource),
             ":gsi2sk": gsi2_sk_usage(window_key, delta.entity_id),
             ":ttl": calculate_snapshot_ttl(ttl_days),
             ":delta": tokens_delta,

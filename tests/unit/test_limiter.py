@@ -2762,14 +2762,14 @@ class TestRateLimiterUsageSnapshots:
 
         for entity_id, resource, window_type, window_start, counters in snapshots_data:
             item = {
-                "PK": {"S": schema.pk_entity(entity_id)},
+                "PK": {"S": schema.pk_entity("default", entity_id)},
                 "SK": {"S": schema.sk_usage(resource, window_start)},
                 "entity_id": {"S": entity_id},
                 "resource": {"S": resource},
                 "window": {"S": window_type},
                 "window_start": {"S": window_start},
                 "total_events": {"N": str(sum(counters.values()))},
-                "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+                "GSI2PK": {"S": schema.gsi2_pk_resource("default", resource)},
                 "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
             }
             for name, value in counters.items():
@@ -4144,7 +4144,7 @@ class TestLeaseCommitTTL:
         # We need to check the raw item has ttl - let's query directly
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
         assert item is not None
         assert "ttl" in item
 
@@ -4153,7 +4153,8 @@ class TestLeaseCommitTTL:
         from zae_limiter.schema import pk_entity, sk_bucket
 
         # Query for a bucket that doesn't exist
-        item = await limiter._repository._get_item(pk_entity("nonexistent-user"), sk_bucket("api"))
+        pk = pk_entity("default", "nonexistent-user")
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is None
 
     async def test_commit_removes_ttl_for_entity_config(self, limiter):
@@ -4184,7 +4185,7 @@ class TestLeaseCommitTTL:
         # Verify TTL was removed
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
         assert item is not None
         assert "ttl" not in item
 
@@ -4209,7 +4210,8 @@ class TestLeaseCommitTTL:
         # Verify TTL IS set (entity_default is treated as a default, not custom)
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("gpt-4"))
+        pk = pk_entity("default", "user-1")
+        item = await limiter._repository._get_item(pk, sk_bucket("gpt-4"))
         assert item is not None
         assert "ttl" in item, "entity_default config should have TTL (treated as default)"
 
@@ -4232,7 +4234,7 @@ class TestLeaseCommitTTL:
         # Get TTL from item
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
 
         # TTL = now + (60 seconds * 7 multiplier) = now + 420
         # Allow ±1 second for timing
@@ -4271,7 +4273,8 @@ class TestLeaseCommitTTL:
 
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        item = await limiter._repository._get_item(pk_entity("user-slow"), sk_bucket("api"))
+        pk = pk_entity("default", "user-slow")
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
 
         # Time to fill = (capacity / refill_amount) × refill_period = 100 × 60 = 6000 seconds
         # Expected TTL = time_to_fill × multiplier = 6000 × 7 = 42000 seconds
@@ -4307,7 +4310,8 @@ class TestLeaseCommitTTL:
                 # Verify no TTL set
                 from zae_limiter.schema import pk_entity, sk_bucket
 
-                item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+                pk = pk_entity("default", "user-1")
+                item = await limiter._repository._get_item(pk, sk_bucket("api"))
                 assert item is not None
                 assert "ttl" not in item
 
@@ -4334,7 +4338,7 @@ class TestLeaseCommitTTL:
             pass
 
         # Verify no TTL (entity has custom config)
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
         assert item is not None
         assert "ttl" not in item
 
@@ -4353,7 +4357,7 @@ class TestLeaseCommitTTL:
             pass
 
         # Verify TTL is now set (entity uses default config)
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
         assert item is not None
         assert "ttl" in item
 
@@ -4388,7 +4392,7 @@ class TestBucketLimitSync:
             pass
 
         # Verify bucket was created with capacity=100
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Initial capacity should be 100 RPM"
 
@@ -4396,7 +4400,7 @@ class TestBucketLimitSync:
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
 
         # Verify bucket capacity was updated immediately (no acquire needed)
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"
 
@@ -4423,7 +4427,7 @@ class TestBucketLimitSync:
             pass
 
         # Verify bucket was created with capacity=200
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Initial capacity should be 200 RPM"
 
@@ -4431,7 +4435,7 @@ class TestBucketLimitSync:
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="api")
 
         # Verify bucket capacity was updated immediately (no acquire needed)
-        item = await limiter._repository._get_item(pk_entity("user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Bucket capacity should be synced to 100 RPM"
 
@@ -4457,7 +4461,7 @@ class TestBucketLimitSync:
             pass
 
         # Verify initial values
-        item = await limiter._repository._get_item(pk_entity("user-2"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-2"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 100000
         assert item["b_tpm_cp"] == 10000000
@@ -4470,7 +4474,7 @@ class TestBucketLimitSync:
         )
 
         # Verify both buckets synced
-        item = await limiter._repository._get_item(pk_entity("user-2"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-2"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "rpm capacity should be synced"
         assert item["b_tpm_cp"] == 20000000, "tpm capacity should be synced"
@@ -4493,7 +4497,7 @@ class TestBucketLimitSync:
             pass
 
         # Verify initial values (per minute: refill_period=60s)
-        item = await limiter._repository._get_item(pk_entity("user-3"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-3"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 100000  # capacity: 100 * 1000
         assert item["b_rpm_bx"] == 150000  # burst: 150 * 1000
@@ -4508,7 +4512,7 @@ class TestBucketLimitSync:
         )
 
         # Verify all params updated
-        item = await limiter._repository._get_item(pk_entity("user-3"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk_entity("default", "user-3"), sk_bucket("api"))
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "capacity should be synced"
         assert item["b_rpm_bx"] == 300000, "burst should be synced"
@@ -4587,7 +4591,8 @@ class TestBucketReconciliation:
             pass
 
         # Verify bucket has TTL
-        item = await limiter._repository._get_item(pk_entity("user-ttl"), sk_bucket("api"))
+        pk = pk_entity("default", "user-ttl")
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "ttl" in item
 
@@ -4595,7 +4600,7 @@ class TestBucketReconciliation:
         await limiter.set_limits("user-ttl", [Limit.per_minute("rpm", 200)], resource="api")
 
         # Verify TTL removed and capacity updated
-        item = await limiter._repository._get_item(pk_entity("user-ttl"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "ttl" not in item
         assert item["b_rpm_cp"] == 200000
@@ -4618,7 +4623,8 @@ class TestBucketReconciliation:
         async with limiter.acquire(entity_id="user-del", resource="api", consume={"rpm": 1}):
             pass
 
-        item = await limiter._repository._get_item(pk_entity("user-del"), sk_bucket("api"))
+        pk = pk_entity("default", "user-del")
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "ttl" not in item
         assert item["b_rpm_cp"] == 500000
@@ -4626,7 +4632,7 @@ class TestBucketReconciliation:
         # Delete entity config — should reconcile to resource defaults
         await limiter.delete_limits("user-del", resource="api")
 
-        item = await limiter._repository._get_item(pk_entity("user-del"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "ttl" in item, "TTL should be set (now using defaults)"
         assert item["b_rpm_cp"] == 100000, "Capacity should match resource defaults"
@@ -4657,14 +4663,15 @@ class TestBucketReconciliation:
         ):
             pass
 
-        item = await limiter._repository._get_item(pk_entity("user-stale"), sk_bucket("api"))
+        pk = pk_entity("default", "user-stale")
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "b_tpm_cp" in item, "tpm limit should exist in bucket"
 
         # Delete entity config — tpm attrs should be removed
         await limiter.delete_limits("user-stale", resource="api")
 
-        item = await limiter._repository._get_item(pk_entity("user-stale"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "b_rpm_cp" in item, "rpm limit should still exist"
         assert item["b_rpm_cp"] == 100000, "rpm should match system defaults"
@@ -4685,14 +4692,15 @@ class TestBucketReconciliation:
             pass
 
         item_before = await limiter._repository._get_item(
-            pk_entity("user-orphan"), sk_bucket("api")
+            pk_entity("default", "user-orphan"), sk_bucket("api")
         )
         assert item_before is not None
 
         # Delete entity config — no fallback, bucket left as-is
         await limiter.delete_limits("user-orphan", resource="api")
 
-        item_after = await limiter._repository._get_item(pk_entity("user-orphan"), sk_bucket("api"))
+        pk = pk_entity("default", "user-orphan")
+        item_after = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item_after is not None
         # Bucket should be unchanged (no reconciliation)
         assert item_after["b_rpm_cp"] == item_before["b_rpm_cp"]
@@ -4735,7 +4743,8 @@ class TestBucketReconciliation:
             pass
 
         # Verify entity config is cached (not _NO_CONFIG)
-        entry = limiter._repository._config_cache._entity_limits.get(("user-dcache", "api"))
+        cache_key = ("default", "user-dcache", "api")
+        entry = limiter._repository._config_cache._entity_limits.get(cache_key)
         assert entry is not None and entry.value is not _NO_CONFIG
 
         # delete_limits should evict stale entity config
@@ -4744,7 +4753,7 @@ class TestBucketReconciliation:
         # After delete, _resolve_limits() re-caches with _NO_CONFIG sentinel
         # (entity config is gone → negative cache entry). The stale entity
         # limits (rpm=200) must NOT be in the cache.
-        entry = limiter._repository._config_cache._entity_limits.get(("user-dcache", "api"))
+        entry = limiter._repository._config_cache._entity_limits.get(cache_key)
         assert entry is None or entry.value is _NO_CONFIG, (
             "Cache should not contain stale entity limits after delete"
         )
@@ -5817,8 +5826,8 @@ class TestCascadeEntityCache:
             pass
 
         cache = limiter._repository._entity_cache
-        assert "entity-1" in cache
-        cascade, parent_id = cache["entity-1"]
+        assert ("default", "entity-1") in cache
+        cascade, parent_id = cache[("default", "entity-1")]
         assert cascade is False
         assert parent_id is None
 
@@ -5834,8 +5843,8 @@ class TestCascadeEntityCache:
             pass
 
         cache = limiter._repository._entity_cache
-        assert "entity-1" in cache
-        cascade, parent_id = cache["entity-1"]
+        assert ("default", "entity-1") in cache
+        cascade, parent_id = cache[("default", "entity-1")]
         assert cascade is False
         assert parent_id is None
 
@@ -5850,8 +5859,8 @@ class TestCascadeEntityCache:
             pass
 
         cache = limiter._repository._entity_cache
-        assert "child-1" in cache
-        cascade, parent_id = cache["child-1"]
+        assert ("default", "child-1") in cache
+        cascade, parent_id = cache[("default", "child-1")]
         assert cascade is True
         assert parent_id == "parent-1"
 

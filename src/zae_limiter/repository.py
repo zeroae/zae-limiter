@@ -75,6 +75,8 @@ class Repository:
         self.table_name = self.stack_name
         self.region = region
         self.endpoint_url = endpoint_url
+        self._namespace_id = schema.DEFAULT_NAMESPACE
+        self._bucket_ttl_refill_multiplier = 7
         self._stack_options = stack_options
         self._session: aioboto3.Session | None = None
         self._client: Any = None
@@ -92,11 +94,13 @@ class Repository:
         )
 
         # Config cache for resolve_limits() (ADR-122)
-        self._config_cache = ConfigCache(ttl_seconds=config_cache_ttl)
+        self._config_cache = ConfigCache(
+            ttl_seconds=config_cache_ttl, namespace_id=self._namespace_id
+        )
 
         # Entity metadata cache for parallel cascade writes (issue #318)
-        # Stores {entity_id -> (cascade, parent_id)} — immutable, no TTL needed
-        self._entity_cache: dict[str, tuple[bool, str | None]] = {}
+        # Stores {(namespace_id, entity_id) -> (cascade, parent_id)} — immutable, no TTL needed
+        self._entity_cache: dict[tuple[str, str], tuple[bool, str | None]] = {}
 
     @property
     def capabilities(self) -> BackendCapabilities:
@@ -311,7 +315,7 @@ class Repository:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(entity_id)},
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_meta()},
             "entity_id": {"S": entity_id},
             "name": {"S": name or entity_id},
@@ -323,7 +327,7 @@ class Repository:
 
         # Add GSI1 keys for parent lookup if this is a child
         if parent_id:
-            item["GSI1PK"] = {"S": schema.gsi1_pk_parent(parent_id)}
+            item["GSI1PK"] = {"S": schema.gsi1_pk_parent(self._namespace_id, parent_id)}
             item["GSI1SK"] = {"S": schema.gsi1_sk_child(entity_id)}
 
         try:
@@ -366,18 +370,18 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_entity(entity_id)},
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_meta()},
             },
         )
 
         item = response.get("Item")
         if not item:
-            self._entity_cache[entity_id] = (False, None)
+            self._entity_cache[(self._namespace_id, entity_id)] = (False, None)
             return None
 
         entity = self._deserialize_entity(item)
-        self._entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+        self._entity_cache[(self._namespace_id, entity_id)] = (entity.cascade, entity.parent_id)
         return entity
 
     async def delete_entity(
@@ -398,7 +402,9 @@ class Repository:
         response = await client.query(
             TableName=self.table_name,
             KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={":pk": {"S": schema.pk_entity(entity_id)}},
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)}
+            },
         )
 
         # Delete all items in batches
@@ -432,7 +438,9 @@ class Repository:
             TableName=self.table_name,
             IndexName=schema.GSI1_NAME,
             KeyConditionExpression="GSI1PK = :pk",
-            ExpressionAttributeValues={":pk": {"S": schema.gsi1_pk_parent(parent_id)}},
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.gsi1_pk_parent(self._namespace_id, parent_id)}
+            },
         )
 
         entities = []
@@ -459,7 +467,7 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_entity(entity_id)},
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_bucket(resource)},
             },
         )
@@ -490,7 +498,7 @@ class Repository:
             response = await client.get_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
             )
@@ -502,7 +510,7 @@ class Repository:
         # Query all composite bucket items for this entity
         key_condition = "PK = :pk AND begins_with(SK, :sk_prefix)"
         expression_values: dict[str, Any] = {
-            ":pk": {"S": schema.pk_entity(entity_id)},
+            ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             ":sk_prefix": {"S": schema.SK_BUCKET},
         }
 
@@ -554,7 +562,7 @@ class Repository:
 
             request_keys = [
                 {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 }
                 for entity_id, resource in chunk
@@ -606,7 +614,7 @@ class Repository:
 
         # Build all keys: META key + composite bucket keys
         meta_key = {
-            "PK": {"S": schema.pk_entity(entity_id)},
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_meta()},
         }
 
@@ -615,7 +623,7 @@ class Repository:
         for eid, resource in unique_bucket_keys:
             request_keys.append(
                 {
-                    "PK": {"S": schema.pk_entity(eid)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, eid)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 }
             )
@@ -647,9 +655,9 @@ class Repository:
 
         # Populate entity cache transparently (issue #318)
         if entity is not None:
-            self._entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+            self._entity_cache[(self._namespace_id, entity_id)] = (entity.cascade, entity.parent_id)
         else:
-            self._entity_cache[entity_id] = (False, None)
+            self._entity_cache[(self._namespace_id, entity_id)] = (False, None)
 
         return entity, buckets
 
@@ -804,7 +812,7 @@ class Repository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": "SET #tokens = :tokens, #refill = :refill",
@@ -857,12 +865,12 @@ class Repository:
             parent_id: The entity's parent_id (if any)
         """
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(entity_id)},
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_bucket(resource)},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
             schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
-            "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+            "GSI2PK": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
             "cascade": {"BOOL": cascade},
         }
@@ -986,7 +994,7 @@ class Repository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
@@ -1038,7 +1046,7 @@ class Repository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
@@ -1091,7 +1099,7 @@ class Repository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
@@ -1166,7 +1174,7 @@ class Repository:
             - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
         # Check entity cache for parallel cascade opportunity (issue #318)
-        cache_entry = self._entity_cache.get(entity_id)
+        cache_entry = self._entity_cache.get((self._namespace_id, entity_id))
 
         if cache_entry is not None:
             cascade_cached, parent_id_cached = cache_entry
@@ -1180,7 +1188,7 @@ class Repository:
                     ),
                 )
                 if child_result.success:
-                    self._entity_cache[entity_id] = (
+                    self._entity_cache[(self._namespace_id, entity_id)] = (
                         child_result.cascade,
                         child_result.parent_id,
                     )
@@ -1196,7 +1204,7 @@ class Repository:
         # Cache miss or non-cascade: single UpdateItem
         result = await self._speculative_consume_single(entity_id, resource, consume, ttl_seconds)
         if result.success:
-            self._entity_cache[entity_id] = (result.cascade, result.parent_id)
+            self._entity_cache[(self._namespace_id, entity_id)] = (result.cascade, result.parent_id)
         return result
 
     async def _speculative_consume_single(
@@ -1257,7 +1265,7 @@ class Repository:
             response = await client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 UpdateExpression=update_expr,
@@ -1321,13 +1329,13 @@ class Repository:
 
         # Build composite config item with all limits
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(entity_id)},
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
             "config_version": {"N": "1"},
             # GSI3 attributes for sparse indexing (entity config queries)
-            "GSI3PK": {"S": schema.gsi3_pk_entity_config(resource)},
+            "GSI3PK": {"S": schema.gsi3_pk_entity_config(self._namespace_id, resource)},
             "GSI3SK": {"S": schema.gsi3_sk_entity(entity_id)},
         }
 
@@ -1350,7 +1358,7 @@ class Repository:
                         "Update": {
                             "TableName": self.table_name,
                             "Key": {
-                                "PK": {"S": schema.pk_system()},
+                                "PK": {"S": schema.pk_system(self._namespace_id)},
                                 "SK": {"S": schema.sk_entity_config_resources()},
                             },
                             "UpdateExpression": "ADD #resource :one",
@@ -1494,7 +1502,7 @@ class Repository:
             await client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 UpdateExpression=update_expr,
@@ -1514,7 +1522,6 @@ class Repository:
         entity_id: str,
         resource: str,
         effective_limits: list[Limit],
-        bucket_ttl_refill_multiplier: int,
         stale_limit_names: set[str] | None = None,
     ) -> None:
         """Reconcile bucket to effective defaults after config deletion (issue #327).
@@ -1529,7 +1536,6 @@ class Repository:
             entity_id: ID of the entity
             resource: Resource name
             effective_limits: The new effective limits (resource/system defaults)
-            bucket_ttl_refill_multiplier: TTL multiplier for default limits
             stale_limit_names: Limit names to REMOVE from bucket (limits that
                 were in the deleted entity config but not in effective defaults)
         """
@@ -1537,7 +1543,7 @@ class Repository:
             entity_id,
             resource,
             effective_limits,
-            bucket_ttl_refill_multiplier=bucket_ttl_refill_multiplier,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
             stale_limit_names=stale_limit_names,
         )
 
@@ -1553,7 +1559,7 @@ class Repository:
             await client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_system()},
+                    "PK": {"S": schema.pk_system(self._namespace_id)},
                     "SK": {"S": schema.sk_entity_config_resources()},
                 },
                 UpdateExpression="REMOVE #resource",
@@ -1582,7 +1588,7 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_entity(entity_id)},
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_config(resource)},
             },
             ConsistentRead=False,
@@ -1621,7 +1627,7 @@ class Repository:
                         "Delete": {
                             "TableName": self.table_name,
                             "Key": {
-                                "PK": {"S": schema.pk_entity(entity_id)},
+                                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                                 "SK": {"S": schema.sk_config(resource)},
                             },
                             "ConditionExpression": "attribute_exists(PK)",
@@ -1631,7 +1637,7 @@ class Repository:
                         "Update": {
                             "TableName": self.table_name,
                             "Key": {
-                                "PK": {"S": schema.pk_system()},
+                                "PK": {"S": schema.pk_system(self._namespace_id)},
                                 "SK": {"S": schema.sk_entity_config_resources()},
                             },
                             "UpdateExpression": "ADD #resource :minus_one",
@@ -1697,7 +1703,9 @@ class Repository:
             "TableName": self.table_name,
             "IndexName": schema.GSI3_NAME,
             "KeyConditionExpression": "GSI3PK = :pk",
-            "ExpressionAttributeValues": {":pk": {"S": schema.gsi3_pk_entity_config(resource)}},
+            "ExpressionAttributeValues": {
+                ":pk": {"S": schema.gsi3_pk_entity_config(self._namespace_id, resource)}
+            },
         }
 
         if limit is not None:
@@ -1739,7 +1747,7 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_entity_config_resources()},
             },
             ConsistentRead=False,
@@ -1785,7 +1793,7 @@ class Repository:
 
         # Build composite config item with all limits
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_resource(resource)},
+            "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
             "SK": {"S": schema.sk_config()},
             "resource": {"S": resource},
             "config_version": {"N": "1"},
@@ -1801,7 +1809,7 @@ class Repository:
         await client.update_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_resources()},
             },
             UpdateExpression="ADD resources :resource",
@@ -1835,7 +1843,7 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_resource(resource)},
+                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
                 "SK": {"S": schema.sk_config()},
             },
             ConsistentRead=False,
@@ -1868,7 +1876,7 @@ class Repository:
         await client.delete_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_resource(resource)},
+                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -1877,7 +1885,7 @@ class Repository:
         await client.update_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_resources()},
             },
             UpdateExpression="DELETE resources :resource",
@@ -1902,7 +1910,7 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_resources()},
             },
             ConsistentRead=False,
@@ -1938,7 +1946,7 @@ class Repository:
 
         # Build composite config item with all limits + on_unavailable
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system(self._namespace_id)},
             "SK": {"S": schema.sk_config()},
             "config_version": {"N": "1"},
         }
@@ -1980,7 +1988,7 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_config()},
             },
             ConsistentRead=False,
@@ -2024,7 +2032,7 @@ class Repository:
         await client.delete_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -2066,7 +2074,7 @@ class Repository:
         await client.update_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_config()},
             },
             UpdateExpression="SET audit_retention_days = :ard",
@@ -2098,7 +2106,7 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_config()},
             },
             ConsistentRead=False,
@@ -2126,7 +2134,7 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_version()},
             },
         )
@@ -2162,7 +2170,7 @@ class Repository:
             await client.get_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_system()},
+                    "PK": {"S": schema.pk_system(self._namespace_id)},
                     "SK": {"S": schema.sk_version()},
                 },
             )
@@ -2191,7 +2199,7 @@ class Repository:
 
         # Flat schema (v0.6.0+)
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system(self._namespace_id)},
             "SK": {"S": schema.sk_version()},
             "schema_version": {"S": schema_version},
             "client_min_version": {"S": client_min_version},
@@ -2265,7 +2273,7 @@ class Repository:
 
         # Build DynamoDB item (flat schema v0.6.0+)
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_audit(entity_id)},
+            "PK": {"S": schema.pk_audit(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_audit(event_id)},
             "entity_id": {"S": entity_id},
             "event_id": {"S": event_id},
@@ -2303,7 +2311,7 @@ class Repository:
             "TableName": self.table_name,
             "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk_prefix)",
             "ExpressionAttributeValues": {
-                ":pk": {"S": schema.pk_audit(entity_id)},
+                ":pk": {"S": schema.pk_audit(self._namespace_id, entity_id)},
                 ":sk_prefix": {"S": schema.SK_AUDIT},
             },
             "ScanIndexForward": False,  # Most recent first
@@ -2312,7 +2320,7 @@ class Repository:
 
         if start_event_id:
             query_args["ExclusiveStartKey"] = {
-                "PK": {"S": schema.pk_audit(entity_id)},
+                "PK": {"S": schema.pk_audit(self._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_audit(start_event_id)},
             }
 
@@ -2397,7 +2405,7 @@ class Repository:
             # Query by entity (primary key)
             key_condition = "PK = :pk AND begins_with(SK, :sk_prefix)"
             expression_values: dict[str, Any] = {
-                ":pk": {"S": schema.pk_entity(entity_id)},
+                ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                 ":sk_prefix": {"S": schema.SK_USAGE},
             }
 
@@ -2422,7 +2430,7 @@ class Repository:
             # Query by resource across entities (GSI2)
             key_condition = "GSI2PK = :pk AND begins_with(GSI2SK, :sk_prefix)"
             expression_values = {
-                ":pk": {"S": schema.gsi2_pk_resource(resource)},
+                ":pk": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
                 ":sk_prefix": {"S": "USAGE#"},
             }
 
@@ -2647,7 +2655,7 @@ class Repository:
 
         key_condition = "GSI2PK = :pk AND begins_with(GSI2SK, :sk_prefix)"
         expression_values: dict[str, Any] = {
-            ":pk": {"S": schema.gsi2_pk_resource(resource)},
+            ":pk": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
             ":sk_prefix": {"S": "BUCKET#"},
         }
 

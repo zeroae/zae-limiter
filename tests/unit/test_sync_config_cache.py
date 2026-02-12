@@ -408,8 +408,8 @@ class TestConfigCacheResolveLimits:
         """When all slots are cached, no batch call is made."""
         cache = SyncConfigCache(ttl_seconds=60)
         entity_limits = [Limit.per_minute("rpm", 100)]
-        cache._entity_limits["user-1", "gpt-4"] = cache._make_entry(entity_limits)
-        cache._entity_limits["user-1", "_default_"] = cache._make_entry(_NO_CONFIG)
+        cache._entity_limits["default", "user-1", "gpt-4"] = cache._make_entry(entity_limits)
+        cache._entity_limits["default", "user-1", "_default_"] = cache._make_entry(_NO_CONFIG)
         cache._resource_defaults["gpt-4"] = cache._make_entry([])
         cache._system_defaults = cache._make_entry(([], None))
         batch_fn = MagicMock(return_value={})
@@ -426,7 +426,7 @@ class TestConfigCacheResolveLimits:
         system_limits = [Limit.per_minute("rpm", 1000)]
 
         def batch_fn(keys):
-            return {(schema.pk_system(), schema.sk_config()): (system_limits, "allow")}
+            return {(schema.pk_system("default"), schema.sk_config()): (system_limits, "allow")}
 
         limits, on_unavailable, source = cache.resolve_limits("user-1", "gpt-4", batch_fn)
         assert limits is not None
@@ -447,9 +447,9 @@ class TestConfigCacheResolveLimits:
         def batch_fn(keys):
             result = {}
             for pk, sk in keys:
-                if pk == schema.pk_entity("user-1") and sk == schema.sk_config("gpt-4"):
+                if pk == schema.pk_entity("default", "user-1") and sk == schema.sk_config("gpt-4"):
                     result[pk, sk] = (entity_limits, None)
-                elif pk == schema.pk_system() and sk == schema.sk_config():
+                elif pk == schema.pk_system("default") and sk == schema.sk_config():
                     result[pk, sk] = (system_limits, None)
             return result
 
@@ -463,8 +463,8 @@ class TestConfigCacheResolveLimits:
         from zae_limiter import schema
 
         cache = SyncConfigCache(ttl_seconds=60)
-        cache._entity_limits["user-1", "gpt-4"] = cache._make_entry(_NO_CONFIG)
-        cache._entity_limits["user-1", "_default_"] = cache._make_entry(_NO_CONFIG)
+        cache._entity_limits["default", "user-1", "gpt-4"] = cache._make_entry(_NO_CONFIG)
+        cache._entity_limits["default", "user-1", "_default_"] = cache._make_entry(_NO_CONFIG)
         resource_limits = [Limit.per_minute("rpm", 500)]
         called_keys: list[tuple[str, str]] = []
 
@@ -472,7 +472,7 @@ class TestConfigCacheResolveLimits:
             called_keys.extend(keys)
             result = {}
             for pk, sk in keys:
-                if pk == schema.pk_resource("gpt-4"):
+                if pk == schema.pk_resource("default", "gpt-4"):
                     result[pk, sk] = (resource_limits, None)
             return result
 
@@ -480,7 +480,7 @@ class TestConfigCacheResolveLimits:
         assert limits is not None
         assert limits[0].capacity == 500
         assert source == "resource"
-        entity_pk = schema.pk_entity("user-1")
+        entity_pk = schema.pk_entity("default", "user-1")
         fetched_pks = [pk for pk, _ in called_keys]
         assert entity_pk not in fetched_pks
 
@@ -495,7 +495,7 @@ class TestConfigCacheResolveLimits:
         def batch_fn(keys):
             nonlocal call_count
             call_count += 1
-            return {(schema.pk_system(), schema.sk_config()): (system_limits, None)}
+            return {(schema.pk_system("default"), schema.sk_config()): (system_limits, None)}
 
         limits1, _, source1 = cache.resolve_limits("user-1", "gpt-4", batch_fn)
         assert limits1 is not None
@@ -528,7 +528,7 @@ class TestConfigCacheResolveLimits:
         def batch_fn(keys):
             nonlocal call_count
             call_count += 1
-            return {(schema.pk_system(), schema.sk_config()): (system_limits, None)}
+            return {(schema.pk_system("default"), schema.sk_config()): (system_limits, None)}
 
         cache.resolve_limits("user-1", "gpt-4", batch_fn)
         cache.resolve_limits("user-1", "gpt-4", batch_fn)
@@ -544,7 +544,8 @@ class TestConfigCacheResolveLimits:
         def batch_fn(keys):
             result = {}
             for pk, sk in keys:
-                if pk == schema.pk_entity("user-1") and sk == schema.sk_config("_default_"):
+                ent_pk = schema.pk_entity("default", "user-1")
+                if pk == ent_pk and sk == schema.sk_config("_default_"):
                     result[pk, sk] = (entity_default_limits, None)
             return result
 
@@ -570,11 +571,12 @@ class TestConfigCacheResolveLimits:
         def batch_fn(keys):
             result: dict = {}
             for pk, sk in keys:
-                if pk == schema.pk_entity("user-1") and sk == schema.sk_config("gpt-4"):
+                ent_pk = schema.pk_entity("default", "user-1")
+                if pk == ent_pk and sk == schema.sk_config("gpt-4"):
                     result[pk, sk] = ([], None)
-                elif pk == schema.pk_entity("user-1") and sk == schema.sk_config("_default_"):
+                elif pk == ent_pk and sk == schema.sk_config("_default_"):
                     result[pk, sk] = ([], None)
-                elif pk == schema.pk_system() and sk == schema.sk_config():
+                elif pk == schema.pk_system("default") and sk == schema.sk_config():
                     result[pk, sk] = (system_limits, None)
             return result
 

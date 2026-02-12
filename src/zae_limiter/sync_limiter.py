@@ -1303,7 +1303,6 @@ class SyncRateLimiter:
             entity_id,
             resource,
             effective_limits,
-            self._bucket_ttl_refill_multiplier,
             stale_limit_names=stale_names if stale_names else None,
         )
 

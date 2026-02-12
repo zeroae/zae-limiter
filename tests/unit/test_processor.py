@@ -87,13 +87,13 @@ class TestExtractDeltas:
             limits = {"tpm": (0, 5000000)}
 
         new_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": sk},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf)},
         }
         old_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": sk},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf - 1000)},
@@ -349,7 +349,7 @@ class TestUpdateSnapshot:
 
         mock_table.update_item.assert_called_once()
         call_kwargs = mock_table.update_item.call_args[1]
-        assert call_kwargs["Key"]["PK"] == "ENTITY#entity-1"
+        assert call_kwargs["Key"]["PK"] == "default/ENTITY#entity-1"
         assert call_kwargs["Key"]["SK"] == "#USAGE#gpt-4#2024-01-01T14:00:00Z"
 
     def test_converts_millitokens_to_tokens(self) -> None:
@@ -382,7 +382,7 @@ class TestUpdateSnapshot:
         update_snapshot(mock_table, delta, "hourly", 90)
 
         call_kwargs = mock_table.update_item.call_args[1]
-        assert call_kwargs["ExpressionAttributeValues"][":gsi2pk"] == "RESOURCE#gpt-4"
+        assert call_kwargs["ExpressionAttributeValues"][":gsi2pk"] == "default/RESOURCE#gpt-4"
         assert ":gsi2sk" in call_kwargs["ExpressionAttributeValues"]
 
     def test_sets_ttl(self) -> None:
@@ -501,13 +501,13 @@ class TestProcessStreamRecords:
     ) -> dict:
         """Helper to create a composite bucket stream record (ADR-114)."""
         new_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": sk},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf)},
         }
         old_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": sk},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf - 1000)},
@@ -753,13 +753,13 @@ class TestStructuredLoggingIntegration:
     ) -> dict:
         """Helper to create a composite bucket stream record (ADR-114)."""
         new_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": sk},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf)},
         }
         old_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": sk},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf - 1000)},
@@ -893,13 +893,13 @@ class TestAggregateBucketStates:
             }
 
         new_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": f"#BUCKET#{resource}"},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf)},
         }
         old_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": f"#BUCKET#{resource}"},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf - 1000)},
@@ -1327,13 +1327,13 @@ class TestProcessStreamRecordsRefill:
             }
 
         new_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": f"#BUCKET#{resource}"},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf)},
         }
         old_image: dict = {
-            "PK": {"S": f"ENTITY#{entity_id}"},
+            "PK": {"S": f"default/ENTITY#{entity_id}"},
             "SK": {"S": f"#BUCKET#{resource}"},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf - 1000)},

@@ -73,7 +73,7 @@ class TestUpdateSnapshotIntegration:
         # Verify item was created correctly
         response = dynamodb_table.get_item(
             Key={
-                "PK": pk_entity("test-entity-1"),
+                "PK": pk_entity("default", "test-entity-1"),
                 "SK": sk_usage("gpt-4", "2024-01-01T14:00:00Z"),
             }
         )
@@ -120,7 +120,7 @@ class TestUpdateSnapshotIntegration:
         # Verify counters were incremented (flat structure)
         response = dynamodb_table.get_item(
             Key={
-                "PK": pk_entity("test-entity-2"),
+                "PK": pk_entity("default", "test-entity-2"),
                 "SK": sk_usage("gpt-4", "2024-01-01T15:00:00Z"),
             }
         )
@@ -161,7 +161,7 @@ class TestUpdateSnapshotIntegration:
         # Verify both limit types are tracked (flat structure)
         response = dynamodb_table.get_item(
             Key={
-                "PK": pk_entity("test-entity-3"),
+                "PK": pk_entity("default", "test-entity-3"),
                 "SK": sk_usage("claude-3", "2024-01-01T16:00:00Z"),
             }
         )
@@ -202,7 +202,7 @@ class TestUpdateSnapshotIntegration:
         # Verify counter was decremented (flat structure)
         response = dynamodb_table.get_item(
             Key={
-                "PK": pk_entity("test-entity-4"),
+                "PK": pk_entity("default", "test-entity-4"),
                 "SK": sk_usage("api", "2024-01-01T17:00:00Z"),
             }
         )
@@ -226,7 +226,7 @@ class TestUpdateSnapshotIntegration:
 
         response = dynamodb_table.get_item(
             Key={
-                "PK": pk_entity("test-entity-5"),
+                "PK": pk_entity("default", "test-entity-5"),
                 "SK": sk_usage("service", "2024-01-15T00:00:00Z"),
             }
         )
