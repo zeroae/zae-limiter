@@ -49,6 +49,7 @@ from .exceptions import (
     InfrastructureNotFoundError,
     InvalidIdentifierError,
     InvalidNameError,
+    NamespaceNotFoundError,
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
@@ -83,11 +84,13 @@ from .models import (
     UsageSummary,
 )
 from .repository import Repository
+from .repository_builder import RepositoryBuilder
 from .repository_protocol import RepositoryProtocol
 from .sync_config_cache import SyncConfigCache
 from .sync_lease import SyncLease
 from .sync_limiter import SyncRateLimiter
 from .sync_repository import SyncRepository
+from .sync_repository_builder import SyncRepositoryBuilder
 from .sync_repository_protocol import SyncRepositoryProtocol
 
 try:
@@ -101,12 +104,14 @@ __all__ = [
     # Main classes
     "RateLimiter",
     "Repository",
+    "RepositoryBuilder",
     "RepositoryProtocol",
     "Lease",
     "StackManager",
     # Sync classes (generated from async via scripts/generate_sync.py)
     "SyncRateLimiter",
     "SyncRepository",
+    "SyncRepositoryBuilder",
     "SyncRepositoryProtocol",
     "SyncLease",
     "SyncConfigCache",
@@ -149,6 +154,7 @@ __all__ = [
     "StackCreationError",
     "StackAlreadyExistsError",
     "InfrastructureNotFoundError",
+    "NamespaceNotFoundError",
     # Exceptions - Version
     "VersionMismatchError",
     "IncompatibleSchemaError",

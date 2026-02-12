@@ -262,6 +262,11 @@ class RateLimiter:
         if self._initialized:
             return
 
+        # If repository was built via builder, infra + version already handled
+        if getattr(self._repository, "_builder_initialized", False):
+            self._initialized = True
+            return
+
         # Repository owns infrastructure config - it will no-op if not configured
         await self._repository.ensure_infrastructure()
 

@@ -254,6 +254,16 @@ class InfrastructureNotFoundError(InfrastructureError):
         super().__init__(msg)
 
 
+class NamespaceNotFoundError(InfrastructureError):
+    """Raised when a namespace is not found in the registry."""
+
+    def __init__(self, namespace_name: str) -> None:
+        self.namespace_name = namespace_name
+        super().__init__(
+            f"Namespace '{namespace_name}' not found. Register it first or check for typos."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Version Exceptions
 # ---------------------------------------------------------------------------

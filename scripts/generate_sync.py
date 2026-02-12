@@ -33,6 +33,7 @@ TESTS = ROOT / "tests" / "unit"
 SOURCE_TRANSFORMS = [
     ("repository_protocol.py", "sync_repository_protocol.py"),
     ("repository.py", "sync_repository.py"),
+    ("repository_builder.py", "sync_repository_builder.py"),
     ("limiter.py", "sync_limiter.py"),
     ("lease.py", "sync_lease.py"),
     ("config_cache.py", "sync_config_cache.py"),
@@ -54,6 +55,7 @@ CLASS_RENAMES = {
     "RepositoryProtocol": "SyncRepositoryProtocol",
     "RateLimiter": "SyncRateLimiter",
     "Repository": "SyncRepository",
+    "RepositoryBuilder": "SyncRepositoryBuilder",
     "Lease": "SyncLease",
     "ConfigCache": "SyncConfigCache",
     "StackManager": "SyncStackManager",
@@ -87,6 +89,7 @@ ATTRIBUTE_ACCESS_REWRITES = {
 IMPORT_PATH_REWRITES = {
     ".repository_protocol": ".sync_repository_protocol",
     ".repository": ".sync_repository",
+    ".repository_builder": ".sync_repository_builder",
     ".lease": ".sync_lease",
     ".config_cache": ".sync_config_cache",
     ".infra.stack_manager": ".infra.sync_stack_manager",
@@ -97,6 +100,7 @@ IMPORT_PATH_REWRITES = {
 IMPORT_NAME_REWRITES = {
     "RepositoryProtocol": "SyncRepositoryProtocol",
     "Repository": "SyncRepository",
+    "RepositoryBuilder": "SyncRepositoryBuilder",
     "Lease": "SyncLease",
     "ConfigCache": "SyncConfigCache",
     "StackManager": "SyncStackManager",
@@ -263,6 +267,7 @@ TEST_IMPORT_PATH_REWRITES = {
     "zae_limiter.infra.discovery": "zae_limiter.infra.sync_discovery",
     "zae_limiter.infra.stack_manager": "zae_limiter.infra.sync_stack_manager",
     "zae_limiter.repository": "zae_limiter.sync_repository",
+    "zae_limiter.repository_builder": "zae_limiter.sync_repository_builder",
     "zae_limiter.limiter": "zae_limiter.sync_limiter",
     "zae_limiter.config_cache": "zae_limiter.sync_config_cache",
     "zae_limiter.lease": "zae_limiter.sync_lease",

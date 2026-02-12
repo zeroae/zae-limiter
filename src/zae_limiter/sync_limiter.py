@@ -235,6 +235,9 @@ class SyncRateLimiter:
         """Ensure infrastructure exists and version is compatible."""
         if self._initialized:
             return
+        if getattr(self._repository, "_builder_initialized", False):
+            self._initialized = True
+            return
         self._repository.ensure_infrastructure()
         if not self._skip_version_check:
             self._check_and_update_version()
