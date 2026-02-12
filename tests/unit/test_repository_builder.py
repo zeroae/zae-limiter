@@ -4,8 +4,13 @@ import warnings
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
-from zae_limiter.exceptions import NamespaceNotFoundError
+from zae_limiter.exceptions import (
+    IncompatibleSchemaError,
+    NamespaceNotFoundError,
+    VersionMismatchError,
+)
 from zae_limiter.models import StackOptions
 from zae_limiter.repository import Repository
 from zae_limiter.repository_builder import RepositoryBuilder
@@ -500,3 +505,221 @@ class TestEnsureInfrastructureDeprecation:
                 assert "builder" in str(w[0].message).lower()
 
             await repo.close()
+
+
+class TestNamespaceEdgeCases:
+    """Test namespace registration/resolution edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_register_namespace_non_transaction_error_reraises(self, repo):
+        """_register_namespace re-raises non-TransactionCanceledException errors."""
+        error_response = {"Error": {"Code": "ValidationException", "Message": "Bad"}}
+        with patch.object(repo, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.transact_write_items.side_effect = ClientError(
+                error_response, "TransactWriteItems"
+            )
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ClientError) as exc_info:
+                await repo._register_namespace("test-error")
+            assert exc_info.value.response["Error"]["Code"] == "ValidationException"
+
+    @pytest.mark.asyncio
+    async def test_resolve_namespace_deleted_returns_none(self, repo):
+        """_resolve_namespace returns None for namespace with status=deleted."""
+        from zae_limiter import schema
+
+        # Manually insert a namespace record with status=deleted
+        client = await repo._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_namespace("deleted-ns")},
+                "namespace_id": {"S": "01234567890123456789abcdef"},
+                "namespace_name": {"S": "deleted-ns"},
+                "status": {"S": "deleted"},
+            },
+        )
+
+        result = await repo._resolve_namespace("deleted-ns")
+        assert result is None
+
+
+class TestVersionManagementCodePaths:
+    """Test version management methods directly (not mocked)."""
+
+    @pytest.mark.asyncio
+    async def test_check_and_update_version_auto_no_record(self, mock_dynamodb):
+        """_check_and_update_version_auto initializes version when none exists."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="test-auto-no-rec", region="us-east-1")
+            await repo.create_table()
+            try:
+                await repo._check_and_update_version_auto()
+                version = await repo.get_version_record()
+                assert version is not None
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_check_and_update_version_auto_compatible(self, mock_dynamodb):
+        """_check_and_update_version_auto is no-op when versions match."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="test-auto-compat", region="us-east-1")
+            await repo.create_table()
+            try:
+                # Initialize version record first
+                await repo._initialize_version_record()
+                # Should be no-op (compatible)
+                await repo._check_and_update_version_auto()
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_check_and_update_version_auto_schema_migration(self, mock_dynamodb):
+        """_check_and_update_version_auto raises IncompatibleSchemaError on schema mismatch."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.version import CompatibilityResult
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="test-auto-schema", region="us-east-1")
+            await repo.create_table()
+            try:
+                await repo._initialize_version_record()
+
+                # Mock check_compatibility to return schema migration needed
+                compat = CompatibilityResult(
+                    is_compatible=False,
+                    requires_schema_migration=True,
+                    message="Major schema version mismatch",
+                )
+                with patch("zae_limiter.version.check_compatibility", return_value=compat):
+                    with pytest.raises(IncompatibleSchemaError):
+                        await repo._check_and_update_version_auto()
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_check_and_update_version_auto_lambda_update(self, mock_dynamodb):
+        """_check_and_update_version_auto calls _perform_lambda_update when needed."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.version import CompatibilityResult
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="test-auto-lambda", region="us-east-1")
+            await repo.create_table()
+            try:
+                await repo._initialize_version_record()
+
+                compat = CompatibilityResult(
+                    is_compatible=True,
+                    requires_lambda_update=True,
+                    message="Lambda update available",
+                )
+                with (
+                    patch(
+                        "zae_limiter.version.check_compatibility",
+                        return_value=compat,
+                    ),
+                    patch.object(
+                        repo, "_perform_lambda_update", new_callable=AsyncMock
+                    ) as mock_update,
+                ):
+                    await repo._check_and_update_version_auto()
+                    mock_update.assert_called_once()
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_check_version_strict_no_record(self, mock_dynamodb):
+        """_check_version_strict initializes version when none exists."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="test-strict-no-rec", region="us-east-1")
+            await repo.create_table()
+            try:
+                await repo._check_version_strict()
+                version = await repo.get_version_record()
+                assert version is not None
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_check_version_strict_schema_migration(self, mock_dynamodb):
+        """_check_version_strict raises IncompatibleSchemaError on schema mismatch."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.version import CompatibilityResult
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="test-strict-schema", region="us-east-1")
+            await repo.create_table()
+            try:
+                await repo._initialize_version_record()
+
+                compat = CompatibilityResult(
+                    is_compatible=False,
+                    requires_schema_migration=True,
+                    message="Major schema version mismatch",
+                )
+                with patch("zae_limiter.version.check_compatibility", return_value=compat):
+                    with pytest.raises(IncompatibleSchemaError):
+                        await repo._check_version_strict()
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_check_version_strict_lambda_mismatch(self, mock_dynamodb):
+        """_check_version_strict raises VersionMismatchError when lambda update needed."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.version import CompatibilityResult
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="test-strict-mismatch", region="us-east-1")
+            await repo.create_table()
+            try:
+                await repo._initialize_version_record()
+
+                compat = CompatibilityResult(
+                    is_compatible=True,
+                    requires_lambda_update=True,
+                    message="Lambda version mismatch",
+                )
+                with patch("zae_limiter.version.check_compatibility", return_value=compat):
+                    with pytest.raises(VersionMismatchError):
+                        await repo._check_version_strict()
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_perform_lambda_update(self, mock_dynamodb):
+        """_perform_lambda_update calls StackManager.deploy_lambda_code."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = Repository(name="test-lambda-update", region="us-east-1")
+            await repo.create_table()
+            try:
+                mock_manager = AsyncMock()
+                mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+                mock_manager.__aexit__ = AsyncMock(return_value=False)
+
+                with patch(
+                    "zae_limiter.infra.stack_manager.StackManager",
+                    return_value=mock_manager,
+                ):
+                    await repo._perform_lambda_update()
+                    mock_manager.deploy_lambda_code.assert_called_once()
+
+                # Verify version record was updated
+                version = await repo.get_version_record()
+                assert version is not None
+            finally:
+                await repo.close()
