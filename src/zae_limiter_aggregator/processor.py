@@ -19,11 +19,11 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
-    DEFAULT_NAMESPACE,
     SK_BUCKET,
     bucket_attr,
     gsi2_pk_resource,
     gsi2_sk_usage,
+    parse_namespace,
     pk_entity,
     sk_bucket,
     sk_usage,
@@ -80,6 +80,7 @@ class ProcessResult:
 class ConsumptionDelta:
     """Consumption delta extracted from stream record."""
 
+    namespace_id: str
     entity_id: str
     resource: str
     limit_name: str
@@ -107,6 +108,7 @@ class BucketRefillState:
     with the shared ``rf`` timestamp.
     """
 
+    namespace_id: str
     entity_id: str
     resource: str
     rf_ms: int  # shared refill timestamp (optimistic lock)
@@ -249,6 +251,7 @@ class ParsedBucketLimit:
 class ParsedBucketRecord:
     """Parsed composite bucket stream record."""
 
+    namespace_id: str
     entity_id: str
     resource: str
     rf_ms: int  # shared refill timestamp from NewImage
@@ -277,6 +280,17 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
 
     resource = sk[len(SK_BUCKET) :]
     if not resource:
+        return None
+
+    # Extract namespace_id from the PK (e.g. "a7x3kq/ENTITY#user-123")
+    pk = new_image.get("PK", {}).get("S", "")
+    try:
+        namespace_id, _remainder = parse_namespace(pk)
+    except ValueError:
+        logger.warning(
+            "Skipping pre-migration record with unprefixed PK",
+            pk=pk,
+        )
         return None
 
     entity_id = new_image.get("entity_id", {}).get("S", "")
@@ -333,6 +347,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         return None
 
     return ParsedBucketRecord(
+        namespace_id=namespace_id,
         entity_id=entity_id,
         resource=resource,
         rf_ms=rf_ms,
@@ -365,6 +380,7 @@ def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:
             continue
         deltas.append(
             ConsumptionDelta(
+                namespace_id=parsed.namespace_id,
                 entity_id=parsed.entity_id,
                 resource=parsed.resource,
                 limit_name=limit_name,
@@ -378,10 +394,10 @@ def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:
 
 def aggregate_bucket_states(
     records: list[dict[str, Any]],
-) -> dict[tuple[str, str], BucketRefillState]:
+) -> dict[tuple[str, str, str], BucketRefillState]:
     """Aggregate per-bucket state from stream records for refill decisions.
 
-    For each (entity_id, resource) composite bucket:
+    For each (namespace_id, entity_id, resource) composite bucket:
     - Accumulates ``tc`` deltas across all events per limit
     - Keeps the last NewImage's bucket fields (tk, cp, bx, ra, rp) per limit
     - Keeps the last shared ``rf`` timestamp (optimistic lock target)
@@ -390,9 +406,9 @@ def aggregate_bucket_states(
         records: DynamoDB stream records
 
     Returns:
-        Dict mapping (entity_id, resource) to BucketRefillState
+        Dict mapping (namespace_id, entity_id, resource) to BucketRefillState
     """
-    bucket_states: dict[tuple[str, str], BucketRefillState] = {}
+    bucket_states: dict[tuple[str, str, str], BucketRefillState] = {}
 
     for record in records:
         if record.get("eventName") != "MODIFY":
@@ -402,10 +418,11 @@ def aggregate_bucket_states(
         if not parsed:
             continue
 
-        key = (parsed.entity_id, parsed.resource)
+        key = (parsed.namespace_id, parsed.entity_id, parsed.resource)
 
         if key not in bucket_states:
             bucket_states[key] = BucketRefillState(
+                namespace_id=parsed.namespace_id,
                 entity_id=parsed.entity_id,
                 resource=parsed.resource,
                 rf_ms=parsed.rf_ms,
@@ -517,7 +534,7 @@ def try_refill_bucket(
     try:
         table.update_item(
             Key={
-                "PK": pk_entity(DEFAULT_NAMESPACE, state.entity_id),
+                "PK": pk_entity(state.namespace_id, state.entity_id),
                 "SK": sk_bucket(state.resource),
             },
             UpdateExpression=update_expr,
@@ -641,7 +658,7 @@ def update_snapshot(
     # See: https://github.com/zeroae/zae-limiter/issues/168
     table.update_item(
         Key={
-            "PK": pk_entity(DEFAULT_NAMESPACE, delta.entity_id),
+            "PK": pk_entity(delta.namespace_id, delta.entity_id),
             "SK": sk_usage(delta.resource, window_key),
         },
         UpdateExpression="""
@@ -668,7 +685,7 @@ def update_snapshot(
             ":resource": delta.resource,
             ":window": window,
             ":window_start": window_key,
-            ":gsi2pk": gsi2_pk_resource(DEFAULT_NAMESPACE, delta.resource),
+            ":gsi2pk": gsi2_pk_resource(delta.namespace_id, delta.resource),
             ":gsi2sk": gsi2_sk_usage(window_key, delta.entity_id),
             ":ttl": calculate_snapshot_ttl(ttl_days),
             ":delta": tokens_delta,

@@ -14,6 +14,7 @@ from zae_limiter_aggregator.processor import (
     LimitRefillInfo,
     ProcessResult,
     StructuredLogger,
+    _parse_bucket_record,
     aggregate_bucket_states,
     calculate_snapshot_ttl,
     extract_deltas,
@@ -31,6 +32,7 @@ class TestConsumptionDelta:
     def test_dataclass_fields(self) -> None:
         """ConsumptionDelta stores all fields."""
         delta = ConsumptionDelta(
+            namespace_id="a7x3kq",
             entity_id="entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -38,6 +40,7 @@ class TestConsumptionDelta:
             timestamp_ms=1704067200000,
         )
 
+        assert delta.namespace_id == "a7x3kq"
         assert delta.entity_id == "entity-1"
         assert delta.resource == "gpt-4"
         assert delta.limit_name == "tpm"
@@ -125,6 +128,7 @@ class TestExtractDeltas:
 
         assert len(deltas) == 1
         delta = deltas[0]
+        assert delta.namespace_id == "default"
         assert delta.entity_id == "test-entity"
         assert delta.resource == "gpt-4"
         assert delta.limit_name == "tpm"
@@ -338,6 +342,7 @@ class TestUpdateSnapshot:
         """Verifies update_item is called with correct PK/SK."""
         mock_table = MagicMock()
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -356,6 +361,7 @@ class TestUpdateSnapshot:
         """Verifies millitokens are converted to tokens."""
         mock_table = MagicMock()
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -372,6 +378,7 @@ class TestUpdateSnapshot:
         """Verifies GSI2 keys are set for resource aggregation."""
         mock_table = MagicMock()
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -389,6 +396,7 @@ class TestUpdateSnapshot:
         """Verifies TTL is set in the future."""
         mock_table = MagicMock()
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -414,6 +422,7 @@ class TestUpdateSnapshot:
         """
         mock_table = MagicMock()
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -442,6 +451,7 @@ class TestUpdateSnapshot:
         """Verifies expression attribute values for flat structure."""
         mock_table = MagicMock()
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -465,6 +475,7 @@ class TestUpdateSnapshot:
         """Verifies expression attribute names for flat structure."""
         mock_table = MagicMock()
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -595,12 +606,14 @@ class TestProcessStreamRecords:
             "eventName": "MODIFY",
             "dynamodb": {
                 "NewImage": {
+                    "PK": {"S": "default/ENTITY#entity"},
                     "SK": {"S": "#BUCKET#res"},
                     "entity_id": {"S": "entity"},
                     "rf": {"N": "1704067200000"},
                     "b_limit_tc": {"N": "not_a_number"},  # invalid counter
                 },
                 "OldImage": {
+                    "PK": {"S": "default/ENTITY#entity"},
                     "SK": {"S": "#BUCKET#res"},
                     "entity_id": {"S": "entity"},
                     "rf": {"N": "1704067200000"},
@@ -925,9 +938,10 @@ class TestAggregateBucketStates:
         states = aggregate_bucket_states(records)
 
         assert len(states) == 1
-        key = ("entity-1", "gpt-4")
+        key = ("default", "entity-1", "gpt-4")
         assert key in states
         state = states[key]
+        assert state.namespace_id == "default"
         assert state.entity_id == "entity-1"
         assert state.resource == "gpt-4"
         assert "tpm" in state.limits
@@ -966,7 +980,7 @@ class TestAggregateBucketStates:
         states = aggregate_bucket_states(records)
 
         assert len(states) == 1
-        state = states[("entity-1", "gpt-4")]
+        state = states[("default", "entity-1", "gpt-4")]
         assert len(state.limits) == 2
         assert state.limits["tpm"].tc_delta == 5000000
         assert state.limits["rpm"].tc_delta == 1000
@@ -1005,7 +1019,7 @@ class TestAggregateBucketStates:
         ]
         states = aggregate_bucket_states(records)
 
-        state = states[("entity-1", "gpt-4")]
+        state = states[("default", "entity-1", "gpt-4")]
         assert state.limits["tpm"].tc_delta == 5000000  # 2M + 3M
         # Last event's values
         assert state.limits["tpm"].tk_milli == 95000000
@@ -1019,8 +1033,8 @@ class TestAggregateBucketStates:
         ]
         states = aggregate_bucket_states(records)
         assert len(states) == 2
-        assert ("e1", "gpt-4") in states
-        assert ("e2", "gpt-4") in states
+        assert ("default", "e1", "gpt-4") in states
+        assert ("default", "e2", "gpt-4") in states
 
     def test_non_modify_events_skipped(self) -> None:
         """INSERT and REMOVE events are ignored."""
@@ -1054,7 +1068,7 @@ class TestAggregateBucketStates:
         ]
         states = aggregate_bucket_states(records)
         # Key created but no limits populated
-        assert len(states) == 0 or len(states[("entity-1", "gpt-4")].limits) == 0
+        assert len(states) == 0 or len(states[("default", "entity-1", "gpt-4")].limits) == 0
 
 
 class TestTryRefillBucket:
@@ -1062,6 +1076,7 @@ class TestTryRefillBucket:
 
     def _make_state(
         self,
+        namespace_id: str = "default",
         entity_id: str = "entity-1",
         resource: str = "gpt-4",
         rf_ms: int = 1704067200000,
@@ -1080,6 +1095,7 @@ class TestTryRefillBucket:
                 ),
             }
         return BucketRefillState(
+            namespace_id=namespace_id,
             entity_id=entity_id,
             resource=resource,
             rf_ms=rf_ms,
@@ -1426,3 +1442,161 @@ class TestProcessStreamRecordsRefill:
 
         assert result.refills_written == 0
         assert any("Error refilling bucket" in e for e in result.errors)
+
+
+class TestNamespaceExtraction:
+    """Tests for namespace ID extraction from stream record PKs (#367)."""
+
+    def _make_record(
+        self,
+        pk: str = "a7x3kq/ENTITY#entity-1",
+        sk: str = "#BUCKET#gpt-4",
+        entity_id: str = "entity-1",
+        rf: int = 1704067200000,
+        limits: dict[str, tuple[int, int]] | None = None,
+    ) -> dict:
+        """Helper to create a stream record with a specific PK."""
+        if limits is None:
+            limits = {"tpm": (0, 5000000)}
+
+        new_image: dict = {
+            "PK": {"S": pk},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf)},
+        }
+        old_image: dict = {
+            "PK": {"S": pk},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf - 1000)},
+        }
+
+        for name, (old_tc, new_tc) in limits.items():
+            new_image[f"b_{name}_tc"] = {"N": str(new_tc)}
+            old_image[f"b_{name}_tc"] = {"N": str(old_tc)}
+
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {"NewImage": new_image, "OldImage": old_image},
+        }
+
+    def test_extract_namespace_from_pk(self) -> None:
+        """_parse_bucket_record extracts namespace_id from PK."""
+        record = self._make_record(pk="a7x3kq/ENTITY#user-123", entity_id="user-123")
+        parsed = _parse_bucket_record(record)
+
+        assert parsed is not None
+        assert parsed.namespace_id == "a7x3kq"
+        assert parsed.entity_id == "user-123"
+
+    def test_pre_migration_record_returns_none(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Unprefixed PK (pre-migration) returns None and logs warning."""
+        record = self._make_record(pk="ENTITY#user-123", entity_id="user-123")
+        parsed = _parse_bucket_record(record)
+
+        assert parsed is None
+
+        captured = capsys.readouterr()
+        logs = [json.loads(line) for line in captured.out.strip().split("\n") if line]
+        warning_logs = [log for log in logs if log["level"] == "WARNING"]
+        assert len(warning_logs) == 1
+        assert "pre-migration" in warning_logs[0]["message"].lower()
+        assert warning_logs[0]["pk"] == "ENTITY#user-123"
+
+    def test_extract_deltas_propagates_namespace_id(self) -> None:
+        """extract_deltas populates namespace_id on ConsumptionDelta."""
+        record = self._make_record(pk="ns42/ENTITY#e1", entity_id="e1")
+        deltas = extract_deltas(record)
+
+        assert len(deltas) == 1
+        assert deltas[0].namespace_id == "ns42"
+        assert deltas[0].entity_id == "e1"
+
+    def test_aggregate_bucket_states_propagates_namespace_id(self) -> None:
+        """aggregate_bucket_states populates namespace_id on BucketRefillState."""
+        records = [self._make_record(pk="nsabc/ENTITY#e1", entity_id="e1")]
+        states = aggregate_bucket_states(records)
+
+        assert len(states) == 1
+        key = ("nsabc", "e1", "gpt-4")
+        assert key in states
+        assert states[key].namespace_id == "nsabc"
+
+    def test_cross_namespace_aggregation_independence(self) -> None:
+        """Records from different namespaces aggregate independently."""
+        records = [
+            self._make_record(
+                pk="ns1/ENTITY#user-1",
+                entity_id="user-1",
+                limits={"tpm": (0, 3000000)},
+            ),
+            self._make_record(
+                pk="ns2/ENTITY#user-1",
+                entity_id="user-1",
+                limits={"tpm": (0, 7000000)},
+            ),
+        ]
+        states = aggregate_bucket_states(records)
+
+        assert len(states) == 2
+        assert ("ns1", "user-1", "gpt-4") in states
+        assert ("ns2", "user-1", "gpt-4") in states
+        assert states[("ns1", "user-1", "gpt-4")].limits["tpm"].tc_delta == 3000000
+        assert states[("ns2", "user-1", "gpt-4")].limits["tpm"].tc_delta == 7000000
+
+    def test_update_snapshot_uses_namespaced_keys(self) -> None:
+        """update_snapshot passes namespace_id to pk_entity and gsi2_pk_resource."""
+        mock_table = MagicMock()
+        delta = ConsumptionDelta(
+            namespace_id="a7x3kq",
+            entity_id="entity-1",
+            resource="gpt-4",
+            limit_name="tpm",
+            tokens_delta=1000000,
+            timestamp_ms=int(datetime(2024, 1, 1, 14, 0, 0, tzinfo=UTC).timestamp() * 1000),
+        )
+
+        update_snapshot(mock_table, delta, "hourly", 90)
+
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["Key"]["PK"] == "a7x3kq/ENTITY#entity-1"
+        assert call_kwargs["ExpressionAttributeValues"][":gsi2pk"] == "a7x3kq/RESOURCE#gpt-4"
+
+    def test_try_refill_bucket_uses_namespaced_key(self) -> None:
+        """try_refill_bucket passes namespace_id to pk_entity."""
+        mock_table = MagicMock()
+        state = BucketRefillState(
+            namespace_id="a7x3kq",
+            entity_id="entity-1",
+            resource="gpt-4",
+            rf_ms=1704067195000,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=20000000,
+                    tk_milli=5000000,
+                    cp_milli=100000000,
+                    bx_milli=100000000,
+                    ra_milli=100000000,
+                    rp_ms=60000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        try_refill_bucket(mock_table, state, now_ms)
+
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["Key"]["PK"] == "a7x3kq/ENTITY#entity-1"
+
+    def test_pre_migration_records_skipped_in_extract_deltas(self) -> None:
+        """extract_deltas returns empty list for pre-migration records."""
+        record = self._make_record(pk="ENTITY#user-123", entity_id="user-123")
+        deltas = extract_deltas(record)
+        assert deltas == []
+
+    def test_pre_migration_records_skipped_in_aggregate(self) -> None:
+        """aggregate_bucket_states skips pre-migration records."""
+        records = [self._make_record(pk="ENTITY#user-123", entity_id="user-123")]
+        states = aggregate_bucket_states(records)
+        assert len(states) == 0
