@@ -118,6 +118,9 @@ markers = [
     "doctest: marks tests that validate documentation code examples",
     "gevent: marks tests that trigger gevent monkey-patching (incompatible with xdist)",
 ]
+filterwarnings = [
+    "ignore:StackOptions is deprecated:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

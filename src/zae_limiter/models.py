@@ -1,6 +1,7 @@
 """Core models for zae-limiter."""
 
 import re
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -721,7 +722,13 @@ class StackOptions:
     tags: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
-        """Validate options."""
+        """Validate options and emit deprecation warning."""
+        warnings.warn(
+            "StackOptions is deprecated. Use Repository.builder(...) with "
+            "fluent methods instead. This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not (1 <= self.lambda_timeout <= 900):
             raise ValueError("lambda_timeout must be between 1 and 900")
         if not (128 <= self.lambda_memory <= 3008):
