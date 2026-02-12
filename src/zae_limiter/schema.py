@@ -10,6 +10,11 @@ DEFAULT_TABLE_NAME = "rate_limits"
 GSI1_NAME = "GSI1"  # For parent -> children lookups
 GSI2_NAME = "GSI2"  # For resource aggregation
 GSI3_NAME = "GSI3"  # For entity config queries (sparse)
+GSI4_NAME = "GSI4"  # For namespace-scoped item discovery
+
+# Namespace constants
+RESERVED_NAMESPACE = "_"
+DEFAULT_NAMESPACE = "default"
 
 # Key prefixes
 ENTITY_PREFIX = "ENTITY#"
@@ -30,6 +35,10 @@ SK_AUDIT = "#AUDIT#"
 SK_CONFIG = "#CONFIG"
 SK_RESOURCES = "#RESOURCES"
 SK_ENTITY_CONFIG_RESOURCES = "#ENTITY_CONFIG_RESOURCES"
+
+# Namespace registry sort key prefixes
+SK_NAMESPACE_PREFIX = "#NAMESPACE#"
+SK_NSID_PREFIX = "#NSID#"
 
 # Partition key prefix for audit logs
 AUDIT_PREFIX = "AUDIT#"
@@ -95,19 +104,19 @@ def parse_limit_attr(attr_name: str) -> tuple[str, str] | None:
     return rest[:idx], rest[idx + 1 :]
 
 
-def pk_entity(entity_id: str) -> str:
+def pk_entity(namespace_id: str, entity_id: str) -> str:
     """Build partition key for an entity."""
-    return f"{ENTITY_PREFIX}{entity_id}"
+    return f"{namespace_id}/{ENTITY_PREFIX}{entity_id}"
 
 
-def pk_system() -> str:
+def pk_system(namespace_id: str) -> str:
     """Build partition key for system records (e.g., version)."""
-    return SYSTEM_PREFIX
+    return f"{namespace_id}/{SYSTEM_PREFIX}"
 
 
-def pk_resource(resource: str) -> str:
+def pk_resource(namespace_id: str, resource: str) -> str:
     """Build partition key for resource config records."""
-    return f"{RESOURCE_PREFIX}{resource}"
+    return f"{namespace_id}/{RESOURCE_PREFIX}{resource}"
 
 
 def sk_version() -> str:
@@ -189,9 +198,9 @@ def sk_usage(resource: str, window_key: str) -> str:
     return f"{SK_USAGE}{resource}#{window_key}"
 
 
-def gsi1_pk_parent(parent_id: str) -> str:
+def gsi1_pk_parent(namespace_id: str, parent_id: str) -> str:
     """Build GSI1 partition key for parent lookup."""
-    return f"{PARENT_PREFIX}{parent_id}"
+    return f"{namespace_id}/{PARENT_PREFIX}{parent_id}"
 
 
 def gsi1_sk_child(entity_id: str) -> str:
@@ -199,9 +208,9 @@ def gsi1_sk_child(entity_id: str) -> str:
     return f"{CHILD_PREFIX}{entity_id}"
 
 
-def gsi2_pk_resource(resource: str) -> str:
+def gsi2_pk_resource(namespace_id: str, resource: str) -> str:
     """Build GSI2 partition key for resource aggregation."""
-    return f"{RESOURCE_PREFIX}{resource}"
+    return f"{namespace_id}/{RESOURCE_PREFIX}{resource}"
 
 
 def gsi2_sk_bucket(entity_id: str) -> str:
@@ -219,9 +228,9 @@ def gsi2_sk_usage(window_key: str, entity_id: str) -> str:
     return f"USAGE#{window_key}#{entity_id}"
 
 
-def gsi3_pk_entity_config(resource: str) -> str:
+def gsi3_pk_entity_config(namespace_id: str, resource: str) -> str:
     """Build GSI3 partition key for entity config lookup by resource."""
-    return f"{ENTITY_CONFIG_PREFIX}{resource}"
+    return f"{namespace_id}/{ENTITY_CONFIG_PREFIX}{resource}"
 
 
 def gsi3_sk_entity(entity_id: str) -> str:
@@ -229,14 +238,54 @@ def gsi3_sk_entity(entity_id: str) -> str:
     return entity_id
 
 
-def pk_audit(entity_id: str) -> str:
+def pk_audit(namespace_id: str, entity_id: str) -> str:
     """Build partition key for audit log records."""
-    return f"{AUDIT_PREFIX}{entity_id}"
+    return f"{namespace_id}/{AUDIT_PREFIX}{entity_id}"
 
 
 def sk_audit(event_id: str) -> str:
     """Build sort key for audit log record."""
     return f"{SK_AUDIT}{event_id}"
+
+
+def parse_namespace(key: str) -> tuple[str, str]:
+    """Parse namespace_id and remainder from a namespaced key.
+
+    Splits on the first '/' character.
+
+    Args:
+        key: A namespaced key like 'a7x3kq/ENTITY#user-123'
+
+    Returns:
+        Tuple of (namespace_id, remainder)
+
+    Raises:
+        ValueError: If key contains no '/'
+    """
+    idx = key.find("/")
+    if idx < 0:
+        raise ValueError(f"Key has no namespace separator '/': {key}")
+    return key[:idx], key[idx + 1 :]
+
+
+def sk_namespace(namespace_name: str) -> str:
+    """Build sort key for namespace registry record (name -> nsid lookup)."""
+    return f"{SK_NAMESPACE_PREFIX}{namespace_name}"
+
+
+def sk_nsid(namespace_id: str) -> str:
+    """Build sort key for namespace ID registry record (nsid -> name lookup)."""
+    return f"{SK_NSID_PREFIX}{namespace_id}"
+
+
+def sk_namespace_prefix() -> str:
+    """Return the sort key prefix for namespace name queries."""
+    return SK_NAMESPACE_PREFIX
+
+
+def sk_nsid_prefix() -> str:
+    """Return the sort key prefix for namespace ID queries."""
+    return SK_NSID_PREFIX
 
 
 def parse_bucket_sk(sk: str) -> str:
@@ -268,6 +317,8 @@ def get_table_definition(table_name: str) -> dict[str, Any]:
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
             {"AttributeName": "GSI3PK", "AttributeType": "S"},
             {"AttributeName": "GSI3SK", "AttributeType": "S"},
+            {"AttributeName": "GSI4PK", "AttributeType": "S"},
+            {"AttributeName": "GSI4SK", "AttributeType": "S"},
         ],
         "KeySchema": [
             {"AttributeName": "PK", "KeyType": "HASH"},
@@ -295,6 +346,14 @@ def get_table_definition(table_name: str) -> dict[str, Any]:
                 "KeySchema": [
                     {"AttributeName": "GSI3PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI3SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "KEYS_ONLY"},
+            },
+            {
+                "IndexName": GSI4_NAME,
+                "KeySchema": [
+                    {"AttributeName": "GSI4PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI4SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "KEYS_ONLY"},
             },

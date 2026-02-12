@@ -307,6 +307,10 @@ Resources:
           AttributeType: S
         - AttributeName: GSI3SK
           AttributeType: S
+        - AttributeName: GSI4PK
+          AttributeType: S
+        - AttributeName: GSI4SK
+          AttributeType: S
 
       KeySchema:
         - AttributeName: PK
@@ -338,6 +342,15 @@ Resources:
             - AttributeName: GSI3PK
               KeyType: HASH
             - AttributeName: GSI3SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+
+        - IndexName: GSI4
+          KeySchema:
+            - AttributeName: GSI4PK
+              KeyType: HASH
+            - AttributeName: GSI4SK
               KeyType: RANGE
           Projection:
             ProjectionType: KEYS_ONLY
