@@ -504,7 +504,6 @@ class RepositoryProtocol(Protocol):
         entity_id: str,
         resource: str,
         effective_limits: "list[Limit]",
-        bucket_ttl_refill_multiplier: int,
         stale_limit_names: set[str] | None = None,
     ) -> None:
         """Reconcile bucket to effective defaults after config deletion (issue #327).
@@ -516,7 +515,6 @@ class RepositoryProtocol(Protocol):
             entity_id: Entity owning the bucket
             resource: Resource name
             effective_limits: New effective limits (resource/system defaults)
-            bucket_ttl_refill_multiplier: TTL multiplier for default limits
             stale_limit_names: Limit names to REMOVE from bucket
         """
         ...

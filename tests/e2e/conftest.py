@@ -252,7 +252,7 @@ async def poll_for_snapshots(
             TableName=repo.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
-                ":pk": {"S": f"ENTITY#{entity_id}"},
+                ":pk": {"S": f"default/ENTITY#{entity_id}"},
                 ":sk_prefix": {"S": "#USAGE#"},
             },
         )

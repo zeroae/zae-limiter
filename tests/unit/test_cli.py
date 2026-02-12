@@ -2044,7 +2044,7 @@ class TestUsageCommands:
             ),
         ]
         # Return a next_key to indicate more results
-        next_key = {"PK": {"S": "ENTITY#test"}, "SK": {"S": "#USAGE#..."}}
+        next_key = {"PK": {"S": "default/ENTITY#test"}, "SK": {"S": "#USAGE#..."}}
 
         mock_repo = Mock()
         mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, next_key))

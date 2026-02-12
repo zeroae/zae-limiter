@@ -81,6 +81,8 @@ class SyncRepository:
         self.table_name = self.stack_name
         self.region = region
         self.endpoint_url = endpoint_url
+        self._namespace_id = schema.DEFAULT_NAMESPACE
+        self._bucket_ttl_refill_multiplier = 7
         self._stack_options = stack_options
         self._session: boto3.Session | None = None
         self._client: Any = None
@@ -94,8 +96,10 @@ class SyncRepository:
             supports_change_streams=True,
             supports_batch_operations=True,
         )
-        self._config_cache = SyncConfigCache(ttl_seconds=config_cache_ttl)
-        self._entity_cache: dict[str, tuple[bool, str | None]] = {}
+        self._config_cache = SyncConfigCache(
+            ttl_seconds=config_cache_ttl, namespace_id=self._namespace_id
+        )
+        self._entity_cache: dict[tuple[str, str], tuple[bool, str | None]] = {}
         self._parallel_mode = parallel_mode
         self._executor_fn = self._resolve_parallel_mode(parallel_mode)
         self._thread_pool: Any = None
@@ -278,7 +282,7 @@ class SyncRepository:
         client = self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(entity_id)},
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_meta()},
             "entity_id": {"S": entity_id},
             "name": {"S": name or entity_id},
@@ -288,7 +292,7 @@ class SyncRepository:
             "created_at": {"S": now},
         }
         if parent_id:
-            item["GSI1PK"] = {"S": schema.gsi1_pk_parent(parent_id)}
+            item["GSI1PK"] = {"S": schema.gsi1_pk_parent(self._namespace_id, parent_id)}
             item["GSI1SK"] = {"S": schema.gsi1_sk_child(entity_id)}
         try:
             client.put_item(
@@ -323,14 +327,17 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_entity(entity_id)}, "SK": {"S": schema.sk_meta()}},
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_meta()},
+            },
         )
         item = response.get("Item")
         if not item:
-            self._entity_cache[entity_id] = (False, None)
+            self._entity_cache[self._namespace_id, entity_id] = (False, None)
             return None
         entity = self._deserialize_entity(item)
-        self._entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+        self._entity_cache[self._namespace_id, entity_id] = (entity.cascade, entity.parent_id)
         return entity
 
     def delete_entity(self, entity_id: str, principal: str | None = None) -> None:
@@ -345,7 +352,9 @@ class SyncRepository:
         response = client.query(
             TableName=self.table_name,
             KeyConditionExpression="PK = :pk",
-            ExpressionAttributeValues={":pk": {"S": schema.pk_entity(entity_id)}},
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)}
+            },
         )
         items = response.get("Items", [])
         if not items:
@@ -370,7 +379,9 @@ class SyncRepository:
             TableName=self.table_name,
             IndexName=schema.GSI1_NAME,
             KeyConditionExpression="GSI1PK = :pk",
-            ExpressionAttributeValues={":pk": {"S": schema.gsi1_pk_parent(parent_id)}},
+            ExpressionAttributeValues={
+                ":pk": {"S": schema.gsi1_pk_parent(self._namespace_id, parent_id)}
+            },
         )
         entities = []
         for item in response.get("Items", []):
@@ -384,7 +395,10 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_entity(entity_id)}, "SK": {"S": schema.sk_bucket(resource)}},
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_bucket(resource)},
+            },
         )
         item = response.get("Item")
         if not item:
@@ -405,7 +419,7 @@ class SyncRepository:
             response = client.get_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
             )
@@ -415,7 +429,7 @@ class SyncRepository:
             return self._deserialize_composite_bucket(item)
         key_condition = "PK = :pk AND begins_with(SK, :sk_prefix)"
         expression_values: dict[str, Any] = {
-            ":pk": {"S": schema.pk_entity(entity_id)},
+            ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             ":sk_prefix": {"S": schema.SK_BUCKET},
         }
         response = client.query(
@@ -457,7 +471,10 @@ class SyncRepository:
         for i in range(0, len(unique_keys), 100):
             chunk = unique_keys[i : i + 100]
             request_keys = [
-                {"PK": {"S": schema.pk_entity(entity_id)}, "SK": {"S": schema.sk_bucket(resource)}}
+                {
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                }
                 for entity_id, resource in chunk
             ]
             response = client.batch_get_item(RequestItems={self.table_name: {"Keys": request_keys}})
@@ -492,12 +509,18 @@ class SyncRepository:
             The META key counts toward that limit.
         """
         client = self._get_client()
-        meta_key = {"PK": {"S": schema.pk_entity(entity_id)}, "SK": {"S": schema.sk_meta()}}
+        meta_key = {
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_meta()},
+        }
         request_keys = [meta_key]
         unique_bucket_keys = list(set(bucket_keys))
         for eid, resource in unique_bucket_keys:
             request_keys.append(
-                {"PK": {"S": schema.pk_entity(eid)}, "SK": {"S": schema.sk_bucket(resource)}}
+                {
+                    "PK": {"S": schema.pk_entity(self._namespace_id, eid)},
+                    "SK": {"S": schema.sk_bucket(resource)},
+                }
             )
         entity: Entity | None = None
         buckets: dict[tuple[str, str, str], BucketState] = {}
@@ -514,9 +537,9 @@ class SyncRepository:
                         key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                         buckets[key] = bucket
         if entity is not None:
-            self._entity_cache[entity_id] = (entity.cascade, entity.parent_id)
+            self._entity_cache[self._namespace_id, entity_id] = (entity.cascade, entity.parent_id)
         else:
-            self._entity_cache[entity_id] = (False, None)
+            self._entity_cache[self._namespace_id, entity_id] = (False, None)
         return (entity, buckets)
 
     def batch_get_configs(
@@ -634,7 +657,7 @@ class SyncRepository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": "SET #tokens = :tokens, #refill = :refill",
@@ -677,12 +700,12 @@ class SyncRepository:
             parent_id: The entity's parent_id (if any)
         """
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(entity_id)},
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_bucket(resource)},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
             schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
-            "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+            "GSI2PK": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
             "cascade": {"BOOL": cascade},
         }
@@ -782,7 +805,7 @@ class SyncRepository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
@@ -826,7 +849,7 @@ class SyncRepository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
@@ -868,7 +891,7 @@ class SyncRepository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 "UpdateExpression": update_expr,
@@ -934,7 +957,7 @@ class SyncRepository:
             - On cache miss or non-cascade: parent_result is None
             - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
-        cache_entry = self._entity_cache.get(entity_id)
+        cache_entry = self._entity_cache.get((self._namespace_id, entity_id))
         if cache_entry is not None:
             cascade_cached, parent_id_cached = cache_entry
             if cascade_cached and parent_id_cached:
@@ -949,7 +972,10 @@ class SyncRepository:
                     ),
                 )
                 if child_result.success:
-                    self._entity_cache[entity_id] = (child_result.cascade, child_result.parent_id)
+                    self._entity_cache[self._namespace_id, entity_id] = (
+                        child_result.cascade,
+                        child_result.parent_id,
+                    )
                 else:
                     child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
@@ -957,7 +983,7 @@ class SyncRepository:
                 return child_result
         result = self._speculative_consume_single(entity_id, resource, consume, ttl_seconds)
         if result.success:
-            self._entity_cache[entity_id] = (result.cascade, result.parent_id)
+            self._entity_cache[self._namespace_id, entity_id] = (result.cascade, result.parent_id)
         return result
 
     def _speculative_consume_single(
@@ -1002,7 +1028,7 @@ class SyncRepository:
             response = client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 UpdateExpression=update_expr,
@@ -1051,12 +1077,12 @@ class SyncRepository:
         """
         client = self._get_client()
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(entity_id)},
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
             "config_version": {"N": "1"},
-            "GSI3PK": {"S": schema.gsi3_pk_entity_config(resource)},
+            "GSI3PK": {"S": schema.gsi3_pk_entity_config(self._namespace_id, resource)},
             "GSI3SK": {"S": schema.gsi3_sk_entity(entity_id)},
         }
         self._serialize_composite_limits(limits, item)
@@ -1074,7 +1100,7 @@ class SyncRepository:
                         "Update": {
                             "TableName": self.table_name,
                             "Key": {
-                                "PK": {"S": schema.pk_system()},
+                                "PK": {"S": schema.pk_system(self._namespace_id)},
                                 "SK": {"S": schema.sk_entity_config_resources()},
                             },
                             "UpdateExpression": "ADD #resource :one",
@@ -1187,7 +1213,7 @@ class SyncRepository:
             client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(entity_id)},
+                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                     "SK": {"S": schema.sk_bucket(resource)},
                 },
                 UpdateExpression=update_expr,
@@ -1205,7 +1231,6 @@ class SyncRepository:
         entity_id: str,
         resource: str,
         effective_limits: list[Limit],
-        bucket_ttl_refill_multiplier: int,
         stale_limit_names: set[str] | None = None,
     ) -> None:
         """Reconcile bucket to effective defaults after config deletion (issue #327).
@@ -1220,7 +1245,6 @@ class SyncRepository:
             entity_id: ID of the entity
             resource: Resource name
             effective_limits: The new effective limits (resource/system defaults)
-            bucket_ttl_refill_multiplier: TTL multiplier for default limits
             stale_limit_names: Limit names to REMOVE from bucket (limits that
                 were in the deleted entity config but not in effective defaults)
         """
@@ -1228,7 +1252,7 @@ class SyncRepository:
             entity_id,
             resource,
             effective_limits,
-            bucket_ttl_refill_multiplier=bucket_ttl_refill_multiplier,
+            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
             stale_limit_names=stale_limit_names,
         )
 
@@ -1243,7 +1267,7 @@ class SyncRepository:
             client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_system()},
+                    "PK": {"S": schema.pk_system(self._namespace_id)},
                     "SK": {"S": schema.sk_entity_config_resources()},
                 },
                 UpdateExpression="REMOVE #resource",
@@ -1264,7 +1288,10 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_entity(entity_id)}, "SK": {"S": schema.sk_config(resource)}},
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
             ConsistentRead=False,
         )
         item = response.get("Item")
@@ -1293,7 +1320,7 @@ class SyncRepository:
                         "Delete": {
                             "TableName": self.table_name,
                             "Key": {
-                                "PK": {"S": schema.pk_entity(entity_id)},
+                                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                                 "SK": {"S": schema.sk_config(resource)},
                             },
                             "ConditionExpression": "attribute_exists(PK)",
@@ -1303,7 +1330,7 @@ class SyncRepository:
                         "Update": {
                             "TableName": self.table_name,
                             "Key": {
-                                "PK": {"S": schema.pk_system()},
+                                "PK": {"S": schema.pk_system(self._namespace_id)},
                                 "SK": {"S": schema.sk_entity_config_resources()},
                             },
                             "UpdateExpression": "ADD #resource :minus_one",
@@ -1357,7 +1384,9 @@ class SyncRepository:
             "TableName": self.table_name,
             "IndexName": schema.GSI3_NAME,
             "KeyConditionExpression": "GSI3PK = :pk",
-            "ExpressionAttributeValues": {":pk": {"S": schema.gsi3_pk_entity_config(resource)}},
+            "ExpressionAttributeValues": {
+                ":pk": {"S": schema.gsi3_pk_entity_config(self._namespace_id, resource)}
+            },
         }
         if limit is not None:
             query_params["Limit"] = limit
@@ -1389,7 +1418,10 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_entity_config_resources()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_entity_config_resources()},
+            },
             ConsistentRead=False,
         )
         item = response.get("Item", {})
@@ -1419,7 +1451,7 @@ class SyncRepository:
         validate_resource(resource)
         client = self._get_client()
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_resource(resource)},
+            "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
             "SK": {"S": schema.sk_config()},
             "resource": {"S": resource},
             "config_version": {"N": "1"},
@@ -1428,7 +1460,10 @@ class SyncRepository:
         client.put_item(TableName=self.table_name, Item=item)
         client.update_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_resources()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_resources()},
+            },
             UpdateExpression="ADD resources :resource",
             ExpressionAttributeValues={":resource": {"SS": [resource]}},
         )
@@ -1450,7 +1485,10 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_resource(resource)}, "SK": {"S": schema.sk_config()}},
+            Key={
+                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+                "SK": {"S": schema.sk_config()},
+            },
             ConsistentRead=False,
         )
         item = response.get("Item")
@@ -1472,11 +1510,17 @@ class SyncRepository:
         client = self._get_client()
         client.delete_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_resource(resource)}, "SK": {"S": schema.sk_config()}},
+            Key={
+                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+                "SK": {"S": schema.sk_config()},
+            },
         )
         client.update_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_resources()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_resources()},
+            },
             UpdateExpression="DELETE resources :resource",
             ExpressionAttributeValues={":resource": {"SS": [resource]}},
         )
@@ -1492,7 +1536,10 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_resources()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_resources()},
+            },
             ConsistentRead=False,
         )
         item = response.get("Item", {})
@@ -1518,7 +1565,7 @@ class SyncRepository:
         """
         client = self._get_client()
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system(self._namespace_id)},
             "SK": {"S": schema.sk_config()},
             "config_version": {"N": "1"},
         }
@@ -1549,7 +1596,10 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_config()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_config()},
+            },
             ConsistentRead=False,
         )
         item = response.get("Item")
@@ -1577,7 +1627,10 @@ class SyncRepository:
         limits, on_unavailable = self.get_system_defaults()
         client.delete_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_config()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_config()},
+            },
         )
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
@@ -1607,7 +1660,10 @@ class SyncRepository:
         client = self._get_client()
         client.update_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_config()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_config()},
+            },
             UpdateExpression="SET audit_retention_days = :ard",
             ExpressionAttributeValues={
                 ":ard": {"N": str(self._stack_options.audit_retention_days)}
@@ -1631,7 +1687,10 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_config()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_config()},
+            },
             ConsistentRead=False,
         )
         item = response.get("Item", {})
@@ -1650,7 +1709,10 @@ class SyncRepository:
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_version()}},
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_version()},
+            },
         )
         item = response.get("Item")
         if not item:
@@ -1681,7 +1743,10 @@ class SyncRepository:
             client = self._get_client()
             client.get_item(
                 TableName=self.table_name,
-                Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_version()}},
+                Key={
+                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                    "SK": {"S": schema.sk_version()},
+                },
             )
             return True
         except Exception:
@@ -1706,7 +1771,7 @@ class SyncRepository:
         client = self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system(self._namespace_id)},
             "SK": {"S": schema.sk_version()},
             "schema_version": {"S": schema_version},
             "client_min_version": {"S": client_min_version},
@@ -1764,7 +1829,7 @@ class SyncRepository:
             details=details or {},
         )
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_audit(entity_id)},
+            "PK": {"S": schema.pk_audit(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_audit(event_id)},
             "entity_id": {"S": entity_id},
             "event_id": {"S": event_id},
@@ -1797,7 +1862,7 @@ class SyncRepository:
             "TableName": self.table_name,
             "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk_prefix)",
             "ExpressionAttributeValues": {
-                ":pk": {"S": schema.pk_audit(entity_id)},
+                ":pk": {"S": schema.pk_audit(self._namespace_id, entity_id)},
                 ":sk_prefix": {"S": schema.SK_AUDIT},
             },
             "ScanIndexForward": False,
@@ -1805,7 +1870,7 @@ class SyncRepository:
         }
         if start_event_id:
             query_args["ExclusiveStartKey"] = {
-                "PK": {"S": schema.pk_audit(entity_id)},
+                "PK": {"S": schema.pk_audit(self._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_audit(start_event_id)},
             }
         response = client.query(**query_args)
@@ -1879,7 +1944,7 @@ class SyncRepository:
         if entity_id is not None:
             key_condition = "PK = :pk AND begins_with(SK, :sk_prefix)"
             expression_values: dict[str, Any] = {
-                ":pk": {"S": schema.pk_entity(entity_id)},
+                ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                 ":sk_prefix": {"S": schema.SK_USAGE},
             }
             if resource:
@@ -1897,7 +1962,7 @@ class SyncRepository:
         elif resource is not None:
             key_condition = "GSI2PK = :pk AND begins_with(GSI2SK, :sk_prefix)"
             expression_values = {
-                ":pk": {"S": schema.gsi2_pk_resource(resource)},
+                ":pk": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
                 ":sk_prefix": {"S": "USAGE#"},
             }
             query_args = {
@@ -2072,7 +2137,7 @@ class SyncRepository:
         client = self._get_client()
         key_condition = "GSI2PK = :pk AND begins_with(GSI2SK, :sk_prefix)"
         expression_values: dict[str, Any] = {
-            ":pk": {"S": schema.gsi2_pk_resource(resource)},
+            ":pk": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
             ":sk_prefix": {"S": "BUCKET#"},
         }
         response = client.query(

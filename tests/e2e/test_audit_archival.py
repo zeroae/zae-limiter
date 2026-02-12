@@ -222,7 +222,7 @@ class TestAuditArchival:
                 TableName=repo.table_name,
                 KeyConditionExpression="PK = :pk",
                 ExpressionAttributeValues={
-                    ":pk": {"S": f"AUDIT#{entity.id}"},
+                    ":pk": {"S": f"default/AUDIT#{entity.id}"},
                 },
             )
 

@@ -74,12 +74,13 @@ class ConfigCache:
     """
 
     ttl_seconds: int = 60
+    namespace_id: str = "default"
     _enabled: bool = field(init=False, default=True)
 
     # Cache storage
     _system_defaults: CacheEntry | None = field(init=False, default=None)
     _resource_defaults: dict[str, CacheEntry] = field(init=False, default_factory=dict)
-    _entity_limits: dict[tuple[str, str], CacheEntry] = field(init=False, default_factory=dict)
+    _entity_limits: dict[tuple[str, str, str], CacheEntry] = field(init=False, default_factory=dict)
 
     # Statistics
     _hits: int = field(init=False, default=0)
@@ -111,7 +112,7 @@ class ConfigCache:
             entity_id: Entity ID to evict
             resource: Resource name to evict
         """
-        self._entity_limits.pop((entity_id, resource), None)
+        self._entity_limits.pop((self.namespace_id, entity_id, resource), None)
 
     # -------------------------------------------------------------------------
     # System defaults
@@ -268,7 +269,7 @@ class ConfigCache:
         if not self._enabled:
             return await fetch_fn(entity_id, resource)
 
-        cache_key = (entity_id, resource)
+        cache_key = (self.namespace_id, entity_id, resource)
 
         async with self._async_lock:
             # Check cache
@@ -313,7 +314,7 @@ class ConfigCache:
         if not self._enabled:
             return fetch_fn(entity_id, resource)
 
-        cache_key = (entity_id, resource)
+        cache_key = (self.namespace_id, entity_id, resource)
 
         with self._sync_lock:
             # Check cache
@@ -361,10 +362,10 @@ class ConfigCache:
         """
         if slot_type == "entity":
             assert entity_id is not None and resource is not None
-            entry = self._entity_limits.get((entity_id, resource))
+            entry = self._entity_limits.get((self.namespace_id, entity_id, resource))
         elif slot_type == "entity_default":
             assert entity_id is not None
-            entry = self._entity_limits.get((entity_id, "_default_"))
+            entry = self._entity_limits.get((self.namespace_id, entity_id, "_default_"))
         elif slot_type == "resource":
             assert resource is not None
             entry = self._resource_defaults.get(resource)
@@ -457,17 +458,18 @@ class ConfigCache:
             (levels, cached_results, miss_keys)
         """
         include_entity_default = resource != "_default_"
+        ns = self.namespace_id
         levels: list[tuple[ConfigSource, str, str]] = [
-            ("entity", schema.pk_entity(entity_id), schema.sk_config(resource)),
+            ("entity", schema.pk_entity(ns, entity_id), schema.sk_config(resource)),
         ]
         if include_entity_default:
             levels.append(
-                ("entity_default", schema.pk_entity(entity_id), schema.sk_config("_default_")),
+                ("entity_default", schema.pk_entity(ns, entity_id), schema.sk_config("_default_")),
             )
         levels.extend(
             [
-                ("resource", schema.pk_resource(resource), schema.sk_config()),
-                ("system", schema.pk_system(), schema.sk_config()),
+                ("resource", schema.pk_resource(ns, resource), schema.sk_config()),
+                ("system", schema.pk_system(ns), schema.sk_config()),
             ]
         )
 
@@ -514,25 +516,26 @@ class ConfigCache:
                     self._resource_defaults[resource] = self._make_entry(limits)
                     fetched_results[slot_type] = limits
                 elif slot_type == "entity":
-                    cache_key = (entity_id, resource)
+                    cache_key = (self.namespace_id, entity_id, resource)
                     if limits:
                         self._entity_limits[cache_key] = self._make_entry(limits)
                     else:
                         self._entity_limits[cache_key] = self._make_entry(_NO_CONFIG)
                     fetched_results[slot_type] = limits
                 elif slot_type == "entity_default":
-                    cache_key_d = (entity_id, "_default_")
+                    cache_key_d = (self.namespace_id, entity_id, "_default_")
                     if limits:
                         self._entity_limits[cache_key_d] = self._make_entry(limits)
                     else:
                         self._entity_limits[cache_key_d] = self._make_entry(_NO_CONFIG)
                     fetched_results[slot_type] = limits
             else:
+                ns = self.namespace_id
                 if slot_type == "entity":
-                    self._entity_limits[(entity_id, resource)] = self._make_entry(_NO_CONFIG)
+                    self._entity_limits[(ns, entity_id, resource)] = self._make_entry(_NO_CONFIG)
                     fetched_results[slot_type] = _NO_CONFIG
                 elif slot_type == "entity_default":
-                    self._entity_limits[(entity_id, "_default_")] = self._make_entry(_NO_CONFIG)
+                    self._entity_limits[(ns, entity_id, "_default_")] = self._make_entry(_NO_CONFIG)
                     fetched_results[slot_type] = _NO_CONFIG
                 elif slot_type == "resource":
                     self._resource_defaults[resource] = self._make_entry([])

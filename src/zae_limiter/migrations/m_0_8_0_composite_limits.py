@@ -56,7 +56,7 @@ async def _migrate_system_limits(
         TableName=table,
         KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
         ExpressionAttributeValues={
-            ":pk": {"S": schema.pk_system()},
+            ":pk": {"S": schema.pk_system(schema.DEFAULT_NAMESPACE)},
             ":sk_prefix": {"S": schema.SK_LIMIT},
         },
     )
@@ -96,7 +96,7 @@ async def _migrate_system_limits(
     existing_config = await client.get_item(
         TableName=table,
         Key={
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system(schema.DEFAULT_NAMESPACE)},
             "SK": {"S": schema.sk_config()},
         },
     )
@@ -107,7 +107,7 @@ async def _migrate_system_limits(
 
     # Build composite item
     composite_item: dict[str, Any] = {
-        "PK": {"S": schema.pk_system()},
+        "PK": {"S": schema.pk_system(schema.DEFAULT_NAMESPACE)},
         "SK": {"S": schema.sk_config()},
         "config_version": {"N": "1"},
     }
@@ -141,7 +141,7 @@ async def _migrate_resource_limits(
     registry_response = await client.get_item(
         TableName=table,
         Key={
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system(schema.DEFAULT_NAMESPACE)},
             "SK": {"S": schema.sk_resources()},
         },
     )
@@ -156,7 +156,7 @@ async def _migrate_resource_limits(
             TableName=table,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_resource(resource)},
+                ":pk": {"S": schema.pk_resource(schema.DEFAULT_NAMESPACE, resource)},
                 ":sk_prefix": {"S": schema.SK_LIMIT},
             },
         )
@@ -191,7 +191,7 @@ async def _migrate_resource_limits(
 
         # Build composite item
         composite_item: dict[str, Any] = {
-            "PK": {"S": schema.pk_resource(resource)},
+            "PK": {"S": schema.pk_resource(schema.DEFAULT_NAMESPACE, resource)},
             "SK": {"S": schema.sk_config()},
             "resource": {"S": resource},
             "config_version": {"N": "1"},
@@ -233,7 +233,7 @@ async def _migrate_entity_limits(
             "TableName": table,
             "FilterExpression": "begins_with(PK, :pk_prefix) AND begins_with(SK, :sk_prefix)",
             "ExpressionAttributeValues": {
-                ":pk_prefix": {"S": schema.ENTITY_PREFIX},
+                ":pk_prefix": {"S": f"{schema.DEFAULT_NAMESPACE}/{schema.ENTITY_PREFIX}"},
                 ":sk_prefix": {"S": schema.SK_LIMIT},
             },
         }
@@ -285,7 +285,7 @@ async def _migrate_entity_limits(
 
         # Build composite item
         composite_item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(entity_id)},
+            "PK": {"S": schema.pk_entity(schema.DEFAULT_NAMESPACE, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},

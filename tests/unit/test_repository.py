@@ -357,10 +357,10 @@ class TestRepositoryBucketOperations:
         await repo.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="_default_")
 
         keys = [
-            (schema.pk_system(), schema.sk_config()),
-            (schema.pk_resource("gpt-4"), schema.sk_config()),
-            (schema.pk_entity("user-1"), schema.sk_config("gpt-4")),
-            (schema.pk_entity("user-1"), schema.sk_config("_default_")),
+            (schema.pk_system("default"), schema.sk_config()),
+            (schema.pk_resource("default", "gpt-4"), schema.sk_config()),
+            (schema.pk_entity("default", "user-1"), schema.sk_config("gpt-4")),
+            (schema.pk_entity("default", "user-1"), schema.sk_config("_default_")),
         ]
 
         result = await repo.batch_get_configs(keys)
@@ -372,14 +372,14 @@ class TestRepositoryBucketOperations:
             assert isinstance(limits, list)
 
         # Verify system config has on_unavailable
-        sys_limits, sys_ou = result[(schema.pk_system(), schema.sk_config())]
+        sys_limits, sys_ou = result[(schema.pk_system("default"), schema.sk_config())]
         assert len(sys_limits) == 1
         assert sys_limits[0].name == "rpm"
         assert sys_limits[0].capacity == 1000
         assert sys_ou == "allow"
 
         # Verify resource config has no on_unavailable
-        res_limits, res_ou = result[(schema.pk_resource("gpt-4"), schema.sk_config())]
+        res_limits, res_ou = result[(schema.pk_resource("default", "gpt-4"), schema.sk_config())]
         assert len(res_limits) == 1
         assert res_limits[0].capacity == 500
         assert res_ou is None
@@ -393,15 +393,15 @@ class TestRepositoryBucketOperations:
         await repo.set_system_defaults([Limit.per_minute("rpm", 1000)])
 
         keys = [
-            (schema.pk_system(), schema.sk_config()),
-            (schema.pk_resource("gpt-4"), schema.sk_config()),  # Not set
-            (schema.pk_entity("user-1"), schema.sk_config("gpt-4")),  # Not set
+            (schema.pk_system("default"), schema.sk_config()),
+            (schema.pk_resource("default", "gpt-4"), schema.sk_config()),  # Not set
+            (schema.pk_entity("default", "user-1"), schema.sk_config("gpt-4")),  # Not set
         ]
 
         result = await repo.batch_get_configs(keys)
 
         assert len(result) == 1
-        sys_key = (schema.pk_system(), schema.sk_config())
+        sys_key = (schema.pk_system("default"), schema.sk_config())
         assert sys_key in result
         limits, on_unavailable = result[sys_key]
         assert len(limits) == 1
@@ -496,7 +496,7 @@ class TestRepositoryTransactions:
             "Delete": {
                 "TableName": repo.table_name,
                 "Key": {
-                    "PK": {"S": "ENTITY#tw-delete-test"},
+                    "PK": {"S": "default/ENTITY#tw-delete-test"},
                     "SK": {"S": "#META"},
                 },
             }
@@ -517,7 +517,7 @@ class TestRepositoryTransactions:
             "ConditionCheck": {
                 "TableName": repo.table_name,
                 "Key": {
-                    "PK": {"S": "ENTITY#tw-condcheck-test"},
+                    "PK": {"S": "default/ENTITY#tw-condcheck-test"},
                     "SK": {"S": "#META"},
                 },
                 "ConditionExpression": "attribute_exists(PK)",
@@ -559,7 +559,7 @@ class TestRepositoryTransactions:
             "Delete": {
                 "TableName": repo.table_name,
                 "Key": {
-                    "PK": {"S": "ENTITY#we-test"},
+                    "PK": {"S": "default/ENTITY#we-test"},
                     "SK": {"S": "#META"},
                 },
             }
@@ -588,7 +588,7 @@ class TestRepositoryTransactions:
         # Verify keys (composite: no limit_name in SK)
         assert "PK" in put_spec["Item"]
         assert "SK" in put_spec["Item"]
-        assert put_spec["Item"]["PK"]["S"] == "ENTITY#entity-1"
+        assert put_spec["Item"]["PK"]["S"] == "default/ENTITY#entity-1"
         assert put_spec["Item"]["SK"]["S"] == "#BUCKET#gpt-4"
 
         # Verify composite bucket attributes (b_{name}_{field} format)
@@ -646,7 +646,7 @@ class TestCompositeWritePaths:
 
         assert "Update" in result
         update = result["Update"]
-        assert update["Key"]["PK"]["S"] == "ENTITY#entity-1"
+        assert update["Key"]["PK"]["S"] == "default/ENTITY#entity-1"
         assert update["Key"]["SK"]["S"] == "#BUCKET#gpt-4"
 
         # Verify ADD expression contains both limits
@@ -1272,7 +1272,7 @@ class TestRepositoryNoTTLOnConfigRecords:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_entity("no-ttl-meta-test")},
+                "PK": {"S": schema.pk_entity("default", "no-ttl-meta-test")},
                 "SK": {"S": schema.sk_meta()},
             },
         )
@@ -1299,7 +1299,7 @@ class TestRepositoryNoTTLOnConfigRecords:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_entity("no-ttl-config-test")},
+                "PK": {"S": schema.pk_entity("default", "no-ttl-config-test")},
                 "SK": {"S": schema.sk_config("api")},
             },
         )
@@ -1321,7 +1321,7 @@ class TestRepositoryNoTTLOnConfigRecords:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -1346,7 +1346,7 @@ class TestRepositoryNoTTLOnConfigRecords:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_resource("gpt-4")},
+                "PK": {"S": schema.pk_resource("default", "gpt-4")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -1653,7 +1653,7 @@ class TestRepositoryAuditLogging:
         await client.update_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_config()},
             },
             UpdateExpression="SET audit_retention_days = :ard",
@@ -1693,7 +1693,7 @@ class TestRepositoryAuditLogging:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -1729,7 +1729,7 @@ class TestRepositoryAuditLogging:
             TableName=repo.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
-                ":pk": {"S": schema.pk_audit("ttl-test")},
+                ":pk": {"S": schema.pk_audit("default", "ttl-test")},
                 ":sk_prefix": {"S": schema.SK_AUDIT},
             },
         )
@@ -1774,14 +1774,14 @@ class TestRepositoryUsageSnapshots:
 
         for entity_id, resource, window_type, window_start, counters in snapshots_data:
             item = {
-                "PK": {"S": schema.pk_entity(entity_id)},
+                "PK": {"S": schema.pk_entity("default", entity_id)},
                 "SK": {"S": schema.sk_usage(resource, window_start)},
                 "entity_id": {"S": entity_id},
                 "resource": {"S": resource},
                 "window": {"S": window_type},
                 "window_start": {"S": window_start},
                 "total_events": {"N": str(sum(counters.values()))},
-                "GSI2PK": {"S": schema.gsi2_pk_resource(resource)},
+                "GSI2PK": {"S": schema.gsi2_pk_resource("default", resource)},
                 "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
             }
             # Add counters as top-level attributes
@@ -1991,7 +1991,7 @@ class TestRepositoryUsageSnapshots:
         await client.put_item(
             TableName=repo.table_name,
             Item={
-                "PK": {"S": schema.pk_entity("test-malformed")},
+                "PK": {"S": schema.pk_entity("default", "test-malformed")},
                 "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T10:00:00Z")},
                 # Missing entity_id, resource, window_start
                 "window": {"S": "hourly"},
@@ -2003,7 +2003,7 @@ class TestRepositoryUsageSnapshots:
         await client.put_item(
             TableName=repo.table_name,
             Item={
-                "PK": {"S": schema.pk_entity("test-malformed")},
+                "PK": {"S": schema.pk_entity("default", "test-malformed")},
                 "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T11:00:00Z")},
                 "entity_id": {"S": "test-malformed"},
                 "resource": {"S": "gpt-4"},
@@ -2011,7 +2011,7 @@ class TestRepositoryUsageSnapshots:
                 "window_start": {"S": "2024-01-15T11:00:00Z"},
                 "tpm": {"N": "200"},
                 "total_events": {"N": "10"},
-                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2PK": {"S": "default/RESOURCE#gpt-4"},
                 "GSI2SK": {"S": "USAGE#2024-01-15T11:00:00Z#test-malformed"},
             },
         )
@@ -2053,7 +2053,7 @@ class TestRepositoryUsageSnapshots:
         await client.put_item(
             TableName=repo.table_name,
             Item={
-                "PK": {"S": schema.pk_entity(entity_id)},
+                "PK": {"S": schema.pk_entity("default", entity_id)},
                 "SK": {"S": schema.sk_usage("gpt-4", window_start)},
                 "entity_id": {"S": entity_id},
                 "resource": {"S": "gpt-4"},
@@ -2061,7 +2061,7 @@ class TestRepositoryUsageSnapshots:
                 "window_start": {"S": window_start},
                 "tpm": {"N": "1000"},
                 "total_events": {"N": "10"},
-                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2PK": {"S": "default/RESOURCE#gpt-4"},
                 "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
             },
         )
@@ -2082,7 +2082,7 @@ class TestRepositoryUsageSnapshots:
         await client.put_item(
             TableName=repo.table_name,
             Item={
-                "PK": {"S": schema.pk_entity("unknown-window")},
+                "PK": {"S": schema.pk_entity("default", "unknown-window")},
                 "SK": {"S": schema.sk_usage("gpt-4", "2024-01-15T10:00:00Z")},
                 "entity_id": {"S": "unknown-window"},
                 "resource": {"S": "gpt-4"},
@@ -2090,7 +2090,7 @@ class TestRepositoryUsageSnapshots:
                 "window_start": {"S": "2024-01-15T10:00:00Z"},
                 "tpm": {"N": "100"},
                 "total_events": {"N": "5"},
-                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2PK": {"S": "default/RESOURCE#gpt-4"},
                 "GSI2SK": {"S": "USAGE#2024-01-15T10:00:00Z#unknown-window"},
             },
         )
@@ -2111,7 +2111,7 @@ class TestRepositoryUsageSnapshots:
         await client.put_item(
             TableName=repo.table_name,
             Item={
-                "PK": {"S": schema.pk_entity("invalid-date")},
+                "PK": {"S": schema.pk_entity("default", "invalid-date")},
                 "SK": {"S": schema.sk_usage("gpt-4", "invalid-date")},
                 "entity_id": {"S": "invalid-date"},
                 "resource": {"S": "gpt-4"},
@@ -2119,7 +2119,7 @@ class TestRepositoryUsageSnapshots:
                 "window_start": {"S": "invalid-date"},  # Invalid date format
                 "tpm": {"N": "100"},
                 "total_events": {"N": "5"},
-                "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                "GSI2PK": {"S": "default/RESOURCE#gpt-4"},
                 "GSI2SK": {"S": "USAGE#invalid-date#invalid-date"},
             },
         )
@@ -2251,7 +2251,7 @@ class TestGSI3EntityConfigIndex:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": pk_entity("user-123")},
+                "PK": {"S": pk_entity("default", "user-123")},
                 "SK": {"S": sk_config("gpt-4")},
             },
         )
@@ -2260,7 +2260,7 @@ class TestGSI3EntityConfigIndex:
 
         # Verify GSI3 attributes
         assert "GSI3PK" in item
-        assert item["GSI3PK"]["S"] == gsi3_pk_entity_config("gpt-4")
+        assert item["GSI3PK"]["S"] == gsi3_pk_entity_config("default", "gpt-4")
         assert "GSI3SK" in item
         assert item["GSI3SK"]["S"] == gsi3_sk_entity("user-123")
 
@@ -2295,7 +2295,7 @@ class TestGSI3EntityConfigIndex:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": pk_system()},
+                "PK": {"S": pk_system("default")},
                 "SK": {"S": sk_config()},
             },
         )
@@ -2319,7 +2319,7 @@ class TestGSI3EntityConfigIndex:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": pk_resource("gpt-4")},
+                "PK": {"S": pk_resource("default", "gpt-4")},
                 "SK": {"S": sk_config()},
             },
         )
@@ -2418,7 +2418,7 @@ class TestEntityConfigRegistry:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_entity_config_resources()},
             },
         )

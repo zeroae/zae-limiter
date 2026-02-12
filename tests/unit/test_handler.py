@@ -39,7 +39,7 @@ class TestHandler:
             "eventName": "MODIFY",
             "dynamodb": {
                 "OldImage": {
-                    "PK": {"S": f"ENTITY#{entity_id}"},
+                    "PK": {"S": f"default/ENTITY#{entity_id}"},
                     "SK": {"S": f"#BUCKET#{resource}"},
                     "entity_id": {"S": entity_id},
                     "rf": {"N": "1705329000000"},
@@ -51,7 +51,7 @@ class TestHandler:
                     f"b_{limit_name}_rp": {"N": "60000"},
                 },
                 "NewImage": {
-                    "PK": {"S": f"ENTITY#{entity_id}"},
+                    "PK": {"S": f"default/ENTITY#{entity_id}"},
                     "SK": {"S": f"#BUCKET#{resource}"},
                     "entity_id": {"S": entity_id},
                     "rf": {"N": "1705329000000"},
@@ -80,7 +80,7 @@ class TestHandler:
             "eventName": "REMOVE",
             "dynamodb": {
                 "OldImage": {
-                    "PK": {"S": f"AUDIT#{entity_id}"},
+                    "PK": {"S": f"default/AUDIT#{entity_id}"},
                     "SK": {"S": f"#AUDIT#{event_id}"},
                     "entity_id": {"S": entity_id},
                     "event_id": {"S": event_id},

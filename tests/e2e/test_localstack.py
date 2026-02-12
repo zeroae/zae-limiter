@@ -414,7 +414,7 @@ class TestE2ELocalStackCLIWorkflow:
                 rpm_value = 10 + (i * 2)
 
                 item = {
-                    "PK": {"S": "ENTITY#plot-test-user"},
+                    "PK": {"S": "default/ENTITY#plot-test-user"},
                     "SK": {"S": f"#USAGE#gpt-4#{window_key}"},
                     "entity_id": {"S": "plot-test-user"},
                     "resource": {"S": "gpt-4"},
@@ -423,7 +423,7 @@ class TestE2ELocalStackCLIWorkflow:
                     "tpm": {"N": str(tpm_value)},
                     "rpm": {"N": str(rpm_value)},
                     "total_events": {"N": str(5 + i)},
-                    "GSI2PK": {"S": "RESOURCE#gpt-4"},
+                    "GSI2PK": {"S": "default/RESOURCE#gpt-4"},
                     "GSI2SK": {"S": f"USAGE#{window_key}#plot-test-user"},
                 }
                 dynamodb.put_item(TableName=table_name, Item=item)
@@ -842,7 +842,7 @@ class TestE2ELocalStackAggregatorWorkflow:
             TableName=repo.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
-                ":pk": {"S": "ENTITY#snapshot-user"},
+                ":pk": {"S": "default/ENTITY#snapshot-user"},
                 ":sk_prefix": {"S": "#BUCKET#"},
             },
         )

@@ -483,7 +483,8 @@ class TestBucketTTLDowngrade:
             pass
 
         # Verify no TTL (entity has custom config)
-        item = await limiter._repository._get_item(pk_entity("user-downgrade"), sk_bucket("api"))
+        pk = pk_entity("default", "user-downgrade")
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None, "Bucket should exist after acquire"
         assert "ttl" not in item, "Custom config entity should NOT have TTL"
 
@@ -502,7 +503,7 @@ class TestBucketTTLDowngrade:
             pass
 
         # Verify TTL is now set (entity uses default config)
-        item = await limiter._repository._get_item(pk_entity("user-downgrade"), sk_bucket("api"))
+        item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None, "Bucket should still exist"
         assert "ttl" in item, "Default config entity should have TTL after downgrade"
 
@@ -609,7 +610,7 @@ class TestEntityConfigRegistry:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_entity_config_resources()},
             },
         )

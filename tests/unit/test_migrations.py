@@ -216,7 +216,7 @@ class TestMigration080CompositeLimits:
 
         # Create old-format system limit item
         old_item = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system("default")},
             "SK": {"S": f"{schema.SK_LIMIT}rpm"},
             "limit_name": {"S": "rpm"},
             "capacity": {"N": "1000"},
@@ -233,7 +233,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -248,7 +248,7 @@ class TestMigration080CompositeLimits:
         old_result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": f"{schema.SK_LIMIT}rpm"},
             },
         )
@@ -263,7 +263,7 @@ class TestMigration080CompositeLimits:
 
         # Create existing config with on_unavailable
         config_item = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system("default")},
             "SK": {"S": schema.sk_config()},
             "on_unavailable": {"S": "allow"},
             "config_version": {"N": "1"},
@@ -272,7 +272,7 @@ class TestMigration080CompositeLimits:
 
         # Create old-format limit item
         old_item = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system("default")},
             "SK": {"S": f"{schema.SK_LIMIT}tpm"},
             "limit_name": {"S": "tpm"},
             "capacity": {"N": "100000"},
@@ -289,7 +289,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -307,7 +307,7 @@ class TestMigration080CompositeLimits:
         # Create multiple old-format limit items
         for name, capacity in [("rpm", "1000"), ("tpm", "100000"), ("rpd", "10000")]:
             old_item = {
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": f"{schema.SK_LIMIT}{name}"},
                 "limit_name": {"S": name},
                 "capacity": {"N": capacity},
@@ -324,7 +324,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -352,7 +352,7 @@ class TestMigration080CompositeLimits:
 
         # Create resource registry
         registry_item = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system("default")},
             "SK": {"S": schema.sk_resources()},
             "resources": {"SS": ["gpt-4"]},
         }
@@ -360,7 +360,7 @@ class TestMigration080CompositeLimits:
 
         # Create old-format resource limit item
         old_item = {
-            "PK": {"S": schema.pk_resource("gpt-4")},
+            "PK": {"S": schema.pk_resource("default", "gpt-4")},
             "SK": {"S": f"{schema.SK_LIMIT}rpm"},
             "limit_name": {"S": "rpm"},
             "capacity": {"N": "500"},
@@ -377,7 +377,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_resource("gpt-4")},
+                "PK": {"S": schema.pk_resource("default", "gpt-4")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -390,7 +390,7 @@ class TestMigration080CompositeLimits:
         old_result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_resource("gpt-4")},
+                "PK": {"S": schema.pk_resource("default", "gpt-4")},
                 "SK": {"S": f"{schema.SK_LIMIT}rpm"},
             },
         )
@@ -415,7 +415,7 @@ class TestMigration080CompositeLimits:
 
         # Create old-format entity limit item
         old_item = {
-            "PK": {"S": schema.pk_entity("user-123")},
+            "PK": {"S": schema.pk_entity("default", "user-123")},
             "SK": {"S": f"{schema.SK_LIMIT}gpt-4#rpm"},
             "entity_id": {"S": "user-123"},
             "resource": {"S": "gpt-4"},
@@ -434,7 +434,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_entity("user-123")},
+                "PK": {"S": schema.pk_entity("default", "user-123")},
                 "SK": {"S": schema.sk_config("gpt-4")},
             },
         )
@@ -448,7 +448,7 @@ class TestMigration080CompositeLimits:
         old_result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_entity("user-123")},
+                "PK": {"S": schema.pk_entity("default", "user-123")},
                 "SK": {"S": f"{schema.SK_LIMIT}gpt-4#rpm"},
             },
         )
@@ -465,7 +465,7 @@ class TestMigration080CompositeLimits:
         for resource in ["gpt-4", "claude-3"]:
             for name in ["rpm", "tpm"]:
                 old_item = {
-                    "PK": {"S": schema.pk_entity("user-456")},
+                    "PK": {"S": schema.pk_entity("default", "user-456")},
                     "SK": {"S": f"{schema.SK_LIMIT}{resource}#{name}"},
                     "entity_id": {"S": "user-456"},
                     "resource": {"S": resource},
@@ -485,7 +485,7 @@ class TestMigration080CompositeLimits:
             result = await client.get_item(
                 TableName=table,
                 Key={
-                    "PK": {"S": schema.pk_entity("user-456")},
+                    "PK": {"S": schema.pk_entity("default", "user-456")},
                     "SK": {"S": schema.sk_config(resource)},
                 },
             )
@@ -506,7 +506,7 @@ class TestMigration080CompositeLimits:
         await client.put_item(
             TableName=table,
             Item={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": f"{schema.SK_LIMIT}rpm"},
                 "limit_name": {"S": "rpm"},
                 "capacity": {"N": "1000"},
@@ -520,7 +520,7 @@ class TestMigration080CompositeLimits:
         await client.put_item(
             TableName=table,
             Item={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_resources()},
                 "resources": {"SS": ["api"]},
             },
@@ -528,7 +528,7 @@ class TestMigration080CompositeLimits:
         await client.put_item(
             TableName=table,
             Item={
-                "PK": {"S": schema.pk_resource("api")},
+                "PK": {"S": schema.pk_resource("default", "api")},
                 "SK": {"S": f"{schema.SK_LIMIT}rpm"},
                 "limit_name": {"S": "rpm"},
                 "capacity": {"N": "500"},
@@ -542,7 +542,7 @@ class TestMigration080CompositeLimits:
         await client.put_item(
             TableName=table,
             Item={
-                "PK": {"S": schema.pk_entity("test-user")},
+                "PK": {"S": schema.pk_entity("default", "test-user")},
                 "SK": {"S": f"{schema.SK_LIMIT}api#rpm"},
                 "entity_id": {"S": "test-user"},
                 "resource": {"S": "api"},
@@ -560,21 +560,27 @@ class TestMigration080CompositeLimits:
         # Verify system level
         result = await client.get_item(
             TableName=table,
-            Key={"PK": {"S": schema.pk_system()}, "SK": {"S": schema.sk_config()}},
+            Key={"PK": {"S": schema.pk_system("default")}, "SK": {"S": schema.sk_config()}},
         )
         assert result["Item"].get("l_rpm_cp", {}).get("N") == "1000"
 
         # Verify resource level
         result = await client.get_item(
             TableName=table,
-            Key={"PK": {"S": schema.pk_resource("api")}, "SK": {"S": schema.sk_config()}},
+            Key={
+                "PK": {"S": schema.pk_resource("default", "api")},
+                "SK": {"S": schema.sk_config()},
+            },
         )
         assert result["Item"].get("l_rpm_cp", {}).get("N") == "500"
 
         # Verify entity level
         result = await client.get_item(
             TableName=table,
-            Key={"PK": {"S": schema.pk_entity("test-user")}, "SK": {"S": schema.sk_config("api")}},
+            Key={
+                "PK": {"S": schema.pk_entity("default", "test-user")},
+                "SK": {"S": schema.sk_config("api")},
+            },
         )
         assert result["Item"].get("l_rpm_cp", {}).get("N") == "100"
 
@@ -587,7 +593,7 @@ class TestMigration080CompositeLimits:
 
         # Create old-format system limit item WITHOUT limit_name
         old_item = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system("default")},
             "SK": {"S": f"{schema.SK_LIMIT}rpm"},
             # Missing limit_name attribute
             "capacity": {"N": "1000"},
@@ -604,7 +610,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_system()},
+                "PK": {"S": schema.pk_system("default")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -620,7 +626,7 @@ class TestMigration080CompositeLimits:
 
         # Create resource registry with a resource that has no limit items
         registry_item = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system("default")},
             "SK": {"S": schema.sk_resources()},
             "resources": {"SS": ["empty-resource"]},
         }
@@ -633,7 +639,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_resource("empty-resource")},
+                "PK": {"S": schema.pk_resource("default", "empty-resource")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -648,7 +654,7 @@ class TestMigration080CompositeLimits:
 
         # Create resource registry
         registry_item = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system("default")},
             "SK": {"S": schema.sk_resources()},
             "resources": {"SS": ["test-resource"]},
         }
@@ -656,7 +662,7 @@ class TestMigration080CompositeLimits:
 
         # Create existing config record (should be skipped, not parsed as limit)
         existing_config = {
-            "PK": {"S": schema.pk_resource("test-resource")},
+            "PK": {"S": schema.pk_resource("default", "test-resource")},
             "SK": {"S": schema.sk_config()},
             "config_version": {"N": "1"},
         }
@@ -664,7 +670,7 @@ class TestMigration080CompositeLimits:
 
         # Create old-format limit item
         old_item = {
-            "PK": {"S": schema.pk_resource("test-resource")},
+            "PK": {"S": schema.pk_resource("default", "test-resource")},
             "SK": {"S": f"{schema.SK_LIMIT}rpm"},
             "limit_name": {"S": "rpm"},
             "capacity": {"N": "500"},
@@ -681,7 +687,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_resource("test-resource")},
+                "PK": {"S": schema.pk_resource("default", "test-resource")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -697,7 +703,7 @@ class TestMigration080CompositeLimits:
 
         # Create resource registry
         registry_item = {
-            "PK": {"S": schema.pk_system()},
+            "PK": {"S": schema.pk_system("default")},
             "SK": {"S": schema.sk_resources()},
             "resources": {"SS": ["no-name-resource"]},
         }
@@ -705,7 +711,7 @@ class TestMigration080CompositeLimits:
 
         # Create old-format limit item WITHOUT limit_name
         old_item = {
-            "PK": {"S": schema.pk_resource("no-name-resource")},
+            "PK": {"S": schema.pk_resource("default", "no-name-resource")},
             "SK": {"S": f"{schema.SK_LIMIT}rpm"},
             # Missing limit_name attribute
             "capacity": {"N": "500"},
@@ -722,7 +728,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_resource("no-name-resource")},
+                "PK": {"S": schema.pk_resource("default", "no-name-resource")},
                 "SK": {"S": schema.sk_config()},
             },
         )
@@ -737,7 +743,7 @@ class TestMigration080CompositeLimits:
 
         # Create old-format entity limit item WITHOUT limit_name
         old_item = {
-            "PK": {"S": schema.pk_entity("user-no-name")},
+            "PK": {"S": schema.pk_entity("default", "user-no-name")},
             "SK": {"S": f"{schema.SK_LIMIT}gpt-4#rpm"},
             "entity_id": {"S": "user-no-name"},
             "resource": {"S": "gpt-4"},
@@ -756,7 +762,7 @@ class TestMigration080CompositeLimits:
         result = await client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_entity("user-no-name")},
+                "PK": {"S": schema.pk_entity("default", "user-no-name")},
                 "SK": {"S": schema.sk_config("gpt-4")},
             },
         )
@@ -771,7 +777,7 @@ class TestMigration080CompositeLimits:
 
         # Create entity limit items that will be returned in paginated responses
         item1 = {
-            "PK": {"S": schema.pk_entity("paginated-user")},
+            "PK": {"S": schema.pk_entity("default", "paginated-user")},
             "SK": {"S": f"{schema.SK_LIMIT}api#rpm"},
             "entity_id": {"S": "paginated-user"},
             "resource": {"S": "api"},
@@ -809,7 +815,7 @@ class TestMigration080CompositeLimits:
         result = await real_client.get_item(
             TableName=table,
             Key={
-                "PK": {"S": schema.pk_entity("paginated-user")},
+                "PK": {"S": schema.pk_entity("default", "paginated-user")},
                 "SK": {"S": schema.sk_config("api")},
             },
         )
