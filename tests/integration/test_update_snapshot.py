@@ -60,6 +60,7 @@ class TestUpdateSnapshotIntegration:
         the item doesn't exist yet.
         """
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="test-entity-1",
             resource="gpt-4",
             limit_name="tpm",
@@ -97,6 +98,7 @@ class TestUpdateSnapshotIntegration:
         This verifies that ADD operations work correctly on existing items.
         """
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="test-entity-2",
             resource="gpt-4",
             limit_name="rpm",
@@ -109,6 +111,7 @@ class TestUpdateSnapshotIntegration:
 
         # Second update with same entity/resource/window
         delta2 = ConsumptionDelta(
+            namespace_id="default",
             entity_id="test-entity-2",
             resource="gpt-4",
             limit_name="rpm",
@@ -140,6 +143,7 @@ class TestUpdateSnapshotIntegration:
 
         # Add tpm consumption
         delta_tpm = ConsumptionDelta(
+            namespace_id="default",
             entity_id="test-entity-3",
             resource="claude-3",
             limit_name="tpm",
@@ -150,6 +154,7 @@ class TestUpdateSnapshotIntegration:
 
         # Add rpm consumption (same entity, resource, window)
         delta_rpm = ConsumptionDelta(
+            namespace_id="default",
             entity_id="test-entity-3",
             resource="claude-3",
             limit_name="rpm",
@@ -181,6 +186,7 @@ class TestUpdateSnapshotIntegration:
 
         # Initial consumption
         delta1 = ConsumptionDelta(
+            namespace_id="default",
             entity_id="test-entity-4",
             resource="api",
             limit_name="rph",
@@ -191,6 +197,7 @@ class TestUpdateSnapshotIntegration:
 
         # Refund (negative delta)
         delta2 = ConsumptionDelta(
+            namespace_id="default",
             entity_id="test-entity-4",
             resource="api",
             limit_name="rph",
@@ -215,6 +222,7 @@ class TestUpdateSnapshotIntegration:
     def test_daily_window(self, dynamodb_table) -> None:
         """Daily window creates correct snapshot keys."""
         delta = ConsumptionDelta(
+            namespace_id="default",
             entity_id="test-entity-5",
             resource="service",
             limit_name="daily_limit",
