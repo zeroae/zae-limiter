@@ -3147,7 +3147,7 @@ class TestGSI4Attributes:
 
     @pytest.mark.asyncio
     async def test_set_version_record_sets_gsi4(self, repo):
-        """set_version_record() sets GSI4PK/GSI4SK on version record."""
+        """set_version_record() sets GSI4PK/GSI4SK on version record using RESERVED_NAMESPACE."""
         from zae_limiter import schema
 
         await repo.set_version_record(schema_version="1.0.0")
@@ -3156,13 +3156,13 @@ class TestGSI4Attributes:
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_system("default")},
+                "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
                 "SK": {"S": schema.sk_version()},
             },
         )
         item = response["Item"]
-        assert item["GSI4PK"]["S"] == "default"
-        assert item["GSI4SK"]["S"] == schema.pk_system("default")
+        assert item["GSI4PK"]["S"] == schema.RESERVED_NAMESPACE
+        assert item["GSI4SK"]["S"] == schema.pk_system(schema.RESERVED_NAMESPACE)
 
     @pytest.mark.asyncio
     async def test_log_audit_event_sets_gsi4(self, repo):

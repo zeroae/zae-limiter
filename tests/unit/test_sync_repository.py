@@ -2301,18 +2301,21 @@ class TestGSI4Attributes:
         assert item["GSI4SK"]["S"] == schema.pk_system("default")
 
     def test_set_version_record_sets_gsi4(self, repo):
-        """set_version_record() sets GSI4PK/GSI4SK on version record."""
+        """set_version_record() sets GSI4PK/GSI4SK on version record using RESERVED_NAMESPACE."""
         from zae_limiter import schema
 
         repo.set_version_record(schema_version="1.0.0")
         client = repo._get_client()
         response = client.get_item(
             TableName=repo.table_name,
-            Key={"PK": {"S": schema.pk_system("default")}, "SK": {"S": schema.sk_version()}},
+            Key={
+                "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
+                "SK": {"S": schema.sk_version()},
+            },
         )
         item = response["Item"]
-        assert item["GSI4PK"]["S"] == "default"
-        assert item["GSI4SK"]["S"] == schema.pk_system("default")
+        assert item["GSI4PK"]["S"] == schema.RESERVED_NAMESPACE
+        assert item["GSI4SK"]["S"] == schema.pk_system(schema.RESERVED_NAMESPACE)
 
     def test_log_audit_event_sets_gsi4(self, repo):
         """_log_audit_event() sets GSI4PK/GSI4SK on audit records."""

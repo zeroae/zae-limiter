@@ -2019,7 +2019,7 @@ class SyncRepository:
         response = client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
                 "SK": {"S": schema.sk_version()},
             },
         )
@@ -2053,7 +2053,7 @@ class SyncRepository:
             client.get_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                    "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
                     "SK": {"S": schema.sk_version()},
                 },
             )
@@ -2080,15 +2080,15 @@ class SyncRepository:
         client = self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_system(self._namespace_id)},
+            "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
             "SK": {"S": schema.sk_version()},
             "schema_version": {"S": schema_version},
             "client_min_version": {"S": client_min_version},
             "updated_at": {"S": now},
             "lambda_version": {"S": lambda_version} if lambda_version else {"NULL": True},
             "updated_by": {"S": updated_by} if updated_by else {"NULL": True},
-            "GSI4PK": {"S": self._namespace_id},
-            "GSI4SK": {"S": schema.pk_system(self._namespace_id)},
+            "GSI4PK": {"S": schema.RESERVED_NAMESPACE},
+            "GSI4SK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
         }
         client.put_item(TableName=self.table_name, Item=item)
 

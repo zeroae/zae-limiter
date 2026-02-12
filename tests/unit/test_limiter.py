@@ -1655,14 +1655,14 @@ class TestRateLimiterStackOptions:
                 name="test-with-stack-options",
                 region="us-east-1",
                 stack_options=stack_options,
-                skip_version_check=True,  # Skip version check to isolate test
             )
 
-            # Mock ensure_infrastructure to track calls
+            # Mock ensure_infrastructure and version check to isolate test
             ensure_infrastructure_mock = AsyncMock(return_value=None)
             monkeypatch.setattr(
                 limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
             )
+            monkeypatch.setattr(limiter, "_check_and_update_version", AsyncMock(return_value=None))
 
             # Call _ensure_initialized
             await limiter._ensure_initialized()
@@ -1692,14 +1692,14 @@ class TestRateLimiterStackOptions:
                 name="test-without-stack-options",
                 region="us-east-1",
                 stack_options=None,  # No stack options
-                skip_version_check=True,
             )
 
-            # Mock ensure_infrastructure to track if it's called
+            # Mock ensure_infrastructure and version check to isolate test
             ensure_infrastructure_mock = AsyncMock(return_value=None)
             monkeypatch.setattr(
                 limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
             )
+            monkeypatch.setattr(limiter, "_check_and_update_version", AsyncMock(return_value=None))
 
             # Call _ensure_initialized
             await limiter._ensure_initialized()
@@ -1912,7 +1912,6 @@ class TestRateLimiterGetStatus:
             limiter = RateLimiter(
                 name="test-no-version",
                 region="us-east-1",
-                skip_version_check=True,
             )
             # Create table without version record
             await limiter._repository.create_table()
@@ -2245,7 +2244,6 @@ class TestRateLimiterVersionChecking:
             limiter = RateLimiter(
                 name="test-version-check",
                 region="us-east-1",
-                skip_version_check=False,
             )
             await limiter._repository.create_table()
 
@@ -2300,8 +2298,6 @@ class TestRateLimiterVersionChecking:
             limiter = RateLimiter(
                 name="test-strict-version",
                 region="us-east-1",
-                skip_version_check=False,
-                strict_version=True,
                 auto_update=False,
             )
             await limiter._repository.create_table()

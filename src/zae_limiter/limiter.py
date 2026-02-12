@@ -102,8 +102,6 @@ class RateLimiter:
         # Business logic config (not deprecated)
         on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
         auto_update: bool = True,
-        strict_version: bool = True,
-        skip_version_check: bool = False,
         bucket_ttl_refill_multiplier: int = 7,
         speculative_writes: bool = True,
     ) -> None:
@@ -122,9 +120,8 @@ class RateLimiter:
             stack_options: DEPRECATED. Infrastructure state.
                 Use Repository(stack_options=...) instead.
             on_unavailable: Behavior when DynamoDB is unavailable
-            auto_update: Auto-update Lambda when version mismatch detected
-            strict_version: Fail if version mismatch (when auto_update is False)
-            skip_version_check: Skip all version checks (dangerous)
+            auto_update: Auto-update Lambda when version mismatch detected.
+                When False, raises VersionMismatchError on mismatch.
             bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
                 TTL = max_refill_period_seconds × multiplier. Default: 7.
                 Set to 0 to disable TTL for buckets using default limits.
@@ -180,8 +177,6 @@ class RateLimiter:
         self.table_name = self._name
         self.on_unavailable = on_unavailable
         self._auto_update = auto_update
-        self._strict_version = strict_version
-        self._skip_version_check = skip_version_check
         self._initialized = False
 
         # Bucket TTL multiplier for default limit buckets (issue #271)
@@ -270,9 +265,8 @@ class RateLimiter:
         # Repository owns infrastructure config - it will no-op if not configured
         await self._repository.ensure_infrastructure()
 
-        # Version check (skip for local DynamoDB without CloudFormation)
-        if not self._skip_version_check:
-            await self._check_and_update_version()
+        # Version check
+        await self._check_and_update_version()
 
         self._initialized = True
 
@@ -309,7 +303,7 @@ class RateLimiter:
             if self._auto_update and not self._repository.endpoint_url:
                 # Auto-update Lambda (skip for local DynamoDB)
                 await self._perform_lambda_update()
-            elif self._strict_version:
+            else:
                 raise VersionMismatchError(
                     client_version=__version__,
                     schema_version=infra_version.schema_version,
@@ -317,7 +311,6 @@ class RateLimiter:
                     message=compatibility.message,
                     can_auto_update=not self._repository.endpoint_url,
                 )
-            # else: continue with version mismatch (not strict)
 
     async def _initialize_version_record(self) -> None:
         """Initialize the version record for first-time setup."""
