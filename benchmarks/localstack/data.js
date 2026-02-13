@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770881015097,
+  "lastUpdate": 1770962950465,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -9547,6 +9547,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.017959873952267755",
             "extra": "mean: 1.0823726276000116 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bbc8120cb92bb63a318d4ac9f9c2be7223baf0a8",
+          "message": "✨ feat(repository): add Builder pattern replacing StackOptions + with_options() (#379)\n\n## Summary\n\n- Add `RepositoryBuilder` with fluent API that absorbs all\n`StackOptions` fields, namespace resolution, and version management into\na single `await build()` call\n- Add `repo.namespace(name)` for multi-tenant scoping that shares boto3\nclient and caches with the parent repository\n- Set GSI4 attributes (`GSI4PK`, `GSI4SK`) on all 8 record creation\npaths (buckets, entity metadata, configs, version, audit, usage) for\nnamespace lookup support\n- Add `NamespaceNotFoundError` exception for missing/deleted namespaces\nduring `build()` or `namespace()` calls\n- Deprecate `StackOptions` (emits `DeprecationWarning`),\n`ensure_infrastructure()` as public API, and\n`strict_version`/`skip_version_check` on RateLimiter\n- Generate sync counterparts (`SyncRepositoryBuilder`, updated\n`SyncRepository`) via `generate-sync`\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/test_repository_builder.py -v` — builder\nmethod chaining, `build()` with/without infra options, namespace\nresolution, version management, `StackOptions` deprecation\n- [x] `uv run pytest tests/unit/test_namespace_scoping.py -v` —\n`repo.namespace()` returns scoped repo sharing client + caches,\nnamespace ID caching, `NamespaceNotFoundError`\n- [x] `uv run pytest tests/unit/test_repository.py -v` — GSI4 attributes\non all creation paths, speculative writes and adjustments do NOT set\nGSI4\n- [x] `uv run pytest tests/unit/test_sync_repository.py -v` — sync\nbuilder and namespace parity\n- [x] `uv run pytest tests/unit/ -v` — full unit test suite passes\n- [x] `uv run mypy src/zae_limiter/` — no new type errors\n\nCloses #375\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-02-13T00:52:39-05:00",
+          "tree_id": "8fb05703bee7afca49c290976fb1a31e6269f458",
+          "url": "https://github.com/zeroae/zae-limiter/commit/bbc8120cb92bb63a318d4ac9f9c2be7223baf0a8"
+        },
+        "date": 1770962949423,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 30.003901545798097,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009048177331713815",
+            "extra": "mean: 33.328998846153226 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.8962714065613,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01183861119702462",
+            "extra": "mean: 45.66987599999999 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 45.87821669365009,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004473993255716885",
+            "extra": "mean: 21.79683675757188 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 48.8461144383185,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002488684812765122",
+            "extra": "mean: 20.4724574615402 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 30.32778294946802,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004384534444105177",
+            "extra": "mean: 32.9730663684251 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 230.67264423355482,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005240626448772928",
+            "extra": "mean: 4.335147773255269 msec\nrounds: 172"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 33.7739616970367,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003750956113405154",
+            "extra": "mean: 29.608608222225204 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 32.12566239836448,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0052718987174530515",
+            "extra": "mean: 31.12776283333258 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 32.688891040713116,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004175931031486689",
+            "extra": "mean: 30.59143238461432 msec\nrounds: 39"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 30.37914060149648,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003482482165562542",
+            "extra": "mean: 32.91732353846573 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.081640523978724,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005060448139697394",
+            "extra": "mean: 35.61045513513025 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 29.054340444677763,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006451346928993845",
+            "extra": "mean: 34.4182653846194 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 32.159011974675686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007471177928772508",
+            "extra": "mean: 31.095482684215288 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9407339308749127,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001607755797810767",
+            "extra": "mean: 515.2689836000263 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9416315198029939,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010526976350453555",
+            "extra": "mean: 515.030782000008 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9526457889990431,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004319376789511691",
+            "extra": "mean: 1.049708098799988 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.924912401264406,
+            "unit": "iter/sec",
+            "range": "stddev: 0.021882956494087804",
+            "extra": "mean: 1.0811834705999672 sec\nrounds: 5"
           }
         ]
       }
