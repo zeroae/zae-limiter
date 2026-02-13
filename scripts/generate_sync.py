@@ -578,6 +578,50 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             executor_stmts = ast.parse(_EXECUTOR_METHODS).body
             node.body.extend(executor_stmts)
 
+        # Inject parallel_mode support into SyncRepositoryBuilder
+        if node.name == "SyncRepositoryBuilder":
+            # 1. Add self._parallel_mode = "auto" to __init__
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "__init__":
+                    item.body.extend(ast.parse('self._parallel_mode: str = "auto"').body)
+                    break
+
+            # 2. Add parallel_mode() builder method
+            method = ast.parse(
+                "def parallel_mode(self, value: str) -> 'SyncRepositoryBuilder':\n"
+                '    """Set parallel execution strategy for cascade writes '
+                '("auto", "gevent", "threadpool", "serial")."""\n'
+                "    self._parallel_mode = value\n"
+                "    return self\n"
+            ).body[0]
+            # Insert after the last builder method (before build)
+            for i, item in enumerate(node.body):
+                if isinstance(item, ast.FunctionDef) and item.name == "build":
+                    node.body.insert(i, method)
+                    break
+
+            # 3. Add parallel_mode= to SyncRepository() call in build()
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "build":
+                    for stmt in ast.walk(item):
+                        if (
+                            isinstance(stmt, ast.Call)
+                            and isinstance(stmt.func, ast.Name)
+                            and stmt.func.id == "SyncRepository"
+                        ):
+                            stmt.keywords.append(
+                                ast.keyword(
+                                    arg="parallel_mode",
+                                    value=ast.Attribute(
+                                        value=ast.Name(id="self", ctx=ast.Load()),
+                                        attr="_parallel_mode",
+                                        ctx=ast.Load(),
+                                    ),
+                                )
+                            )
+                            break
+                    break
+
         return node
 
     def _transform_base_class(self, node: ast.AST) -> ast.AST:

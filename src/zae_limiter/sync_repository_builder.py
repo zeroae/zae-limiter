@@ -37,6 +37,7 @@ class SyncRepositoryBuilder:
         self._bucket_ttl_multiplier = 7
         self._on_unavailable: OnUnavailableAction | None = None
         self._infra_options: dict[str, Any] = {}
+        self._parallel_mode: str = "auto"
 
     def namespace(self, name: str) -> "SyncRepositoryBuilder":
         """Set the namespace to resolve during build (default: "default")."""
@@ -195,6 +196,11 @@ class SyncRepositoryBuilder:
             self._infra_options[f.name] = getattr(opts, f.name)
         return self
 
+    def parallel_mode(self, value: str) -> "SyncRepositoryBuilder":
+        """Set parallel execution strategy for cascade writes ("auto", "gevent", "threadpool", "serial")."""
+        self._parallel_mode = value
+        return self
+
     def build(self) -> "SyncRepository":
         """Perform initialization and return a fully initialized SyncRepository.
 
@@ -222,6 +228,7 @@ class SyncRepositoryBuilder:
             endpoint_url=self._endpoint_url,
             stack_options=stack_opts,
             config_cache_ttl=self._config_cache_ttl,
+            parallel_mode=self._parallel_mode,
         )
         repo._bucket_ttl_refill_multiplier = self._bucket_ttl_multiplier
         repo._auto_update = self._auto_update
