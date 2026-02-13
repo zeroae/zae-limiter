@@ -514,7 +514,7 @@ class Repository:
             return None
 
         status = item.get("status", {}).get("S", "")
-        if status == "deleted":
+        if status in ("deleted", "purging"):
             return None
 
         namespace_id: str = item["namespace_id"]["S"]
