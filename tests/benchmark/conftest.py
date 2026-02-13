@@ -229,18 +229,19 @@ def sync_localstack_limiter_with_aggregator(
     This fixture is primarily used for Lambda cold/warm start benchmarks
     that require the aggregator function to be deployed.
     """
-    limiter = SyncRateLimiter(
+    repo = SyncRepository(
         name=unique_name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=aggregator_stack_options,
     )
+    limiter = SyncRateLimiter(repository=repo)
 
     with limiter:
         yield limiter
 
     try:
-        limiter.delete_stack()
+        repo.delete_stack()
     except Exception as e:
         print(f"Warning: Stack cleanup failed: {e}")
 
@@ -328,6 +329,6 @@ def sync_localstack_limiter_no_cache(localstack_endpoint, minimal_stack_options)
         yield limiter
 
     try:
-        limiter.delete_stack()
+        repo.delete_stack()
     except Exception as e:
         print(f"Warning: Stack cleanup failed: {e}")

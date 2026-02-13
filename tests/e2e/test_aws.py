@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 import pytest
 import pytest_asyncio
 
-from zae_limiter import Limit, RateLimiter, StackOptions
+from zae_limiter import Limit, RateLimiter, Repository, StackOptions
 from zae_limiter.models import BucketState
 
 pytestmark = [pytest.mark.aws, pytest.mark.e2e]
@@ -95,18 +95,19 @@ class TestE2EAWSFullWorkflow:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         # Clean up stack after test completes
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -345,17 +346,18 @@ class TestE2EAWSUsageSnapshots:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -509,17 +511,18 @@ class TestE2EAWSRateLimiting:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -630,17 +633,18 @@ class TestE2EAWSXRayTracingEnabled:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -863,17 +867,18 @@ class TestE2EAWSXRayTracingDisabled:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -931,8 +936,6 @@ class TestE2EAWSSpeculativeConsume:
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
     async def aws_repo(self, unique_name_class):
         """Repository with minimal stack on real AWS. Class-scoped to share stack."""
-        from zae_limiter.repository import Repository
-
         stack_options = StackOptions(
             enable_aggregator=False,
             enable_alarms=False,

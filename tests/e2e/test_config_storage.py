@@ -21,7 +21,7 @@ import pytest
 import pytest_asyncio  # type: ignore[import-untyped]
 from click.testing import CliRunner
 
-from zae_limiter import Limit, OnUnavailable, RateLimiter
+from zae_limiter import Limit, OnUnavailable, RateLimiter, Repository
 from zae_limiter.cli import cli
 
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
@@ -33,18 +33,19 @@ class TestE2EResourceConfigStorage:
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
     async def e2e_limiter(self, localstack_endpoint, unique_name_class, minimal_stack_options):
         """Class-scoped limiter with minimal stack for config tests."""
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=minimal_stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -197,18 +198,19 @@ class TestE2ESystemConfigStorage:
         """Class-scoped limiter with minimal stack for config tests."""
         # Use different name suffix to avoid conflicts with other test class
         name = f"{unique_name_class}-sys"
-        limiter = RateLimiter(
+        repo = Repository(
             name=name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=minimal_stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -330,20 +332,22 @@ class TestE2EConfigCLIWorkflow:
     def e2e_limiter(self, localstack_endpoint, unique_name_class, minimal_stack_options):
         """Class-scoped limiter with minimal stack for CLI tests."""
         from zae_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
 
         name = f"{unique_name_class}-cli"
-        limiter = SyncRateLimiter(
+        repo = SyncRepository(
             name=name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=minimal_stack_options,
         )
+        limiter = SyncRateLimiter(repository=repo)
 
         with limiter:
             yield limiter
 
         try:
-            limiter.delete_stack()
+            repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -599,20 +603,22 @@ class TestE2ESyncConfigStorage:
     ):
         """Class-scoped sync limiter for config tests."""
         from zae_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
 
         name = f"{unique_name_class}-sync"
-        limiter = SyncRateLimiter(
+        repo = SyncRepository(
             name=name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=minimal_stack_options,
         )
+        limiter = SyncRateLimiter(repository=repo)
 
         with limiter:
             yield limiter
 
         try:
-            limiter.delete_stack()
+            repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 

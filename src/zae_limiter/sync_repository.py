@@ -309,6 +309,21 @@ class SyncRepository:
             if e.response["Error"]["Code"] != "ResourceNotFoundException":
                 raise
 
+    def delete_stack(self) -> None:
+        """Delete the CloudFormation stack and all associated resources.
+
+        Permanently removes the stack including DynamoDB table, Lambda
+        aggregator, IAM roles, and CloudWatch log groups. Waits for
+        deletion to complete. No-op if stack doesn't exist.
+
+        Raises:
+            StackCreationError: If deletion fails.
+        """
+        from .infra.sync_stack_manager import SyncStackManager
+
+        with SyncStackManager(self.stack_name, self.region, self.endpoint_url) as manager:
+            manager.delete_stack(self.stack_name)
+
     def ensure_infrastructure(self) -> None:
         """
         Ensure DynamoDB infrastructure exists.

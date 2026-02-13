@@ -30,7 +30,7 @@ import boto3
 import pytest
 import requests
 
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import RateLimiter, Repository, StackOptions
 
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 
@@ -176,12 +176,13 @@ class TestAuditArchival:
         5. Wait for Lambda to process the REMOVE event
         6. Verify audit event is in S3 as gzip-compressed JSONL
         """
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=archival_stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             # Step 1: Create entity (generates audit event)
@@ -289,7 +290,7 @@ class TestAuditArchival:
 
         # Cleanup
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception:
             pass
 
@@ -308,12 +309,13 @@ class TestAuditArchival:
             enable_audit_archival=False,
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             # The stack should deploy without the S3 bucket
@@ -337,6 +339,6 @@ class TestAuditArchival:
 
         # Cleanup
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception:
             pass
