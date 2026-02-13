@@ -2184,14 +2184,17 @@ class TestRepositoryDeprecation:
 
                     await repo.create_stack(stack_options=StackOptions())
 
-                    # Should have exactly one deprecation warning
-                    deprecation_warnings = [
-                        x for x in w if issubclass(x.category, DeprecationWarning)
+                    # Filter for the create_stack deprecation (not the StackOptions one)
+                    create_stack_warnings = [
+                        x
+                        for x in w
+                        if issubclass(x.category, DeprecationWarning)
+                        and "create_stack" in str(x.message)
                     ]
-                    assert len(deprecation_warnings) == 1
+                    assert len(create_stack_warnings) == 1
 
                     # Message should mention ensure_infrastructure
-                    msg = str(deprecation_warnings[0].message)
+                    msg = str(create_stack_warnings[0].message)
                     assert "ensure_infrastructure" in msg
                     assert "v2.0.0" in msg
 

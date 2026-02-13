@@ -1592,11 +1592,14 @@ class TestRepositoryDeprecation:
                     from zae_limiter import StackOptions
 
                     repo.create_stack(stack_options=StackOptions())
-                    deprecation_warnings = [
-                        x for x in w if issubclass(x.category, DeprecationWarning)
+                    create_stack_warnings = [
+                        x
+                        for x in w
+                        if issubclass(x.category, DeprecationWarning)
+                        and "create_stack" in str(x.message)
                     ]
-                    assert len(deprecation_warnings) == 1
-                    msg = str(deprecation_warnings[0].message)
+                    assert len(create_stack_warnings) == 1
+                    msg = str(create_stack_warnings[0].message)
                     assert "ensure_infrastructure" in msg
                     assert "v2.0.0" in msg
         repo.close()
