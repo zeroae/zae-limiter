@@ -388,10 +388,10 @@ class SyncRepository:
         Returns:
             The namespace_id (either newly created or existing).
         """
-        from ulid import ULID
+        import secrets
 
         client = self._get_client()
-        namespace_id = str(ULID()).lower()
+        namespace_id = secrets.token_urlsafe(8)
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         pk = schema.pk_system(schema.RESERVED_NAMESPACE)
         try:

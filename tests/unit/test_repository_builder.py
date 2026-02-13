@@ -161,7 +161,7 @@ class TestBuilderBuild:
                 assert repo.stack_name == "test-build"
                 assert repo._builder_initialized is True
                 assert repo.namespace_name == "default"
-                # namespace_id should be a resolved ULID, not "default"
+                # namespace_id should be a resolved opaque ID, not "default"
                 assert repo.namespace_id != "default"
                 assert len(repo.namespace_id) > 0
             finally:
@@ -243,9 +243,8 @@ class TestBuilderBuild:
 
             repo = await RepositoryBuilder("test-resolve", "us-east-1").build()
             try:
-                # namespace_id should be a ULID (26 chars lowercase)
-                assert len(repo.namespace_id) == 26
-                assert repo.namespace_id.isalnum()
+                # namespace_id should be a token_urlsafe(8) (11 chars URL-safe)
+                assert len(repo.namespace_id) == 11
             finally:
                 await repo.close()
 
@@ -306,7 +305,7 @@ class TestNamespaceRegistration:
         """_register_namespace creates name and ID records."""
         ns_id = await repo._register_namespace("test-ns")
         assert ns_id is not None
-        assert len(ns_id) == 26  # ULID
+        assert len(ns_id) == 11  # token_urlsafe(8)
 
     @pytest.mark.asyncio
     async def test_register_namespace_idempotent(self, repo):

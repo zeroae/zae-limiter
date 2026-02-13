@@ -32,7 +32,7 @@ class TestNamespaceScopedRepo:
         assert isinstance(scoped, Repository)
         assert scoped.namespace_name == "tenant-a"
         assert scoped.namespace_id != "default"
-        assert len(scoped.namespace_id) == 26  # ULID
+        assert len(scoped.namespace_id) == 11  # token_urlsafe(8)
 
     @pytest.mark.asyncio
     async def test_namespace_shares_client(self, repo):
