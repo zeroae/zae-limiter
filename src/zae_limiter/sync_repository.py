@@ -107,6 +107,7 @@ class SyncRepository:
         )
         self._config_cache_ttl = config_cache_ttl
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None]] = {}
+        self._on_unavailable_cache: OnUnavailableAction | None = None
         self._namespace_cache: dict[str, str] = {}
         self._parallel_mode = parallel_mode
         self._executor_fn = self._resolve_parallel_mode(parallel_mode)
@@ -215,6 +216,7 @@ class SyncRepository:
         )
         scoped._entity_cache = self._entity_cache
         scoped._namespace_cache = self._namespace_cache
+        scoped._on_unavailable_cache = None
         if on_unavailable is not None:
             existing_limits, _ = scoped.get_system_defaults()
             scoped.set_system_defaults(limits=existing_limits, on_unavailable=on_unavailable)
@@ -2731,10 +2733,31 @@ class SyncRepository:
             return (system_limits, on_unavailable, "system")
         return (None, on_unavailable, None)
 
-    def resolve_on_unavailable(self) -> OnUnavailableAction | None:
-        """Resolve on_unavailable from system config, using cache."""
-        _, on_unavailable = self._config_cache.get_system_defaults(self.get_system_defaults)
-        return on_unavailable
+    def resolve_on_unavailable(self) -> OnUnavailableAction:
+        """Resolve on_unavailable from system config, with caching fallback.
+
+        Returns the on_unavailable action from system config. Caches the
+        value after first successful load so it's available as fallback
+        when DynamoDB is unreachable. Defaults to "block" if no system
+        config exists and no cached value is available.
+        """
+        try:
+            _, on_unavailable = self._config_cache.get_system_defaults(self.get_system_defaults)
+            if on_unavailable is not None:
+                self._on_unavailable_cache = on_unavailable
+                return on_unavailable
+            if self._on_unavailable_cache is not None:
+                return self._on_unavailable_cache
+            return "block"
+        except Exception:
+            if self._on_unavailable_cache is not None:
+                logger.warning(
+                    "DynamoDB unavailable, using cached on_unavailable=%s",
+                    self._on_unavailable_cache,
+                )
+                return self._on_unavailable_cache
+            logger.warning("DynamoDB unavailable, defaulting on_unavailable=block")
+            return "block"
 
     def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""

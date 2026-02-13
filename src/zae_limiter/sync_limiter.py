@@ -25,13 +25,7 @@ from .bucket import (
     try_consume,
     would_refill_satisfy,
 )
-from .exceptions import (
-    IncompatibleSchemaError,
-    RateLimiterUnavailable,
-    RateLimitExceeded,
-    ValidationError,
-    VersionMismatchError,
-)
+from .exceptions import RateLimiterUnavailable, RateLimitExceeded, ValidationError
 from .models import (
     AuditEvent,
     BucketState,
@@ -43,7 +37,6 @@ from .models import (
     OnUnavailableAction,
     ResourceCapacity,
     StackOptions,
-    Status,
     UsageSnapshot,
     UsageSummary,
     validate_identifier,
@@ -54,6 +47,7 @@ from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
 
+_UNSET: Any = object()
 logger = logging.getLogger(__name__)
 
 
@@ -93,9 +87,9 @@ class SyncRateLimiter:
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
-        on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
-        auto_update: bool = True,
-        bucket_ttl_refill_multiplier: int = 7,
+        on_unavailable: "OnUnavailable | Any" = _UNSET,
+        auto_update: "bool | Any" = _UNSET,
+        bucket_ttl_refill_multiplier: "int | Any" = _UNSET,
         speculative_writes: bool = True,
     ) -> None:
         """
@@ -104,20 +98,16 @@ class SyncRateLimiter:
         Args:
             repository: SyncRepository instance (new API, preferred).
                 Pass a SyncRepository or any SyncRepositoryProtocol implementation.
-            name: DEPRECATED. Resource identifier (e.g., 'my-app').
-                Use SyncRepository(name=...) instead.
-            region: DEPRECATED. AWS region.
-                Use SyncRepository(region=...) instead.
-            endpoint_url: DEPRECATED. DynamoDB endpoint URL.
-                Use SyncRepository(endpoint_url=...) instead.
-            stack_options: DEPRECATED. Infrastructure state.
-                Use SyncRepository(stack_options=...) instead.
-            on_unavailable: Behavior when DynamoDB is unavailable
-            auto_update: Auto-update Lambda when version mismatch detected.
-                When False, raises VersionMismatchError on mismatch.
-            bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
-                TTL = max_refill_period_seconds × multiplier. Default: 7.
-                Set to 0 to disable TTL for buckets using default limits.
+            name: DEPRECATED. Use ``SyncRepository(name=...)`` instead.
+            region: DEPRECATED. Use ``SyncRepository(region=...)`` instead.
+            endpoint_url: DEPRECATED. Use ``SyncRepository(endpoint_url=...)`` instead.
+            stack_options: DEPRECATED. Use ``SyncRepository(stack_options=...)`` instead.
+            on_unavailable: DEPRECATED. Use ``set_system_defaults(on_unavailable=...)``
+                or pass ``on_unavailable=`` to ``acquire()`` instead.
+            auto_update: DEPRECATED. Use ``SyncRepository.builder(...).auto_update().build()``
+                instead.
+            bucket_ttl_refill_multiplier: DEPRECATED. Use
+                ``SyncRepository.builder(...).bucket_ttl_multiplier().build()`` instead.
             speculative_writes: Enable speculative UpdateItem fast path.
                 When True, acquire() tries a speculative write first, falling
                 back to the full read-write path only when needed.
@@ -128,6 +118,24 @@ class SyncRateLimiter:
         """
         from .naming import normalize_name
 
+        if on_unavailable is not _UNSET:
+            warnings.warn(
+                "on_unavailable constructor parameter is deprecated. Use set_system_defaults(on_unavailable=...) or acquire(on_unavailable=...) instead. This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if auto_update is not _UNSET:
+            warnings.warn(
+                "auto_update constructor parameter is deprecated. Use SyncRepository.builder(...).auto_update(True).build() instead. This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if bucket_ttl_refill_multiplier is not _UNSET:
+            warnings.warn(
+                "bucket_ttl_refill_multiplier constructor parameter is deprecated. Use SyncRepository.builder(...).bucket_ttl_multiplier(7).build() instead. This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         old_params_provided = any(
             p is not None for p in (name, region, endpoint_url, stack_options)
         )
@@ -137,7 +145,6 @@ class SyncRateLimiter:
             )
         if repository is not None:
             self._repository = repository
-            self._name = repository.stack_name
         elif old_params_provided:
             warnings.warn(
                 "Passing name/region/endpoint_url/stack_options directly to SyncRateLimiter is deprecated. Use SyncRepository(...) instead. This will be removed in v2.0.0.",
@@ -145,28 +152,46 @@ class SyncRateLimiter:
                 stacklevel=2,
             )
             effective_name = name if name is not None else "limiter"
-            self._name = normalize_name(effective_name)
             self._repository = SyncRepository(
-                name=self._name,
+                name=normalize_name(effective_name),
                 region=region,
                 endpoint_url=endpoint_url,
                 stack_options=stack_options,
             )
         else:
-            self._name = normalize_name("limiter")
-            self._repository = SyncRepository(name=self._name)
-        self.stack_name = self._name
-        self.table_name = self._name
-        self.on_unavailable = on_unavailable
-        self._auto_update = auto_update
+            warnings.warn(
+                "SyncRateLimiter() without a repository argument is deprecated. Use SyncRateLimiter(repository=SyncRepository(...)) instead. This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._repository = SyncRepository(name=normalize_name("limiter"))
         self._initialized = False
-        self._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
         self._speculative_writes = speculative_writes
 
     @property
     def name(self) -> str:
         """The resource identifier."""
-        return self._name
+        return self._repository.stack_name
+
+    @property
+    def stack_name(self) -> str:
+        """DEPRECATED. Use ``repository.stack_name`` instead."""
+        warnings.warn(
+            "SyncRateLimiter.stack_name is deprecated. Use repository.stack_name instead. This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._repository.stack_name
+
+    @property
+    def table_name(self) -> str:
+        """DEPRECATED. Use ``repository.stack_name`` instead."""
+        warnings.warn(
+            "SyncRateLimiter.table_name is deprecated. Use repository.stack_name instead. This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._repository.stack_name
 
     @staticmethod
     def _datetime_to_iso(dt: datetime) -> str:
@@ -227,76 +252,14 @@ class SyncRateLimiter:
             return discovery.list_limiters()
 
     def _ensure_initialized(self) -> None:
-        """Ensure infrastructure exists and version is compatible."""
+        """Ensure infrastructure exists."""
         if self._initialized:
             return
         if getattr(self._repository, "_builder_initialized", False):
             self._initialized = True
             return
         self._repository.ensure_infrastructure()
-        self._check_and_update_version()
         self._initialized = True
-
-    def _check_and_update_version(self) -> None:
-        """Check version compatibility and update Lambda if needed."""
-        from . import __version__
-        from .version import InfrastructureVersion, check_compatibility
-
-        version_record = self._repository.get_version_record()
-        if version_record is None:
-            self._initialize_version_record()
-            return
-        infra_version = InfrastructureVersion.from_record(version_record)
-        compatibility = check_compatibility(__version__, infra_version)
-        if compatibility.is_compatible and (not compatibility.requires_lambda_update):
-            return
-        if compatibility.requires_schema_migration:
-            raise IncompatibleSchemaError(
-                client_version=__version__,
-                schema_version=infra_version.schema_version,
-                message=compatibility.message,
-            )
-        if compatibility.requires_lambda_update:
-            if self._auto_update and (not self._repository.endpoint_url):
-                self._perform_lambda_update()
-            else:
-                raise VersionMismatchError(
-                    client_version=__version__,
-                    schema_version=infra_version.schema_version,
-                    lambda_version=infra_version.lambda_version,
-                    message=compatibility.message,
-                    can_auto_update=not self._repository.endpoint_url,
-                )
-
-    def _initialize_version_record(self) -> None:
-        """Initialize the version record for first-time setup."""
-        from . import __version__
-        from .version import get_schema_version
-
-        lambda_version = __version__
-        self._repository.set_version_record(
-            schema_version=get_schema_version(),
-            lambda_version=lambda_version,
-            client_min_version="0.0.0",
-            updated_by=f"client:{__version__}",
-        )
-
-    def _perform_lambda_update(self) -> None:
-        """Update Lambda code to match client version."""
-        from . import __version__
-        from .infra.sync_stack_manager import SyncStackManager
-        from .version import get_schema_version
-
-        with SyncStackManager(
-            self.stack_name, self._repository.region, self._repository.endpoint_url
-        ) as manager:
-            manager.deploy_lambda_code()
-            self._repository.set_version_record(
-                schema_version=get_schema_version(),
-                lambda_version=__version__,
-                client_min_version="0.0.0",
-                updated_by=f"client:{__version__}",
-            )
 
     def close(self) -> None:
         """Close the underlying connections."""
@@ -610,7 +573,7 @@ class SyncRateLimiter:
                 raise RateLimiterUnavailable(
                     str(e),
                     cause=e,
-                    stack_name=self.stack_name,
+                    stack_name=self._repository.stack_name,
                     entity_id=entity_id,
                     resource=resource,
                 ) from e
@@ -742,11 +705,7 @@ class SyncRateLimiter:
                     return parent_lease
                 self._compensate_child(entity_id, resource, consume)
                 return None
-        lease = SyncLease(
-            repository=self._repository,
-            entries=entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
-        )
+        lease = SyncLease(repository=self._repository, entries=entries)
         lease._initial_committed = True
         for entry in entries:
             entry._initial_consumed = entry.consumed
@@ -923,18 +882,10 @@ class SyncRateLimiter:
         if violations:
             return None
         all_entries = list(child_entries) + parent_entries
-        lease = SyncLease(
-            repository=self._repository,
-            entries=all_entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
-        )
+        lease = SyncLease(repository=self._repository, entries=all_entries)
         for entry in child_entries:
             entry._initial_consumed = entry.consumed
-        parent_lease = SyncLease(
-            repository=self._repository,
-            entries=parent_entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
-        )
+        parent_lease = SyncLease(repository=self._repository, entries=parent_entries)
         try:
             parent_lease._commit_initial()
         except RateLimitExceeded:
@@ -1027,11 +978,7 @@ class SyncRateLimiter:
         violations = [s for s in statuses if s.exceeded]
         if violations:
             raise RateLimitExceeded(statuses)
-        return SyncLease(
-            repository=self._repository,
-            entries=entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
-        )
+        return SyncLease(repository=self._repository, entries=entries)
 
     def _fetch_entity_and_buckets(
         self, entity_id: str, resource: str
@@ -1127,12 +1074,12 @@ class SyncRateLimiter:
 
     def _resolve_on_unavailable(self, on_unavailable_param: OnUnavailable | None) -> OnUnavailable:
         """
-        Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
+        Resolve on_unavailable behavior: Parameter > System Config (cached).
 
         Delegates system config lookup to repository.resolve_on_unavailable() (#333).
 
         Args:
-            on_unavailable_param: Optional parameter override
+            on_unavailable_param: Optional per-call override
 
         Returns:
             Resolved OnUnavailable enum value
@@ -1140,9 +1087,7 @@ class SyncRateLimiter:
         if on_unavailable_param is not None:
             return on_unavailable_param
         on_unavailable_action = self._repository.resolve_on_unavailable()
-        if on_unavailable_action is not None:
-            return OnUnavailable(on_unavailable_action)
-        return self.on_unavailable
+        return OnUnavailable(on_unavailable_action)
 
     def available(
         self,
@@ -1495,187 +1440,4 @@ class SyncRateLimiter:
             if total_capacity > 0
             else 0,
             entities=entities,
-        )
-
-    def create_stack(self, stack_options: StackOptions | None = None) -> dict[str, Any]:
-        """
-        Create CloudFormation stack for infrastructure.
-
-        Args:
-            stack_options: Stack configuration
-
-        Returns:
-            Dict with stack_id, stack_name, and status
-
-        Raises:
-            StackCreationError: If stack creation fails
-        """
-        from .infra.sync_stack_manager import SyncStackManager
-
-        with SyncStackManager(
-            self.stack_name, self._repository.region, self._repository.endpoint_url
-        ) as manager:
-            return manager.create_stack(stack_options)
-
-    def delete_stack(self) -> None:
-        """
-        Delete the CloudFormation stack and all associated resources.
-
-        This method permanently removes the CloudFormation stack, including:
-
-        - DynamoDB table and all stored data
-        - Lambda aggregator function (if deployed)
-        - IAM roles and CloudWatch log groups
-        - All other stack resources
-
-        The method waits for deletion to complete before returning.
-        If the stack doesn't exist, no error is raised.
-
-        Raises:
-            StackCreationError: If deletion fails (e.g., permission denied,
-                resources in use, or CloudFormation service error)
-
-        Example:
-            Cleanup after integration testing::
-
-                limiter = SyncRateLimiter(
-                    name="test-limits",
-                    region="us-east-1",
-                    stack_options=StackOptions(),
-                )
-
-                async with limiter:
-                    # Run tests...
-                    pass
-
-                # Clean up infrastructure
-                limiter.delete_stack()
-
-        Warning:
-            This operation is irreversible. All rate limit state, entity data,
-            and usage history will be permanently deleted.
-        """
-        from .infra.sync_stack_manager import SyncStackManager
-
-        with SyncStackManager(
-            self.stack_name, self._repository.region, self._repository.endpoint_url
-        ) as manager:
-            manager.delete_stack(self.stack_name)
-
-    def get_status(self) -> Status:
-        """
-        Get comprehensive status of the SyncRateLimiter infrastructure.
-
-        Consolidates connectivity, infrastructure state, version information,
-        and table metrics into a single status object. This method does not
-        raise exceptions for missing infrastructure - it gracefully handles
-        all error cases and returns status information accordingly.
-
-        Returns:
-            Status object containing:
-            - Connectivity: available, latency_ms
-            - Infrastructure: stack_status, table_status, aggregator_enabled
-            - Identity: name, region
-            - Versions: schema_version, lambda_version, client_version
-            - Table metrics: table_item_count, table_size_bytes
-            - IAM Roles: app_role_arn, admin_role_arn, readonly_role_arn
-
-        Example:
-            Check infrastructure health::
-
-                status = limiter.get_status()
-                if status.available:
-                    print(f"Ready! Latency: {status.latency_ms}ms")
-                    print(f"Stack: {status.stack_status}")
-                    print(f"Schema: {status.schema_version}")
-                else:
-                    print("DynamoDB is not reachable")
-
-        Note:
-            This method measures actual DynamoDB latency by performing a
-            lightweight operation. The latency_ms value reflects real
-            round-trip time to the DynamoDB endpoint.
-        """
-        from . import __version__
-        from .infra.sync_stack_manager import SyncStackManager
-
-        available = False
-        latency_ms: float | None = None
-        cfn_status: str | None = None
-        table_status: str | None = None
-        aggregator_enabled = False
-        schema_version: str | None = None
-        lambda_version: str | None = None
-        table_item_count: int | None = None
-        table_size_bytes: int | None = None
-        app_role_arn: str | None = None
-        admin_role_arn: str | None = None
-        readonly_role_arn: str | None = None
-        try:
-            with SyncStackManager(
-                self.stack_name, self._repository.region, self._repository.endpoint_url
-            ) as manager:
-                cfn_status = manager.get_stack_status(self.stack_name)
-                if cfn_status and "COMPLETE" in cfn_status:
-                    try:
-                        client = manager._get_client()
-                        response = client.describe_stacks(StackName=self.stack_name)
-                        if response.get("Stacks"):
-                            outputs = response["Stacks"][0].get("Outputs", [])
-                            for output in outputs:
-                                key = output.get("OutputKey", "")
-                                value = output.get("OutputValue", "")
-                                if key == "AppRoleArn":
-                                    app_role_arn = value
-                                elif key == "AdminRoleArn":
-                                    admin_role_arn = value
-                                elif key == "ReadOnlyRoleArn":
-                                    readonly_role_arn = value
-                    except Exception:
-                        logger.debug("Stack outputs unavailable", exc_info=True)
-        except Exception:
-            logger.debug("Stack status unavailable", exc_info=True)
-        try:
-            start_time = time.time()
-            if hasattr(self._repository, "_get_client"):
-                client = self._repository._get_client()
-                response = client.describe_table(TableName=self.table_name)
-                latency_ms = (time.time() - start_time) * 1000
-                available = True
-                table = response.get("Table", {})
-                table_status = table.get("TableStatus")
-                table_item_count = table.get("ItemCount")
-                table_size_bytes = table.get("TableSizeInBytes")
-                stream_spec = table.get("StreamSpecification", {})
-                aggregator_enabled = stream_spec.get("StreamEnabled", False)
-            else:
-                available = self._repository.ping()
-                if available:
-                    latency_ms = (time.time() - start_time) * 1000
-        except Exception:
-            logger.debug("DynamoDB unavailable", exc_info=True)
-        if available:
-            try:
-                version_record = self._repository.get_version_record()
-                if version_record:
-                    schema_version = version_record.get("schema_version")
-                    lambda_version = version_record.get("lambda_version")
-            except Exception:
-                logger.debug("Version record unavailable", exc_info=True)
-        return Status(
-            available=available,
-            latency_ms=latency_ms,
-            stack_status=cfn_status,
-            table_status=table_status,
-            aggregator_enabled=aggregator_enabled,
-            name=self._name,
-            region=self._repository.region,
-            schema_version=schema_version,
-            lambda_version=lambda_version,
-            client_version=__version__,
-            table_item_count=table_item_count,
-            table_size_bytes=table_size_bytes,
-            app_role_arn=app_role_arn,
-            admin_role_arn=admin_role_arn,
-            readonly_role_arn=readonly_role_arn,
         )
