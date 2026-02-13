@@ -43,7 +43,6 @@ async def main() -> None:
         name=NAME,  # Creates ZAEL-hierarchical resources
         endpoint_url=ENDPOINT_URL,
         stack_options=StackOptions(),
-        skip_version_check=True,
     )
 
     # -------------------------------------------------------------------------

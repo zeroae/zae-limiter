@@ -95,8 +95,6 @@ class SyncRateLimiter:
         stack_options: StackOptions | None = None,
         on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
         auto_update: bool = True,
-        strict_version: bool = True,
-        skip_version_check: bool = False,
         bucket_ttl_refill_multiplier: int = 7,
         speculative_writes: bool = True,
     ) -> None:
@@ -115,9 +113,8 @@ class SyncRateLimiter:
             stack_options: DEPRECATED. Infrastructure state.
                 Use SyncRepository(stack_options=...) instead.
             on_unavailable: Behavior when DynamoDB is unavailable
-            auto_update: Auto-update Lambda when version mismatch detected
-            strict_version: Fail if version mismatch (when auto_update is False)
-            skip_version_check: Skip all version checks (dangerous)
+            auto_update: Auto-update Lambda when version mismatch detected.
+                When False, raises VersionMismatchError on mismatch.
             bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
                 TTL = max_refill_period_seconds × multiplier. Default: 7.
                 Set to 0 to disable TTL for buckets using default limits.
@@ -162,8 +159,6 @@ class SyncRateLimiter:
         self.table_name = self._name
         self.on_unavailable = on_unavailable
         self._auto_update = auto_update
-        self._strict_version = strict_version
-        self._skip_version_check = skip_version_check
         self._initialized = False
         self._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
         self._speculative_writes = speculative_writes
@@ -216,7 +211,7 @@ class SyncRateLimiter:
 
         Example:
             # Discover all limiters in us-east-1
-            limiters = await SyncRateLimiter.list_deployed(region="us-east-1")
+            limiters = SyncRateLimiter.list_deployed(region="us-east-1")
             for limiter in limiters:
                 if limiter.is_healthy:
                     print(f"✓ {limiter.user_name}: {limiter.version}")
@@ -235,9 +230,11 @@ class SyncRateLimiter:
         """Ensure infrastructure exists and version is compatible."""
         if self._initialized:
             return
+        if getattr(self._repository, "_builder_initialized", False):
+            self._initialized = True
+            return
         self._repository.ensure_infrastructure()
-        if not self._skip_version_check:
-            self._check_and_update_version()
+        self._check_and_update_version()
         self._initialized = True
 
     def _check_and_update_version(self) -> None:
@@ -262,7 +259,7 @@ class SyncRateLimiter:
         if compatibility.requires_lambda_update:
             if self._auto_update and (not self._repository.endpoint_url):
                 self._perform_lambda_update()
-            elif self._strict_version:
+            else:
                 raise VersionMismatchError(
                     client_version=__version__,
                     schema_version=infra_version.schema_version,
@@ -327,7 +324,7 @@ class SyncRateLimiter:
 
         Example:
             limiter = SyncRateLimiter(name="my-app", region="us-east-1")
-            if await limiter.is_available():
+            if limiter.is_available():
                 async with limiter.acquire(...) as lease:
                     ...
             else:
@@ -414,7 +411,7 @@ class SyncRateLimiter:
             List of AuditEvent objects, ordered by most recent first
 
         Example:
-            events = await limiter.get_audit_events("proj-1")
+            events = limiter.get_audit_events("proj-1")
             for event in events:
                 print(f"{event.timestamp}: {event.action} by {event.principal}")
         """
@@ -467,7 +464,7 @@ class SyncRateLimiter:
 
         Example:
             # Get hourly snapshots for an entity
-            snapshots, cursor = await limiter.get_usage_snapshots(
+            snapshots, cursor = limiter.get_usage_snapshots(
                 entity_id="user-123",
                 resource="gpt-4",
                 window_type="hourly",
@@ -479,7 +476,7 @@ class SyncRateLimiter:
 
             # Paginate through results
             while cursor:
-                more, cursor = await limiter.get_usage_snapshots(
+                more, cursor = limiter.get_usage_snapshots(
                     entity_id="user-123",
                     next_key=cursor,
                 )
@@ -526,7 +523,7 @@ class SyncRateLimiter:
             ValueError: If neither entity_id nor resource is provided
 
         Example:
-            summary = await limiter.get_usage_summary(
+            summary = limiter.get_usage_summary(
                 entity_id="user-123",
                 resource="gpt-4",
                 window_type="hourly",
@@ -1325,13 +1322,13 @@ class SyncRateLimiter:
 
         Example:
             # Get all entities with custom limits for gpt-4
-            entities, cursor = await limiter.list_entities_with_custom_limits("gpt-4")
+            entities, cursor = limiter.list_entities_with_custom_limits("gpt-4")
             for entity_id in entities:
                 print(entity_id)
 
             # Paginate through results
             while cursor:
-                more, cursor = await limiter.list_entities_with_custom_limits(
+                more, cursor = limiter.list_entities_with_custom_limits(
                     "gpt-4", cursor=cursor
                 )
                 entities.extend(more)
@@ -1349,9 +1346,9 @@ class SyncRateLimiter:
             Sorted list of resource names with at least one entity having custom limits
 
         Example:
-            resources = await limiter.list_resources_with_entity_configs()
+            resources = limiter.list_resources_with_entity_configs()
             for resource in resources:
-                entities, _ = await limiter.list_entities_with_custom_limits(resource)
+                entities, _ = limiter.list_entities_with_custom_limits(resource)
                 print(f"{resource}: {len(entities)} entities with custom limits")
         """
         self._ensure_initialized()
@@ -1552,7 +1549,7 @@ class SyncRateLimiter:
                     pass
 
                 # Clean up infrastructure
-                await limiter.delete_stack()
+                limiter.delete_stack()
 
         Warning:
             This operation is irreversible. All rate limit state, entity data,
@@ -1586,7 +1583,7 @@ class SyncRateLimiter:
         Example:
             Check infrastructure health::
 
-                status = await limiter.get_status()
+                status = limiter.get_status()
                 if status.available:
                     print(f"Ready! Latency: {status.latency_ms}ms")
                     print(f"Stack: {status.stack_status}")

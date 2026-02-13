@@ -104,6 +104,16 @@ class RepositoryProtocol(Protocol):
         ...
 
     @property
+    def namespace_name(self) -> str:
+        """The human-readable namespace name."""
+        ...
+
+    @property
+    def namespace_id(self) -> str:
+        """The opaque namespace ID used in DynamoDB keys."""
+        ...
+
+    @property
     def capabilities(self) -> "BackendCapabilities":
         """
         Declare which extended features this backend supports.
@@ -114,6 +124,28 @@ class RepositoryProtocol(Protocol):
         Example:
             if repo.capabilities.supports_audit_logging:
                 events = await repo.get_audit_events(entity_id)
+        """
+        ...
+
+    async def namespace(
+        self,
+        name: str,
+        *,
+        on_unavailable: "OnUnavailableAction | None" = None,
+        bucket_ttl_multiplier: int | None = None,
+    ) -> "RepositoryProtocol":
+        """Return a scoped repository for the given namespace.
+
+        Args:
+            name: Namespace name to resolve.
+            on_unavailable: Override on_unavailable for this namespace.
+            bucket_ttl_multiplier: Override bucket TTL multiplier.
+
+        Returns:
+            A repository scoped to the resolved namespace.
+
+        Raises:
+            NamespaceNotFoundError: If the namespace is not registered.
         """
         ...
 

@@ -43,7 +43,6 @@ async def async_main() -> None:
         name=NAME,  # ZAEL-example resources
         endpoint_url=ENDPOINT_URL,
         stack_options=StackOptions(),  # Declare desired infrastructure state
-        skip_version_check=True,  # Skip version check for local dev
     )
 
     # Define limits: 5 requests per minute, 100 tokens per minute
@@ -89,7 +88,6 @@ def sync_main() -> None:
         name=NAME + "-sync",  # Creates ZAEL-example-sync resources
         endpoint_url=ENDPOINT_URL,
         stack_options=StackOptions(),
-        skip_version_check=True,
     )
 
     limits = [Limit.per_minute("rpm", 3)]

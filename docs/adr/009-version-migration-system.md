@@ -26,9 +26,9 @@ Implement version tracking in both DynamoDB and CloudFormation, with a migration
 4. **Migration registry**: Python framework for versioned migrations
 
 **Client parameters:**
-- `auto_update`: Auto-update Lambda on version mismatch (default: True)
-- `strict_version`: Fail if version mismatch (default: True)
-- `skip_version_check`: Bypass all checks (default: False)
+- `auto_update`: Auto-update Lambda on version mismatch (default: True, configured via `RepositoryBuilder.auto_update()`)
+
+*Note: `strict_version` and `skip_version_check` were removed in v0.10.0 when version management moved from RateLimiter to Repository/RepositoryBuilder.*
 
 ## Consequences
 

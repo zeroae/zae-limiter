@@ -297,7 +297,6 @@ def doctest_env(moto_env, monkeypatch):
     _original_init = _RateLimiter.__init__
 
     def _patched_init(self, *args, **kwargs):
-        kwargs["skip_version_check"] = True
         kwargs.pop("stack_options", None)
         _original_init(self, *args, **kwargs)
 
@@ -306,11 +305,20 @@ def doctest_env(moto_env, monkeypatch):
     _original_sync_init = _SyncRateLimiter.__init__
 
     def _patched_sync_init(self, *args, **kwargs):
-        kwargs["skip_version_check"] = True
         kwargs.pop("stack_options", None)
         _original_sync_init(self, *args, **kwargs)
 
     monkeypatch.setattr(_SyncRateLimiter, "__init__", _patched_sync_init)
+
+    # Skip version check (no CloudFormation stack in doctests)
+    async def _noop_version_check(self):
+        pass
+
+    def _noop_version_check_sync(self):
+        pass
+
+    monkeypatch.setattr(_RateLimiter, "_check_and_update_version", _noop_version_check)
+    monkeypatch.setattr(_SyncRateLimiter, "_check_and_update_version", _noop_version_check_sync)
 
 
 # Entity IDs commonly referenced in documentation examples

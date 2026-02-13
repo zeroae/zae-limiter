@@ -86,7 +86,6 @@ async def main() -> None:
         name=NAME,  # Creates ZAEL-llm resources
         endpoint_url=ENDPOINT_URL,
         stack_options=StackOptions(),
-        skip_version_check=True,
     )
 
     # Define limits for a GPT-4 style API

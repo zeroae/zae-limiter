@@ -36,6 +36,8 @@ from .naming import normalize_stack_name
 from .sync_config_cache import ConfigSource, SyncConfigCache
 from .sync_repository_protocol import SpeculativeResult
 
+if TYPE_CHECKING:
+    from .sync_repository_builder import SyncRepositoryBuilder
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +84,7 @@ class SyncRepository:
         self.region = region
         self.endpoint_url = endpoint_url
         self._namespace_id = schema.DEFAULT_NAMESPACE
+        self._namespace_name = "default"
         self._bucket_ttl_refill_multiplier = 7
         self._stack_options = stack_options
         self._session: boto3.Session | None = None
@@ -89,6 +92,9 @@ class SyncRepository:
         self._caller_identity_arn: str | None = None
         self._caller_identity_fetched = False
         self._audit_retention_days_cache: int | None = None
+        self._builder_initialized = False
+        self._auto_update = True
+        self._is_scoped = False
         self._capabilities = BackendCapabilities(
             supports_audit_logging=True,
             supports_usage_snapshots=True,
@@ -99,10 +105,40 @@ class SyncRepository:
         self._config_cache = SyncConfigCache(
             ttl_seconds=config_cache_ttl, namespace_id=self._namespace_id
         )
+        self._config_cache_ttl = config_cache_ttl
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None]] = {}
+        self._namespace_cache: dict[str, str] = {}
         self._parallel_mode = parallel_mode
         self._executor_fn = self._resolve_parallel_mode(parallel_mode)
         self._thread_pool: Any = None
+
+    @classmethod
+    def builder(
+        cls, name: str, region: str | None = None, *, endpoint_url: str | None = None
+    ) -> "SyncRepositoryBuilder":
+        """Create a SyncRepositoryBuilder for fluent configuration.
+
+        Example:
+            repo = (
+                SyncRepository.builder("my-app", "us-east-1")
+                .namespace("default")
+                .lambda_memory(512)
+                .build()
+            )
+        """
+        from .sync_repository_builder import SyncRepositoryBuilder
+
+        return SyncRepositoryBuilder(name, region, endpoint_url=endpoint_url)
+
+    @property
+    def namespace_name(self) -> str:
+        """The human-readable namespace name."""
+        return self._namespace_name
+
+    @property
+    def namespace_id(self) -> str:
+        """The opaque namespace ID used in DynamoDB keys."""
+        return self._namespace_id
 
     @property
     def capabilities(self) -> BackendCapabilities:
@@ -118,8 +154,82 @@ class SyncRepository:
             )
         return self._client
 
+    def namespace(
+        self,
+        name: str,
+        *,
+        on_unavailable: "OnUnavailableAction | None" = None,
+        bucket_ttl_multiplier: int | None = None,
+    ) -> "SyncRepository":
+        """Return a scoped SyncRepository for the given namespace.
+
+        The scoped repo shares the DynamoDB client, entity cache, and
+        namespace cache with the parent, but has its own ``SyncConfigCache``
+        and namespace identity.  Calling ``close()`` on a scoped repo
+        is a no-op (it does not close the shared client).
+
+        Args:
+            name: Namespace name to resolve.
+            on_unavailable: Override on_unavailable behavior for this
+                namespace ("allow" or "block").  Persisted via
+                ``set_system_defaults()``.
+            bucket_ttl_multiplier: Override bucket TTL multiplier for
+                this scoped repo.  Defaults to the parent's value.
+
+        Returns:
+            A new SyncRepository scoped to the resolved namespace.
+
+        Raises:
+            NamespaceNotFoundError: If the namespace is not registered.
+        """
+        from .exceptions import NamespaceNotFoundError
+
+        namespace_id = self._resolve_namespace(name)
+        if namespace_id is None:
+            raise NamespaceNotFoundError(name)
+        scoped = SyncRepository.__new__(SyncRepository)
+        scoped.stack_name = self.stack_name
+        scoped.table_name = self.table_name
+        scoped.region = self.region
+        scoped.endpoint_url = self.endpoint_url
+        scoped._namespace_id = namespace_id
+        scoped._namespace_name = name
+        scoped._bucket_ttl_refill_multiplier = (
+            bucket_ttl_multiplier
+            if bucket_ttl_multiplier is not None
+            else self._bucket_ttl_refill_multiplier
+        )
+        scoped._stack_options = None
+        scoped._session = self._session
+        scoped._client = self._client
+        scoped._caller_identity_arn = self._caller_identity_arn
+        scoped._caller_identity_fetched = self._caller_identity_fetched
+        scoped._audit_retention_days_cache = self._audit_retention_days_cache
+        scoped._builder_initialized = self._builder_initialized
+        scoped._auto_update = self._auto_update
+        scoped._is_scoped = True
+        scoped._capabilities = self._capabilities
+        scoped._config_cache_ttl = self._config_cache_ttl
+        scoped._config_cache = SyncConfigCache(
+            ttl_seconds=self._config_cache_ttl, namespace_id=namespace_id
+        )
+        scoped._entity_cache = self._entity_cache
+        scoped._namespace_cache = self._namespace_cache
+        if on_unavailable is not None:
+            existing_limits, _ = scoped.get_system_defaults()
+            scoped.set_system_defaults(limits=existing_limits, on_unavailable=on_unavailable)
+        scoped._parallel_mode = self._parallel_mode
+        scoped._executor_fn = self._executor_fn
+        scoped._thread_pool = self._thread_pool
+        return scoped
+
     def close(self) -> None:
-        """Close the DynamoDB client."""
+        """Close the DynamoDB client.
+
+        No-op for scoped repos (created via ``namespace()``).
+        """
+        if self._is_scoped:
+            return
         if self._client is not None:
             self._client = None
             self._session = None
@@ -201,12 +311,27 @@ class SyncRepository:
         """
         Ensure DynamoDB infrastructure exists.
 
+        .. deprecated::
+            Use ``SyncRepository.builder(...).build()`` instead, which handles
+            infrastructure creation during the build step.
+
         Creates CloudFormation stack using stack_options passed to the constructor.
         No-op if stack_options was not provided.
 
         Raises:
             StackCreationError: If CloudFormation stack creation fails
         """
+        import warnings
+
+        warnings.warn(
+            "ensure_infrastructure() is deprecated. Use SyncRepository.builder(...).build() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._ensure_infrastructure_internal()
+
+    def _ensure_infrastructure_internal(self) -> None:
+        """Internal: ensure infrastructure exists (no deprecation warning)."""
         if self._stack_options is None:
             return
         from .infra.sync_stack_manager import SyncStackManager
@@ -243,11 +368,192 @@ class SyncRepository:
             saved = self._stack_options
             self._stack_options = stack_options
             try:
-                self.ensure_infrastructure()
+                self._ensure_infrastructure_internal()
             finally:
                 self._stack_options = saved
         else:
-            self.ensure_infrastructure()
+            self._ensure_infrastructure_internal()
+
+    def _register_namespace(self, name: str) -> str:
+        """Register a namespace (idempotent).
+
+        Creates two records under RESERVED_NAMESPACE:
+        - ``PK=_/SYSTEM#, SK=#NAMESPACE#{name}`` (name → ID lookup)
+        - ``PK=_/SYSTEM#, SK=#NSID#{id}`` (ID → name lookup)
+
+        Uses TransactWriteItems with ConditionExpression to ensure atomicity.
+        On TransactionCanceledException (namespace exists), resolves and returns
+        the existing ID.
+
+        Returns:
+            The namespace_id (either newly created or existing).
+        """
+        import secrets
+
+        client = self._get_client()
+        namespace_id = secrets.token_urlsafe(8)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+        try:
+            client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Put": {
+                            "TableName": self.table_name,
+                            "Item": {
+                                "PK": {"S": pk},
+                                "SK": {"S": schema.sk_namespace(name)},
+                                "namespace_id": {"S": namespace_id},
+                                "namespace_name": {"S": name},
+                                "status": {"S": "active"},
+                                "created_at": {"S": now},
+                            },
+                            "ConditionExpression": "attribute_not_exists(PK)",
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": self.table_name,
+                            "Item": {
+                                "PK": {"S": pk},
+                                "SK": {"S": schema.sk_nsid(namespace_id)},
+                                "namespace_id": {"S": namespace_id},
+                                "namespace_name": {"S": name},
+                                "status": {"S": "active"},
+                            },
+                            "ConditionExpression": "attribute_not_exists(PK)",
+                        }
+                    },
+                ]
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "TransactionCanceledException":
+                existing_id = self._resolve_namespace(name)
+                if existing_id is not None:
+                    return existing_id
+                raise
+            raise
+        self._namespace_cache[name] = namespace_id
+        return namespace_id
+
+    def _resolve_namespace(self, name: str) -> str | None:
+        """Resolve a namespace name to its opaque ID.
+
+        Returns None if the namespace doesn't exist or has status "deleted".
+        """
+        if name in self._namespace_cache:
+            return self._namespace_cache[name]
+        client = self._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+        response = client.get_item(
+            TableName=self.table_name, Key={"PK": {"S": pk}, "SK": {"S": schema.sk_namespace(name)}}
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        status = item.get("status", {}).get("S", "")
+        if status in ("deleted", "purging"):
+            return None
+        namespace_id: str = item["namespace_id"]["S"]
+        self._namespace_cache[name] = namespace_id
+        return namespace_id
+
+    def _reinitialize_config_cache(self, namespace_id: str) -> None:
+        """Reinitialize the config cache with a new namespace_id."""
+        self._config_cache = SyncConfigCache(
+            ttl_seconds=self._config_cache_ttl, namespace_id=namespace_id
+        )
+
+    def _check_and_update_version_auto(self) -> None:
+        """Check version compatibility and auto-update Lambda if needed.
+
+        Used when ``auto_update=True``. On version mismatch, deploys
+        updated Lambda code and updates the version record. On schema
+        migration needed, raises ``IncompatibleSchemaError``.
+        """
+        from . import __version__
+        from .version import InfrastructureVersion, check_compatibility
+
+        version_record = self.get_version_record()
+        if version_record is None:
+            self._initialize_version_record()
+            return
+        infra_version = InfrastructureVersion.from_record(version_record)
+        compatibility = check_compatibility(__version__, infra_version)
+        if compatibility.is_compatible and (not compatibility.requires_lambda_update):
+            return
+        if compatibility.requires_schema_migration:
+            from .exceptions import IncompatibleSchemaError
+
+            raise IncompatibleSchemaError(
+                client_version=__version__,
+                schema_version=infra_version.schema_version,
+                message=compatibility.message,
+            )
+        if compatibility.requires_lambda_update and (not self.endpoint_url):
+            self._perform_lambda_update()
+
+    def _check_version_strict(self) -> None:
+        """Check version compatibility in strict mode (no auto-update).
+
+        Raises ``VersionMismatchError`` if the Lambda version differs
+        from the client version.
+        """
+        from . import __version__
+        from .exceptions import VersionMismatchError
+        from .version import InfrastructureVersion, check_compatibility
+
+        version_record = self.get_version_record()
+        if version_record is None:
+            self._initialize_version_record()
+            return
+        infra_version = InfrastructureVersion.from_record(version_record)
+        compatibility = check_compatibility(__version__, infra_version)
+        if compatibility.is_compatible and (not compatibility.requires_lambda_update):
+            return
+        if compatibility.requires_schema_migration:
+            from .exceptions import IncompatibleSchemaError
+
+            raise IncompatibleSchemaError(
+                client_version=__version__,
+                schema_version=infra_version.schema_version,
+                message=compatibility.message,
+            )
+        if compatibility.requires_lambda_update:
+            raise VersionMismatchError(
+                client_version=__version__,
+                schema_version=infra_version.schema_version,
+                lambda_version=infra_version.lambda_version,
+                message=compatibility.message,
+                can_auto_update=not self.endpoint_url,
+            )
+
+    def _initialize_version_record(self) -> None:
+        """Initialize the version record for first-time setup."""
+        from . import __version__
+        from .version import get_schema_version
+
+        self.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version=__version__,
+            client_min_version="0.0.0",
+            updated_by=f"client:{__version__}",
+        )
+
+    def _perform_lambda_update(self) -> None:
+        """Update Lambda code to match client version."""
+        from . import __version__
+        from .infra.sync_stack_manager import SyncStackManager
+        from .version import get_schema_version
+
+        with SyncStackManager(self.stack_name, self.region, self.endpoint_url) as manager:
+            manager.deploy_lambda_code()
+            self.set_version_record(
+                schema_version=get_schema_version(),
+                lambda_version=__version__,
+                client_min_version="0.0.0",
+                updated_by=f"client:{__version__}",
+            )
 
     def create_entity(
         self,
@@ -290,6 +596,8 @@ class SyncRepository:
             "cascade": {"BOOL": cascade},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
+            "GSI4PK": {"S": self._namespace_id},
+            "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
         }
         if parent_id:
             item["GSI1PK"] = {"S": schema.gsi1_pk_parent(self._namespace_id, parent_id)}
@@ -708,6 +1016,8 @@ class SyncRepository:
             "GSI2PK": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
             "cascade": {"BOOL": cascade},
+            "GSI4PK": {"S": self._namespace_id},
+            "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
         }
         if parent_id is not None:
             item["parent_id"] = {"S": parent_id}
@@ -938,11 +1248,11 @@ class SyncRepository:
 
     def speculative_consume(
         self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
-    ) -> "SpeculativeResult":
+    ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
         Checks entity cache for cascade metadata. If cache hit + cascade,
-        issues child+parent UpdateItems concurrently via asyncio.gather
+        issues child+parent UpdateItems concurrently via _run_in_executor
         and returns nested parent_result.
 
         Args:
@@ -988,7 +1298,7 @@ class SyncRepository:
 
     def _speculative_consume_single(
         self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
-    ) -> "SpeculativeResult":
+    ) -> SpeculativeResult:
         """Single speculative UpdateItem (extracted for parallel reuse)."""
         client = self._get_client()
         add_parts: list[str] = []
@@ -1084,6 +1394,8 @@ class SyncRepository:
             "config_version": {"N": "1"},
             "GSI3PK": {"S": schema.gsi3_pk_entity_config(self._namespace_id, resource)},
             "GSI3SK": {"S": schema.gsi3_sk_entity(entity_id)},
+            "GSI4PK": {"S": self._namespace_id},
+            "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
         }
         self._serialize_composite_limits(limits, item)
         try:
@@ -1103,9 +1415,13 @@ class SyncRepository:
                                 "PK": {"S": schema.pk_system(self._namespace_id)},
                                 "SK": {"S": schema.sk_entity_config_resources()},
                             },
-                            "UpdateExpression": "ADD #resource :one",
+                            "UpdateExpression": "SET GSI4PK = if_not_exists(GSI4PK, :gsi4pk), GSI4SK = if_not_exists(GSI4SK, :gsi4sk) ADD #resource :one",
                             "ExpressionAttributeNames": {"#resource": resource},
-                            "ExpressionAttributeValues": {":one": {"N": "1"}},
+                            "ExpressionAttributeValues": {
+                                ":one": {"N": "1"},
+                                ":gsi4pk": {"S": self._namespace_id},
+                                ":gsi4sk": {"S": schema.pk_system(self._namespace_id)},
+                            },
                         }
                     },
                 ]
@@ -1455,6 +1771,8 @@ class SyncRepository:
             "SK": {"S": schema.sk_config()},
             "resource": {"S": resource},
             "config_version": {"N": "1"},
+            "GSI4PK": {"S": self._namespace_id},
+            "GSI4SK": {"S": schema.pk_resource(self._namespace_id, resource)},
         }
         self._serialize_composite_limits(limits, item)
         client.put_item(TableName=self.table_name, Item=item)
@@ -1464,8 +1782,12 @@ class SyncRepository:
                 "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_resources()},
             },
-            UpdateExpression="ADD resources :resource",
-            ExpressionAttributeValues={":resource": {"SS": [resource]}},
+            UpdateExpression="SET GSI4PK = if_not_exists(GSI4PK, :gsi4pk), GSI4SK = if_not_exists(GSI4SK, :gsi4sk) ADD resources :resource",
+            ExpressionAttributeValues={
+                ":resource": {"SS": [resource]},
+                ":gsi4pk": {"S": self._namespace_id},
+                ":gsi4sk": {"S": schema.pk_system(self._namespace_id)},
+            },
         )
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
@@ -1572,6 +1894,8 @@ class SyncRepository:
         if on_unavailable is not None:
             item["on_unavailable"] = {"S": on_unavailable}
         self._serialize_composite_limits(limits, item)
+        item["GSI4PK"] = {"S": self._namespace_id}
+        item["GSI4SK"] = {"S": schema.pk_system(self._namespace_id)}
         client.put_item(TableName=self.table_name, Item=item)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
@@ -1710,7 +2034,7 @@ class SyncRepository:
         response = client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
                 "SK": {"S": schema.sk_version()},
             },
         )
@@ -1744,7 +2068,7 @@ class SyncRepository:
             client.get_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                    "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
                     "SK": {"S": schema.sk_version()},
                 },
             )
@@ -1771,13 +2095,15 @@ class SyncRepository:
         client = self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_system(self._namespace_id)},
+            "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
             "SK": {"S": schema.sk_version()},
             "schema_version": {"S": schema_version},
             "client_min_version": {"S": client_min_version},
             "updated_at": {"S": now},
             "lambda_version": {"S": lambda_version} if lambda_version else {"NULL": True},
             "updated_by": {"S": updated_by} if updated_by else {"NULL": True},
+            "GSI4PK": {"S": schema.RESERVED_NAMESPACE},
+            "GSI4SK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
         }
         client.put_item(TableName=self.table_name, Item=item)
 
@@ -1839,6 +2165,8 @@ class SyncRepository:
             "resource": {"S": resource} if resource else {"NULL": True},
             "details": {"M": self._serialize_map(details or {})},
             "ttl": {"N": str(schema.calculate_ttl(self._now_ms(), ttl_seconds))},
+            "GSI4PK": {"S": self._namespace_id},
+            "GSI4SK": {"S": schema.pk_audit(self._namespace_id, entity_id)},
         }
         client.put_item(TableName=self.table_name, Item=item)
         return event

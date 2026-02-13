@@ -17,7 +17,6 @@ async def seed_data() -> None:
     limiter = RateLimiter(
         name=name,  # Creates ZAEL-demo resources
         endpoint_url=endpoint_url,
-        skip_version_check=True,
     )
 
     # Create project (parent entity)

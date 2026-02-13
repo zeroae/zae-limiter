@@ -35,7 +35,7 @@ class SyncInfrastructureDiscovery:
 
     Example:
         async with SyncInfrastructureDiscovery(region="us-east-1") as discovery:
-            limiters = await discovery.list_limiters()
+            limiters = discovery.list_limiters()
             for limiter in limiters:
                 print(f"{limiter.user_name}: {limiter.stack_status}")
 
@@ -268,11 +268,11 @@ class SyncInfrastructureDiscovery:
         self._session = None
 
     def __enter__(self) -> "SyncInfrastructureDiscovery":
-        """Enter async context manager."""
+        """Enter context manager."""
         return self
 
     def __exit__(
         self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
     ) -> None:
-        """Exit async context manager."""
+        """Exit context manager."""
         self.close()

@@ -1156,15 +1156,13 @@ class TestRateLimiterStackOptions:
         with _patch_aiobotocore_response():
             stack_options = StackOptions(lambda_timeout=120)
             limiter = SyncRateLimiter(
-                name="test-with-stack-options",
-                region="us-east-1",
-                stack_options=stack_options,
-                skip_version_check=True,
+                name="test-with-stack-options", region="us-east-1", stack_options=stack_options
             )
             ensure_infrastructure_mock = MagicMock(return_value=None)
             monkeypatch.setattr(
                 limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
             )
+            monkeypatch.setattr(limiter, "_check_and_update_version", MagicMock(return_value=None))
             limiter._ensure_initialized()
             ensure_infrastructure_mock.assert_called_once()
             limiter.close()
@@ -1184,15 +1182,13 @@ class TestRateLimiterStackOptions:
 
         with _patch_aiobotocore_response():
             limiter = SyncRateLimiter(
-                name="test-without-stack-options",
-                region="us-east-1",
-                stack_options=None,
-                skip_version_check=True,
+                name="test-without-stack-options", region="us-east-1", stack_options=None
             )
             ensure_infrastructure_mock = MagicMock(return_value=None)
             monkeypatch.setattr(
                 limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
             )
+            monkeypatch.setattr(limiter, "_check_and_update_version", MagicMock(return_value=None))
             limiter._ensure_initialized()
             ensure_infrastructure_mock.assert_called_once()
             limiter.close()
@@ -1333,9 +1329,7 @@ class TestRateLimiterGetStatus:
         from zae_limiter import SyncRateLimiter, __version__
 
         with _patch_aiobotocore_response():
-            limiter = SyncRateLimiter(
-                name="test-no-version", region="us-east-1", skip_version_check=True
-            )
+            limiter = SyncRateLimiter(name="test-no-version", region="us-east-1")
             limiter._repository.create_table()
             status = limiter.get_status()
             assert status.client_version == __version__
@@ -1576,9 +1570,7 @@ class TestRateLimiterVersionChecking:
         from zae_limiter.version import CompatibilityResult, InfrastructureVersion
 
         with _patch_aiobotocore_response():
-            limiter = SyncRateLimiter(
-                name="test-version-check", region="us-east-1", skip_version_check=False
-            )
+            limiter = SyncRateLimiter(name="test-version-check", region="us-east-1")
             limiter._repository.create_table()
             incompatible_record = {
                 "schema_version": "99.0.0",
@@ -1625,11 +1617,7 @@ class TestRateLimiterVersionChecking:
 
         with _patch_aiobotocore_response():
             limiter = SyncRateLimiter(
-                name="test-strict-version",
-                region="us-east-1",
-                skip_version_check=False,
-                strict_version=True,
-                auto_update=False,
+                name="test-strict-version", region="us-east-1", auto_update=False
             )
             limiter._repository.create_table()
             mismatch_record = {

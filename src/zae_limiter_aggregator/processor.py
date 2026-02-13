@@ -668,6 +668,8 @@ def update_snapshot(
                 #window_start = if_not_exists(#window_start, :window_start),
                 GSI2PK = :gsi2pk,
                 GSI2SK = :gsi2sk,
+                GSI4PK = if_not_exists(GSI4PK, :gsi4pk),
+                GSI4SK = if_not_exists(GSI4SK, :gsi4sk),
                 #ttl = if_not_exists(#ttl, :ttl)
             ADD #limit_name :delta,
                 #total_events :one
@@ -687,6 +689,8 @@ def update_snapshot(
             ":window_start": window_key,
             ":gsi2pk": gsi2_pk_resource(delta.namespace_id, delta.resource),
             ":gsi2sk": gsi2_sk_usage(window_key, delta.entity_id),
+            ":gsi4pk": delta.namespace_id,
+            ":gsi4sk": pk_entity(delta.namespace_id, delta.entity_id),
             ":ttl": calculate_snapshot_ttl(ttl_days),
             ":delta": tokens_delta,
             ":one": 1,

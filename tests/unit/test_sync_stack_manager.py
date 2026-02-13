@@ -518,7 +518,7 @@ class TestDeployLambdaCode:
 
 
 class TestContextManager:
-    """Tests for async context manager functionality."""
+    """Tests for context manager functionality."""
 
     def test_aenter_returns_self(self) -> None:
         """__aenter__ returns the manager instance."""
