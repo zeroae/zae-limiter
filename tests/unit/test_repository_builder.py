@@ -42,6 +42,7 @@ class TestBuilderConstruction:
             .config_cache_ttl(120)
             .auto_update(False)
             .bucket_ttl_multiplier(14)
+            .on_unavailable("allow")
             .lambda_memory(512)
             .enable_alarms(False)
             .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
@@ -263,6 +264,23 @@ class TestBuilderBuild:
                 await builder.build()
 
             assert exc_info.value.namespace_name == "nonexistent"
+
+    @pytest.mark.asyncio
+    async def test_build_with_on_unavailable(self, mock_dynamodb):
+        """build() persists on_unavailable as system config."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            temp_repo = Repository(name="test-on-unavail", region="us-east-1")
+            await temp_repo.create_table()
+
+            builder = RepositoryBuilder("test-on-unavail", "us-east-1").on_unavailable("allow")
+            repo = await builder.build()
+            try:
+                _, on_unavailable = await repo.get_system_defaults()
+                assert on_unavailable == "allow"
+            finally:
+                await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_idempotent_namespace_registration(self, mock_dynamodb):

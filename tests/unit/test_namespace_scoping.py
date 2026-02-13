@@ -104,6 +104,13 @@ class TestNamespaceScopedRepo:
         assert scoped.stack_name == repo.stack_name
 
     @pytest.mark.asyncio
+    async def test_scoped_repo_on_unavailable(self, repo):
+        """namespace() with on_unavailable persists to system config."""
+        scoped = await repo.namespace("tenant-a", on_unavailable="allow")
+        _, on_unavailable = await scoped.get_system_defaults()
+        assert on_unavailable == "allow"
+
+    @pytest.mark.asyncio
     async def test_scoped_repo_custom_bucket_ttl(self, repo):
         """namespace() accepts bucket_ttl_multiplier override."""
         scoped = await repo.namespace("tenant-a", bucket_ttl_multiplier=14)
