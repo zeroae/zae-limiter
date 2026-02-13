@@ -2618,9 +2618,8 @@
 <li><strong>Migration registry</strong>: Python framework for versioned migrations</li>
 </ol>
 <p><strong>Client parameters:</strong>
-- <code>auto_update</code>: Auto-update Lambda on version mismatch (default: True)
-- <code>strict_version</code>: Fail if version mismatch (default: True)
-- <code>skip_version_check</code>: Bypass all checks (default: False)</p>
+- <code>auto_update</code>: Auto-update Lambda on version mismatch (default: True, configured via <code>RepositoryBuilder.auto_update()</code>)</p>
+<p><em>Note: <code>strict_version</code> and <code>skip_version_check</code> were removed in v0.10.0 when version management moved from RateLimiter to Repository/RepositoryBuilder.</em></p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - Safe rolling updates: detect incompatibility before operations

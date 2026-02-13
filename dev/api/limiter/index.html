@@ -4325,7 +4325,7 @@
 
 
 <a href="#zae_limiter.limiter.RateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="o">=</span><span class="mi">7</span><span class="p">,</span> <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="o">=</span><span class="mi">7</span><span class="p">,</span> <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -4483,43 +4483,12 @@ Use Repository(stack_options=...) instead.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Auto-update Lambda when version mismatch detected</p>
+                <p>Auto-update Lambda when version mismatch detected.
+When False, raises VersionMismatchError on mismatch.</p>
               </div>
             </td>
             <td>
                   <code>True</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>strict_version</code>
-            </td>
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Fail if version mismatch (when auto_update is False)</p>
-              </div>
-            </td>
-            <td>
-                  <code>True</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>skip_version_check</code>
-            </td>
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Skip all version checks (dangerous)</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -7742,7 +7711,7 @@ round-trip time to the DynamoDB endpoint.</p>
 
 
 <a href="#zae_limiter.sync_limiter.SyncRateLimiter" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">strict_version</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">skip_version_check</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="o">=</span><span class="mi">7</span><span class="p">,</span> <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncRateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="o">=</span><span class="n"><span title="zae_limiter.limiter.OnUnavailable.BLOCK">BLOCK</span></span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">bucket_ttl_refill_multiplier</span><span class="o">=</span><span class="mi">7</span><span class="p">,</span> <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -7900,43 +7869,12 @@ Use SyncRepository(stack_options=...) instead.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Auto-update Lambda when version mismatch detected</p>
+                <p>Auto-update Lambda when version mismatch detected.
+When False, raises VersionMismatchError on mismatch.</p>
               </div>
             </td>
             <td>
                   <code>True</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>strict_version</code>
-            </td>
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Fail if version mismatch (when auto_update is False)</p>
-              </div>
-            </td>
-            <td>
-                  <code>True</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>skip_version_check</code>
-            </td>
-            <td>
-                  <code><span title="bool">bool</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Skip all version checks (dangerous)</p>
-              </div>
-            </td>
-            <td>
-                  <code>False</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -8163,7 +8101,7 @@ for stacks tagged with <code>ManagedBy=zae-limiter</code>.</p>
 <details class="example" open>
   <summary>Example</summary>
   <h5 id="zae_limiter.sync_limiter.SyncRateLimiter.list_deployed--discover-all-limiters-in-us-east-1">Discover all limiters in us-east-1<a class="headerlink" href="#zae_limiter.sync_limiter.SyncRateLimiter.list_deployed--discover-all-limiters-in-us-east-1" title="Permanent link">&para;</a></h5>
-<p>limiters = await SyncRateLimiter.list_deployed(region="us-east-1")
+<p>limiters = SyncRateLimiter.list_deployed(region="us-east-1")
 for limiter in limiters:
     if limiter.is_healthy:
         print(f"✓ {limiter.user_name}: {limiter.version}")
@@ -8293,7 +8231,7 @@ This method never raises exceptions - it returns False on any error.</p>
 <details class="example" open>
   <summary>Example</summary>
   <p>limiter = SyncRateLimiter(name="my-app", region="us-east-1")
-if await limiter.is_available():
+if limiter.is_available():
     async with limiter.acquire(...) as lease:
         ...
 else:
@@ -8705,7 +8643,7 @@ on the specified entity, ordered by most recent first.</p>
 
 <details class="example" open>
   <summary>Example</summary>
-  <p>events = await limiter.get_audit_events("proj-1")
+  <p>events = limiter.get_audit_events("proj-1")
 for event in events:
     print(f"{event.timestamp}: {event.action} by {event.principal}")</p>
 </details>
@@ -8925,7 +8863,7 @@ Use <code>next_key</code> to paginate through all matching results.</p>
 <details class="example" open>
   <summary>Example</summary>
   <h5 id="zae_limiter.sync_limiter.SyncRateLimiter.get_usage_snapshots--get-hourly-snapshots-for-an-entity">Get hourly snapshots for an entity<a class="headerlink" href="#zae_limiter.sync_limiter.SyncRateLimiter.get_usage_snapshots--get-hourly-snapshots-for-an-entity" title="Permanent link">&para;</a></h5>
-<p>snapshots, cursor = await limiter.get_usage_snapshots(
+<p>snapshots, cursor = limiter.get_usage_snapshots(
     entity_id="user-123",
     resource="gpt-4",
     window_type="hourly",
@@ -8936,7 +8874,7 @@ for snap in snapshots:
     print(f"{snap.window_start}: {snap.counters}")</p>
 <h5 id="zae_limiter.sync_limiter.SyncRateLimiter.get_usage_snapshots--paginate-through-results">Paginate through results<a class="headerlink" href="#zae_limiter.sync_limiter.SyncRateLimiter.get_usage_snapshots--paginate-through-results" title="Permanent link">&para;</a></h5>
 <p>while cursor:
-    more, cursor = await limiter.get_usage_snapshots(
+    more, cursor = limiter.get_usage_snapshots(
         entity_id="user-123",
         next_key=cursor,
     )</p>
@@ -9113,7 +9051,7 @@ capacity planning.</p>
 
 <details class="example" open>
   <summary>Example</summary>
-  <p>summary = await limiter.get_usage_summary(
+  <p>summary = limiter.get_usage_summary(
     entity_id="user-123",
     resource="gpt-4",
     window_type="hourly",
@@ -10053,12 +9991,12 @@ custom limits for the specified resource are returned.</p>
 <details class="example" open>
   <summary>Example</summary>
   <h5 id="zae_limiter.sync_limiter.SyncRateLimiter.list_entities_with_custom_limits--get-all-entities-with-custom-limits-for-gpt-4">Get all entities with custom limits for gpt-4<a class="headerlink" href="#zae_limiter.sync_limiter.SyncRateLimiter.list_entities_with_custom_limits--get-all-entities-with-custom-limits-for-gpt-4" title="Permanent link">&para;</a></h5>
-<p>entities, cursor = await limiter.list_entities_with_custom_limits("gpt-4")
+<p>entities, cursor = limiter.list_entities_with_custom_limits("gpt-4")
 for entity_id in entities:
     print(entity_id)</p>
 <h5 id="zae_limiter.sync_limiter.SyncRateLimiter.list_entities_with_custom_limits--paginate-through-results">Paginate through results<a class="headerlink" href="#zae_limiter.sync_limiter.SyncRateLimiter.list_entities_with_custom_limits--paginate-through-results" title="Permanent link">&para;</a></h5>
 <p>while cursor:
-    more, cursor = await limiter.list_entities_with_custom_limits(
+    more, cursor = limiter.list_entities_with_custom_limits(
         "gpt-4", cursor=cursor
     )
     entities.extend(more)</p>
@@ -10110,9 +10048,9 @@ for entity_id in entities:
 
 <details class="example" open>
   <summary>Example</summary>
-  <p>resources = await limiter.list_resources_with_entity_configs()
+  <p>resources = limiter.list_resources_with_entity_configs()
 for resource in resources:
-    entities, _ = await limiter.list_entities_with_custom_limits(resource)
+    entities, _ = limiter.list_entities_with_custom_limits(resource)
     print(f"{resource}: {len(entities)} entities with custom limits")</p>
 </details>
 
@@ -10840,7 +10778,7 @@ async with limiter:
     pass
 
 # Clean up infrastructure
-await limiter.delete_stack()
+limiter.delete_stack()
 </code></pre></div>
 </details>
 
@@ -11007,7 +10945,7 @@ all error cases and returns status information accordingly.</p>
 <details class="example" open>
   <summary>Example</summary>
   <p>Check infrastructure health::</p>
-<div class="language-text highlight"><pre><span></span><code>status = await limiter.get_status()
+<div class="language-text highlight"><pre><span></span><code>status = limiter.get_status()
 if status.available:
     print(f&quot;Ready! Latency: {status.latency_ms}ms&quot;)
     print(f&quot;Stack: {status.stack_status}&quot;)
