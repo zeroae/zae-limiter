@@ -559,7 +559,22 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                     item.body.extend(cleanup_stmts)
                     break
 
-            # 3. Inject executor methods
+            # 3. Inject parallel mode fields into namespace() scoped repo
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "namespace":
+                    namespace_stmts = ast.parse(
+                        "scoped._parallel_mode = self._parallel_mode\n"
+                        "scoped._executor_fn = self._executor_fn\n"
+                        "scoped._thread_pool = self._thread_pool\n"
+                    ).body
+                    # Insert before the return statement
+                    for i, stmt in enumerate(item.body):
+                        if isinstance(stmt, ast.Return):
+                            item.body[i:i] = namespace_stmts
+                            break
+                    break
+
+            # 4. Inject executor methods
             executor_stmts = ast.parse(_EXECUTOR_METHODS).body
             node.body.extend(executor_stmts)
 

@@ -218,6 +218,9 @@ class SyncRepository:
         if on_unavailable is not None:
             existing_limits, _ = scoped.get_system_defaults()
             scoped.set_system_defaults(limits=existing_limits, on_unavailable=on_unavailable)
+        scoped._parallel_mode = self._parallel_mode
+        scoped._executor_fn = self._executor_fn
+        scoped._thread_pool = self._thread_pool
         return scoped
 
     def close(self) -> None:
