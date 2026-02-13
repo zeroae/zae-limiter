@@ -2393,3 +2393,102 @@ class TestGSI4Attributes:
         item = response["Item"]
         assert item["GSI4PK"]["S"] == "default"
         assert item["GSI4SK"]["S"] == schema.pk_entity("default", "adj-gsi4")
+
+
+class TestDeleteStack:
+    """Tests for SyncRepository.delete_stack()."""
+
+    def test_delete_stack_delegates_to_stack_manager(self, mock_dynamodb):
+        """delete_stack() creates a SyncStackManager and calls delete_stack."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = SyncRepository(name="test-stack", region="us-east-1")
+            mock_manager = MagicMock()
+            mock_manager.delete_stack = MagicMock()
+            mock_manager.__enter__ = MagicMock(return_value=mock_manager)
+            mock_manager.__exit__ = MagicMock(return_value=False)
+            with patch(
+                "zae_limiter.infra.sync_stack_manager.SyncStackManager", return_value=mock_manager
+            ):
+                repo.delete_stack()
+            mock_manager.delete_stack.assert_called_once_with("test-stack")
+            repo.close()
+
+
+class TestResolveOnUnavailable:
+    """Tests for SyncRepository.resolve_on_unavailable() edge cases."""
+
+    def test_cached_value_returned_when_system_config_has_no_on_unavailable(self, mock_dynamodb):
+        """When system config exists but on_unavailable is None, cached value is used."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = SyncRepository(name="test-cache", region="us-east-1")
+            repo._on_unavailable_cache = "allow"
+            with patch.object(
+                repo._config_cache, "get_system_defaults", new_callable=MagicMock
+            ) as mock_get:
+                mock_get.return_value = (None, None)
+                result = repo.resolve_on_unavailable()
+            assert result == "allow"
+            repo.close()
+
+    def test_default_block_when_no_cache_and_no_system_config(self, mock_dynamodb):
+        """When no cache and system config has no on_unavailable, default to 'block'."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = SyncRepository(name="test-default", region="us-east-1")
+            assert repo._on_unavailable_cache is None
+            with patch.object(
+                repo._config_cache, "get_system_defaults", new_callable=MagicMock
+            ) as mock_get:
+                mock_get.return_value = (None, None)
+                result = repo.resolve_on_unavailable()
+            assert result == "block"
+            repo.close()
+
+    def test_cached_value_on_dynamodb_error(self, mock_dynamodb):
+        """When DynamoDB is unreachable, cached on_unavailable is returned."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = SyncRepository(name="test-fallback", region="us-east-1")
+            repo._on_unavailable_cache = "allow"
+            with patch.object(
+                repo._config_cache,
+                "get_system_defaults",
+                new_callable=MagicMock,
+                side_effect=Exception("DynamoDB unavailable"),
+            ):
+                result = repo.resolve_on_unavailable()
+            assert result == "allow"
+            repo.close()
+
+    def test_default_block_on_dynamodb_error_without_cache(self, mock_dynamodb):
+        """When DynamoDB is unreachable and no cache, default to 'block'."""
+        from unittest.mock import MagicMock, patch
+
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            repo = SyncRepository(name="test-no-cache", region="us-east-1")
+            assert repo._on_unavailable_cache is None
+            with patch.object(
+                repo._config_cache,
+                "get_system_defaults",
+                new_callable=MagicMock,
+                side_effect=Exception("DynamoDB unavailable"),
+            ):
+                result = repo.resolve_on_unavailable()
+            assert result == "block"
+            repo.close()

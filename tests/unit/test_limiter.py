@@ -3033,6 +3033,55 @@ class TestRateLimiterRepositoryParameter:
             await limiter.close()
 
 
+class TestDeprecatedConstructorParams:
+    """Tests for individual deprecated constructor parameter warnings."""
+
+    async def test_on_unavailable_param_warns(self, mock_dynamodb):
+        """Passing on_unavailable to constructor emits DeprecationWarning."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter.limiter import OnUnavailable
+        from zae_limiter.repository import Repository
+
+        with _patch_aiobotocore_response():
+            with pytest.warns(DeprecationWarning, match="on_unavailable"):
+                limiter = RateLimiter(name="test", on_unavailable=OnUnavailable.ALLOW)
+            repo = limiter._repository
+            assert isinstance(repo, Repository)
+            assert repo._on_unavailable_cache == "allow"
+            await limiter.close()
+
+    async def test_auto_update_param_warns(self, mock_dynamodb):
+        """Passing auto_update to constructor emits DeprecationWarning."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            with pytest.warns(DeprecationWarning, match="auto_update"):
+                limiter = RateLimiter(name="test", auto_update=True)
+            await limiter.close()
+
+    async def test_stack_name_property_warns(self, mock_dynamodb):
+        """Accessing RateLimiter.stack_name emits DeprecationWarning."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(name="test")
+            with pytest.warns(DeprecationWarning, match="stack_name"):
+                name = limiter.stack_name
+            assert name == "test"
+            await limiter.close()
+
+    async def test_table_name_property_warns(self, mock_dynamodb):
+        """Accessing RateLimiter.table_name emits DeprecationWarning."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(name="test")
+            with pytest.warns(DeprecationWarning, match="table_name"):
+                name = limiter.table_name
+            assert name == "test"
+            await limiter.close()
+
+
 class TestRepositoryProtocolCompliance:
     """Tests that Repository implements RepositoryProtocol."""
 
