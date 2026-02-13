@@ -211,7 +211,7 @@ class SyncRateLimiter:
 
         Example:
             # Discover all limiters in us-east-1
-            limiters = await SyncRateLimiter.list_deployed(region="us-east-1")
+            limiters = SyncRateLimiter.list_deployed(region="us-east-1")
             for limiter in limiters:
                 if limiter.is_healthy:
                     print(f"✓ {limiter.user_name}: {limiter.version}")
@@ -324,7 +324,7 @@ class SyncRateLimiter:
 
         Example:
             limiter = SyncRateLimiter(name="my-app", region="us-east-1")
-            if await limiter.is_available():
+            if limiter.is_available():
                 async with limiter.acquire(...) as lease:
                     ...
             else:
@@ -411,7 +411,7 @@ class SyncRateLimiter:
             List of AuditEvent objects, ordered by most recent first
 
         Example:
-            events = await limiter.get_audit_events("proj-1")
+            events = limiter.get_audit_events("proj-1")
             for event in events:
                 print(f"{event.timestamp}: {event.action} by {event.principal}")
         """
@@ -464,7 +464,7 @@ class SyncRateLimiter:
 
         Example:
             # Get hourly snapshots for an entity
-            snapshots, cursor = await limiter.get_usage_snapshots(
+            snapshots, cursor = limiter.get_usage_snapshots(
                 entity_id="user-123",
                 resource="gpt-4",
                 window_type="hourly",
@@ -476,7 +476,7 @@ class SyncRateLimiter:
 
             # Paginate through results
             while cursor:
-                more, cursor = await limiter.get_usage_snapshots(
+                more, cursor = limiter.get_usage_snapshots(
                     entity_id="user-123",
                     next_key=cursor,
                 )
@@ -523,7 +523,7 @@ class SyncRateLimiter:
             ValueError: If neither entity_id nor resource is provided
 
         Example:
-            summary = await limiter.get_usage_summary(
+            summary = limiter.get_usage_summary(
                 entity_id="user-123",
                 resource="gpt-4",
                 window_type="hourly",
@@ -1322,13 +1322,13 @@ class SyncRateLimiter:
 
         Example:
             # Get all entities with custom limits for gpt-4
-            entities, cursor = await limiter.list_entities_with_custom_limits("gpt-4")
+            entities, cursor = limiter.list_entities_with_custom_limits("gpt-4")
             for entity_id in entities:
                 print(entity_id)
 
             # Paginate through results
             while cursor:
-                more, cursor = await limiter.list_entities_with_custom_limits(
+                more, cursor = limiter.list_entities_with_custom_limits(
                     "gpt-4", cursor=cursor
                 )
                 entities.extend(more)
@@ -1346,9 +1346,9 @@ class SyncRateLimiter:
             Sorted list of resource names with at least one entity having custom limits
 
         Example:
-            resources = await limiter.list_resources_with_entity_configs()
+            resources = limiter.list_resources_with_entity_configs()
             for resource in resources:
-                entities, _ = await limiter.list_entities_with_custom_limits(resource)
+                entities, _ = limiter.list_entities_with_custom_limits(resource)
                 print(f"{resource}: {len(entities)} entities with custom limits")
         """
         self._ensure_initialized()
@@ -1549,7 +1549,7 @@ class SyncRateLimiter:
                     pass
 
                 # Clean up infrastructure
-                await limiter.delete_stack()
+                limiter.delete_stack()
 
         Warning:
             This operation is irreversible. All rate limit state, entity data,
@@ -1583,7 +1583,7 @@ class SyncRateLimiter:
         Example:
             Check infrastructure health::
 
-                status = await limiter.get_status()
+                status = limiter.get_status()
                 if status.available:
                     print(f"Ready! Latency: {status.latency_ms}ms")
                     print(f"Stack: {status.stack_status}")

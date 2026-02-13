@@ -119,6 +119,21 @@ TYPE_REWRITES = {
 # Subscript type unwrapping (e.g., Awaitable[X] -> X, Coroutine[Any, Any, X] -> X)
 UNWRAP_SUBSCRIPTS = {"Awaitable", "Coroutine"}
 
+# Docstring text replacements (applied only to docstring string constants,
+# not to general strings like patch targets or error messages).
+# Order matters: more specific patterns first to avoid partial matches.
+DOCSTRING_REWRITES = [
+    ("async initialization", "initialization"),
+    ("async context manager", "context manager"),
+    ("async I/O", "I/O"),
+    ("async work", "work"),
+    ("Perform async ", "Perform "),
+    ("performs all async ", "performs all "),
+    ("via asyncio.gather", "via _run_in_executor"),
+    ("repo = await (\n", "repo = (\n"),
+    ("await ", ""),
+]
+
 # Methods injected into SyncRepository for parallel execution (issue #318)
 # asyncio.gather() is transformed to self._run_in_executor(lambda: a, lambda: b)
 # and the method is injected into SyncRepository by visit_ClassDef.
@@ -291,6 +306,20 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         self.source_file = source_file
         super().__init__()
 
+    @staticmethod
+    def _rewrite_docstring(body: list[ast.stmt]) -> None:
+        """Rewrite async-specific language in the docstring of a body (if present)."""
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            value = body[0].value.value
+            for old, new in DOCSTRING_REWRITES:
+                value = value.replace(old, new)
+            body[0].value.value = value
+
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.FunctionDef:  # noqa: N802
         """Convert async def to def."""
         # Transform the body first
@@ -317,6 +346,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             node.args.vararg.annotation = self._transform_annotation(node.args.vararg.annotation)
         if node.args.kwarg and node.args.kwarg.annotation:
             node.args.kwarg.annotation = self._transform_annotation(node.args.kwarg.annotation)
+
+        # Rewrite async-specific language in docstrings
+        self._rewrite_docstring(new_body)
 
         # Create sync function
         new_node = ast.FunctionDef(
@@ -496,6 +528,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             new_body.append(item)
         node.body = new_body
 
+        # Rewrite async-specific language in class docstrings
+        self._rewrite_docstring(node.body)
+
         # Continue visiting children
         self.generic_visit(node)
 
@@ -664,6 +699,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
         for arg in node.args.args:
             if arg.annotation:
                 arg.annotation = self._transform_annotation(arg.annotation)
+
+        # Rewrite async-specific language in docstrings
+        self._rewrite_docstring(node.body)
 
         self.generic_visit(node)
         return node

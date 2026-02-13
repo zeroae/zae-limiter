@@ -22,7 +22,7 @@ class SyncRepositoryBuilder:
     """Fluent builder for constructing a fully initialized SyncRepository.
 
     All configuration methods return ``self`` for chaining. Call ``build()``
-    to perform async initialization and get a ``SyncRepository``.
+    to perform initialization and get a ``SyncRepository``.
     """
 
     def __init__(
@@ -196,7 +196,7 @@ class SyncRepositoryBuilder:
         return self
 
     def build(self) -> "SyncRepository":
-        """Perform async initialization and return a fully initialized SyncRepository.
+        """Perform initialization and return a fully initialized SyncRepository.
 
         Steps:
             1. Construct SyncRepository with materialized StackOptions (if any infra options set)

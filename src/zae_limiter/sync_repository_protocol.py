@@ -121,7 +121,7 @@ class SyncRepositoryProtocol(Protocol):
 
         Example:
             if repo.capabilities.supports_audit_logging:
-                events = await repo.get_audit_events(entity_id)
+                events = repo.get_audit_events(entity_id)
         """
         ...
 

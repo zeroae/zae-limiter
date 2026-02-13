@@ -573,11 +573,11 @@ class SyncStackManager:
         self._session = None
 
     def __enter__(self) -> "SyncStackManager":
-        """Enter async context manager."""
+        """Enter context manager."""
         return self
 
     def __exit__(
         self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
     ) -> None:
-        """Exit async context manager."""
+        """Exit context manager."""
         self.close()

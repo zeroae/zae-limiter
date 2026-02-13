@@ -119,7 +119,7 @@ class SyncRepository:
         """Create a SyncRepositoryBuilder for fluent configuration.
 
         Example:
-            repo = await (
+            repo = (
                 SyncRepository.builder("my-app", "us-east-1")
                 .namespace("default")
                 .lambda_memory(512)
@@ -1249,7 +1249,7 @@ class SyncRepository:
         """Attempt speculative UpdateItem with condition check.
 
         Checks entity cache for cascade metadata. If cache hit + cascade,
-        issues child+parent UpdateItems concurrently via asyncio.gather
+        issues child+parent UpdateItems concurrently via _run_in_executor
         and returns nested parent_result.
 
         Args:
