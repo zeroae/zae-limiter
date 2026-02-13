@@ -3414,6 +3414,7 @@ class Repository:
     async def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""
         await self._config_cache.invalidate_async()
+        self._on_unavailable_cache = None
 
     def get_cache_stats(self) -> CacheStats:
         """Get config cache performance statistics (ADR-122)."""

@@ -165,6 +165,13 @@ class SyncRateLimiter:
                 stacklevel=2,
             )
             self._repository = SyncRepository(name=normalize_name("limiter"))
+        if repository is None:
+            assert isinstance(self._repository, SyncRepository)
+            repo = self._repository
+            if bucket_ttl_refill_multiplier is not _UNSET:
+                repo._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
+            if on_unavailable is not _UNSET:
+                repo._on_unavailable_cache = on_unavailable.value
         self._initialized = False
         self._speculative_writes = speculative_writes
 
