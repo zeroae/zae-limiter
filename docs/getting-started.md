@@ -37,13 +37,15 @@ zae-limiter creates its own infrastructure automatically.
 For scripts and quick demos, pass limits inline:
 
 ```python
-from zae_limiter import RateLimiter, Limit, StackOptions, RateLimitExceeded
+from zae_limiter import Repository, RateLimiter, Limit, StackOptions, RateLimitExceeded
 
-limiter = RateLimiter(
+repo = Repository(
     name="my-app",
     region="us-east-1",
     stack_options=StackOptions(),  # Creates infrastructure if needed
 )
+await repo.ensure_infrastructure()
+limiter = RateLimiter(repository=repo)
 
 try:
     async with limiter.acquire(
@@ -57,7 +59,7 @@ except RateLimitExceeded as e:
     print(f"Rate limited! Retry after {e.retry_after_seconds:.1f}s")
 
 # Clean up when done
-await limiter.delete_stack()
+await repo.delete_stack()
 ```
 
 ### Stored Config (Recommended)
@@ -96,9 +98,10 @@ For production, configure limits once and keep application code simple.
 **Step 2: Use in your application**
 
 ```python
-from zae_limiter import RateLimiter, RateLimitExceeded
+from zae_limiter import Repository, RateLimiter, RateLimitExceeded
 
-limiter = RateLimiter(name="my-app", region="us-east-1")
+repo = Repository(name="my-app", region="us-east-1")
+limiter = RateLimiter(repository=repo)
 
 try:
     async with limiter.acquire(
@@ -187,20 +190,17 @@ This is useful when infrastructure is managed separately (e.g., via CLI or Terra
 === "Programmatic"
 
     ```{.python .lint-only}
-    status = await limiter.get_status()  # Async
+    available = await repo.ping()  # Async
     # or
-    status = limiter.get_status()  # Sync
+    available = repo.ping()  # Sync
 
-    if not status.available:
-        print("DynamoDB not reachable")
-    elif status.stack_status == "CREATE_COMPLETE":
+    if available:
         print("Stack is ready")
-        print(f"Latency: {status.latency_ms}ms")
-    elif status.stack_status and "IN_PROGRESS" in status.stack_status:
-        print(f"Operation in progress: {status.stack_status}")
-    elif status.stack_status and "FAILED" in status.stack_status:
-        print(f"Stack in failed state: {status.stack_status}")
+    else:
+        print("DynamoDB not reachable")
     ```
+
+    For comprehensive status including CloudFormation details, use the CLI command.
 
 === "CLI"
 
@@ -214,9 +214,9 @@ This is useful when infrastructure is managed separately (e.g., via CLI or Terra
 
     ```{.python .lint-only}
     # After you're done with the limiter
-    await limiter.delete_stack()  # Async
+    await repo.delete_stack()  # Async
     # or
-    limiter.delete_stack()  # Sync
+    repo.delete_stack()  # Sync
     ```
 
 === "CLI"

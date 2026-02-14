@@ -69,7 +69,7 @@ def localstack_endpoint():
 ```python
 import uuid
 import pytest
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter, StackOptions
 
 @pytest.fixture(scope="function")
 async def limiter(localstack_endpoint):
@@ -84,18 +84,19 @@ async def limiter(localstack_endpoint):
     # Unique name prevents test interference
     name = f"test-{uuid.uuid4().hex[:8]}"
 
-    limiter = RateLimiter(
+    repo = Repository(
         name=name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
     )
+    limiter = RateLimiter(repository=repo)
 
     async with limiter:
         yield limiter
 
     # Cleanup: delete the CloudFormation stack
-    await limiter.delete_stack()
+    await repo.delete_stack()
 
 
 @pytest.mark.integration
@@ -121,17 +122,18 @@ async def shared_limiter(localstack_endpoint):
 
     Trade-off: Tests share state, less isolation.
     """
-    limiter = RateLimiter(
+    repo = Repository(
         name="integration-test-shared",
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
     )
+    limiter = RateLimiter(repository=repo)
 
     async with limiter:
         yield limiter
 
-    await limiter.delete_stack()
+    await repo.delete_stack()
 ```
 
 ### Sync Fixture Example
@@ -140,22 +142,23 @@ async def shared_limiter(localstack_endpoint):
 @pytest.fixture(scope="function")
 def sync_limiter(localstack_endpoint):
     """Synchronous rate limiter with cleanup."""
-    from zae_limiter import SyncRateLimiter, StackOptions
+    from zae_limiter import SyncRepository, SyncRateLimiter, StackOptions
     import uuid
 
     name = f"test-sync-{uuid.uuid4().hex[:8]}"
 
-    limiter = SyncRateLimiter(
+    repo = SyncRepository(
         name=name,
         endpoint_url=localstack_endpoint,
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
     )
+    limiter = SyncRateLimiter(repository=repo)
 
     with limiter:
         yield limiter
 
-    limiter.delete_stack()
+    repo.delete_stack()
 ```
 
 ## Documentation Code Examples

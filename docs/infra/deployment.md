@@ -59,21 +59,19 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
 === "Programmatic"
 
     ```python
-    from zae_limiter import RateLimiter
+    from zae_limiter import Repository
 
-    limiter = RateLimiter(name="limiter", region="us-east-1")
+    repo = Repository(name="limiter", region="us-east-1")
 
-    status = await limiter.get_status()  # Returns Status dataclass
+    available = await repo.ping()  # Returns True if DynamoDB is reachable
 
-    if not status.available:
-        print("DynamoDB not reachable")
-    elif status.stack_status == "CREATE_COMPLETE":
+    if available:
         print("Stack is ready")
-        print(f"Schema version: {status.schema_version}")
-        print(f"Table items: {status.table_item_count}")
-    elif status.stack_status and "IN_PROGRESS" in status.stack_status:
-        print(f"Operation in progress: {status.stack_status}")
+    else:
+        print("DynamoDB not reachable")
     ```
+
+    For comprehensive status including CloudFormation details, use the CLI command.
 
 ### Discover Deployed Instances
 
@@ -158,14 +156,11 @@ zae-limiter entity set-limits user-premium --resource gpt-4 -l rpm:500 -l tpm:50
 Application code connects to existing infrastructure without managing it:
 
 ```python
-from zae_limiter import RateLimiter
+from zae_limiter import Repository, RateLimiter
 
 # Connect only - no stack_options means no infrastructure changes
-limiter = RateLimiter(
-    name="prod",
-    region="us-east-1",
-    # No stack_options = connect only, no create/update
-)
+repo = Repository(name="prod", region="us-east-1")
+limiter = RateLimiter(repository=repo)
 
 # Limits are automatically resolved from stored config
 async with limiter.acquire(
@@ -199,25 +194,32 @@ See [Configuration Hierarchy](../guide/config-hierarchy.md) for limit resolution
 
 ### Programmatic Cleanup
 
-In addition to the CLI, you can manage stack lifecycle programmatically using the `delete_stack()` method:
+In addition to the CLI, you can manage stack lifecycle programmatically using the Repository's `delete_stack()` method:
 
 ```python
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter, StackOptions
 
-# Create stack
-limiter = RateLimiter(
+# Create repository with infrastructure options
+repo = Repository(
     name="limiter",
     region="us-east-1",
     stack_options=StackOptions(),
 )
+await repo.ensure_infrastructure()
+
+limiter = RateLimiter(repository=repo)
 
 # Use the limiter...
-async with limiter:
-    # Rate limiting operations here
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="api",
+    consume={"requests": 1},
+    limits=[],
+) as lease:
     pass
 
 # Delete stack when done
-await limiter.delete_stack()
+await repo.delete_stack()
 ```
 
 ### Use-Case Guidance
@@ -227,20 +229,23 @@ await limiter.delete_stack()
 For rapid iteration, declare infrastructure with cleanup:
 
 ```python
+from zae_limiter import Repository, RateLimiter, StackOptions
+
 async def dev_session():
-    limiter = RateLimiter(
+    repo = Repository(
         name="dev",
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False),
     )
+    await repo.ensure_infrastructure()
+    limiter = RateLimiter(repository=repo)
 
     try:
-        async with limiter:
-            # Development work...
-            pass
+        # Development work...
+        pass
     finally:
         # Clean up development stack
-        await limiter.delete_stack()
+        await repo.delete_stack()
 ```
 
 #### Production
@@ -290,9 +295,9 @@ aws lambda update-function-code \
 Create infrastructure directly from your application:
 
 ```python
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter, StackOptions
 
-limiter = RateLimiter(
+repo = Repository(
     name="limiter",
     region="us-east-1",
     stack_options=StackOptions(
@@ -300,6 +305,8 @@ limiter = RateLimiter(
         usage_retention_days=90,
     ),
 )
+await repo.ensure_infrastructure()
+limiter = RateLimiter(repository=repo)
 ```
 
 `StackOptions` declares the desired infrastructure state. CloudFormation ensures the
@@ -368,13 +375,15 @@ Enable X-Ray tracing to gain visibility into Lambda aggregator performance and t
 === "Programmatic"
 
     ```python
-    from zae_limiter import RateLimiter, StackOptions
+    from zae_limiter import Repository, RateLimiter, StackOptions
 
-    limiter = RateLimiter(
+    repo = Repository(
         name="limiter",
         region="us-east-1",
         stack_options=StackOptions(enable_tracing=True),
     )
+    await repo.ensure_infrastructure()
+    limiter = RateLimiter(repository=repo)
     ```
 
 ### Key Details
@@ -437,24 +446,24 @@ The stack creates three managed IAM policies by default for different access pat
 === "Programmatic"
 
     ```python
-    from zae_limiter import RateLimiter, StackOptions
+    from zae_limiter import Repository, StackOptions
 
     # With managed policies only (default)
-    limiter = RateLimiter(
+    repo = Repository(
         name="limiter",
         region="us-east-1",
         stack_options=StackOptions(),
     )
 
     # With managed policies AND IAM roles
-    limiter = RateLimiter(
+    repo = Repository(
         name="limiter",
         region="us-east-1",
         stack_options=StackOptions(create_iam_roles=True),
     )
 
     # Without any IAM resources
-    limiter = RateLimiter(
+    repo = Repository(
         name="limiter",
         region="us-east-1",
         stack_options=StackOptions(create_iam=False),
