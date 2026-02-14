@@ -6406,22 +6406,10 @@ key 1-128 chars, value 0-256 chars). The <code>aws:</code> prefix is reserved.</
 
 
 
-        <p>Comprehensive status of a RateLimiter instance.</p>
+        <p>Comprehensive status of a rate limiter instance.</p>
 <p>Consolidates connectivity, infrastructure, identity, versions, and table
-metrics into a single status object. Returned by <code>RateLimiter.get_status()</code>
-and <code>SyncRateLimiter.get_status()</code>.</p>
+metrics into a single status object. Used by the CLI <code>status</code> command.</p>
 
-
-<details class="example" open>
-  <summary>Example</summary>
-  <p>Check if infrastructure is ready::</p>
-<div class="language-text highlight"><pre><span></span><code>status = await limiter.get_status()
-if status.available and status.stack_status == &quot;CREATE_COMPLETE&quot;:
-    print(f&quot;Ready! Latency: {status.latency_ms}ms&quot;)
-else:
-    print(f&quot;Not ready: {status.stack_status}&quot;)
-</code></pre></div>
-</details>
 
 <p><span class="doc-section-title">Attributes:</span></p>
     <table>
