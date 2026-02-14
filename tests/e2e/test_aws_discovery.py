@@ -21,7 +21,7 @@ Resources are cleaned up after tests, but verify via AWS Console.
 
 import pytest
 
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import RateLimiter, Repository, StackOptions
 from zae_limiter.infra.discovery import InfrastructureDiscovery
 from zae_limiter.infra.stack_manager import (
     MANAGED_BY_TAG_KEY,
@@ -60,17 +60,18 @@ class TestTagBasedDiscovery:
             role_name_format=ROLE_NAME_FORMAT,
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=discovery_name,
             region=REGION,
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -174,17 +175,18 @@ class TestDiscoveryWithUserTags:
             tags={"env": "test", "team": "platform"},
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=discovery_name,
             region=REGION,
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 

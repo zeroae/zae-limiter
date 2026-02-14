@@ -947,20 +947,10 @@ class StackOptions:
 @dataclass
 class Status:
     """
-    Comprehensive status of a RateLimiter instance.
+    Comprehensive status of a rate limiter instance.
 
     Consolidates connectivity, infrastructure, identity, versions, and table
-    metrics into a single status object. Returned by ``RateLimiter.get_status()``
-    and ``SyncRateLimiter.get_status()``.
-
-    Example:
-        Check if infrastructure is ready::
-
-            status = await limiter.get_status()
-            if status.available and status.stack_status == "CREATE_COMPLETE":
-                print(f"Ready! Latency: {status.latency_ms}ms")
-            else:
-                print(f"Not ready: {status.stack_status}")
+    metrics into a single status object. Used by the CLI ``status`` command.
 
     Attributes:
         available: Whether DynamoDB is reachable and responding

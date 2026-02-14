@@ -52,8 +52,6 @@ class Lease:
     _committed: bool = False
     _rolled_back: bool = False
     _initial_committed: bool = False  # True after _commit_initial() succeeds (Issue #309)
-    # TTL configuration (Issue #271)
-    bucket_ttl_refill_multiplier: int = 7
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -213,15 +211,14 @@ class Lease:
             # Calculate TTL based on config source (Issue #271)
             has_custom_config = group_entries[0]._has_custom_config
             limits = [e.limit for e in group_entries]
+            multiplier = self.repository._bucket_ttl_refill_multiplier
 
             if has_custom_config:
                 ttl_seconds: int | None = 0  # 0 means REMOVE ttl
-            elif self.bucket_ttl_refill_multiplier <= 0:
+            elif multiplier <= 0:
                 ttl_seconds = None
             else:
-                ttl_seconds = calculate_bucket_ttl_seconds(
-                    limits, self.bucket_ttl_refill_multiplier
-                )
+                ttl_seconds = calculate_bucket_ttl_seconds(limits, multiplier)
 
             if is_new:
                 first_entry = group_entries[0]

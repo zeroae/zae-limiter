@@ -114,6 +114,11 @@ class RepositoryProtocol(Protocol):
         ...
 
     @property
+    def _bucket_ttl_refill_multiplier(self) -> int:
+        """Multiplier for bucket TTL calculation (Issue #271)."""
+        ...
+
+    @property
     def capabilities(self) -> "BackendCapabilities":
         """
         Declare which extended features this backend supports.
@@ -889,12 +894,13 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def resolve_on_unavailable(self) -> "OnUnavailableAction | None":
+    async def resolve_on_unavailable(self) -> "OnUnavailableAction":
         """
-        Resolve on_unavailable from system config, using cache.
+        Resolve on_unavailable from system config, with caching fallback.
 
-        Returns:
-            The system-level on_unavailable action, or None if not configured.
+        Returns the on_unavailable action. Caches the value after first
+        successful load for use as fallback when DynamoDB is unreachable.
+        Defaults to "block" if no system config and no cached value.
         """
         ...
 

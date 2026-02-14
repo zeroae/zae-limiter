@@ -33,11 +33,13 @@ from zae_limiter import (
     Limit,
     RateLimiter,
     RateLimitExceeded,
+    Repository,
     StackOptions,
     SyncRateLimiter,
     __version__,
 )
 from zae_limiter.cli import cli
+from zae_limiter.sync_repository import SyncRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 
@@ -145,11 +147,12 @@ class TestE2ELocalStackCLIWorkflow:
             )
 
             # Step 3: Use SyncRateLimiter with deployed infrastructure
-            limiter = SyncRateLimiter(
+            repo = SyncRepository(
                 name=unique_name,
                 endpoint_url=localstack_endpoint,
                 region="us-east-1",
             )
+            limiter = SyncRateLimiter(repository=repo)
 
             with limiter:
                 # Create entity and use rate limiting
@@ -165,13 +168,8 @@ class TestE2ELocalStackCLIWorkflow:
                 ) as lease:
                     assert lease.consumed == {"rpm": 1}
 
-                # Step 3b: Test SyncRateLimiter.get_status()
-                status = limiter.get_status()
-                assert status.available is True
-                assert status.latency_ms is not None
-                assert status.latency_ms > 0
-                assert status.table_status == "ACTIVE"
-                assert status.name == stack_name
+                # Step 3b: Test repository connectivity
+                assert limiter._repository.ping() is True
 
         finally:
             # Step 4: Delete stack via CLI
@@ -224,11 +222,12 @@ class TestE2ELocalStackCLIWorkflow:
             assert result.exit_code == 0, f"Deploy failed: {result.output}"
 
             # Step 2: Create entity using SyncRateLimiter (generates audit event)
-            limiter = SyncRateLimiter(
+            repo = SyncRepository(
                 name=unique_name,
                 endpoint_url=localstack_endpoint,
                 region="us-east-1",
             )
+            limiter = SyncRateLimiter(repository=repo)
 
             with limiter:
                 entity = limiter.create_entity(
@@ -513,18 +512,19 @@ class TestE2ELocalStackFullWorkflow:
         This fixture creates the stack once when the first test runs and
         deletes it after all tests in the class complete.
         """
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=e2e_stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -735,45 +735,9 @@ class TestE2ELocalStackFullWorkflow:
         assert available["tpm"] > 10000 - 350  # But not more than ~350
 
     @pytest.mark.asyncio(loop_scope="class")
-    async def test_get_status_returns_comprehensive_info(self, e2e_limiter):
-        """
-        Test get_status() returns comprehensive infrastructure information.
-
-        Verifies:
-        - Connectivity: available=True, latency_ms > 0
-        - Infrastructure: table_status='ACTIVE'
-        - Identity: name matches stack name, region set
-        - Versions: client_version populated, schema_version may be set
-        - Metrics: item_count and size_bytes are integers
-        """
-        from zae_limiter import Status
-
-        status = await e2e_limiter.get_status()
-
-        # Verify Status type
-        assert isinstance(status, Status)
-
-        # Connectivity
-        assert status.available is True
-        assert status.latency_ms is not None
-        assert status.latency_ms > 0
-
-        # Infrastructure
-        assert status.table_status == "ACTIVE"
-        # stack_status depends on CloudFormation availability in LocalStack
-
-        # Identity
-        assert status.name is not None
-        assert len(status.name) > 0
-        assert status.region == "us-east-1"
-
-        # Versions
-        assert status.client_version is not None
-        assert len(status.client_version) > 0
-
-        # Metrics
-        assert status.table_item_count is not None
-        assert status.table_item_count >= 0
+    async def test_repository_ping(self, e2e_limiter):
+        """Test repository connectivity via ping."""
+        assert await e2e_limiter._repository.ping() is True
 
 
 class TestE2ELocalStackAggregatorWorkflow:
@@ -789,18 +753,19 @@ class TestE2ELocalStackAggregatorWorkflow:
             usage_retention_days=7,
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             # LocalStack may have issues with stack deletion, log but don't fail
             print(f"Warning: Stack cleanup failed: {e}")
@@ -868,18 +833,19 @@ class TestE2ELocalStackErrorHandling:
             enable_alarms=False,
         )
 
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name_class,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             yield limiter
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -993,12 +959,13 @@ class TestE2ECloudFormationStackVariations:
         self, localstack_endpoint, full_stack_options, unique_name
     ):
         """Test full CloudFormation stack creation (with aggregator and alarms)."""
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=full_stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             entity = await limiter.create_entity("cfn-full-entity", name="CFN Full Entity")
@@ -1006,7 +973,7 @@ class TestE2ECloudFormationStackVariations:
             assert entity.name == "CFN Full Entity"
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -1019,12 +986,13 @@ class TestE2ECloudFormationStackVariations:
         This tests the edge case where EnableAggregator=true but EnableAlarms=false.
         The AggregatorDLQAlarmName output should not be created in this scenario.
         """
-        limiter = RateLimiter(
+        repo = Repository(
             name=unique_name,
             endpoint_url=localstack_endpoint,
             region="us-east-1",
             stack_options=aggregator_stack_options,
         )
+        limiter = RateLimiter(repository=repo)
 
         async with limiter:
             entity = await limiter.create_entity(
@@ -1034,7 +1002,7 @@ class TestE2ECloudFormationStackVariations:
             assert entity.name == "CFN No Alarms Entity"
 
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 

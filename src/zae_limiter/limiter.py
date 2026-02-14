@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol, SpeculativeResult
@@ -22,11 +22,9 @@ from .bucket import (
 )
 from .config_cache import ConfigSource
 from .exceptions import (
-    IncompatibleSchemaError,
     RateLimiterUnavailable,
     RateLimitExceeded,
     ValidationError,
-    VersionMismatchError,
 )
 from .lease import Lease, LeaseEntry
 from .models import (
@@ -40,7 +38,6 @@ from .models import (
     OnUnavailableAction,
     ResourceCapacity,
     StackOptions,
-    Status,
     UsageSnapshot,
     UsageSummary,
     validate_identifier,
@@ -49,7 +46,7 @@ from .models import (
 from .repository import Repository
 from .schema import DEFAULT_RESOURCE
 
-_T = TypeVar("_T")
+_UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated params
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +96,11 @@ class RateLimiter:
         region: str | None = None,
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
+        # Deprecated business logic config (now on Repository)
+        on_unavailable: "OnUnavailable | Any" = _UNSET,
+        auto_update: "bool | Any" = _UNSET,
+        bucket_ttl_refill_multiplier: "int | Any" = _UNSET,
         # Business logic config (not deprecated)
-        on_unavailable: OnUnavailable = OnUnavailable.BLOCK,
-        auto_update: bool = True,
-        bucket_ttl_refill_multiplier: int = 7,
         speculative_writes: bool = True,
     ) -> None:
         """
@@ -111,20 +109,16 @@ class RateLimiter:
         Args:
             repository: Repository instance (new API, preferred).
                 Pass a Repository or any RepositoryProtocol implementation.
-            name: DEPRECATED. Resource identifier (e.g., 'my-app').
-                Use Repository(name=...) instead.
-            region: DEPRECATED. AWS region.
-                Use Repository(region=...) instead.
-            endpoint_url: DEPRECATED. DynamoDB endpoint URL.
-                Use Repository(endpoint_url=...) instead.
-            stack_options: DEPRECATED. Infrastructure state.
-                Use Repository(stack_options=...) instead.
-            on_unavailable: Behavior when DynamoDB is unavailable
-            auto_update: Auto-update Lambda when version mismatch detected.
-                When False, raises VersionMismatchError on mismatch.
-            bucket_ttl_refill_multiplier: Multiplier for bucket TTL calculation.
-                TTL = max_refill_period_seconds × multiplier. Default: 7.
-                Set to 0 to disable TTL for buckets using default limits.
+            name: DEPRECATED. Use ``Repository(name=...)`` instead.
+            region: DEPRECATED. Use ``Repository(region=...)`` instead.
+            endpoint_url: DEPRECATED. Use ``Repository(endpoint_url=...)`` instead.
+            stack_options: DEPRECATED. Use ``Repository(stack_options=...)`` instead.
+            on_unavailable: DEPRECATED. Use ``set_system_defaults(on_unavailable=...)``
+                or pass ``on_unavailable=`` to ``acquire()`` instead.
+            auto_update: DEPRECATED. Use ``Repository.builder(...).auto_update().build()``
+                instead.
+            bucket_ttl_refill_multiplier: DEPRECATED. Use
+                ``Repository.builder(...).bucket_ttl_multiplier().build()`` instead.
             speculative_writes: Enable speculative UpdateItem fast path.
                 When True, acquire() tries a speculative write first, falling
                 back to the full read-write path only when needed.
@@ -134,6 +128,33 @@ class RateLimiter:
                 are provided.
         """
         from .naming import normalize_name
+
+        # Emit deprecation warnings for deprecated params
+        if on_unavailable is not _UNSET:
+            warnings.warn(
+                "on_unavailable constructor parameter is deprecated. "
+                "Use set_system_defaults(on_unavailable=...) or "
+                "acquire(on_unavailable=...) instead. "
+                "This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if auto_update is not _UNSET:
+            warnings.warn(
+                "auto_update constructor parameter is deprecated. "
+                "Use Repository.builder(...).auto_update(True).build() instead. "
+                "This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if bucket_ttl_refill_multiplier is not _UNSET:
+            warnings.warn(
+                "bucket_ttl_refill_multiplier constructor parameter is deprecated. "
+                "Use Repository.builder(...).bucket_ttl_multiplier(7).build() instead. "
+                "This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         # Check for conflicting parameters
         old_params_provided = any(
@@ -149,7 +170,6 @@ class RateLimiter:
         if repository is not None:
             # New API: use provided repository
             self._repository = repository
-            self._name = repository.stack_name
         elif old_params_provided:
             # Old API: emit deprecation warning
             warnings.warn(
@@ -160,35 +180,72 @@ class RateLimiter:
                 stacklevel=2,
             )
             effective_name = name if name is not None else "limiter"
-            self._name = normalize_name(effective_name)
             self._repository = Repository(
-                name=self._name,
+                name=normalize_name(effective_name),
                 region=region,
                 endpoint_url=endpoint_url,
                 stack_options=stack_options,
             )
         else:
-            # Default: silent backward compatibility
-            self._name = normalize_name("limiter")
-            self._repository = Repository(name=self._name)
+            # No-args constructor: backward compatible but deprecated
+            warnings.warn(
+                "RateLimiter() without a repository argument is deprecated. "
+                "Use RateLimiter(repository=Repository(...)) instead. "
+                "This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._repository = Repository(name=normalize_name("limiter"))
 
-        # Internal: stack_name and table_name for AWS resources
-        self.stack_name = self._name
-        self.table_name = self._name
-        self.on_unavailable = on_unavailable
-        self._auto_update = auto_update
+        # Forward deprecated business-logic params to the internally-created repo
+        if repository is None:
+            assert isinstance(self._repository, Repository)
+            repo = self._repository
+            if bucket_ttl_refill_multiplier is not _UNSET:
+                repo._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
+            if on_unavailable is not _UNSET:
+                repo._on_unavailable_cache = on_unavailable.value
+
         self._initialized = False
-
-        # Bucket TTL multiplier for default limit buckets (issue #271)
-        self._bucket_ttl_refill_multiplier = bucket_ttl_refill_multiplier
 
         # Speculative writes fast path (issue #315)
         self._speculative_writes = speculative_writes
 
     @property
     def name(self) -> str:
-        """The resource identifier."""
-        return self._name
+        """DEPRECATED. Use ``repository.stack_name`` instead."""
+        warnings.warn(
+            "RateLimiter.name is deprecated. "
+            "Use repository.stack_name instead. "
+            "This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._repository.stack_name
+
+    @property
+    def stack_name(self) -> str:
+        """DEPRECATED. Use ``repository.stack_name`` instead."""
+        warnings.warn(
+            "RateLimiter.stack_name is deprecated. "
+            "Use repository.stack_name instead. "
+            "This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._repository.stack_name
+
+    @property
+    def table_name(self) -> str:
+        """DEPRECATED. Use ``repository.stack_name`` instead."""
+        warnings.warn(
+            "RateLimiter.table_name is deprecated. "
+            "Use repository.stack_name instead. "
+            "This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._repository.stack_name
 
     @staticmethod
     def _datetime_to_iso(dt: datetime) -> str:
@@ -253,11 +310,11 @@ class RateLimiter:
             return await discovery.list_limiters()
 
     async def _ensure_initialized(self) -> None:
-        """Ensure infrastructure exists and version is compatible."""
+        """Ensure infrastructure exists."""
         if self._initialized:
             return
 
-        # If repository was built via builder, infra + version already handled
+        # If repository was built via builder, infra already handled
         if getattr(self._repository, "_builder_initialized", False):
             self._initialized = True
             return
@@ -265,88 +322,7 @@ class RateLimiter:
         # Repository owns infrastructure config - it will no-op if not configured
         await self._repository.ensure_infrastructure()
 
-        # Version check
-        await self._check_and_update_version()
-
         self._initialized = True
-
-    async def _check_and_update_version(self) -> None:
-        """Check version compatibility and update Lambda if needed."""
-        from . import __version__
-        from .version import (
-            InfrastructureVersion,
-            check_compatibility,
-        )
-
-        # Get current infrastructure version
-        version_record = await self._repository.get_version_record()
-
-        if version_record is None:
-            # First time setup or legacy infrastructure - initialize version record
-            await self._initialize_version_record()
-            return
-
-        infra_version = InfrastructureVersion.from_record(version_record)
-        compatibility = check_compatibility(__version__, infra_version)
-
-        if compatibility.is_compatible and not compatibility.requires_lambda_update:
-            return
-
-        if compatibility.requires_schema_migration:
-            raise IncompatibleSchemaError(
-                client_version=__version__,
-                schema_version=infra_version.schema_version,
-                message=compatibility.message,
-            )
-
-        if compatibility.requires_lambda_update:
-            if self._auto_update and not self._repository.endpoint_url:
-                # Auto-update Lambda (skip for local DynamoDB)
-                await self._perform_lambda_update()
-            else:
-                raise VersionMismatchError(
-                    client_version=__version__,
-                    schema_version=infra_version.schema_version,
-                    lambda_version=infra_version.lambda_version,
-                    message=compatibility.message,
-                    can_auto_update=not self._repository.endpoint_url,
-                )
-
-    async def _initialize_version_record(self) -> None:
-        """Initialize the version record for first-time setup."""
-        from . import __version__
-        from .version import get_schema_version
-
-        lambda_version = __version__
-
-        await self._repository.set_version_record(
-            schema_version=get_schema_version(),
-            lambda_version=lambda_version,
-            client_min_version="0.0.0",
-            updated_by=f"client:{__version__}",
-        )
-
-    async def _perform_lambda_update(self) -> None:
-        """Update Lambda code to match client version."""
-        from . import __version__
-        from .infra.stack_manager import StackManager
-        from .version import get_schema_version
-
-        async with StackManager(
-            self.stack_name,
-            self._repository.region,
-            self._repository.endpoint_url,
-        ) as manager:
-            # Deploy updated Lambda code
-            await manager.deploy_lambda_code()
-
-            # Update version record in DynamoDB
-            await self._repository.set_version_record(
-                schema_version=get_schema_version(),
-                lambda_version=__version__,
-                client_min_version="0.0.0",
-                updated_by=f"client:{__version__}",
-            )
 
     async def close(self) -> None:
         """Close the underlying connections."""
@@ -707,7 +683,7 @@ class RateLimiter:
                 raise RateLimiterUnavailable(
                     str(e),
                     cause=e,
-                    stack_name=self.stack_name,
+                    stack_name=self._repository.stack_name,
                     entity_id=entity_id,
                     resource=resource,
                 ) from e
@@ -871,7 +847,6 @@ class RateLimiter:
         lease = Lease(
             repository=self._repository,
             entries=entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
         )
         lease._initial_committed = True
         for entry in entries:
@@ -1093,7 +1068,6 @@ class RateLimiter:
         lease = Lease(
             repository=self._repository,
             entries=all_entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
         )
         # Mark child entries as already committed (speculative write succeeded)
         for entry in child_entries:
@@ -1102,7 +1076,6 @@ class RateLimiter:
         parent_lease = Lease(
             repository=self._repository,
             entries=parent_entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
         )
         try:
             await parent_lease._commit_initial()
@@ -1233,7 +1206,6 @@ class RateLimiter:
         return Lease(
             repository=self._repository,
             entries=entries,
-            bucket_ttl_refill_multiplier=self._bucket_ttl_refill_multiplier,
         )
 
     async def _fetch_entity_and_buckets(
@@ -1360,27 +1332,21 @@ class RateLimiter:
         on_unavailable_param: OnUnavailable | None,
     ) -> OnUnavailable:
         """
-        Resolve on_unavailable behavior: Parameter > System Config > Constructor default.
+        Resolve on_unavailable behavior: Parameter > System Config (cached).
 
         Delegates system config lookup to repository.resolve_on_unavailable() (#333).
 
         Args:
-            on_unavailable_param: Optional parameter override
+            on_unavailable_param: Optional per-call override
 
         Returns:
             Resolved OnUnavailable enum value
         """
-        # If parameter is provided, use it
         if on_unavailable_param is not None:
             return on_unavailable_param
 
-        # Try System config via repository (cached, ADR-122 / #333)
         on_unavailable_action = await self._repository.resolve_on_unavailable()
-        if on_unavailable_action is not None:
-            return OnUnavailable(on_unavailable_action)
-
-        # Fall back to constructor default
-        return self.on_unavailable
+        return OnUnavailable(on_unavailable_action)
 
     async def available(
         self,
@@ -1818,212 +1784,4 @@ class RateLimiter:
                 else 0
             ),
             entities=entities,
-        )
-
-    # -------------------------------------------------------------------------
-    # Stack management
-    # -------------------------------------------------------------------------
-
-    async def create_stack(
-        self,
-        stack_options: StackOptions | None = None,
-    ) -> dict[str, Any]:
-        """
-        Create CloudFormation stack for infrastructure.
-
-        Args:
-            stack_options: Stack configuration
-
-        Returns:
-            Dict with stack_id, stack_name, and status
-
-        Raises:
-            StackCreationError: If stack creation fails
-        """
-        from .infra.stack_manager import StackManager
-
-        async with StackManager(
-            self.stack_name, self._repository.region, self._repository.endpoint_url
-        ) as manager:
-            return await manager.create_stack(stack_options)
-
-    async def delete_stack(self) -> None:
-        """
-        Delete the CloudFormation stack and all associated resources.
-
-        This method permanently removes the CloudFormation stack, including:
-
-        - DynamoDB table and all stored data
-        - Lambda aggregator function (if deployed)
-        - IAM roles and CloudWatch log groups
-        - All other stack resources
-
-        The method waits for deletion to complete before returning.
-        If the stack doesn't exist, no error is raised.
-
-        Raises:
-            StackCreationError: If deletion fails (e.g., permission denied,
-                resources in use, or CloudFormation service error)
-
-        Example:
-            Cleanup after integration testing::
-
-                limiter = RateLimiter(
-                    name="test-limits",
-                    region="us-east-1",
-                    stack_options=StackOptions(),
-                )
-
-                async with limiter:
-                    # Run tests...
-                    pass
-
-                # Clean up infrastructure
-                await limiter.delete_stack()
-
-        Warning:
-            This operation is irreversible. All rate limit state, entity data,
-            and usage history will be permanently deleted.
-        """
-        from .infra.stack_manager import StackManager
-
-        async with StackManager(
-            self.stack_name, self._repository.region, self._repository.endpoint_url
-        ) as manager:
-            await manager.delete_stack(self.stack_name)
-
-    async def get_status(self) -> Status:
-        """
-        Get comprehensive status of the RateLimiter infrastructure.
-
-        Consolidates connectivity, infrastructure state, version information,
-        and table metrics into a single status object. This method does not
-        raise exceptions for missing infrastructure - it gracefully handles
-        all error cases and returns status information accordingly.
-
-        Returns:
-            Status object containing:
-            - Connectivity: available, latency_ms
-            - Infrastructure: stack_status, table_status, aggregator_enabled
-            - Identity: name, region
-            - Versions: schema_version, lambda_version, client_version
-            - Table metrics: table_item_count, table_size_bytes
-            - IAM Roles: app_role_arn, admin_role_arn, readonly_role_arn
-
-        Example:
-            Check infrastructure health::
-
-                status = await limiter.get_status()
-                if status.available:
-                    print(f"Ready! Latency: {status.latency_ms}ms")
-                    print(f"Stack: {status.stack_status}")
-                    print(f"Schema: {status.schema_version}")
-                else:
-                    print("DynamoDB is not reachable")
-
-        Note:
-            This method measures actual DynamoDB latency by performing a
-            lightweight operation. The latency_ms value reflects real
-            round-trip time to the DynamoDB endpoint.
-        """
-        from . import __version__
-        from .infra.stack_manager import StackManager
-
-        # Initialize defaults
-        available = False
-        latency_ms: float | None = None
-        cfn_status: str | None = None
-        table_status: str | None = None
-        aggregator_enabled = False
-        schema_version: str | None = None
-        lambda_version: str | None = None
-        table_item_count: int | None = None
-        table_size_bytes: int | None = None
-        app_role_arn: str | None = None
-        admin_role_arn: str | None = None
-        readonly_role_arn: str | None = None
-
-        # Get CloudFormation stack status and outputs (does not require table to exist)
-        try:
-            async with StackManager(
-                self.stack_name, self._repository.region, self._repository.endpoint_url
-            ) as manager:
-                cfn_status = await manager.get_stack_status(self.stack_name)
-                # Get stack outputs for role ARNs if stack exists and is complete
-                if cfn_status and "COMPLETE" in cfn_status:
-                    try:
-                        client = await manager._get_client()
-                        response = await client.describe_stacks(StackName=self.stack_name)
-                        if response.get("Stacks"):
-                            outputs = response["Stacks"][0].get("Outputs", [])
-                            for output in outputs:
-                                key = output.get("OutputKey", "")
-                                value = output.get("OutputValue", "")
-                                if key == "AppRoleArn":
-                                    app_role_arn = value
-                                elif key == "AdminRoleArn":
-                                    admin_role_arn = value
-                                elif key == "ReadOnlyRoleArn":
-                                    readonly_role_arn = value
-                    except Exception:
-                        logger.debug("Stack outputs unavailable", exc_info=True)
-        except Exception:
-            logger.debug("Stack status unavailable", exc_info=True)
-
-        # Ping DynamoDB and measure latency
-        # Note: _get_client is DynamoDB-specific, use hasattr for protocol compliance
-        try:
-            start_time = time.time()
-            if hasattr(self._repository, "_get_client"):
-                client = await self._repository._get_client()
-
-                # Use DescribeTable to check connectivity and get table info
-                response = await client.describe_table(TableName=self.table_name)
-                latency_ms = (time.time() - start_time) * 1000
-                available = True
-
-                # Extract table information
-                table = response.get("Table", {})
-                table_status = table.get("TableStatus")
-                table_item_count = table.get("ItemCount")
-                table_size_bytes = table.get("TableSizeInBytes")
-
-                # Check if aggregator is enabled by looking for stream specification
-                stream_spec = table.get("StreamSpecification", {})
-                aggregator_enabled = stream_spec.get("StreamEnabled", False)
-            else:
-                # Non-DynamoDB backend: use ping() for availability check
-                available = await self._repository.ping()
-                if available:
-                    latency_ms = (time.time() - start_time) * 1000
-
-        except Exception:
-            logger.debug("DynamoDB unavailable", exc_info=True)
-
-        # Get version information from DynamoDB
-        if available:
-            try:
-                version_record = await self._repository.get_version_record()
-                if version_record:
-                    schema_version = version_record.get("schema_version")
-                    lambda_version = version_record.get("lambda_version")
-            except Exception:
-                logger.debug("Version record unavailable", exc_info=True)
-
-        return Status(
-            available=available,
-            latency_ms=latency_ms,
-            stack_status=cfn_status,
-            table_status=table_status,
-            aggregator_enabled=aggregator_enabled,
-            name=self._name,
-            region=self._repository.region,
-            schema_version=schema_version,
-            lambda_version=lambda_version,
-            client_version=__version__,
-            table_item_count=table_item_count,
-            table_size_bytes=table_size_bytes,
-            app_role_arn=app_role_arn,
-            admin_role_arn=admin_role_arn,
-            readonly_role_arn=readonly_role_arn,
         )

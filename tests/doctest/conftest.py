@@ -254,7 +254,7 @@ def doctest_env(moto_env, monkeypatch):
     from zae_limiter import Limit
     from zae_limiter.exceptions import EntityExistsError
     from zae_limiter.limiter import RateLimiter as _RateLimiter
-    from zae_limiter.repository import Repository
+    from zae_limiter.repository import Repository as _Repository
     from zae_limiter.sync_limiter import SyncRateLimiter as _SyncRateLimiter
 
     _created_tables: set[str] = set()
@@ -265,8 +265,7 @@ def doctest_env(moto_env, monkeypatch):
             await self.create_table()
             _created_tables.add(self.table_name)
             # Auto-set system/resource defaults so blocks with limits=None work
-            _tmp = _RateLimiter(name=self.table_name, region="us-east-1")
-            _tmp._repository = self  # reuse same repo
+            _tmp = _RateLimiter(repository=self)
             await _tmp.set_system_defaults(
                 limits=[Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)],
             )
@@ -276,7 +275,7 @@ def doctest_env(moto_env, monkeypatch):
                     limits=[Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)],
                 )
 
-    monkeypatch.setattr(Repository, "ensure_infrastructure", _auto_create_ensure)
+    monkeypatch.setattr(_Repository, "ensure_infrastructure", _auto_create_ensure)
 
     # Monkeypatch create_entity to silently ignore EntityExistsError.
     # Doc examples often call create_entity() on pre-existing entities.
@@ -309,16 +308,6 @@ def doctest_env(moto_env, monkeypatch):
         _original_sync_init(self, *args, **kwargs)
 
     monkeypatch.setattr(_SyncRateLimiter, "__init__", _patched_sync_init)
-
-    # Skip version check (no CloudFormation stack in doctests)
-    async def _noop_version_check(self):
-        pass
-
-    def _noop_version_check_sync(self):
-        pass
-
-    monkeypatch.setattr(_RateLimiter, "_check_and_update_version", _noop_version_check)
-    monkeypatch.setattr(_SyncRateLimiter, "_check_and_update_version", _noop_version_check_sync)
 
 
 # Entity IDs commonly referenced in documentation examples
@@ -381,8 +370,9 @@ def doctest_globals(doctest_env):
     )
 
     # Create pre-built limiter with table
-    _limiter = RateLimiter(name="limiter", region="us-east-1")
-    _asyncio.run(_limiter._repository.create_table())
+    _repo = Repository(name="limiter", region="us-east-1")
+    _asyncio.run(_repo.create_table())
+    _limiter = RateLimiter(repository=_repo)
 
     # Pre-create common entities and set up stored limits
     async def _setup():
@@ -418,7 +408,7 @@ def doctest_globals(doctest_env):
     return {
         # Pre-built limiter and repository
         "limiter": _limiter,
-        "repo": _limiter._repository,
+        "repo": _repo,
         # Common classes
         "RateLimiter": RateLimiter,
         "SyncRateLimiter": SyncRateLimiter,
@@ -499,18 +489,19 @@ def localstack_limiter():
     """
     import os
 
-    from zae_limiter import RateLimiter, StackOptions
+    from zae_limiter import RateLimiter, Repository, StackOptions
 
     endpoint = os.environ.get("AWS_ENDPOINT_URL")
     if not endpoint:
         pytest.skip("AWS_ENDPOINT_URL not set (LocalStack not running)")
 
-    limiter = RateLimiter(
+    repo = Repository(
         name="limiter",
         endpoint_url=endpoint,
         region="us-east-1",
         stack_options=StackOptions(enable_aggregator=False, enable_alarms=False),
     )
+    limiter = RateLimiter(repository=repo)
 
     # Deploy the stack
     import asyncio
@@ -526,7 +517,7 @@ def localstack_limiter():
     # Cleanup after all tests
     async def _cleanup():
         try:
-            await limiter.delete_stack()
+            await repo.delete_stack()
         except Exception:
             pass
 

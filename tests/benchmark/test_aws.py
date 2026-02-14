@@ -80,19 +80,19 @@ class TestAWSLatencyBenchmarks:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = SyncRateLimiter(
+        repo = SyncRepository(
             name=table_name,
             region="us-east-1",
-            speculative_writes=speculative,
             stack_options=stack_options,
         )
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
 
         with limiter:
             yield limiter
 
         # Cleanup
         try:
-            limiter.delete_stack()
+            repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -217,17 +217,18 @@ class TestAWSThroughputBenchmarks:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = SyncRateLimiter(
+        repo = SyncRepository(
             name=table_name,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = SyncRateLimiter(repository=repo)
 
         with limiter:
             yield limiter
 
         try:
-            limiter.delete_stack()
+            repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -412,11 +413,12 @@ class TestAWSCascadeSpeculativeComparison:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = SyncRateLimiter(
+        repo = SyncRepository(
             name=table_name,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = SyncRateLimiter(repository=repo)
 
         with limiter:
             limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -443,7 +445,7 @@ class TestAWSCascadeSpeculativeComparison:
             yield table_name
 
         try:
-            limiter.delete_stack()
+            repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
@@ -591,11 +593,12 @@ class TestAWSCascadeBenchmarks:
             policy_name_format="PowerUserPB-{}",
         )
 
-        limiter = SyncRateLimiter(
+        repo = SyncRepository(
             name=table_name,
             region="us-east-1",
             stack_options=stack_options,
         )
+        limiter = SyncRateLimiter(repository=repo)
 
         with limiter:
             # Create parent and children
@@ -622,7 +625,7 @@ class TestAWSCascadeBenchmarks:
             yield table_name
 
         try:
-            limiter.delete_stack()
+            repo.delete_stack()
         except Exception as e:
             print(f"Warning: Stack cleanup failed: {e}")
 
