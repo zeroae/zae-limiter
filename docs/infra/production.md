@@ -106,6 +106,136 @@ zae-limiter deploy --name myapp --no-iam \
     --aggregator-role-arn arn:aws:iam::123456789012:role/MyLambdaRole
 ```
 
+#### Namespace-Scoped Access Control
+
+For multi-tenant deployments, namespace-scoped policies restrict each tenant to its own namespace's DynamoDB items using tag-based access control (TBAC).
+
+The stack creates three additional namespace-scoped policies:
+
+| Policy | Suffix | Use Case | Tag Required |
+|--------|--------|----------|--------------|
+| **NamespaceAcquirePolicy** | `-ns-acq` | Tenant apps calling `acquire()` | Yes |
+| **NamespaceFullAccessPolicy** | `-ns-full` | Tenant config management | Yes |
+| **NamespaceReadOnlyPolicy** | `-ns-read` | Tenant monitoring | Yes |
+
+These policies use `dynamodb:LeadingKeys` with the `zael_namespace_id` principal tag to restrict DynamoDB access to items whose partition key starts with the tenant's namespace ID.
+
+##### Single Namespace (Most Common)
+
+Attach a namespace-scoped policy and tag the principal with the namespace ID:
+
+```bash
+# 1. Deploy the stack (policies are created automatically)
+zae-limiter deploy --name shared-table --region us-east-1
+
+# 2. Look up the default namespace ID
+zae-limiter namespace show default --name shared-table
+# Output:
+# Namespace:    default
+# Namespace ID: default
+# Status:       active
+# Created At:   2025-01-15T10:30:00Z
+
+# 3. Attach the namespace-scoped policy to your app role
+aws iam attach-role-policy --role-name my-app-role \
+  --policy-arn arn:aws:iam::123456789012:policy/shared-table-ns-acq
+
+# 4. Tag the role with the namespace ID
+aws iam tag-role --role-name my-app-role \
+  --tags Key=zael_namespace_id,Value=default
+```
+
+For additional tenants, register a namespace and use its ID:
+
+```bash
+# Register a new tenant namespace
+zae-limiter namespace register tenant-alpha --name shared-table
+
+# Look up the opaque namespace ID
+zae-limiter namespace show tenant-alpha --name shared-table
+# Namespace ID: a7x3kq2m
+
+# Tag the tenant's role
+aws iam tag-role --role-name tenant-alpha-role \
+  --tags Key=zael_namespace_id,Value=a7x3kq2m
+```
+
+##### Admin / Cross-Namespace Access
+
+For admin roles that need access to all namespaces, attach a table-level policy (no tag needed):
+
+```bash
+aws iam attach-role-policy --role-name admin-role \
+  --policy-arn arn:aws:iam::123456789012:policy/shared-table-full
+```
+
+##### Selective Multi-Namespace Access
+
+**Option A: STS Session Policy** — Assume a base role with a session policy that narrows access to specific namespaces:
+
+```python
+import boto3, json
+
+sts = boto3.client("sts")
+ns_ids = ["a7x3kq2m", "b9y4lr3n"]  # resolved namespace IDs
+
+response = sts.assume_role(
+    RoleArn="arn:aws:iam::123456789012:role/shared-table-base-role",
+    RoleSessionName="multi-tenant-session",
+    Policy=json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:GetItem", "dynamodb:BatchGetItem",
+                "dynamodb:Query", "dynamodb:UpdateItem",
+            ],
+            "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/shared-table",
+            "Condition": {
+                "ForAllValues:StringLike": {
+                    "dynamodb:LeadingKeys":
+                        [f"{ns}/*" for ns in ns_ids] + ["_/*"]
+                }
+            }
+        }]
+    })
+)
+# Use response["Credentials"] for scoped access
+```
+
+The session policy intersects with the base role's table-level policy, narrowing access to exactly those namespaces.
+
+**Option B: Custom IAM Policy** — Create a managed policy listing specific namespace IDs:
+
+```bash
+# Resolve namespace IDs
+NSID1=$(zae-limiter namespace show tenant-alpha --name shared-table \
+  | grep "Namespace ID:" | awk '{print $3}')
+NSID2=$(zae-limiter namespace show tenant-beta --name shared-table \
+  | grep "Namespace ID:" | awk '{print $3}')
+
+# Create a custom policy for multiple namespaces
+aws iam create-policy --policy-name my-multi-ns-policy \
+  --policy-document "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [{
+      \"Effect\": \"Allow\",
+      \"Action\": [
+        \"dynamodb:GetItem\", \"dynamodb:BatchGetItem\",
+        \"dynamodb:Query\", \"dynamodb:UpdateItem\"
+      ],
+      \"Resource\": \"arn:aws:dynamodb:us-east-1:123456789012:table/shared-table\",
+      \"Condition\": {
+        \"ForAllValues:StringLike\": {
+          \"dynamodb:LeadingKeys\": [\"${NSID1}/*\", \"${NSID2}/*\", \"_/*\"]
+        }
+      }
+    }]
+  }"
+```
+
+This policy is operator-managed (not owned by the zae-limiter CloudFormation stack).
+
 ### Network
 
 - No VPC required; uses AWS service endpoints
