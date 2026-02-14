@@ -5233,3 +5233,219 @@ class TestNamespaceCommands:
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
+
+
+class TestNamespaceOption:
+    """Test --namespace / -N option on data-access commands.
+
+    Verifies that repo.namespace() is called for non-default namespaces
+    and skipped for the default namespace, for at least one command per group.
+    """
+
+    # --- audit group ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_with_namespace(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test audit list calls repo.namespace() when --namespace is provided."""
+        mock_repo = Mock()
+        mock_scoped_repo = Mock()
+        mock_repo.namespace = AsyncMock(return_value=mock_scoped_repo)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_scoped_repo.get_audit_events = AsyncMock(return_value=[])
+        mock_scoped_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["audit", "list", "-e", "test-entity", "--namespace", "tenant-alpha"]
+        )
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_called_once_with("tenant-alpha")
+        mock_scoped_repo.get_audit_events.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_default_namespace_skips_call(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test audit list does NOT call repo.namespace() for default namespace."""
+        mock_repo = Mock()
+        mock_repo.namespace = AsyncMock()
+        mock_repo.get_audit_events = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_not_called()
+        mock_repo.get_audit_events.assert_called_once()
+
+    # --- usage group ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_with_namespace(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test usage list calls repo.namespace() when -N is provided."""
+        mock_repo = Mock()
+        mock_scoped_repo = Mock()
+        mock_repo.namespace = AsyncMock(return_value=mock_scoped_repo)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_scoped_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
+        mock_scoped_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "-N", "tenant-alpha"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_called_once_with("tenant-alpha")
+        mock_scoped_repo.get_usage_snapshots.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_usage_list_default_namespace_skips_call(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test usage list does NOT call repo.namespace() for default namespace."""
+        mock_repo = Mock()
+        mock_repo.namespace = AsyncMock()
+        mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_not_called()
+
+    # --- resource group ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_list_with_namespace(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test resource list calls repo.namespace() when --namespace is provided."""
+        mock_repo = Mock()
+        mock_scoped_repo = Mock()
+        mock_repo.namespace = AsyncMock(return_value=mock_scoped_repo)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_scoped_repo.list_resources_with_defaults = AsyncMock(return_value=[])
+        mock_scoped_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["resource", "list", "--namespace", "tenant-alpha"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_called_once_with("tenant-alpha")
+        mock_scoped_repo.list_resources_with_defaults.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_list_default_namespace_skips_call(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test resource list does NOT call repo.namespace() for default namespace."""
+        mock_repo = Mock()
+        mock_repo.namespace = AsyncMock()
+        mock_repo.list_resources_with_defaults = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["resource", "list"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_not_called()
+
+    # --- system group ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_system_get_defaults_with_namespace(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test system get-defaults calls repo.namespace() when --namespace is provided."""
+        mock_repo = Mock()
+        mock_scoped_repo = Mock()
+        mock_repo.namespace = AsyncMock(return_value=mock_scoped_repo)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_scoped_repo.get_system_defaults = AsyncMock(return_value=([], None))
+        mock_scoped_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["system", "get-defaults", "--namespace", "tenant-alpha"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_called_once_with("tenant-alpha")
+        mock_scoped_repo.get_system_defaults.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_system_get_defaults_default_namespace_skips_call(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test system get-defaults does NOT call repo.namespace() for default namespace."""
+        mock_repo = Mock()
+        mock_repo.namespace = AsyncMock()
+        mock_repo.get_system_defaults = AsyncMock(return_value=([], None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["system", "get-defaults"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_not_called()
+
+    # --- entity group ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_show_with_namespace(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity show calls repo.namespace() when --namespace is provided."""
+        from zae_limiter.models import Entity
+
+        mock_repo = Mock()
+        mock_scoped_repo = Mock()
+        mock_repo.namespace = AsyncMock(return_value=mock_scoped_repo)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_scoped_repo.get_entity = AsyncMock(
+            return_value=Entity(id="user-123", cascade=False, parent_id=None)
+        )
+        mock_scoped_repo.get_buckets = AsyncMock(return_value=[])
+        mock_scoped_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "show", "user-123", "--namespace", "tenant-alpha"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_called_once_with("tenant-alpha")
+        mock_scoped_repo.get_entity.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_show_default_namespace_skips_call(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test entity show does NOT call repo.namespace() for default namespace."""
+        from zae_limiter.models import Entity
+
+        mock_repo = Mock()
+        mock_repo.namespace = AsyncMock()
+        mock_repo.get_entity = AsyncMock(
+            return_value=Entity(id="user-123", cascade=False, parent_id=None)
+        )
+        mock_repo.get_buckets = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["entity", "show", "user-123"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_not_called()
+
+    # --- short flag -N ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_short_flag_n_works(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test -N short flag works the same as --namespace."""
+        mock_repo = Mock()
+        mock_scoped_repo = Mock()
+        mock_repo.namespace = AsyncMock(return_value=mock_scoped_repo)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_scoped_repo.get_system_defaults = AsyncMock(return_value=([], None))
+        mock_scoped_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["system", "get-defaults", "-N", "tenant-beta"])
+
+        assert result.exit_code == 0
+        mock_repo.namespace.assert_called_once_with("tenant-beta")
