@@ -155,6 +155,42 @@ class RepositoryProtocol(Protocol):
         ...
 
     # -------------------------------------------------------------------------
+    # Namespace registry (#369)
+    # -------------------------------------------------------------------------
+
+    async def register_namespace(self, namespace: str) -> str:
+        """Register a namespace (idempotent). Returns the namespace_id."""
+        ...
+
+    async def register_namespaces(self, namespaces: list[str]) -> dict[str, str]:
+        """Bulk-register namespaces. Returns ``{name: namespace_id}``."""
+        ...
+
+    async def get_namespace(self, namespace: str) -> dict[str, str] | None:
+        """Get namespace details by name. Returns dict or ``None``."""
+        ...
+
+    async def list_namespaces(self) -> list[dict[str, str]]:
+        """List active namespaces. Returns ``[{name, namespace_id, created_at}]``."""
+        ...
+
+    async def delete_namespace(self, namespace: str) -> None:
+        """Soft-delete a namespace. No-op if not found."""
+        ...
+
+    async def recover_namespace(self, namespace_id: str) -> str:
+        """Recover a deleted namespace. Returns the namespace name."""
+        ...
+
+    async def list_orphan_namespaces(self) -> list[dict[str, str]]:
+        """List deleted namespaces. Returns ``[{namespace_id, namespace, deleted_at}]``."""
+        ...
+
+    async def purge_namespace(self, namespace_id: str) -> None:
+        """Purge all data for a deleted namespace. No-op if not found."""
+        ...
+
+    # -------------------------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------------------------
 

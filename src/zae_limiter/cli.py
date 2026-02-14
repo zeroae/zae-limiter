@@ -3390,6 +3390,537 @@ def entity_list_resources(
 
 
 # ---------------------------------------------------------------------------
+# Namespace registry commands (#369)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def namespace() -> None:
+    """Namespace management commands.
+
+    Manage multi-tenant namespaces for isolated rate limiting.
+    Each namespace has its own entities, buckets, and configurations.
+    """
+    pass
+
+
+@namespace.command(
+    "register",
+    epilog="""\b
+Examples:
+    \b
+    # Register a single namespace
+    zae-limiter namespace register tenant-alpha --name my-app
+    \b
+    # Bulk-register multiple namespaces
+    zae-limiter namespace register tenant-alpha tenant-beta --name my-app
+""",
+)
+@click.argument("namespaces", nargs=-1, required=True)
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def namespace_register(
+    namespaces: tuple[str, ...],
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """Register one or more namespaces.
+
+    NAMESPACES are the namespace names to register (e.g., 'tenant-alpha').
+    Multiple names can be provided for bulk registration.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter namespace register tenant-alpha --name my-app
+        zae-limiter namespace register tenant-alpha tenant-beta --name my-app
+        ```
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _register() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            if len(namespaces) == 1:
+                ns_id = await repo.register_namespace(namespaces[0])
+                click.echo(f"Registered namespace '{namespaces[0]}': {ns_id}")
+            else:
+                result = await repo.register_namespaces(list(namespaces))
+                click.echo(f"Registered {len(result)} namespace(s):")
+                for ns_name, ns_id in result.items():
+                    click.echo(f"  {ns_name}: {ns_id}")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to register namespace(s): {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_register())
+
+
+@namespace.command(
+    "list",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter namespace list --name my-app
+""",
+)
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def namespace_list(
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """List all active namespaces with IDs.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter namespace list --name my-app
+        ```
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _list() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            namespaces = await repo.list_namespaces()
+            if not namespaces:
+                click.echo("No namespaces registered.")
+                return
+
+            from .visualization import TableRenderer
+
+            headers = ["Name", "Namespace ID", "Created At"]
+            rows = [[ns["name"], ns["namespace_id"], ns["created_at"]] for ns in namespaces]
+            renderer = TableRenderer()
+            click.echo(renderer.render(headers, rows))
+            click.echo(f"\nTotal: {len(namespaces)} namespace(s)")
+        except Exception as e:
+            click.echo(f"Error: Failed to list namespaces: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_list())
+
+
+@namespace.command(
+    "show",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter namespace show tenant-alpha --name my-app
+""",
+)
+@click.argument("namespace_name")
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def namespace_show(
+    namespace_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """Show details for a specific namespace.
+
+    NAMESPACE_NAME is the namespace to look up (e.g., 'tenant-alpha').
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter namespace show tenant-alpha --name my-app
+        ```
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _show() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            ns = await repo.get_namespace(namespace_name)
+            if not ns:
+                click.echo(f"Namespace '{namespace_name}' not found.", err=True)
+                sys.exit(1)
+
+            click.echo(f"Namespace:    {ns['name']}")
+            click.echo(f"Namespace ID: {ns['namespace_id']}")
+            click.echo(f"Status:       {ns['status']}")
+            click.echo(f"Created At:   {ns['created_at']}")
+        except SystemExit:
+            raise
+        except Exception as e:
+            click.echo(f"Error: Failed to show namespace: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_show())
+
+
+@namespace.command(
+    "delete",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter namespace delete tenant-alpha --name my-app --yes
+""",
+)
+@click.argument("namespace_name")
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation prompt",
+)
+def namespace_delete(
+    namespace_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    yes: bool,
+) -> None:
+    """Soft-delete a namespace (recoverable).
+
+    NAMESPACE_NAME is the namespace to delete (e.g., 'tenant-alpha').
+    Data items are NOT deleted — they remain orphaned and can be recovered.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter namespace delete tenant-alpha --name my-app --yes
+        ```
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    if not yes:
+        click.confirm(
+            f"Delete namespace '{namespace_name}'? Data will be orphaned but recoverable.",
+            abort=True,
+        )
+
+    async def _delete() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            await repo.delete_namespace(namespace_name)
+            click.echo(f"Namespace '{namespace_name}' deleted (data orphaned, recoverable).")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to delete namespace: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_delete())
+
+
+@namespace.command(
+    "recover",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter namespace recover aB3x_9Qw --name my-app
+""",
+)
+@click.argument("namespace_id")
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def namespace_recover(
+    namespace_id: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """Recover a deleted namespace by its ID.
+
+    NAMESPACE_ID is the opaque namespace ID (e.g., 'aB3x_9Qw').
+    Use 'namespace orphans' to find deleted namespace IDs.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter namespace recover aB3x_9Qw --name my-app
+        ```
+    """
+    from .exceptions import EntityNotFoundError, ValidationError
+    from .repository import Repository
+
+    async def _recover() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            ns_name = await repo.recover_namespace(namespace_id)
+            click.echo(f"Recovered namespace '{ns_name}' (ID: {namespace_id}).")
+        except EntityNotFoundError:
+            click.echo(f"Error: Namespace ID '{namespace_id}' not found.", err=True)
+            sys.exit(1)
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to recover namespace: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_recover())
+
+
+@namespace.command(
+    "orphans",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter namespace orphans --name my-app
+""",
+)
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+def namespace_orphans(
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> None:
+    """List deleted namespaces with orphaned data.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter namespace orphans --name my-app
+        ```
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    async def _orphans() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            orphans = await repo.list_orphan_namespaces()
+            if not orphans:
+                click.echo("No orphaned namespaces.")
+                return
+
+            from .visualization import TableRenderer
+
+            headers = ["Namespace ID", "Name", "Deleted At"]
+            rows = [[o["namespace_id"], o["namespace"], o["deleted_at"]] for o in orphans]
+            renderer = TableRenderer()
+            click.echo(renderer.render(headers, rows))
+            click.echo(f"\nTotal: {len(orphans)} orphaned namespace(s)")
+        except Exception as e:
+            click.echo(f"Error: Failed to list orphaned namespaces: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_orphans())
+
+
+@namespace.command(
+    "purge",
+    epilog="""\b
+Examples:
+    \b
+    zae-limiter namespace purge aB3x_9Qw --name my-app --yes
+""",
+)
+@click.argument("namespace_id")
+@click.option(
+    "--name",
+    "-n",
+    default="limiter",
+    help="Stack identifier. Default: limiter",
+)
+@click.option(
+    "--region",
+    help="AWS region (default: use boto3 defaults)",
+)
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation prompt",
+)
+def namespace_purge(
+    namespace_id: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    yes: bool,
+) -> None:
+    """Permanently delete all data for a namespace (IRREVERSIBLE).
+
+    NAMESPACE_ID is the opaque namespace ID (e.g., 'aB3x_9Qw').
+    Use 'namespace orphans' to find deleted namespace IDs.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter namespace purge aB3x_9Qw --name my-app --yes
+        ```
+
+    !!! warning "Data Loss"
+        Purging permanently deletes all entities, buckets, configs,
+        and audit logs in the namespace. This cannot be undone.
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    if not yes:
+        click.confirm(
+            f"PERMANENTLY delete ALL data for namespace ID '{namespace_id}'? "
+            f"This cannot be undone.",
+            abort=True,
+        )
+
+    async def _purge() -> None:
+        try:
+            repo = Repository(name, region, endpoint_url)
+        except ValidationError as e:
+            click.echo(f"Error: {e.reason}", err=True)
+            sys.exit(1)
+
+        try:
+            await repo.purge_namespace(namespace_id)
+            click.echo(f"Purged namespace '{namespace_id}'. All data permanently deleted.")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: Failed to purge namespace: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_purge())
+
+
+# ---------------------------------------------------------------------------
 # Local development commands
 # ---------------------------------------------------------------------------
 

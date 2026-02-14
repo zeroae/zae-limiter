@@ -152,6 +152,38 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def register_namespace(self, namespace: str) -> str:
+        """Register a namespace (idempotent). Returns the namespace_id."""
+        ...
+
+    def register_namespaces(self, namespaces: list[str]) -> dict[str, str]:
+        """Bulk-register namespaces. Returns ``{name: namespace_id}``."""
+        ...
+
+    def get_namespace(self, namespace: str) -> dict[str, str] | None:
+        """Get namespace details by name. Returns dict or ``None``."""
+        ...
+
+    def list_namespaces(self) -> list[dict[str, str]]:
+        """List active namespaces. Returns ``[{name, namespace_id, created_at}]``."""
+        ...
+
+    def delete_namespace(self, namespace: str) -> None:
+        """Soft-delete a namespace. No-op if not found."""
+        ...
+
+    def recover_namespace(self, namespace_id: str) -> str:
+        """Recover a deleted namespace. Returns the namespace name."""
+        ...
+
+    def list_orphan_namespaces(self) -> list[dict[str, str]]:
+        """List deleted namespaces. Returns ``[{namespace_id, namespace, deleted_at}]``."""
+        ...
+
+    def purge_namespace(self, namespace_id: str) -> None:
+        """Purge all data for a deleted namespace. No-op if not found."""
+        ...
+
     def close(self) -> None:
         """
         Close the backend connection and release resources.

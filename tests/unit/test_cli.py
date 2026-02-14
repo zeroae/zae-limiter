@@ -4585,3 +4585,651 @@ class TestEntityListResourcesCommand:
 
             assert result.exit_code == 1
             assert "Invalid name format" in result.output
+
+
+class TestNamespaceCommands:
+    """Test namespace CLI commands."""
+
+    # -----------------------------------------------------------------------
+    # Help text
+    # -----------------------------------------------------------------------
+
+    def test_namespace_group_help(self, runner: CliRunner) -> None:
+        """Test namespace command group help."""
+        result = runner.invoke(cli, ["namespace", "--help"])
+        assert result.exit_code == 0
+        assert "Namespace management commands" in result.output
+        assert "register" in result.output
+        assert "list" in result.output
+        assert "show" in result.output
+        assert "delete" in result.output
+        assert "recover" in result.output
+        assert "orphans" in result.output
+        assert "purge" in result.output
+
+    def test_namespace_register_help(self, runner: CliRunner) -> None:
+        """Test namespace register command help."""
+        result = runner.invoke(cli, ["namespace", "register", "--help"])
+        assert result.exit_code == 0
+        assert "Register one or more namespaces" in result.output
+        assert "NAMESPACES" in result.output
+        assert "--name" in result.output
+        assert "--region" in result.output
+        assert "--endpoint-url" in result.output
+
+    def test_namespace_list_help(self, runner: CliRunner) -> None:
+        """Test namespace list command help."""
+        result = runner.invoke(cli, ["namespace", "list", "--help"])
+        assert result.exit_code == 0
+        assert "List all active namespaces" in result.output
+        assert "--name" in result.output
+
+    def test_namespace_show_help(self, runner: CliRunner) -> None:
+        """Test namespace show command help."""
+        result = runner.invoke(cli, ["namespace", "show", "--help"])
+        assert result.exit_code == 0
+        assert "Show details for a specific namespace" in result.output
+        assert "NAMESPACE_NAME" in result.output
+
+    def test_namespace_delete_help(self, runner: CliRunner) -> None:
+        """Test namespace delete command help."""
+        result = runner.invoke(cli, ["namespace", "delete", "--help"])
+        assert result.exit_code == 0
+        assert "Soft-delete a namespace" in result.output
+        assert "--yes" in result.output
+
+    def test_namespace_recover_help(self, runner: CliRunner) -> None:
+        """Test namespace recover command help."""
+        result = runner.invoke(cli, ["namespace", "recover", "--help"])
+        assert result.exit_code == 0
+        assert "Recover a deleted namespace" in result.output
+        assert "NAMESPACE_ID" in result.output
+
+    def test_namespace_orphans_help(self, runner: CliRunner) -> None:
+        """Test namespace orphans command help."""
+        result = runner.invoke(cli, ["namespace", "orphans", "--help"])
+        assert result.exit_code == 0
+        assert "List deleted namespaces with orphaned data" in result.output
+
+    def test_namespace_purge_help(self, runner: CliRunner) -> None:
+        """Test namespace purge command help."""
+        result = runner.invoke(cli, ["namespace", "purge", "--help"])
+        assert result.exit_code == 0
+        assert "Permanently delete all data" in result.output
+        assert "--yes" in result.output
+
+    # -----------------------------------------------------------------------
+    # namespace register
+    # -----------------------------------------------------------------------
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_register_single(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace register with a single namespace."""
+        mock_repo = Mock()
+        mock_repo.register_namespace = AsyncMock(return_value="aB3x_9Qw")
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "register", "tenant-alpha", "--name", "my-app"])
+
+        assert result.exit_code == 0
+        assert "Registered namespace 'tenant-alpha': aB3x_9Qw" in result.output
+        mock_repo.register_namespace.assert_called_once_with("tenant-alpha")
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_register_bulk(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace register with multiple namespaces (bulk)."""
+        mock_repo = Mock()
+        mock_repo.register_namespaces = AsyncMock(
+            return_value={"tenant-alpha": "aB3x_9Qw", "tenant-beta": "cD5y_1Rz"}
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli,
+            ["namespace", "register", "tenant-alpha", "tenant-beta", "--name", "my-app"],
+        )
+
+        assert result.exit_code == 0
+        assert "Registered 2 namespace(s):" in result.output
+        assert "tenant-alpha: aB3x_9Qw" in result.output
+        assert "tenant-beta: cD5y_1Rz" in result.output
+        mock_repo.register_namespaces.assert_called_once_with(["tenant-alpha", "tenant-beta"])
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_register_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace register handles ValueError (e.g., duplicate namespace)."""
+        mock_repo = Mock()
+        mock_repo.register_namespace = AsyncMock(
+            side_effect=ValueError("Namespace 'tenant-alpha' already exists")
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "register", "tenant-alpha"])
+
+        assert result.exit_code == 1
+        assert "Namespace 'tenant-alpha' already exists" in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_register_general_error(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test namespace register handles generic Exception."""
+        mock_repo = Mock()
+        mock_repo.register_namespace = AsyncMock(
+            side_effect=Exception("DynamoDB connection timeout")
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "register", "tenant-alpha"])
+
+        assert result.exit_code == 1
+        assert "Failed to register namespace(s)" in result.output
+        assert "DynamoDB connection timeout" in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_register_validation_error(self, runner: CliRunner) -> None:
+        """Test namespace register handles ValidationError from Repository constructor."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+
+            result = runner.invoke(
+                cli, ["namespace", "register", "tenant-alpha", "--name", "bad_name"]
+            )
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    def test_namespace_register_requires_argument(self, runner: CliRunner) -> None:
+        """Test namespace register requires at least one NAMESPACES argument."""
+        result = runner.invoke(cli, ["namespace", "register"])
+        assert result.exit_code != 0
+        assert "NAMESPACES" in result.output
+
+    # -----------------------------------------------------------------------
+    # namespace list
+    # -----------------------------------------------------------------------
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_list_with_results(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace list displays namespaces in table format."""
+        mock_repo = Mock()
+        mock_repo.list_namespaces = AsyncMock(
+            return_value=[
+                {
+                    "name": "tenant-alpha",
+                    "namespace_id": "aB3x_9Qw",
+                    "created_at": "2025-01-15T10:30:00Z",
+                },
+                {
+                    "name": "tenant-beta",
+                    "namespace_id": "cD5y_1Rz",
+                    "created_at": "2025-01-16T12:00:00Z",
+                },
+            ]
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "list", "--name", "my-app"])
+
+        assert result.exit_code == 0
+        assert "tenant-alpha" in result.output
+        assert "aB3x_9Qw" in result.output
+        assert "tenant-beta" in result.output
+        assert "cD5y_1Rz" in result.output
+        assert "Total: 2 namespace(s)" in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_list_empty(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace list with no registered namespaces."""
+        mock_repo = Mock()
+        mock_repo.list_namespaces = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "list", "--name", "my-app"])
+
+        assert result.exit_code == 0
+        assert "No namespaces registered." in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_list_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace list handles generic Exception."""
+        mock_repo = Mock()
+        mock_repo.list_namespaces = AsyncMock(side_effect=Exception("Connection refused"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "list"])
+
+        assert result.exit_code == 1
+        assert "Failed to list namespaces" in result.output
+        assert "Connection refused" in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_list_validation_error(self, runner: CliRunner) -> None:
+        """Test namespace list handles ValidationError from Repository constructor."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+
+            result = runner.invoke(cli, ["namespace", "list", "--name", "bad_name"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    # -----------------------------------------------------------------------
+    # namespace show
+    # -----------------------------------------------------------------------
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_show_found(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace show displays namespace details."""
+        mock_repo = Mock()
+        mock_repo.get_namespace = AsyncMock(
+            return_value={
+                "name": "tenant-alpha",
+                "namespace_id": "aB3x_9Qw",
+                "status": "active",
+                "created_at": "2025-01-15T10:30:00Z",
+            }
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "show", "tenant-alpha", "--name", "my-app"])
+
+        assert result.exit_code == 0
+        assert "Namespace:    tenant-alpha" in result.output
+        assert "Namespace ID: aB3x_9Qw" in result.output
+        assert "Status:       active" in result.output
+        assert "Created At:   2025-01-15T10:30:00Z" in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_show_not_found(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace show when namespace does not exist."""
+        mock_repo = Mock()
+        mock_repo.get_namespace = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "show", "nonexistent", "--name", "my-app"])
+
+        assert result.exit_code == 1
+        assert "Namespace 'nonexistent' not found." in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_show_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace show handles generic Exception."""
+        mock_repo = Mock()
+        mock_repo.get_namespace = AsyncMock(side_effect=Exception("Service unavailable"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "show", "tenant-alpha", "--name", "my-app"])
+
+        assert result.exit_code == 1
+        assert "Failed to show namespace" in result.output
+        assert "Service unavailable" in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_show_validation_error(self, runner: CliRunner) -> None:
+        """Test namespace show handles ValidationError from Repository constructor."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+
+            result = runner.invoke(cli, ["namespace", "show", "tenant-alpha", "--name", "bad_name"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    # -----------------------------------------------------------------------
+    # namespace delete
+    # -----------------------------------------------------------------------
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_delete_with_yes(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace delete with --yes flag skips confirmation."""
+        mock_repo = Mock()
+        mock_repo.delete_namespace = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["namespace", "delete", "tenant-alpha", "--name", "my-app", "--yes"]
+        )
+
+        assert result.exit_code == 0
+        assert "Namespace 'tenant-alpha' deleted (data orphaned, recoverable)." in result.output
+        mock_repo.delete_namespace.assert_called_once_with("tenant-alpha")
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_delete_with_confirmation(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test namespace delete with user confirmation prompt (y)."""
+        mock_repo = Mock()
+        mock_repo.delete_namespace = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["namespace", "delete", "tenant-alpha", "--name", "my-app"], input="y\n"
+        )
+
+        assert result.exit_code == 0
+        assert "Namespace 'tenant-alpha' deleted (data orphaned, recoverable)." in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_delete_abort(self, runner: CliRunner) -> None:
+        """Test namespace delete aborts when user declines confirmation."""
+        result = runner.invoke(cli, ["namespace", "delete", "tenant-alpha"], input="n\n")
+
+        assert result.exit_code == 1
+        assert "Aborted" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_delete_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace delete handles ValueError (e.g., namespace not found)."""
+        mock_repo = Mock()
+        mock_repo.delete_namespace = AsyncMock(
+            side_effect=ValueError("Namespace 'tenant-alpha' not found")
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "delete", "tenant-alpha", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Namespace 'tenant-alpha' not found" in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_delete_general_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace delete handles generic Exception."""
+        mock_repo = Mock()
+        mock_repo.delete_namespace = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "delete", "tenant-alpha", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Failed to delete namespace" in result.output
+        assert "DynamoDB error" in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_delete_validation_error(self, runner: CliRunner) -> None:
+        """Test namespace delete handles ValidationError from Repository constructor."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+
+            result = runner.invoke(
+                cli,
+                ["namespace", "delete", "tenant-alpha", "--name", "bad_name", "--yes"],
+            )
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    # -----------------------------------------------------------------------
+    # namespace recover
+    # -----------------------------------------------------------------------
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_recover_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace recover restores a deleted namespace."""
+        mock_repo = Mock()
+        mock_repo.recover_namespace = AsyncMock(return_value="tenant-alpha")
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "recover", "aB3x_9Qw", "--name", "my-app"])
+
+        assert result.exit_code == 0
+        assert "Recovered namespace 'tenant-alpha' (ID: aB3x_9Qw)." in result.output
+        mock_repo.recover_namespace.assert_called_once_with("aB3x_9Qw")
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_recover_not_found(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace recover handles EntityNotFoundError."""
+        from zae_limiter.exceptions import EntityNotFoundError
+
+        mock_repo = Mock()
+        mock_repo.recover_namespace = AsyncMock(side_effect=EntityNotFoundError("aB3x_9Qw"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "recover", "aB3x_9Qw", "--name", "my-app"])
+
+        assert result.exit_code == 1
+        assert "Namespace ID 'aB3x_9Qw' not found." in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_recover_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace recover handles ValueError (e.g., already active)."""
+        mock_repo = Mock()
+        mock_repo.recover_namespace = AsyncMock(side_effect=ValueError("Namespace is not deleted"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "recover", "aB3x_9Qw", "--name", "my-app"])
+
+        assert result.exit_code == 1
+        assert "Namespace is not deleted" in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_recover_general_error(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test namespace recover handles generic Exception."""
+        mock_repo = Mock()
+        mock_repo.recover_namespace = AsyncMock(side_effect=Exception("Service unavailable"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "recover", "aB3x_9Qw", "--name", "my-app"])
+
+        assert result.exit_code == 1
+        assert "Failed to recover namespace" in result.output
+        assert "Service unavailable" in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_recover_validation_error(self, runner: CliRunner) -> None:
+        """Test namespace recover handles ValidationError from Repository constructor."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+
+            result = runner.invoke(cli, ["namespace", "recover", "aB3x_9Qw", "--name", "bad_name"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    # -----------------------------------------------------------------------
+    # namespace orphans
+    # -----------------------------------------------------------------------
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_orphans_with_results(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace orphans displays orphaned namespaces in table format."""
+        mock_repo = Mock()
+        mock_repo.list_orphan_namespaces = AsyncMock(
+            return_value=[
+                {
+                    "namespace_id": "aB3x_9Qw",
+                    "namespace": "tenant-alpha",
+                    "deleted_at": "2025-02-01T08:00:00Z",
+                },
+                {
+                    "namespace_id": "cD5y_1Rz",
+                    "namespace": "tenant-beta",
+                    "deleted_at": "2025-02-02T09:00:00Z",
+                },
+            ]
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "orphans", "--name", "my-app"])
+
+        assert result.exit_code == 0
+        assert "aB3x_9Qw" in result.output
+        assert "tenant-alpha" in result.output
+        assert "cD5y_1Rz" in result.output
+        assert "tenant-beta" in result.output
+        assert "Total: 2 orphaned namespace(s)" in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_orphans_empty(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace orphans with no orphaned namespaces."""
+        mock_repo = Mock()
+        mock_repo.list_orphan_namespaces = AsyncMock(return_value=[])
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "orphans", "--name", "my-app"])
+
+        assert result.exit_code == 0
+        assert "No orphaned namespaces." in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_orphans_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace orphans handles generic Exception."""
+        mock_repo = Mock()
+        mock_repo.list_orphan_namespaces = AsyncMock(side_effect=Exception("Throttled"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "orphans"])
+
+        assert result.exit_code == 1
+        assert "Failed to list orphaned namespaces" in result.output
+        assert "Throttled" in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_orphans_validation_error(self, runner: CliRunner) -> None:
+        """Test namespace orphans handles ValidationError from Repository constructor."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+
+            result = runner.invoke(cli, ["namespace", "orphans", "--name", "bad_name"])
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
+
+    # -----------------------------------------------------------------------
+    # namespace purge
+    # -----------------------------------------------------------------------
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_purge_with_yes(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace purge with --yes flag skips confirmation."""
+        mock_repo = Mock()
+        mock_repo.purge_namespace = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "purge", "aB3x_9Qw", "--name", "my-app", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Purged namespace 'aB3x_9Qw'. All data permanently deleted." in result.output
+        mock_repo.purge_namespace.assert_called_once_with("aB3x_9Qw")
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_purge_with_confirmation(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test namespace purge with user confirmation prompt (y)."""
+        mock_repo = Mock()
+        mock_repo.purge_namespace = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(
+            cli, ["namespace", "purge", "aB3x_9Qw", "--name", "my-app"], input="y\n"
+        )
+
+        assert result.exit_code == 0
+        assert "Purged namespace 'aB3x_9Qw'. All data permanently deleted." in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_purge_abort(self, runner: CliRunner) -> None:
+        """Test namespace purge aborts when user declines confirmation."""
+        result = runner.invoke(cli, ["namespace", "purge", "aB3x_9Qw"], input="n\n")
+
+        assert result.exit_code == 1
+        assert "Aborted" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_purge_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace purge handles ValueError (e.g., namespace still active)."""
+        mock_repo = Mock()
+        mock_repo.purge_namespace = AsyncMock(
+            side_effect=ValueError("Cannot purge active namespace")
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "purge", "aB3x_9Qw", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Cannot purge active namespace" in result.output
+        mock_repo.close.assert_called_once()
+
+    @patch("zae_limiter.repository.Repository")
+    def test_namespace_purge_general_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace purge handles generic Exception."""
+        mock_repo = Mock()
+        mock_repo.purge_namespace = AsyncMock(side_effect=Exception("Internal server error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["namespace", "purge", "aB3x_9Qw", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Failed to purge namespace" in result.output
+        assert "Internal server error" in result.output
+        mock_repo.close.assert_called_once()
+
+    def test_namespace_purge_validation_error(self, runner: CliRunner) -> None:
+        """Test namespace purge handles ValidationError from Repository constructor."""
+        with patch("zae_limiter.repository.Repository") as mock_repo_class:
+            from zae_limiter.exceptions import ValidationError
+
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+
+            result = runner.invoke(
+                cli, ["namespace", "purge", "aB3x_9Qw", "--name", "bad_name", "--yes"]
+            )
+
+            assert result.exit_code == 1
+            assert "Invalid name format" in result.output
