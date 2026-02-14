@@ -818,6 +818,56 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#namespace-scoped-access-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace-Scoped Access Control
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Namespace-Scoped Access Control">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-namespace-most-common" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single Namespace (Most Common)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-cross-namespace-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin / Cross-Namespace Access
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#selective-multi-namespace-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selective Multi-Namespace Access
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2807,6 +2857,56 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#namespace-scoped-access-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace-Scoped Access Control
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Namespace-Scoped Access Control">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-namespace-most-common" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single Namespace (Most Common)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-cross-namespace-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin / Cross-Namespace Access
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#selective-multi-namespace-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selective Multi-Namespace Access
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -3171,6 +3271,138 @@
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--name<span class="w"> </span>myapp<span class="w"> </span>--no-iam<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span>--aggregator-role-arn<span class="w"> </span>arn:aws:iam::123456789012:role/MyLambdaRole
 </span></code></pre></div>
+<h4 id="namespace-scoped-access-control">Namespace-Scoped Access Control<a class="headerlink" href="#namespace-scoped-access-control" title="Permanent link">&para;</a></h4>
+<p>For multi-tenant deployments, namespace-scoped policies restrict each tenant to its own namespace's DynamoDB items using tag-based access control (TBAC).</p>
+<p>The stack creates three additional namespace-scoped policies:</p>
+<table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>Suffix</th>
+<th>Use Case</th>
+<th>Tag Required</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>NamespaceAcquirePolicy</strong></td>
+<td><code>-ns-acq</code></td>
+<td>Tenant apps calling <code>acquire()</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>NamespaceFullAccessPolicy</strong></td>
+<td><code>-ns-full</code></td>
+<td>Tenant config management</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>NamespaceReadOnlyPolicy</strong></td>
+<td><code>-ns-read</code></td>
+<td>Tenant monitoring</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<p>These policies use <code>dynamodb:LeadingKeys</code> with the <code>zael_namespace_id</code> principal tag to restrict DynamoDB access to items whose partition key starts with the tenant's namespace ID.</p>
+<h5 id="single-namespace-most-common">Single Namespace (Most Common)<a class="headerlink" href="#single-namespace-most-common" title="Permanent link">&para;</a></h5>
+<p>Attach a namespace-scoped policy and tag the principal with the namespace ID:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># 1. Deploy the stack (policies are created automatically)</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--name<span class="w"> </span>shared-table<span class="w"> </span>--region<span class="w"> </span>us-east-1
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># 2. Look up the default namespace ID</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>show<span class="w"> </span>default<span class="w"> </span>--name<span class="w"> </span>shared-table
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1"># Output:</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># Namespace:    default</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># Namespace ID: default</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1"># Status:       active</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># Created At:   2025-01-15T10:30:00Z</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="c1"># 3. Attach the namespace-scoped policy to your app role</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>aws<span class="w"> </span>iam<span class="w"> </span>attach-role-policy<span class="w"> </span>--role-name<span class="w"> </span>my-app-role<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">  </span>--policy-arn<span class="w"> </span>arn:aws:iam::123456789012:policy/shared-table-ns-acq
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="c1"># 4. Tag the role with the namespace ID</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>aws<span class="w"> </span>iam<span class="w"> </span>tag-role<span class="w"> </span>--role-name<span class="w"> </span>my-app-role<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">  </span>--tags<span class="w"> </span><span class="nv">Key</span><span class="o">=</span>zael_namespace_id,Value<span class="o">=</span>default
+</span></code></pre></div>
+<p>For additional tenants, register a namespace and use its ID:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Register a new tenant namespace</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>register<span class="w"> </span>tenant-alpha<span class="w"> </span>--name<span class="w"> </span>shared-table
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Look up the opaque namespace ID</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>show<span class="w"> </span>tenant-alpha<span class="w"> </span>--name<span class="w"> </span>shared-table
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="c1"># Namespace ID: a7x3kq2m</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># Tag the tenant&#39;s role</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>aws<span class="w"> </span>iam<span class="w"> </span>tag-role<span class="w"> </span>--role-name<span class="w"> </span>tenant-alpha-role<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span>--tags<span class="w"> </span><span class="nv">Key</span><span class="o">=</span>zael_namespace_id,Value<span class="o">=</span>a7x3kq2m
+</span></code></pre></div>
+<h5 id="admin-cross-namespace-access">Admin / Cross-Namespace Access<a class="headerlink" href="#admin-cross-namespace-access" title="Permanent link">&para;</a></h5>
+<p>For admin roles that need access to all namespaces, attach a table-level policy (no tag needed):</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>aws<span class="w"> </span>iam<span class="w"> </span>attach-role-policy<span class="w"> </span>--role-name<span class="w"> </span>admin-role<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--policy-arn<span class="w"> </span>arn:aws:iam::123456789012:policy/shared-table-full
+</span></code></pre></div>
+<h5 id="selective-multi-namespace-access">Selective Multi-Namespace Access<a class="headerlink" href="#selective-multi-namespace-access" title="Permanent link">&para;</a></h5>
+<p><strong>Option A: STS Session Policy</strong> — Assume a base role with a session policy that narrows access to specific namespaces:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="kn">import</span><span class="w"> </span><span class="nn">boto3</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">sts</span> <span class="o">=</span> <span class="n">boto3</span><span class="o">.</span><span class="n">client</span><span class="p">(</span><span class="s2">&quot;sts&quot;</span><span class="p">)</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">ns_ids</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;a7x3kq2m&quot;</span><span class="p">,</span> <span class="s2">&quot;b9y4lr3n&quot;</span><span class="p">]</span>  <span class="c1"># resolved namespace IDs</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="n">response</span> <span class="o">=</span> <span class="n">sts</span><span class="o">.</span><span class="n">assume_role</span><span class="p">(</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    <span class="n">RoleArn</span><span class="o">=</span><span class="s2">&quot;arn:aws:iam::123456789012:role/shared-table-base-role&quot;</span><span class="p">,</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    <span class="n">RoleSessionName</span><span class="o">=</span><span class="s2">&quot;multi-tenant-session&quot;</span><span class="p">,</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    <span class="n">Policy</span><span class="o">=</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>        <span class="s2">&quot;Version&quot;</span><span class="p">:</span> <span class="s2">&quot;2012-10-17&quot;</span><span class="p">,</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>        <span class="s2">&quot;Statement&quot;</span><span class="p">:</span> <span class="p">[{</span>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>            <span class="s2">&quot;Effect&quot;</span><span class="p">:</span> <span class="s2">&quot;Allow&quot;</span><span class="p">,</span>
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>            <span class="s2">&quot;Action&quot;</span><span class="p">:</span> <span class="p">[</span>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>                <span class="s2">&quot;dynamodb:GetItem&quot;</span><span class="p">,</span> <span class="s2">&quot;dynamodb:BatchGetItem&quot;</span><span class="p">,</span>
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>                <span class="s2">&quot;dynamodb:Query&quot;</span><span class="p">,</span> <span class="s2">&quot;dynamodb:UpdateItem&quot;</span><span class="p">,</span>
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>            <span class="p">],</span>
+</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>            <span class="s2">&quot;Resource&quot;</span><span class="p">:</span> <span class="s2">&quot;arn:aws:dynamodb:us-east-1:123456789012:table/shared-table&quot;</span><span class="p">,</span>
+</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>            <span class="s2">&quot;Condition&quot;</span><span class="p">:</span> <span class="p">{</span>
+</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>                <span class="s2">&quot;ForAllValues:StringLike&quot;</span><span class="p">:</span> <span class="p">{</span>
+</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>                    <span class="s2">&quot;dynamodb:LeadingKeys&quot;</span><span class="p">:</span>
+</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>                        <span class="p">[</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">ns</span><span class="si">}</span><span class="s2">/*&quot;</span> <span class="k">for</span> <span class="n">ns</span> <span class="ow">in</span> <span class="n">ns_ids</span><span class="p">]</span> <span class="o">+</span> <span class="p">[</span><span class="s2">&quot;_/*&quot;</span><span class="p">]</span>
+</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>                <span class="p">}</span>
+</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a>            <span class="p">}</span>
+</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>        <span class="p">}]</span>
+</span><span id="__span-6-27"><a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a>    <span class="p">})</span>
+</span><span id="__span-6-28"><a id="__codelineno-6-28" name="__codelineno-6-28" href="#__codelineno-6-28"></a><span class="p">)</span>
+</span><span id="__span-6-29"><a id="__codelineno-6-29" name="__codelineno-6-29" href="#__codelineno-6-29"></a><span class="c1"># Use response[&quot;Credentials&quot;] for scoped access</span>
+</span></code></pre></div>
+<p>The session policy intersects with the base role's table-level policy, narrowing access to exactly those namespaces.</p>
+<p><strong>Option B: Custom IAM Policy</strong> — Create a managed policy listing specific namespace IDs:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Resolve namespace IDs</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nv">NSID1</span><span class="o">=</span><span class="k">$(</span>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>show<span class="w"> </span>tenant-alpha<span class="w"> </span>--name<span class="w"> </span>shared-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;Namespace ID:&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>awk<span class="w"> </span><span class="s1">&#39;{print $3}&#39;</span><span class="k">)</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nv">NSID2</span><span class="o">=</span><span class="k">$(</span>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>show<span class="w"> </span>tenant-beta<span class="w"> </span>--name<span class="w"> </span>shared-table<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;Namespace ID:&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>awk<span class="w"> </span><span class="s1">&#39;{print $3}&#39;</span><span class="k">)</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Create a custom policy for multiple namespaces</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>aws<span class="w"> </span>iam<span class="w"> </span>create-policy<span class="w"> </span>--policy-name<span class="w"> </span>my-multi-ns-policy<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">  </span>--policy-document<span class="w"> </span><span class="s2">&quot;{</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="s2">    \&quot;Version\&quot;: \&quot;2012-10-17\&quot;,</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="s2">    \&quot;Statement\&quot;: [{</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="s2">      \&quot;Effect\&quot;: \&quot;Allow\&quot;,</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="s2">      \&quot;Action\&quot;: [</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="s2">        \&quot;dynamodb:GetItem\&quot;, \&quot;dynamodb:BatchGetItem\&quot;,</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="s2">        \&quot;dynamodb:Query\&quot;, \&quot;dynamodb:UpdateItem\&quot;</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="s2">      ],</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="s2">      \&quot;Resource\&quot;: \&quot;arn:aws:dynamodb:us-east-1:123456789012:table/shared-table\&quot;,</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="s2">      \&quot;Condition\&quot;: {</span>
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a><span class="s2">        \&quot;ForAllValues:StringLike\&quot;: {</span>
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a><span class="s2">          \&quot;dynamodb:LeadingKeys\&quot;: [\&quot;</span><span class="si">${</span><span class="nv">NSID1</span><span class="si">}</span><span class="s2">/*\&quot;, \&quot;</span><span class="si">${</span><span class="nv">NSID2</span><span class="si">}</span><span class="s2">/*\&quot;, \&quot;_/*\&quot;]</span>
+</span><span id="__span-7-21"><a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a><span class="s2">        }</span>
+</span><span id="__span-7-22"><a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a><span class="s2">      }</span>
+</span><span id="__span-7-23"><a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a><span class="s2">    }]</span>
+</span><span id="__span-7-24"><a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a><span class="s2">  }&quot;</span>
+</span></code></pre></div>
+<p>This policy is operator-managed (not owned by the zae-limiter CloudFormation stack).</p>
 <h3 id="network">Network<a class="headerlink" href="#network" title="Permanent link">&para;</a></h3>
 <ul>
 <li>No VPC required; uses AWS service endpoints</li>
@@ -3222,11 +3454,11 @@
 <li>Each region should enforce its own limits</li>
 </ul>
 <h3 id="cross-region-pattern">Cross-Region Pattern<a class="headerlink" href="#cross-region-pattern" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Deploy separate stacks per region</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">us_limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;prod&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">eu_limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;prod&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;eu-west-1&quot;</span><span class="p">)</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1"># Application coordinates between regions if needed</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Deploy separate stacks per region</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">us_limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;prod&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">eu_limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;prod&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;eu-west-1&quot;</span><span class="p">)</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># Application coordinates between regions if needed</span>
 </span></code></pre></div>
 <h2 id="monitoring-alerting">Monitoring &amp; Alerting<a class="headerlink" href="#monitoring-alerting" title="Permanent link">&para;</a></h2>
 <p>The stack deploys CloudWatch alarms by default:</p>
