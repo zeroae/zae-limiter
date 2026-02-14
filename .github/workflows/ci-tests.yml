@@ -21,6 +21,11 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
   workflow_dispatch:
+    inputs:
+      run-benchmark-localstack:
+        description: 'Run LocalStack benchmarks'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -233,7 +238,7 @@ jobs:
 
   benchmark-localstack:
     needs: verify-sync
-    if: ${{ !github.event.pull_request.draft }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run-benchmark-localstack }}
     runs-on: ubuntu-latest
     concurrency:
       group: gh-pages-write-${{ github.ref }}
