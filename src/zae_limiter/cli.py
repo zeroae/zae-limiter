@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 
@@ -17,6 +18,24 @@ from .models import StackOptions
 
 if TYPE_CHECKING:
     from .models import Limit
+    from .repository import Repository
+
+
+def namespace_option(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Add --namespace / -N option for data-access commands."""
+    return click.option(
+        "--namespace",
+        "-N",
+        default="default",
+        help='Namespace within the table (default: "default")',
+    )(func)
+
+
+async def _resolve_namespace(repo: Repository, namespace: str) -> Repository:
+    """Return a namespace-scoped repository, or the original if namespace is default."""
+    if namespace != "default":
+        return await repo.namespace(namespace)
+    return repo
 
 
 @click.group()
@@ -1582,6 +1601,7 @@ Examples:
     "--start-event-id",
     help="Event ID to start after (for pagination)",
 )
+@namespace_option
 def audit_list(
     name: str,
     region: str | None,
@@ -1589,6 +1609,7 @@ def audit_list(
     entity_id: str,
     limit: int,
     start_event_id: str | None,
+    namespace: str,
 ) -> None:
     """List audit events for an entity.
 
@@ -1626,6 +1647,7 @@ def audit_list(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             events = await repo.get_audit_events(
                 entity_id=entity_id,
                 limit=limit,
@@ -1754,6 +1776,7 @@ Examples:
     is_flag=True,
     help="Display as ASCII charts instead of table (requires: pip install 'zae-limiter[plot]')",
 )
+@namespace_option
 def usage_list(
     name: str,
     region: str | None,
@@ -1765,6 +1788,7 @@ def usage_list(
     end: str | None,
     limit: int,
     plot: bool,
+    namespace: str,
 ) -> None:
     """List usage snapshots.
 
@@ -1814,6 +1838,7 @@ def usage_list(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             snapshots, next_key = await repo.get_usage_snapshots(
                 entity_id=entity_id,
                 resource=resource,
@@ -1937,6 +1962,7 @@ Examples:
     "--end",
     help="End time (ISO format, e.g., 2024-01-31T23:59:59Z)",
 )
+@namespace_option
 def usage_summary(
     name: str,
     region: str | None,
@@ -1946,6 +1972,7 @@ def usage_summary(
     window: str | None,
     start: str | None,
     end: str | None,
+    namespace: str,
 ) -> None:
     """Show aggregated usage summary.
 
@@ -1993,6 +2020,7 @@ def usage_summary(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             summary = await repo.get_usage_summary(
                 entity_id=entity_id,
                 resource=resource,
@@ -2128,12 +2156,14 @@ Examples:
     required=True,
     help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
 )
+@namespace_option
 def resource_set_defaults(
     resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
     limits: tuple[str, ...],
+    namespace: str,
 ) -> None:
     """Set default limits for a resource.
 
@@ -2172,6 +2202,7 @@ def resource_set_defaults(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             await repo.set_resource_defaults(resource_name, parsed_limits)
             click.echo(f"Set {len(parsed_limits)} default(s) for resource '{resource_name}':")
             for limit in parsed_limits:
@@ -2213,11 +2244,13 @@ Examples:
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
+@namespace_option
 def resource_get_defaults(
     resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    namespace: str,
 ) -> None:
     """Get default limits for a resource.
 
@@ -2249,6 +2282,7 @@ def resource_get_defaults(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             limits = await repo.get_resource_defaults(resource_name)
             if not limits:
                 click.echo(f"No defaults configured for resource '{resource_name}'")
@@ -2302,12 +2336,14 @@ Examples:
     is_flag=True,
     help="Skip confirmation prompt",
 )
+@namespace_option
 def resource_delete_defaults(
     resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
     yes: bool,
+    namespace: str,
 ) -> None:
     """Delete default limits for a resource.
 
@@ -2340,6 +2376,7 @@ def resource_delete_defaults(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             await repo.delete_resource_defaults(resource_name)
             click.echo(f"Deleted defaults for resource '{resource_name}'")
         except ValidationError as e:
@@ -2378,10 +2415,12 @@ Examples:
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
+@namespace_option
 def resource_list(
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    namespace: str,
 ) -> None:
     """List all resources with configured defaults.
 
@@ -2412,6 +2451,7 @@ def resource_list(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             resources = await repo.list_resources_with_defaults()
             if not resources:
                 click.echo("No resources with configured defaults")
@@ -2483,12 +2523,14 @@ Examples:
     type=click.Choice(["allow", "block"]),
     help="Behavior when DynamoDB is unavailable",
 )
+@namespace_option
 def system_set_defaults(
     name: str,
     region: str | None,
     endpoint_url: str | None,
     limits: tuple[str, ...],
     on_unavailable: str | None,
+    namespace: str,
 ) -> None:
     """Set system-wide default limits.
 
@@ -2526,6 +2568,7 @@ def system_set_defaults(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             from .models import OnUnavailableAction
 
             on_unavailable_action: OnUnavailableAction | None = (
@@ -2574,10 +2617,12 @@ Examples:
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
+@namespace_option
 def system_get_defaults(
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    namespace: str,
 ) -> None:
     """Get system-wide default limits and config.
 
@@ -2609,6 +2654,7 @@ def system_get_defaults(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             limits, on_unavailable = await repo.get_system_defaults()
             if not limits and not on_unavailable:
                 click.echo("No system defaults configured")
@@ -2665,11 +2711,13 @@ Examples:
     is_flag=True,
     help="Skip confirmation prompt",
 )
+@namespace_option
 def system_delete_defaults(
     name: str,
     region: str | None,
     endpoint_url: str | None,
     yes: bool,
+    namespace: str,
 ) -> None:
     """Delete all system-wide default limits and config.
 
@@ -2700,6 +2748,7 @@ def system_delete_defaults(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             await repo.delete_system_defaults()
             click.echo("Deleted all system-wide defaults")
         except ValidationError as e:
@@ -2774,6 +2823,7 @@ Examples:
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
+@namespace_option
 def entity_create(
     entity_id: str,
     display_name: str | None,
@@ -2782,6 +2832,7 @@ def entity_create(
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    namespace: str,
 ) -> None:
     """Create a new entity.
 
@@ -2812,6 +2863,7 @@ def entity_create(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             entity = await repo.create_entity(
                 entity_id=entity_id,
                 name=display_name,
@@ -2858,11 +2910,13 @@ Examples:
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
+@namespace_option
 def entity_show(
     entity_id: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    namespace: str,
 ) -> None:
     """Show details for an entity.
 
@@ -2897,6 +2951,7 @@ def entity_show(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             entity = await repo.get_entity(entity_id)
             if entity is None:
                 click.echo(f"Entity '{entity_id}' not found", err=True)
@@ -2962,6 +3017,7 @@ Examples:
     required=True,
     help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
 )
+@namespace_option
 def entity_set_limits(
     entity_id: str,
     resource_name: str,
@@ -2969,6 +3025,7 @@ def entity_set_limits(
     region: str | None,
     endpoint_url: str | None,
     limits: tuple[str, ...],
+    namespace: str,
 ) -> None:
     """Set limits for a specific entity and resource.
 
@@ -3007,6 +3064,7 @@ def entity_set_limits(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             await repo.set_limits(entity_id, parsed_limits, resource=resource_name)
             click.echo(
                 f"Set {len(parsed_limits)} limit(s) for entity '{entity_id}' "
@@ -3058,12 +3116,14 @@ Examples:
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
+@namespace_option
 def entity_get_limits(
     entity_id: str,
     resource_name: str,
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    namespace: str,
 ) -> None:
     """Get limits for a specific entity and resource.
 
@@ -3095,6 +3155,7 @@ def entity_get_limits(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             limits = await repo.get_limits(entity_id, resource=resource_name)
             if not limits:
                 click.echo(
@@ -3157,6 +3218,7 @@ Examples:
     is_flag=True,
     help="Skip confirmation prompt",
 )
+@namespace_option
 def entity_delete_limits(
     entity_id: str,
     resource_name: str,
@@ -3164,6 +3226,7 @@ def entity_delete_limits(
     region: str | None,
     endpoint_url: str | None,
     yes: bool,
+    namespace: str,
 ) -> None:
     """Delete limits for a specific entity and resource.
 
@@ -3198,6 +3261,7 @@ def entity_delete_limits(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             await repo.delete_limits(entity_id, resource=resource_name)
             click.echo(f"Deleted limits for entity '{entity_id}' on resource '{resource_name}'")
         except ValidationError as e:
@@ -3250,12 +3314,14 @@ Examples:
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
+@namespace_option
 def entity_list(
     resource: str,
     limit: int | None,
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    namespace: str,
 ) -> None:
     """List entities with custom limit configurations.
 
@@ -3283,6 +3349,7 @@ def entity_list(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             cursor: str | None = None
             total_count = 0
             while True:
@@ -3336,10 +3403,12 @@ Examples:
     "--endpoint-url",
     help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
 )
+@namespace_option
 def entity_list_resources(
     name: str,
     region: str | None,
     endpoint_url: str | None,
+    namespace: str,
 ) -> None:
     """List resources with entity-level custom limit configurations.
 
@@ -3372,6 +3441,7 @@ def entity_list_resources(
             sys.exit(1)
 
         try:
+            repo = await _resolve_namespace(repo, namespace)
             resources = await repo.list_resources_with_entity_configs()
             if not resources:
                 click.echo("No resources with entity-level custom limits")
