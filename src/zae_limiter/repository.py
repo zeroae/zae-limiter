@@ -456,6 +456,9 @@ class Repository:
                                 "namespace_name": {"S": name},
                                 "status": {"S": "active"},
                                 "created_at": {"S": now},
+                                # GSI4: co-located under reserved namespace
+                                "GSI4PK": {"S": schema.RESERVED_NAMESPACE},
+                                "GSI4SK": {"S": pk},
                             },
                             "ConditionExpression": "attribute_not_exists(PK)",
                         }
@@ -469,6 +472,10 @@ class Repository:
                                 "namespace_id": {"S": namespace_id},
                                 "namespace_name": {"S": name},
                                 "status": {"S": "active"},
+                                "created_at": {"S": now},
+                                # GSI4: co-located under reserved namespace
+                                "GSI4PK": {"S": schema.RESERVED_NAMESPACE},
+                                "GSI4SK": {"S": pk},
                             },
                             "ConditionExpression": "attribute_not_exists(PK)",
                         }
@@ -520,6 +527,401 @@ class Repository:
         namespace_id: str = item["namespace_id"]["S"]
         self._namespace_cache[name] = namespace_id
         return namespace_id
+
+    # -------------------------------------------------------------------------
+    # Namespace registry — public API (#369)
+    # -------------------------------------------------------------------------
+
+    async def register_namespace(self, namespace: str) -> str:
+        """Register a namespace in the registry (idempotent).
+
+        Creates forward (name -> ID) and reverse (ID -> name) mappings.
+        Idempotent: returns existing ID if namespace already registered.
+
+        Args:
+            namespace: Namespace name to register.
+
+        Returns:
+            The namespace_id (either newly created or existing).
+
+        Raises:
+            ValueError: If namespace is the reserved namespace ``"_"``.
+        """
+        if namespace == schema.RESERVED_NAMESPACE:
+            raise ValueError(
+                f"Namespace name {schema.RESERVED_NAMESPACE!r} is reserved for system use"
+            )
+        return await self._register_namespace(namespace)
+
+    async def register_namespaces(self, namespaces: list[str]) -> dict[str, str]:
+        """Bulk-register multiple namespaces.
+
+        Registers all namespaces in DynamoDB (forward + reverse records each).
+
+        Args:
+            namespaces: List of namespace names to register.
+
+        Returns:
+            Mapping of ``{name: namespace_id}`` for all namespaces.
+
+        Raises:
+            ValueError: If any namespace is the reserved namespace ``"_"``.
+        """
+        # Validate all names upfront (fail fast)
+        for ns in namespaces:
+            if ns == schema.RESERVED_NAMESPACE:
+                raise ValueError(
+                    f"Namespace name {schema.RESERVED_NAMESPACE!r} is reserved for system use"
+                )
+
+        ids = await asyncio.gather(*[self._register_namespace(ns) for ns in namespaces])
+        return dict(zip(namespaces, ids))
+
+    async def list_namespaces(self) -> list[dict[str, str]]:
+        """List all active namespaces with their IDs.
+
+        Performs a Query on ``PK = "_/SYSTEM#"`` with
+        ``SK begins_with "#NAMESPACE#"`` (forward records only).
+
+        Returns:
+            List of ``{name, namespace_id, created_at}`` dicts.
+        """
+        client = await self._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+
+        results: list[dict[str, str]] = []
+        exclusive_start_key = None
+
+        while True:
+            query_params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk_prefix)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": pk},
+                    ":sk_prefix": {"S": schema.sk_namespace_prefix()},
+                },
+            }
+            if exclusive_start_key is not None:
+                query_params["ExclusiveStartKey"] = exclusive_start_key
+
+            response = await client.query(**query_params)
+
+            for item in response.get("Items", []):
+                results.append(
+                    {
+                        "name": item["namespace_name"]["S"],
+                        "namespace_id": item["namespace_id"]["S"],
+                        "created_at": item.get("created_at", {}).get("S", ""),
+                    }
+                )
+
+            if "LastEvaluatedKey" not in response:
+                break
+            exclusive_start_key = response["LastEvaluatedKey"]
+
+        return results
+
+    async def delete_namespace(self, namespace: str) -> None:
+        """Soft-delete a namespace. O(1) for data plane.
+
+        Removes the forward record and marks the reverse record as
+        ``status="deleted"``.  Data items are NOT deleted — they remain
+        orphaned under the namespace's random ID prefix.
+
+        No-op if the namespace does not exist.
+
+        Args:
+            namespace: Namespace name to delete.
+
+        Raises:
+            ValueError: If namespace is the reserved namespace ``"_"``.
+        """
+        if namespace == schema.RESERVED_NAMESPACE:
+            raise ValueError(
+                f"Namespace name {schema.RESERVED_NAMESPACE!r} is reserved for system use"
+            )
+
+        client = await self._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+
+        # Step 1: Read the forward record to get the namespace_id
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_namespace(namespace)},
+            },
+        )
+        item = response.get("Item")
+        if not item:
+            return  # No-op if namespace does not exist
+
+        namespace_id: str = item["namespace_id"]["S"]
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        # Step 2: Delete the forward record
+        await client.delete_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_namespace(namespace)},
+            },
+        )
+
+        # Step 3: Update the reverse record — status="deleted", deleted_at
+        await client.update_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_nsid(namespace_id)},
+            },
+            UpdateExpression="SET #status = :deleted, deleted_at = :now",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":deleted": {"S": "deleted"},
+                ":now": {"S": now},
+            },
+        )
+
+        # Invalidate cache
+        self._namespace_cache.pop(namespace, None)
+
+    async def recover_namespace(self, namespace_id: str) -> str:
+        """Recover a deleted namespace by its ID.
+
+        Reads the reverse record to find the original name, re-creates
+        the forward record, and marks the reverse record as active.
+
+        Args:
+            namespace_id: Opaque namespace ID to recover.
+
+        Returns:
+            The recovered namespace name.
+
+        Raises:
+            EntityNotFoundError: If the reverse record does not exist.
+            ValueError: If the reverse record has ``status="purging"``
+                or ``status="active"``.
+        """
+        from .exceptions import EntityNotFoundError
+
+        client = await self._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+
+        # Step 1: Read the reverse record
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_nsid(namespace_id)},
+            },
+        )
+        item = response.get("Item")
+        if not item:
+            raise EntityNotFoundError(namespace_id)
+
+        status = item.get("status", {}).get("S", "")
+        namespace_name: str = item["namespace_name"]["S"]
+
+        if namespace_name == schema.RESERVED_NAMESPACE:
+            raise ValueError(
+                f"Namespace name {schema.RESERVED_NAMESPACE!r} is reserved for system use"
+            )
+
+        if status == "purging":
+            raise ValueError(
+                f"Cannot recover namespace '{namespace_name}' — purge is in progress "
+                f"and is terminal"
+            )
+
+        if status == "active":
+            raise ValueError(f"Namespace '{namespace_name}' is already active (not deleted)")
+
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        created_at = item.get("created_at", {}).get("S", now)
+
+        # Step 2: Re-create the forward record
+        try:
+            await client.put_item(
+                TableName=self.table_name,
+                Item={
+                    "PK": {"S": pk},
+                    "SK": {"S": schema.sk_namespace(namespace_name)},
+                    "namespace_id": {"S": namespace_id},
+                    "namespace_name": {"S": namespace_name},
+                    "status": {"S": "active"},
+                    "created_at": {"S": created_at},
+                    "GSI4PK": {"S": schema.RESERVED_NAMESPACE},
+                    "GSI4SK": {"S": pk},
+                },
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+        except client.exceptions.ConditionalCheckFailedException:
+            raise ValueError(
+                f"Cannot recover namespace '{namespace_name}' — "
+                f"the name has been re-registered by another caller"
+            ) from None
+
+        # Step 3: Update the reverse record — status="active", remove deleted_at
+        await client.update_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_nsid(namespace_id)},
+            },
+            UpdateExpression="SET #status = :active REMOVE deleted_at",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":active": {"S": "active"},
+            },
+        )
+
+        # Update cache
+        self._namespace_cache[namespace_name] = namespace_id
+        return namespace_name
+
+    async def list_orphan_namespaces(self) -> list[dict[str, str]]:
+        """List deleted namespaces with orphaned data.
+
+        Queries reverse records (``SK begins_with "#NSID#"``) and
+        filters for ``status="deleted"``.
+
+        Returns:
+            List of ``{namespace_id, namespace, deleted_at}`` dicts.
+        """
+        client = await self._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+
+        results: list[dict[str, str]] = []
+        exclusive_start_key = None
+
+        while True:
+            query_params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk_prefix)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": pk},
+                    ":sk_prefix": {"S": schema.sk_nsid_prefix()},
+                },
+            }
+            if exclusive_start_key is not None:
+                query_params["ExclusiveStartKey"] = exclusive_start_key
+
+            response = await client.query(**query_params)
+
+            for item in response.get("Items", []):
+                status = item.get("status", {}).get("S", "")
+                if status == "deleted":
+                    results.append(
+                        {
+                            "namespace_id": item["namespace_id"]["S"],
+                            "namespace": item["namespace_name"]["S"],
+                            "deleted_at": item.get("deleted_at", {}).get("S", ""),
+                        }
+                    )
+
+            if "LastEvaluatedKey" not in response:
+                break
+            exclusive_start_key = response["LastEvaluatedKey"]
+
+        return results
+
+    async def purge_namespace(self, namespace_id: str) -> None:
+        """Purge all orphaned data for a deleted namespace.
+
+        Verifies the namespace is in ``"deleted"`` status, transitions to
+        ``"purging"``, queries GSI4 to find all items, deletes them in
+        batches, then removes the reverse record.
+
+        Safe to call on a non-existent namespace_id (no-op).
+
+        Args:
+            namespace_id: Opaque namespace ID to purge.
+
+        Raises:
+            ValueError: If the namespace is ``"active"`` (cannot purge
+                an active namespace).
+        """
+        client = await self._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+
+        # Step 1: Read the reverse record
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_nsid(namespace_id)},
+            },
+        )
+        item = response.get("Item")
+        if not item:
+            return  # No-op for non-existent namespace_id
+
+        status = item.get("status", {}).get("S", "")
+        if status == "active":
+            raise ValueError(
+                f"Cannot purge active namespace '{item['namespace_name']['S']}'. "
+                f"Delete it first with delete_namespace()."
+            )
+
+        # Step 2: Set status="purging" (prevents concurrent recovery)
+        if status != "purging":
+            await client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": pk},
+                    "SK": {"S": schema.sk_nsid(namespace_id)},
+                },
+                UpdateExpression="SET #status = :purging",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":purging": {"S": "purging"},
+                },
+            )
+
+        # Step 3: Query GSI4 for all items belonging to the namespace
+        exclusive_start_key = None
+        while True:
+            query_params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI4_NAME,
+                "KeyConditionExpression": "GSI4PK = :pk",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": namespace_id},
+                },
+            }
+            if exclusive_start_key is not None:
+                query_params["ExclusiveStartKey"] = exclusive_start_key
+
+            response = await client.query(**query_params)
+            items = response.get("Items", [])
+
+            # Step 4: Batch delete items (25 per batch), retrying unprocessed
+            if items:
+                delete_requests = [
+                    {"DeleteRequest": {"Key": {"PK": i["PK"], "SK": i["SK"]}}} for i in items
+                ]
+                for batch_start in range(0, len(delete_requests), 25):
+                    chunk = delete_requests[batch_start : batch_start + 25]
+                    unprocessed: list[Any] = chunk
+                    while unprocessed:
+                        resp = await client.batch_write_item(
+                            RequestItems={self.table_name: unprocessed}
+                        )
+                        unprocessed = resp.get("UnprocessedItems", {}).get(self.table_name, [])
+
+            if "LastEvaluatedKey" not in response:
+                break
+            exclusive_start_key = response["LastEvaluatedKey"]
+
+        # Step 5: Delete the reverse record
+        await client.delete_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_nsid(namespace_id)},
+            },
+        )
 
     def _reinitialize_config_cache(self, namespace_id: str) -> None:
         """Reinitialize the config cache with a new namespace_id."""
