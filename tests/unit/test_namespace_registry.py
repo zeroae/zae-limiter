@@ -412,3 +412,202 @@ class TestPurgeNamespace:
             ExpressionAttributeValues={":pk": {"S": ns_id}},
         )
         assert len(response.get("Items", [])) == 0
+
+
+class TestListNamespacesPagination:
+    """Tests for list_namespaces() pagination branches (lines 605, 620)."""
+
+    @pytest.mark.asyncio
+    async def test_list_namespaces_handles_pagination(self, repo):
+        """list_namespaces() follows LastEvaluatedKey across pages."""
+        # Register two namespaces so we have known data
+        await repo.register_namespace("page-ns-1")
+        await repo.register_namespace("page-ns-2")
+
+        client = await repo._get_client()
+        original_query = client.query
+
+        call_count = 0
+
+        async def paginated_query(**kwargs):
+            nonlocal call_count
+            result = await original_query(**kwargs)
+            call_count += 1
+            if call_count == 1:
+                # First call: return only the first item with a continuation token
+                result["LastEvaluatedKey"] = {
+                    "PK": {"S": "fake-pk"},
+                    "SK": {"S": "fake-sk"},
+                }
+                result["Items"] = result["Items"][:1]
+            else:
+                # Second call: return the rest without continuation
+                result["Items"] = result["Items"][1:]
+                result.pop("LastEvaluatedKey", None)
+            return result
+
+        client.query = paginated_query
+
+        results = await repo.list_namespaces()
+        # Should have made 2 calls due to pagination
+        assert call_count == 2
+        # Second call uses ExclusiveStartKey (line 605)
+        # and first call had LastEvaluatedKey (line 620)
+        names = [ns["name"] for ns in results]
+        assert len(names) >= 1  # At least the items we got back
+
+
+class TestRecoverNamespaceReserved:
+    """Test for recover_namespace() reserved namespace check (line 727)."""
+
+    @pytest.mark.asyncio
+    async def test_recover_namespace_rejects_reserved_name_in_reverse_record(self, repo):
+        """recover_namespace() raises ValueError when reverse record has reserved name."""
+        # Directly write a reverse record with namespace_name="_" (reserved).
+        # Normal API prevents this, so we write raw to DynamoDB.
+        client = await repo._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+        fake_ns_id = "fake-reserved-id"
+
+        await client.put_item(
+            TableName=repo.table_name,
+            Item={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_nsid(fake_ns_id)},
+                "namespace_id": {"S": fake_ns_id},
+                "namespace_name": {"S": schema.RESERVED_NAMESPACE},
+                "status": {"S": "deleted"},
+                "GSI4PK": {"S": schema.RESERVED_NAMESPACE},
+                "GSI4SK": {"S": pk},
+            },
+        )
+
+        with pytest.raises(ValueError, match="reserved"):
+            await repo.recover_namespace(fake_ns_id)
+
+
+class TestListOrphanNamespacesPagination:
+    """Tests for list_orphan_namespaces() pagination branches (lines 808, 825)."""
+
+    @pytest.mark.asyncio
+    async def test_list_orphan_namespaces_handles_pagination(self, repo):
+        """list_orphan_namespaces() follows LastEvaluatedKey across pages."""
+        # Create two deleted namespaces
+        await repo.register_namespace("orphan-page-1")
+        await repo.register_namespace("orphan-page-2")
+        await repo.delete_namespace("orphan-page-1")
+        await repo.delete_namespace("orphan-page-2")
+
+        client = await repo._get_client()
+        original_query = client.query
+
+        call_count = 0
+
+        async def paginated_query(**kwargs):
+            nonlocal call_count
+            result = await original_query(**kwargs)
+            call_count += 1
+            if call_count == 1:
+                # First call: return only the first item with continuation
+                result["LastEvaluatedKey"] = {
+                    "PK": {"S": "fake-pk"},
+                    "SK": {"S": "fake-sk"},
+                }
+                result["Items"] = result["Items"][:1]
+            else:
+                # Second call: return rest, no continuation
+                result["Items"] = result["Items"][1:]
+                result.pop("LastEvaluatedKey", None)
+            return result
+
+        client.query = paginated_query
+
+        results = await repo.list_orphan_namespaces()
+        # Should have made 2 calls due to pagination
+        assert call_count == 2
+        # Covers ExclusiveStartKey branch (line 808)
+        # and LastEvaluatedKey branch (line 825)
+        ids = [ns["namespace_id"] for ns in results]
+        assert len(ids) >= 1
+
+
+class TestPurgeNamespaceGSI4Pagination:
+    """Tests for purge_namespace() GSI4 query pagination (lines 894, 915)."""
+
+    @pytest.mark.asyncio
+    async def test_purge_namespace_gsi4_query_pagination(self, repo):
+        """purge_namespace() follows LastEvaluatedKey on GSI4 query."""
+        ns_id = await repo.register_namespace("ns-purge-gsi4-page")
+
+        # Create some entities under this namespace
+        original_ns_id = repo._namespace_id
+        repo._namespace_id = ns_id
+        await repo.create_entity("ent-a")
+        await repo.create_entity("ent-b")
+        repo._namespace_id = original_ns_id
+
+        await repo.delete_namespace("ns-purge-gsi4-page")
+
+        # Pre-fetch all GSI4 items before purge so we can split them
+        # across two synthetic pages.
+        client = await repo._get_client()
+        original_query = client.query
+
+        pre_result = await original_query(
+            TableName=repo.table_name,
+            IndexName=schema.GSI4_NAME,
+            KeyConditionExpression="GSI4PK = :pk",
+            ExpressionAttributeValues={":pk": {"S": ns_id}},
+        )
+        all_items = pre_result.get("Items", [])
+        assert len(all_items) >= 2, "Need at least 2 items to test pagination"
+
+        # Split items: first page gets half, second page gets the rest
+        mid = len(all_items) // 2
+        page1_items = all_items[:mid]
+        page2_items = all_items[mid:]
+
+        gsi4_call_count = 0
+
+        async def paginated_query(**kwargs):
+            nonlocal gsi4_call_count
+            # Only intercept GSI4 queries (purge_namespace's inner loop)
+            if kwargs.get("IndexName") == schema.GSI4_NAME:
+                gsi4_call_count += 1
+                if gsi4_call_count == 1:
+                    # First page: subset of items + continuation key
+                    return {
+                        "Items": page1_items,
+                        "Count": len(page1_items),
+                        "ScannedCount": len(page1_items),
+                        "LastEvaluatedKey": {
+                            "PK": page1_items[-1]["PK"],
+                            "SK": page1_items[-1]["SK"],
+                            "GSI4PK": {"S": ns_id},
+                            "GSI4SK": page1_items[-1].get("GSI4SK", {"S": ""}),
+                        },
+                    }
+                else:
+                    # Second page: remaining items, no continuation
+                    return {
+                        "Items": page2_items,
+                        "Count": len(page2_items),
+                        "ScannedCount": len(page2_items),
+                    }
+            return await original_query(**kwargs)
+
+        client.query = paginated_query
+
+        await repo.purge_namespace(ns_id)
+        # Should have made exactly 2 GSI4 calls due to pagination
+        assert gsi4_call_count == 2
+
+        # Verify all items are gone (use original_query to bypass mock)
+        client.query = original_query
+        response = await original_query(
+            TableName=repo.table_name,
+            IndexName=schema.GSI4_NAME,
+            KeyConditionExpression="GSI4PK = :pk",
+            ExpressionAttributeValues={":pk": {"S": ns_id}},
+        )
+        assert len(response.get("Items", [])) == 0
