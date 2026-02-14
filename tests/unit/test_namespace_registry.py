@@ -120,6 +120,37 @@ class TestRegisterNamespaces:
             await repo.register_namespaces(["valid-ns", "_"])
 
 
+class TestGetNamespace:
+    """Tests for get_namespace()."""
+
+    @pytest.mark.asyncio
+    async def test_get_namespace_returns_details(self, repo):
+        """get_namespace() returns details for a registered namespace."""
+        ns_id = await repo.register_namespace("tenant-alpha")
+
+        result = await repo.get_namespace("tenant-alpha")
+        assert result is not None
+        assert result["name"] == "tenant-alpha"
+        assert result["namespace_id"] == ns_id
+        assert result["status"] == "active"
+        assert result["created_at"] != ""
+
+    @pytest.mark.asyncio
+    async def test_get_namespace_returns_none_not_found(self, repo):
+        """get_namespace() returns None for nonexistent namespace."""
+        result = await repo.get_namespace("nonexistent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_namespace_returns_none_after_delete(self, repo):
+        """get_namespace() returns None after namespace is deleted."""
+        await repo.register_namespace("ns-deleted")
+        await repo.delete_namespace("ns-deleted")
+
+        result = await repo.get_namespace("ns-deleted")
+        assert result is None
+
+
 class TestListNamespaces:
     """Tests for list_namespaces()."""
 

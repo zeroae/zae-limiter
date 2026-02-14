@@ -4837,20 +4837,15 @@ class TestNamespaceCommands:
     @patch("zae_limiter.repository.Repository")
     def test_namespace_show_found(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test namespace show displays namespace details."""
-        mock_client = AsyncMock()
-        mock_client.get_item = AsyncMock(
+        mock_repo = Mock()
+        mock_repo.get_namespace = AsyncMock(
             return_value={
-                "Item": {
-                    "namespace_id": {"S": "aB3x_9Qw"},
-                    "status": {"S": "active"},
-                    "created_at": {"S": "2025-01-15T10:30:00Z"},
-                }
+                "name": "tenant-alpha",
+                "namespace_id": "aB3x_9Qw",
+                "status": "active",
+                "created_at": "2025-01-15T10:30:00Z",
             }
         )
-
-        mock_repo = Mock()
-        mock_repo._get_client = AsyncMock(return_value=mock_client)
-        mock_repo.table_name = "my-app"
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
@@ -4866,12 +4861,8 @@ class TestNamespaceCommands:
     @patch("zae_limiter.repository.Repository")
     def test_namespace_show_not_found(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test namespace show when namespace does not exist."""
-        mock_client = AsyncMock()
-        mock_client.get_item = AsyncMock(return_value={})
-
         mock_repo = Mock()
-        mock_repo._get_client = AsyncMock(return_value=mock_client)
-        mock_repo.table_name = "my-app"
+        mock_repo.get_namespace = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
@@ -4885,8 +4876,7 @@ class TestNamespaceCommands:
     def test_namespace_show_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test namespace show handles generic Exception."""
         mock_repo = Mock()
-        mock_repo._get_client = AsyncMock(side_effect=Exception("Service unavailable"))
-        mock_repo.table_name = "my-app"
+        mock_repo.get_namespace = AsyncMock(side_effect=Exception("Service unavailable"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
 
@@ -4896,34 +4886,6 @@ class TestNamespaceCommands:
         assert "Failed to show namespace" in result.output
         assert "Service unavailable" in result.output
         mock_repo.close.assert_called_once()
-
-    @patch("zae_limiter.repository.Repository")
-    def test_namespace_show_missing_status_and_created_at(
-        self, mock_repo_class: Mock, runner: CliRunner
-    ) -> None:
-        """Test namespace show handles item without status or created_at fields."""
-        mock_client = AsyncMock()
-        mock_client.get_item = AsyncMock(
-            return_value={
-                "Item": {
-                    "namespace_id": {"S": "aB3x_9Qw"},
-                }
-            }
-        )
-
-        mock_repo = Mock()
-        mock_repo._get_client = AsyncMock(return_value=mock_client)
-        mock_repo.table_name = "my-app"
-        mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.return_value = mock_repo
-
-        result = runner.invoke(cli, ["namespace", "show", "tenant-alpha", "--name", "my-app"])
-
-        assert result.exit_code == 0
-        assert "Namespace:    tenant-alpha" in result.output
-        assert "Namespace ID: aB3x_9Qw" in result.output
-        assert "Status:       unknown" in result.output
-        assert "Created At:   unknown" in result.output
 
     def test_namespace_show_validation_error(self, runner: CliRunner) -> None:
         """Test namespace show handles ValidationError from Repository constructor."""

@@ -3600,26 +3600,15 @@ def namespace_show(
             sys.exit(1)
 
         try:
-            from . import schema as _schema
-
-            # Query the forward record directly
-            client = await repo._get_client()
-            response = await client.get_item(
-                TableName=repo.table_name,
-                Key={
-                    "PK": {"S": _schema.pk_system(_schema.RESERVED_NAMESPACE)},
-                    "SK": {"S": _schema.sk_namespace(namespace_name)},
-                },
-            )
-            item = response.get("Item")
-            if not item:
+            ns = await repo.get_namespace(namespace_name)
+            if not ns:
                 click.echo(f"Namespace '{namespace_name}' not found.", err=True)
                 sys.exit(1)
 
-            click.echo(f"Namespace:    {namespace_name}")
-            click.echo(f"Namespace ID: {item['namespace_id']['S']}")
-            click.echo(f"Status:       {item.get('status', {}).get('S', 'unknown')}")
-            click.echo(f"Created At:   {item.get('created_at', {}).get('S', 'unknown')}")
+            click.echo(f"Namespace:    {ns['name']}")
+            click.echo(f"Namespace ID: {ns['namespace_id']}")
+            click.echo(f"Status:       {ns['status']}")
+            click.echo(f"Created At:   {ns['created_at']}")
         except SystemExit:
             raise
         except Exception as e:

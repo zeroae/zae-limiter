@@ -155,6 +155,10 @@ class SyncRepositoryProtocol(Protocol):
         """Bulk-register namespaces. Returns ``{name: namespace_id}``."""
         ...
 
+    def get_namespace(self, namespace: str) -> dict[str, str] | None:
+        """Get namespace details by name. Returns dict or ``None``."""
+        ...
+
     def list_namespaces(self) -> list[dict[str, str]]:
         """List active namespaces. Returns ``[{name, namespace_id, created_at}]``."""
         ...

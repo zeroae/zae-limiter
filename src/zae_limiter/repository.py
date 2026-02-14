@@ -577,6 +577,37 @@ class Repository:
         ids = await asyncio.gather(*[self._register_namespace(ns) for ns in namespaces])
         return dict(zip(namespaces, ids))
 
+    async def get_namespace(self, namespace: str) -> dict[str, str] | None:
+        """Get details for a single namespace by name.
+
+        Args:
+            namespace: Namespace name to look up.
+
+        Returns:
+            Dict with ``{name, namespace_id, status, created_at}``
+            or ``None`` if not found.
+        """
+        client = await self._get_client()
+        pk = schema.pk_system(schema.RESERVED_NAMESPACE)
+
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": pk},
+                "SK": {"S": schema.sk_namespace(namespace)},
+            },
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+
+        return {
+            "name": namespace,
+            "namespace_id": item["namespace_id"]["S"],
+            "status": item.get("status", {}).get("S", "unknown"),
+            "created_at": item.get("created_at", {}).get("S", "unknown"),
+        }
+
     async def list_namespaces(self) -> list[dict[str, str]]:
         """List all active namespaces with their IDs.
 
