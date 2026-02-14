@@ -2186,7 +2186,7 @@ class TestRateLimiterRepositoryParameter:
             repo = SyncRepository(name="my-repo-app", region="us-east-1")
             limiter = SyncRateLimiter(repository=repo)
             assert limiter._repository is repo
-            assert limiter.name == "my-repo-app"
+            assert limiter._repository.stack_name == "my-repo-app"
             limiter.close()
 
     def test_repository_parameter_conflict_with_name_raises(self, mock_dynamodb):
@@ -2250,7 +2250,7 @@ class TestRateLimiterRepositoryParameter:
                 deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
                 assert len(deprecation_warnings) == 1
                 assert "without a repository" in str(deprecation_warnings[0].message).lower()
-            assert limiter.name == "limiter"
+            assert limiter._repository.stack_name == "limiter"
             assert limiter._repository is not None
             limiter.close()
 
@@ -2279,6 +2279,34 @@ class TestDeprecatedConstructorParams:
         with _patch_aiobotocore_response():
             with pytest.warns(DeprecationWarning, match="auto_update"):
                 limiter = SyncRateLimiter(name="test", auto_update=True)
+            limiter.close()
+
+    def test_name_property_warns(self, mock_dynamodb):
+        """Accessing SyncRateLimiter.name emits DeprecationWarning."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = SyncRateLimiter(name="test")
+            with pytest.warns(DeprecationWarning, match="SyncRateLimiter\\.name is deprecated"):
+                name = limiter.name
+            assert name == "test"
+            limiter.close()
+
+    def test_speculative_writes_does_not_warn(self, mock_dynamodb):
+        """Passing speculative_writes does NOT emit DeprecationWarning."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import SyncRepository
+
+        with _patch_aiobotocore_response():
+            import warnings
+
+            repo = SyncRepository(name="test", region="us-east-1")
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                limiter = SyncRateLimiter(repository=repo, speculative_writes=False)
+                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+                assert len(deprecation_warnings) == 0
+            assert limiter._speculative_writes is False
             limiter.close()
 
     def test_stack_name_property_warns(self, mock_dynamodb):

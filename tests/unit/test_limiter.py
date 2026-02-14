@@ -2950,7 +2950,7 @@ class TestRateLimiterRepositoryParameter:
             limiter = RateLimiter(repository=repo)
 
             assert limiter._repository is repo
-            assert limiter.name == "my-repo-app"
+            assert limiter._repository.stack_name == "my-repo-app"
             await limiter.close()
 
     @pytest.mark.asyncio
@@ -3028,7 +3028,7 @@ class TestRateLimiterRepositoryParameter:
                 assert len(deprecation_warnings) == 1
                 assert "without a repository" in str(deprecation_warnings[0].message).lower()
 
-            assert limiter.name == "limiter"
+            assert limiter._repository.stack_name == "limiter"
             assert limiter._repository is not None
             await limiter.close()
 
@@ -3057,6 +3057,34 @@ class TestDeprecatedConstructorParams:
         with _patch_aiobotocore_response():
             with pytest.warns(DeprecationWarning, match="auto_update"):
                 limiter = RateLimiter(name="test", auto_update=True)
+            await limiter.close()
+
+    async def test_name_property_warns(self, mock_dynamodb):
+        """Accessing RateLimiter.name emits DeprecationWarning."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+
+        with _patch_aiobotocore_response():
+            limiter = RateLimiter(name="test")
+            with pytest.warns(DeprecationWarning, match=r"RateLimiter\.name is deprecated"):
+                name = limiter.name
+            assert name == "test"
+            await limiter.close()
+
+    async def test_speculative_writes_does_not_warn(self, mock_dynamodb):
+        """Passing speculative_writes does NOT emit DeprecationWarning."""
+        from tests.unit.conftest import _patch_aiobotocore_response
+        from zae_limiter import Repository
+
+        with _patch_aiobotocore_response():
+            import warnings
+
+            repo = Repository(name="test", region="us-east-1")
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                limiter = RateLimiter(repository=repo, speculative_writes=False)
+                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+                assert len(deprecation_warnings) == 0
+            assert limiter._speculative_writes is False
             await limiter.close()
 
     async def test_stack_name_property_warns(self, mock_dynamodb):

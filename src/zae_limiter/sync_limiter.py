@@ -177,7 +177,12 @@ class SyncRateLimiter:
 
     @property
     def name(self) -> str:
-        """The resource identifier."""
+        """DEPRECATED. Use ``repository.stack_name`` instead."""
+        warnings.warn(
+            "SyncRateLimiter.name is deprecated. Use repository.stack_name instead. This will be removed in v2.0.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._repository.stack_name
 
     @property

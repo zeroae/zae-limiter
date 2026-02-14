@@ -362,7 +362,7 @@ class TestE2EConfigCLIWorkflow:
         4. Delete via CLI
         """
         # Get the limiter name for CLI commands
-        short_name = e2e_limiter.name
+        short_name = e2e_limiter._repository.stack_name
 
         # Step 1: Set resource defaults
         result = cli_runner.invoke(
@@ -451,7 +451,7 @@ class TestE2EConfigCLIWorkflow:
         3. Delete via CLI
         """
         # Get the limiter name for CLI commands
-        short_name = e2e_limiter.name
+        short_name = e2e_limiter._repository.stack_name
 
         # Step 1: Set system defaults
         result = cli_runner.invoke(
@@ -524,7 +524,7 @@ class TestE2EConfigCLIWorkflow:
         3. Delete via CLI
         """
         # Get the limiter name for CLI commands
-        short_name = e2e_limiter.name
+        short_name = e2e_limiter._repository.stack_name
 
         # Step 1: Set entity limits
         result = cli_runner.invoke(
