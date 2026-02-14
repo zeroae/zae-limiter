@@ -771,10 +771,10 @@ class StackOptions:
                     f"found {placeholder_count}"
                 )
             # IAM managed policy names max 128 chars
-            # Policy components: app, admin, read (max 5 chars)
-            # Formula: 128 - max_component(5) - dash(1) = 122 max format length
+            # Policy components: ns-full is the longest at 7 chars
+            # Formula: 128 - max_component(7) - dash(1) = 120 max format length
             format_len = len(self.policy_name_format)
-            if format_len > 122:
+            if format_len > 120:
                 raise ValueError(
                     "policy_name_format template is too long, resulting policy name "
                     "may exceed IAM 128 character limit"
@@ -919,7 +919,7 @@ class StackOptions:
             params["app_role_name"] = app_role
             params["admin_role_name"] = admin_role
             params["readonly_role_name"] = readonly_role
-        # Generate 3 separate policy name parameters
+        # Generate 3 table-level + 3 namespace-scoped policy name parameters
         if self.policy_name_format and stack_name:
             acquire_only_policy = self.get_policy_name(stack_name, "acq")
             full_access_policy = self.get_policy_name(stack_name, "full")
@@ -930,6 +930,16 @@ class StackOptions:
             params["acquire_only_policy_name"] = acquire_only_policy
             params["full_access_policy_name"] = full_access_policy
             params["readonly_policy_name"] = readonly_policy
+            # Namespace-scoped policies
+            ns_acquire_policy = self.get_policy_name(stack_name, "ns-acq")
+            ns_full_policy = self.get_policy_name(stack_name, "ns-full")
+            ns_readonly_policy = self.get_policy_name(stack_name, "ns-read")
+            assert ns_acquire_policy is not None
+            assert ns_full_policy is not None
+            assert ns_readonly_policy is not None
+            params["namespace_acquire_policy_name"] = ns_acquire_policy
+            params["namespace_full_access_policy_name"] = ns_full_policy
+            params["namespace_readonly_policy_name"] = ns_readonly_policy
         # Audit archival parameters
         params["enable_audit_archival"] = "true" if self.enable_audit_archival else "false"
         params["audit_archive_glacier_days"] = str(self.audit_archive_glacier_days)
