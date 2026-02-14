@@ -163,6 +163,27 @@ Parameters:
       (Optional) Custom name for the read-only IAM managed policy.
       If empty, uses default: {stack_name}-read.
 
+  NamespaceAcquirePolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the namespace-scoped acquire-only IAM managed policy.
+      If empty, uses default: {stack_name}-ns-acq.
+
+  NamespaceFullAccessPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the namespace-scoped full-access IAM managed policy.
+      If empty, uses default: {stack_name}-ns-full.
+
+  NamespaceReadOnlyPolicyName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the namespace-scoped read-only IAM managed policy.
+      If empty, uses default: {stack_name}-ns-read.
+
   EnableAuditArchival:
     Type: String
     Default: 'true'
@@ -240,6 +261,9 @@ Conditions:
   HasCustomAcquireOnlyPolicyName: !Not [!Equals [!Ref AcquireOnlyPolicyName, '']]
   HasCustomFullAccessPolicyName: !Not [!Equals [!Ref FullAccessPolicyName, '']]
   HasCustomReadOnlyPolicyName: !Not [!Equals [!Ref ReadOnlyPolicyName, '']]
+  HasCustomNamespaceAcquirePolicyName: !Not [!Equals [!Ref NamespaceAcquirePolicyName, '']]
+  HasCustomNamespaceFullAccessPolicyName: !Not [!Equals [!Ref NamespaceFullAccessPolicyName, '']]
+  HasCustomNamespaceReadOnlyPolicyName: !Not [!Equals [!Ref NamespaceReadOnlyPolicyName, '']]
   PermissionBoundaryIsArn: !Equals
     - !Select [0, !Split [':', !Ref PermissionBoundary]]
     - 'arn'
@@ -490,6 +514,112 @@ Resources:
             Resource:
               - !GetAtt RateLimitsTable.Arn
               - !Sub ${RateLimitsTable.Arn}/index/*
+
+  # -------------------------------------------------------------------------
+  # Namespace-Scoped IAM Managed Policies (Created when EnableIAM=true)
+  # Tag-based access control using zael_namespace_id principal tag.
+  # LeadingKeys restricts DynamoDB access to items within the tagged namespace.
+  # -------------------------------------------------------------------------
+
+  # NamespaceAcquirePolicy: For tenant apps running acquire() - scoped to namespace
+  NamespaceAcquirePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: DeployIAM
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomNamespaceAcquirePolicyName
+        - !Ref NamespaceAcquirePolicyName
+        - !Sub ${AWS::StackName}-ns-acq
+      Description: Namespace-scoped acquire-only access (read + update within namespace)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: NamespaceAcquireAccess
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - "${aws:PrincipalTag/zael_namespace_id}/*"
+          - Sid: SharedReadAccess
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - "_/*"
+
+  # NamespaceFullAccessPolicy: Full access scoped to namespace + shared prefix
+  NamespaceFullAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: DeployIAM
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomNamespaceFullAccessPolicyName
+        - !Ref NamespaceFullAccessPolicyName
+        - !Sub ${AWS::StackName}-ns-full
+      Description: Namespace-scoped full access (all operations within namespace)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: NamespaceFullAccess
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - "${aws:PrincipalTag/zael_namespace_id}/*"
+                  - "_/*"
+
+  # NamespaceReadOnlyPolicy: Read-only access scoped to namespace + shared prefix
+  NamespaceReadOnlyPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: DeployIAM
+    Properties:
+      ManagedPolicyName: !If
+        - HasCustomNamespaceReadOnlyPolicyName
+        - !Ref NamespaceReadOnlyPolicyName
+        - !Sub ${AWS::StackName}-ns-read
+      Description: Namespace-scoped read-only access (monitoring within namespace)
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: NamespaceReadAccess
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+            Resource:
+              - !GetAtt RateLimitsTable.Arn
+              - !Sub ${RateLimitsTable.Arn}/index/*
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - "${aws:PrincipalTag/zael_namespace_id}/*"
+                  - "_/*"
 
   # -------------------------------------------------------------------------
   # Lambda Aggregator
@@ -1044,6 +1174,31 @@ Outputs:
     Value: !Ref ReadOnlyPolicy
     Export:
       Name: !Sub ${AWS::StackName}-ReadOnlyPolicyArn
+
+  # -------------------------------------------------------------------------
+  # Namespace-Scoped IAM Managed Policy Outputs
+  # -------------------------------------------------------------------------
+
+  NamespaceAcquirePolicyArn:
+    Condition: DeployIAM
+    Description: IAM managed policy ARN for namespace-scoped acquire-only access
+    Value: !Ref NamespaceAcquirePolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-NamespaceAcquirePolicyArn
+
+  NamespaceFullAccessPolicyArn:
+    Condition: DeployIAM
+    Description: IAM managed policy ARN for namespace-scoped full access
+    Value: !Ref NamespaceFullAccessPolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-NamespaceFullAccessPolicyArn
+
+  NamespaceReadOnlyPolicyArn:
+    Condition: DeployIAM
+    Description: IAM managed policy ARN for namespace-scoped read-only access
+    Value: !Ref NamespaceReadOnlyPolicy
+    Export:
+      Name: !Sub ${AWS::StackName}-NamespaceReadOnlyPolicyArn
 
   # -------------------------------------------------------------------------
   # Application IAM Role Outputs

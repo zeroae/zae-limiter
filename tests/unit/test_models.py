@@ -516,14 +516,17 @@ class TestStackOptions:
             StackOptions(policy_name_format="{}-{}")
 
     def test_policy_name_format_too_long(self):
-        """Test policy_name_format exceeding 122 chars fails."""
-        long_format = "x" * 121 + "{}"  # 123 chars total
+        """Test policy_name_format exceeding 120 chars fails.
+
+        Longest component is ns-full (7 chars): 128 - 7 - 1 = 120.
+        """
+        long_format = "x" * 119 + "{}"  # 121 chars total
         with pytest.raises(ValueError, match="too long"):
             StackOptions(policy_name_format=long_format)
 
-    def test_policy_name_format_max_length_122(self):
-        """Test policy_name_format at exactly 122 chars succeeds."""
-        max_format = "x" * 120 + "{}"  # exactly 122 chars
+    def test_policy_name_format_max_length_120(self):
+        """Test policy_name_format at exactly 120 chars succeeds."""
+        max_format = "x" * 118 + "{}"  # exactly 120 chars
         opts = StackOptions(policy_name_format=max_format)
         assert opts.policy_name_format == max_format
 
@@ -550,9 +553,14 @@ class TestStackOptions:
         """Test to_parameters generates policy name params when format is set."""
         opts = StackOptions(policy_name_format="pb-{}")
         params = opts.to_parameters(stack_name="mystack")
+        # Table-level policies
         assert params["acquire_only_policy_name"] == "pb-mystack-acq"
         assert params["full_access_policy_name"] == "pb-mystack-full"
         assert params["readonly_policy_name"] == "pb-mystack-read"
+        # Namespace-scoped policies
+        assert params["namespace_acquire_policy_name"] == "pb-mystack-ns-acq"
+        assert params["namespace_full_access_policy_name"] == "pb-mystack-ns-full"
+        assert params["namespace_readonly_policy_name"] == "pb-mystack-ns-read"
 
     def test_to_parameters_no_policy_names_when_format_none(self):
         """Test to_parameters excludes policy names when format is None."""
@@ -561,6 +569,9 @@ class TestStackOptions:
         assert "acquire_only_policy_name" not in params
         assert "full_access_policy_name" not in params
         assert "readonly_policy_name" not in params
+        assert "namespace_acquire_policy_name" not in params
+        assert "namespace_full_access_policy_name" not in params
+        assert "namespace_readonly_policy_name" not in params
 
     # -------------------------------------------------------------------------
     # create_iam and aggregator_role_arn Tests
