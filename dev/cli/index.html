@@ -4030,6 +4030,12 @@ Results are ordered by timestamp (newest first).</p>
 <td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -4513,6 +4519,12 @@ Entity limits have highest priority, overriding resource and system defaults.</p
 <td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -4575,6 +4587,12 @@ Entity limits have highest priority, overriding resource and system defaults.</p
 <td><code>False</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -4631,6 +4649,12 @@ Entity limits have highest priority, overriding resource and system defaults.</p
 <td>text</td>
 <td>AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)</td>
 <td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
@@ -4695,6 +4719,12 @@ Entity limits have highest priority, overriding resource and system defaults.</p
 <td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -4746,6 +4776,12 @@ Uses the entity config resources registry for fast O(1) lookup.</p>
 <td>text</td>
 <td>AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)</td>
 <td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
@@ -4811,6 +4847,12 @@ Entity limits override resource and system defaults.</p>
 <td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -4864,6 +4906,12 @@ Entity limits override resource and system defaults.</p>
 <td>text</td>
 <td>AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)</td>
 <td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
@@ -6235,6 +6283,12 @@ Resource defaults override system defaults but are overridden by entity limits.<
 <td><code>False</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -6287,6 +6341,12 @@ Resource defaults override system defaults but are overridden by entity limits.<
 <td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -6337,6 +6397,12 @@ Resource defaults override system defaults but are overridden by entity limits.<
 <td>text</td>
 <td>AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)</td>
 <td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
@@ -6394,6 +6460,12 @@ Resource defaults override system defaults for this specific resource.</p>
 <td>text</td>
 <td>Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500</td>
 <td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
@@ -6556,6 +6628,12 @@ System defaults are the lowest priority in the hierarchy.</p>
 <td><code>False</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -6607,6 +6685,12 @@ System defaults are the lowest priority in the hierarchy.</p>
 <td>text</td>
 <td>AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)</td>
 <td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
@@ -6669,6 +6753,12 @@ System defaults are the lowest priority in the hierarchy.</p>
 <td>choice (<code>allow</code> &#x7C; <code>block</code>)</td>
 <td>Behavior when DynamoDB is unavailable</td>
 <td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
@@ -6875,6 +6965,12 @@ Snapshots track token consumption per entity/resource in hourly and daily window
 <td><code>False</code></td>
 </tr>
 <tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
+</tr>
+<tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
@@ -6968,6 +7064,12 @@ Useful for billing, reporting, and capacity planning.</p>
 <td>text</td>
 <td>End time (ISO format, e.g., 2024-01-31T23:59:59Z)</td>
 <td><code>Sentinel.UNSET</code></td>
+</tr>
+<tr>
+<td><code>--namespace</code>, <code>-N</code></td>
+<td>text</td>
+<td>Namespace within the table (default: "default")</td>
+<td><code>default</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
