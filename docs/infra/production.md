@@ -174,7 +174,9 @@ aws iam attach-role-policy --role-name admin-role \
 **Option A: STS Session Policy** — Assume a base role with a session policy that narrows access to specific namespaces:
 
 ```python
-import boto3, json
+import json
+
+import boto3
 
 sts = boto3.client("sts")
 ns_ids = ["a7x3kq2m", "b9y4lr3n"]  # resolved namespace IDs
