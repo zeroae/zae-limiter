@@ -19,6 +19,11 @@ import pytest  # noqa: E402
 
 from tests.fixtures.stacks import cleanup_shared_stacks  # noqa: E402
 
+pytest_plugins = [
+    "tests.fixtures.names",
+    "tests.fixtures.stacks",
+]
+
 
 def pytest_addoption(parser):
     """Add --run-aws pytest option."""

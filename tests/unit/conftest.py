@@ -2,18 +2,17 @@
 
 import pytest
 
-from tests.fixtures.moto import (  # noqa: F401
-    _patch_aiobotocore_response,
-    aws_credentials,
-    mock_dynamodb,
-    sync_limiter,
-)
+from tests.fixtures.moto import _patch_aiobotocore_response
 from zae_limiter import RateLimiter
 from zae_limiter.sync_repository import SyncRepository
 
+pytest_plugins = [
+    "tests.fixtures.moto",
+]
+
 
 @pytest.fixture
-async def limiter(mock_dynamodb):  # noqa: F811
+async def limiter(mock_dynamodb):
     """Create a RateLimiter with mocked DynamoDB."""
     with _patch_aiobotocore_response():
         limiter = RateLimiter(
@@ -26,7 +25,7 @@ async def limiter(mock_dynamodb):  # noqa: F811
 
 
 @pytest.fixture
-def sync_repository(mock_dynamodb):  # noqa: F811
+def sync_repository(mock_dynamodb):
     """Create a SyncRepository with mocked DynamoDB."""
     repo = SyncRepository(
         name="test-rate-limits",
