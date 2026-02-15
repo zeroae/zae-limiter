@@ -37,14 +37,9 @@ zae-limiter creates its own infrastructure automatically.
 For scripts and quick demos, pass limits inline:
 
 ```python
-from zae_limiter import Repository, RateLimiter, Limit, StackOptions, RateLimitExceeded
+from zae_limiter import Repository, RateLimiter, Limit, RateLimitExceeded
 
-repo = Repository(
-    name="my-app",
-    region="us-east-1",
-    stack_options=StackOptions(),  # Creates infrastructure if needed
-)
-await repo.ensure_infrastructure()
+repo = await Repository.builder("my-app", "us-east-1").build()
 limiter = RateLimiter(repository=repo)
 
 try:
@@ -81,13 +76,10 @@ For production, configure limits once and keep application code simple.
 === "Python"
 
     ```python
-    from zae_limiter import RateLimiter, Limit, StackOptions
+    from zae_limiter import Repository, RateLimiter, Limit
 
-    limiter = RateLimiter(
-        name="my-app",
-        region="us-east-1",
-        stack_options=StackOptions(),
-    )
+    repo = await Repository.builder("my-app", "us-east-1").build()
+    limiter = RateLimiter(repository=repo)
 
     await limiter.set_system_defaults(limits=[
         Limit.per_minute("rpm", 1000),
@@ -100,7 +92,7 @@ For production, configure limits once and keep application code simple.
 ```python
 from zae_limiter import Repository, RateLimiter, RateLimitExceeded
 
-repo = Repository(name="my-app", region="us-east-1")
+repo = await Repository.builder("my-app", "us-east-1").build()
 limiter = RateLimiter(repository=repo)
 
 try:
@@ -116,7 +108,7 @@ except RateLimitExceeded as e:
 
 ## Infrastructure Persistence
 
-When you pass `stack_options=StackOptions()`, zae-limiter creates real AWS infrastructure via CloudFormation:
+When you use infrastructure builder methods, zae-limiter creates real AWS infrastructure via CloudFormation:
 
 | Resource | Purpose | Persists? |
 |----------|---------|-----------|
@@ -138,13 +130,11 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 
 === "Programmatic"
 
-    Pass `stack_options` to declare the desired infrastructure state:
+    Use builder methods to declare the desired infrastructure state:
 
     ```python
-    limiter = RateLimiter(
-        name="my-app",
-        stack_options=StackOptions(),  # Desired state declaration
-    )
+    repo = await Repository.builder("my-app", "us-east-1").build()
+    limiter = RateLimiter(repository=repo)
     ```
 
     CloudFormation ensures the infrastructure matches your declaration.
@@ -159,30 +149,27 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 
 ### Connecting to Existing Infrastructure
 
-If you omit `stack_options`, the limiter connects to existing infrastructure without
+When no infrastructure builder methods are called, the builder connects to existing infrastructure without
 attempting to create or modify it:
 
 ```python
-# Connect only - fails if my-app stack doesn't exist
-limiter = RateLimiter(
-    name="my-app",
-    region="us-east-1",
-    # No stack_options = connect only, no create/update
-)
+# Connect only — no infra builder methods = no create/update
+repo = await Repository.builder("my-app", "us-east-1").build()
+limiter = RateLimiter(repository=repo)
 ```
 
 This is useful when infrastructure is managed separately (e.g., via CLI or Terraform).
 
 !!! warning "Declarative State Management"
-    `StackOptions` declares the desired infrastructure state. If multiple applications
+    Builder methods declare the desired infrastructure state. If multiple applications
     use the same limiter name with **different** settings, CloudFormation will update
     the stack to match the most recent declaration—similar to how Terraform applies
     the last-written configuration.
 
     To maintain consistent state:
 
-    - Use identical `StackOptions` across all clients sharing a limiter
-    - Omit `stack_options` in application code and manage infrastructure externally
+    - Use identical builder options across all clients sharing a limiter
+    - Omit infrastructure builder methods in application code and manage infrastructure externally
     - Use different limiter names for different configurations
 
 ### Checking Status
@@ -364,6 +351,32 @@ async with limiter.acquire(
 
 See [Configuration Hierarchy](guide/config-hierarchy.md) for full details.
 
+## Multi-Tenant Namespaces
+
+For multi-tenant applications, namespaces provide logical isolation within a single DynamoDB table:
+
+```python
+from zae_limiter import Repository, RateLimiter
+
+# Each tenant gets an isolated namespace
+repo = await (
+    Repository.builder("my-app", "us-east-1")
+    .namespace("tenant-alpha")
+    .build()
+)
+limiter = RateLimiter(repository=repo)
+
+# All operations are scoped to tenant-alpha's namespace
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="api",
+    consume={"rpm": 1},
+) as lease:
+    await do_work()
+```
+
+For namespace lifecycle management and per-tenant IAM access control, see the [Production Guide](infra/production.md#multi-tenant-deployments).
+
 ## Next Steps
 
 - [Basic Usage](guide/basic-usage.md) - Multiple limits, adjustments, capacity queries
@@ -372,3 +385,4 @@ See [Configuration Hierarchy](guide/config-hierarchy.md) for full details.
 - [LLM Integration](guide/llm-integration.md) - Token estimation and reconciliation
 - [Deployment Guide](infra/deployment.md) - Production deployment options
 - [CLI Reference](cli.md) - Full CLI command reference
+- [Namespace Keys Migration](migrations/namespace-keys.md) - Migrating from v0.9.x to v0.10.0
