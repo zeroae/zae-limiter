@@ -8,6 +8,7 @@ Example:
 """
 
 import os
+from pathlib import Path
 
 if os.environ.get("GEVENT"):
     import gevent.monkey
@@ -15,6 +16,8 @@ if os.environ.get("GEVENT"):
     gevent.monkey.patch_all()
 
 import pytest  # noqa: E402
+
+from tests.fixtures.stacks import cleanup_shared_stacks  # noqa: E402
 
 
 def pytest_addoption(parser):
@@ -61,3 +64,18 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "aws" in item.keywords:
                 item.add_marker(skip_aws)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Clean up shared CloudFormation stacks after all xdist workers finish.
+
+    Runs in the xdist controller (after all workers complete) or in the
+    single process when xdist is disabled. Workers skip cleanup since
+    they don't have the controller's tmp directory.
+    """
+    # Only run in the controller or single-process mode (not in workers)
+    if hasattr(session.config, "workerinput"):
+        return
+
+    tmp_root = Path(session.config._tmp_path_factory.getbasetemp())  # type: ignore[attr-defined]
+    cleanup_shared_stacks(tmp_root)

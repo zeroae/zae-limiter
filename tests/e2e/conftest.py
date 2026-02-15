@@ -16,8 +16,7 @@ from tests.fixtures.names import unique_name, unique_name_class  # noqa: F401
 from tests.fixtures.repositories import make_test_repo
 from tests.fixtures.stacks import (  # noqa: F401
     SharedStack,
-    create_shared_stack,
-    destroy_shared_stack,
+    get_or_create_shared_stack,
     localstack_endpoint,
 )
 from zae_limiter import RateLimiter, StackOptions
@@ -58,52 +57,40 @@ def e2e_stack_options():
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def shared_minimal_stack(localstack_endpoint):  # noqa: F811
+async def shared_minimal_stack(localstack_endpoint, tmp_path_factory):  # noqa: F811
     """Session-scoped shared stack without aggregator or alarms."""
-    name = f"e2e-minimal-{uuid.uuid4().hex[:8]}"
-    stack, repo = await create_shared_stack(
-        name,
-        "us-east-1",
-        endpoint_url=localstack_endpoint,
-        enable_aggregator=False,
-        enable_alarms=False,
+    return await get_or_create_shared_stack(
+        tmp_path_factory,
+        "shared-minimal",
+        localstack_endpoint,
     )
-    yield stack
-    await destroy_shared_stack(repo)
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def shared_aggregator_stack(localstack_endpoint):  # noqa: F811
+async def shared_aggregator_stack(localstack_endpoint, tmp_path_factory):  # noqa: F811
     """Session-scoped shared stack with aggregator Lambda."""
-    name = f"e2e-aggr-{uuid.uuid4().hex[:8]}"
-    stack, repo = await create_shared_stack(
-        name,
-        "us-east-1",
-        endpoint_url=localstack_endpoint,
+    return await get_or_create_shared_stack(
+        tmp_path_factory,
+        "shared-aggregator",
+        localstack_endpoint,
         enable_aggregator=True,
-        enable_alarms=False,
         snapshot_windows="hourly",
         usage_retention_days=7,
     )
-    yield stack
-    await destroy_shared_stack(repo)
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def shared_full_stack(localstack_endpoint):  # noqa: F811
+async def shared_full_stack(localstack_endpoint, tmp_path_factory):  # noqa: F811
     """Session-scoped shared stack with aggregator and alarms."""
-    name = f"e2e-full-{uuid.uuid4().hex[:8]}"
-    stack, repo = await create_shared_stack(
-        name,
-        "us-east-1",
-        endpoint_url=localstack_endpoint,
+    return await get_or_create_shared_stack(
+        tmp_path_factory,
+        "shared-full",
+        localstack_endpoint,
         enable_aggregator=True,
         enable_alarms=True,
         snapshot_windows="hourly",
         usage_retention_days=7,
     )
-    yield stack
-    await destroy_shared_stack(repo)
 
 
 # Namespace-scoped fixtures

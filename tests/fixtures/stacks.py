@@ -1,12 +1,26 @@
-"""Shared stack dataclass and lifecycle helpers."""
+"""Shared stack dataclass and lifecycle helpers.
+
+Provides FileLock-based coordination so that xdist workers share
+CloudFormation stacks instead of each creating their own.
+
+Stack creation: First worker acquires FileLock and creates the stack;
+other workers read the metadata from a shared JSON file.
+
+Stack cleanup: ``cleanup_shared_stacks()`` runs via ``pytest_sessionfinish``
+in the xdist controller (after all workers finish) or in the single
+process when xdist is disabled.
+"""
 
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from filelock import FileLock
 
 if TYPE_CHECKING:
     from zae_limiter.repository import Repository
@@ -72,3 +86,70 @@ async def destroy_shared_stack(repo: Repository) -> None:
     except Exception as e:
         print(f"Warning: Stack cleanup failed: {e}")
     await repo.close()
+
+
+async def get_or_create_shared_stack(
+    tmp_path_factory: pytest.TempPathFactory,
+    lock_name: str,
+    endpoint_url: str,
+    *,
+    enable_aggregator: bool = False,
+    enable_alarms: bool = False,
+    snapshot_windows: str | None = None,
+    usage_retention_days: int | None = None,
+) -> SharedStack:
+    """Get an existing shared stack or create one, coordinated via FileLock.
+
+    With xdist, each worker has its own session scope. This function uses
+    a FileLock so only the first worker creates the CloudFormation stack;
+    other workers read the stack metadata from a shared JSON file.
+
+    Cleanup is handled by ``cleanup_shared_stacks()`` via
+    ``pytest_sessionfinish``, not by individual fixture teardown.
+    """
+    # tmp_path_factory.getbasetemp().parent is shared across all xdist workers
+    root = tmp_path_factory.getbasetemp().parent
+    lock_file = root / f"{lock_name}.lock"
+    data_file = root / f"{lock_name}.json"
+
+    with FileLock(str(lock_file)):
+        if data_file.exists():
+            return SharedStack(**json.loads(data_file.read_text()))
+
+        # First worker — create the stack
+        stack, repo = await create_shared_stack(
+            lock_name,
+            "us-east-1",
+            endpoint_url=endpoint_url,
+            enable_aggregator=enable_aggregator,
+            enable_alarms=enable_alarms,
+            snapshot_windows=snapshot_windows,
+            usage_retention_days=usage_retention_days,
+        )
+        data_file.write_text(json.dumps(asdict(stack)))
+        await repo.close()
+
+    return stack
+
+
+def cleanup_shared_stacks(tmp_root: Path) -> None:
+    """Delete all shared stacks recorded in the tmp directory.
+
+    Called from ``pytest_sessionfinish`` after all workers complete.
+    Uses SyncRepository.delete_stack() since the hook is synchronous.
+    """
+    from zae_limiter.sync_repository import SyncRepository
+
+    for data_file in sorted(tmp_root.glob("shared-*.json")):
+        try:
+            data = json.loads(data_file.read_text())
+            stack = SharedStack(**data)
+            repo = SyncRepository(
+                name=stack.name,
+                region=stack.region,
+                endpoint_url=stack.endpoint_url,
+            )
+            repo.delete_stack()
+            repo.close()
+        except Exception as e:
+            print(f"Warning: cleanup of {data_file.stem} failed: {e}")

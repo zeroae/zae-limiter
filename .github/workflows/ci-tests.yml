@@ -89,7 +89,6 @@ jobs:
           fail_ci_if_error: false
 
   integration:
-    if: ${{ !github.event.pull_request.draft }}
     needs: verify-sync
     runs-on: ubuntu-latest
     strategy:

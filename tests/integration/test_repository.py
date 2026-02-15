@@ -57,9 +57,9 @@ class TestRepositoryLocalStackCloudFormation:
             assert entity.name == "Test Entity"
 
         finally:
-            # Cleanup
+            # Cleanup: delete the stack (not just the table)
             try:
-                await repo.delete_table()
+                await repo.delete_stack()
             except Exception:
                 pass
             await repo.close()
@@ -93,8 +93,9 @@ class TestRepositoryLocalStackCloudFormation:
             assert entity is not None
 
         finally:
+            # Cleanup: delete the stack (not just the table)
             try:
-                await repo.delete_table()
+                await repo.delete_stack()
             except Exception:
                 pass
             await repo.close()
