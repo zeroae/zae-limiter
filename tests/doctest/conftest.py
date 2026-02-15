@@ -257,26 +257,33 @@ def doctest_env(moto_env, monkeypatch):
     from zae_limiter.repository import Repository as _Repository
     from zae_limiter.sync_limiter import SyncRateLimiter as _SyncRateLimiter
 
-    _created_tables: set[str] = set()
+    _created_tables: set[tuple[str, str | None]] = set()
+
+    _default_limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)]
+    _default_resources = ["gpt-4", "gpt-3.5-turbo", "api", "llm-api", "test"]
 
     async def _auto_create_ensure(self):
         """Auto-create DynamoDB table instead of CloudFormation stack."""
-        if self.table_name not in _created_tables:
+        table_key = (self.table_name, self.region)
+        if table_key not in _created_tables:
             await self.create_table()
-            await self._register_namespace("default")
-            _created_tables.add(self.table_name)
-            # Auto-set system/resource defaults so blocks with limits=None work
-            _tmp = _RateLimiter(repository=self)
-            await _tmp.set_system_defaults(
-                limits=[Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)],
-            )
-            for _r in ["gpt-4", "gpt-3.5-turbo", "api", "llm-api", "test"]:
-                await _tmp.set_resource_defaults(
-                    resource=_r,
-                    limits=[Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)],
-                )
+            _created_tables.add(table_key)
+            # Register namespaces and set defaults for each
+            saved_ns_id = self._namespace_id
+            for ns_name in ["default", "tenant-alpha", "tenant-beta"]:
+                ns_id = await self._register_namespace(ns_name)
+                self._namespace_id = ns_id
+                self._reinitialize_config_cache(ns_id)
+                _tmp = _RateLimiter(repository=self)
+                await _tmp.set_system_defaults(limits=_default_limits)
+                for _r in _default_resources:
+                    await _tmp.set_resource_defaults(resource=_r, limits=_default_limits)
+            # Restore original namespace_id (builder will set the resolved one)
+            self._namespace_id = saved_ns_id
 
     monkeypatch.setattr(_Repository, "ensure_infrastructure", _auto_create_ensure)
+    # Builder calls _ensure_infrastructure_internal, not ensure_infrastructure
+    monkeypatch.setattr(_Repository, "_ensure_infrastructure_internal", _auto_create_ensure)
 
     # Set sys.argv for standalone scripts (e.g., migration script with argparse)
     import sys
@@ -378,13 +385,17 @@ def doctest_globals(doctest_env):
     # Create pre-built limiter with table
     _repo = Repository(name="limiter", region="us-east-1")
     _asyncio.run(_repo.create_table())
-    _asyncio.run(_repo.register_namespace("default"))
+    _ns_id = _asyncio.run(_repo.register_namespace("default"))
+    _repo._namespace_id = _ns_id
+    _repo._reinitialize_config_cache(_ns_id)
     _limiter = RateLimiter(repository=_repo)
 
     # Create "my-app" table used by migration guide examples
     _my_app_repo = Repository(name="my-app", region="us-east-1")
     _asyncio.run(_my_app_repo.create_table())
-    _asyncio.run(_my_app_repo.register_namespace("default"))
+    _my_app_ns_id = _asyncio.run(_my_app_repo.register_namespace("default"))
+    _my_app_repo._namespace_id = _my_app_ns_id
+    _my_app_repo._reinitialize_config_cache(_my_app_ns_id)
 
     # Pre-create common entities and set up stored limits
     async def _setup():
