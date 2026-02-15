@@ -263,6 +263,7 @@ def doctest_env(moto_env, monkeypatch):
         """Auto-create DynamoDB table instead of CloudFormation stack."""
         if self.table_name not in _created_tables:
             await self.create_table()
+            await self._register_namespace("default")
             _created_tables.add(self.table_name)
             # Auto-set system/resource defaults so blocks with limits=None work
             _tmp = _RateLimiter(repository=self)
@@ -276,6 +277,11 @@ def doctest_env(moto_env, monkeypatch):
                 )
 
     monkeypatch.setattr(_Repository, "ensure_infrastructure", _auto_create_ensure)
+
+    # Set sys.argv for standalone scripts (e.g., migration script with argparse)
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["migrate", "--name", "my-app", "--region", "us-east-1"])
 
     # Monkeypatch create_entity to silently ignore EntityExistsError.
     # Doc examples often call create_entity() on pre-existing entities.
@@ -372,7 +378,13 @@ def doctest_globals(doctest_env):
     # Create pre-built limiter with table
     _repo = Repository(name="limiter", region="us-east-1")
     _asyncio.run(_repo.create_table())
+    _asyncio.run(_repo.register_namespace("default"))
     _limiter = RateLimiter(repository=_repo)
+
+    # Create "my-app" table used by migration guide examples
+    _my_app_repo = Repository(name="my-app", region="us-east-1")
+    _asyncio.run(_my_app_repo.create_table())
+    _asyncio.run(_my_app_repo.register_namespace("default"))
 
     # Pre-create common entities and set up stored limits
     async def _setup():

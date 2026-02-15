@@ -115,7 +115,9 @@ nav:
       - Deployment: infra/deployment.md
       - Production: infra/production.md
       - CloudFormation: infra/cloudformation.md
-      - Migrations: migrations.md
+      - Migrations:
+          - Framework: migrations.md
+          - "Namespace Keys (v0.10.0)": migrations/namespace-keys.md
       - Troubleshooting: operations/index.md
       - Monitoring: monitoring.md
       - Auditing: infra/auditing.md

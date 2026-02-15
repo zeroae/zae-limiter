@@ -842,3 +842,7 @@ zae-limiter version --name NAME --region REGION
 # Upgrade infrastructure
 zae-limiter upgrade --name NAME --region REGION [--lambda-only] [--force]
 ```
+
+## Version-Specific Migration Guides
+
+- [Namespace-Prefixed Keys (v0.10.0)](migrations/namespace-keys.md) -- Migrate from bare DynamoDB keys to namespace-prefixed keys for multi-tenant isolation
