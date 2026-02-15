@@ -15,7 +15,6 @@ from tests.fixtures.aws_clients import (  # noqa: F401
 from tests.fixtures.names import unique_name, unique_name_class  # noqa: F401
 from tests.fixtures.repositories import make_test_repo
 from tests.fixtures.stacks import (  # noqa: F401
-    SharedStack,
     get_or_create_shared_stack,
     localstack_endpoint,
 )
