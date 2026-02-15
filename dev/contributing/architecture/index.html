@@ -1496,6 +1496,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#namespace-isolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace Isolation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#optimized-read-patterns" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2889,6 +2900,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#namespace-isolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace Isolation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#optimized-read-patterns" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3189,43 +3211,53 @@
 <tbody>
 <tr>
 <td>Entity metadata</td>
-<td><code>ENTITY#{id}</code></td>
+<td><code>{ns}/ENTITY#{id}</code></td>
 <td><code>#META</code></td>
 </tr>
 <tr>
 <td>Bucket</td>
-<td><code>ENTITY#{id}</code></td>
+<td><code>{ns}/ENTITY#{id}</code></td>
 <td><code>#BUCKET#{resource}#{limit_name}</code></td>
 </tr>
 <tr>
 <td>Entity config</td>
-<td><code>ENTITY#{id}</code></td>
+<td><code>{ns}/ENTITY#{id}</code></td>
 <td><code>#CONFIG#{resource}</code></td>
 </tr>
 <tr>
 <td>Resource config</td>
-<td><code>RESOURCE#{resource}</code></td>
+<td><code>{ns}/RESOURCE#{resource}</code></td>
 <td><code>#CONFIG</code></td>
 </tr>
 <tr>
 <td>System config</td>
-<td><code>SYSTEM#</code></td>
+<td><code>{ns}/SYSTEM#</code></td>
 <td><code>#CONFIG</code></td>
 </tr>
 <tr>
 <td>Usage snapshot</td>
-<td><code>ENTITY#{id}</code></td>
+<td><code>{ns}/ENTITY#{id}</code></td>
 <td><code>#USAGE#{resource}#{window_key}</code></td>
 </tr>
 <tr>
 <td>System version</td>
-<td><code>SYSTEM#</code></td>
+<td><code>{ns}/SYSTEM#</code></td>
 <td><code>#VERSION</code></td>
 </tr>
 <tr>
 <td>Audit events</td>
-<td><code>AUDIT#{entity_id}</code></td>
+<td><code>{ns}/AUDIT#{entity_id}</code></td>
 <td><code>#AUDIT#{timestamp}</code></td>
+</tr>
+<tr>
+<td>Namespace forward</td>
+<td><code>_/SYSTEM#</code></td>
+<td><code>#NAMESPACE#{name}</code></td>
+</tr>
+<tr>
+<td>Namespace reverse</td>
+<td><code>_/SYSTEM#</code></td>
+<td><code>#NSID#{id}</code></td>
 </tr>
 </tbody>
 </table>
@@ -3242,17 +3274,22 @@
 <tr>
 <td><strong>GSI1</strong></td>
 <td>Parent → Children lookup</td>
-<td><code>GSI1PK=PARENT#{id}</code> → <code>GSI1SK=CHILD#{id}</code></td>
+<td><code>GSI1PK={ns}/PARENT#{id}</code> → <code>GSI1SK=CHILD#{id}</code></td>
 </tr>
 <tr>
 <td><strong>GSI2</strong></td>
 <td>Resource aggregation</td>
-<td><code>GSI2PK=RESOURCE#{name}</code> → buckets/usage</td>
+<td><code>GSI2PK={ns}/RESOURCE#{name}</code> → buckets/usage</td>
 </tr>
 <tr>
 <td><strong>GSI3</strong></td>
 <td>Entity config queries (sparse)</td>
-<td><code>GSI3PK=ENTITY_CONFIG#{resource}</code> → <code>GSI3SK=entity_id</code></td>
+<td><code>GSI3PK={ns}/ENTITY_CONFIG#{resource}</code> → <code>GSI3SK=entity_id</code></td>
+</tr>
+<tr>
+<td><strong>GSI4</strong></td>
+<td>Namespace item discovery (KEYS_ONLY)</td>
+<td><code>GSI4PK={ns}</code> → <code>GSI4SK=PK</code></td>
 </tr>
 </tbody>
 </table>
@@ -3267,11 +3304,11 @@
 <tbody>
 <tr>
 <td>Get entity</td>
-<td><code>PK=ENTITY#{id}, SK=#META</code></td>
+<td><code>PK={ns}/ENTITY#{id}, SK=#META</code></td>
 </tr>
 <tr>
 <td>Get buckets</td>
-<td><code>PK=ENTITY#{id}, SK begins_with #BUCKET#</code></td>
+<td><code>PK={ns}/ENTITY#{id}, SK begins_with #BUCKET#</code></td>
 </tr>
 <tr>
 <td>Batch get buckets</td>
@@ -3279,42 +3316,61 @@
 </tr>
 <tr>
 <td>Get children</td>
-<td>GSI1: <code>GSI1PK=PARENT#{id}</code></td>
+<td>GSI1: <code>GSI1PK={ns}/PARENT#{id}</code></td>
 </tr>
 <tr>
 <td>Resource capacity</td>
-<td>GSI2: <code>GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#</code></td>
+<td>GSI2: <code>GSI2PK={ns}/RESOURCE#{name}, SK begins_with BUCKET#</code></td>
 </tr>
 <tr>
 <td>Get version</td>
-<td><code>PK=SYSTEM#, SK=#VERSION</code></td>
+<td><code>PK={ns}/SYSTEM#, SK=#VERSION</code></td>
 </tr>
 <tr>
 <td>Get audit events</td>
-<td><code>PK=AUDIT#{entity_id}, SK begins_with #AUDIT#</code></td>
+<td><code>PK={ns}/AUDIT#{entity_id}, SK begins_with #AUDIT#</code></td>
 </tr>
 <tr>
 <td>Get usage snapshots</td>
-<td><code>PK=ENTITY#{id}, SK begins_with #USAGE#</code></td>
+<td><code>PK={ns}/ENTITY#{id}, SK begins_with #USAGE#</code></td>
 </tr>
 <tr>
 <td>Get system config</td>
-<td><code>PK=SYSTEM#, SK=#CONFIG</code></td>
+<td><code>PK={ns}/SYSTEM#, SK=#CONFIG</code></td>
 </tr>
 <tr>
 <td>Get resource config</td>
-<td><code>PK=RESOURCE#{resource}, SK=#CONFIG</code></td>
+<td><code>PK={ns}/RESOURCE#{resource}, SK=#CONFIG</code></td>
 </tr>
 <tr>
 <td>Get entity config</td>
-<td><code>PK=ENTITY#{id}, SK=#CONFIG#{resource}</code></td>
+<td><code>PK={ns}/ENTITY#{id}, SK=#CONFIG#{resource}</code></td>
 </tr>
 <tr>
 <td>List entities with custom limits</td>
-<td>GSI3: <code>GSI3PK=ENTITY_CONFIG#{resource}</code></td>
+<td>GSI3: <code>GSI3PK={ns}/ENTITY_CONFIG#{resource}</code></td>
+</tr>
+<tr>
+<td>Namespace forward lookup</td>
+<td><code>PK=_/SYSTEM#, SK=#NAMESPACE#{name}</code></td>
+</tr>
+<tr>
+<td>Namespace reverse lookup</td>
+<td><code>PK=_/SYSTEM#, SK=#NSID#{id}</code></td>
+</tr>
+<tr>
+<td>List all items in namespace</td>
+<td>GSI4: <code>GSI4PK={ns}</code></td>
 </tr>
 </tbody>
 </table>
+<h3 id="namespace-isolation">Namespace Isolation<a class="headerlink" href="#namespace-isolation" title="Permanent link">&para;</a></h3>
+<p>All partition key values are prefixed with an opaque namespace ID (<code>{ns}/</code>), providing logical isolation between tenants within a single DynamoDB table. The reserved namespace <code>_</code> is used for the namespace registry itself (forward and reverse lookup records).</p>
+<ul>
+<li><strong>Namespace ID format</strong>: 11-character opaque string generated via <code>secrets.token_urlsafe(8)</code></li>
+<li><strong>Default namespace</strong>: Automatically registered on first deploy or <code>RepositoryBuilder.build()</code></li>
+<li><strong>GSI4</strong>: A KEYS_ONLY index on <code>GSI4PK=namespace_id</code> enables <code>purge_namespace()</code> to discover and delete all items belonging to a namespace</li>
+</ul>
 <h3 id="optimized-read-patterns">Optimized Read Patterns<a class="headerlink" href="#optimized-read-patterns" title="Permanent link">&para;</a></h3>
 <p>The <code>acquire()</code> operation uses <code>BatchGetItem</code> to fetch all required buckets in a
 single DynamoDB round trip (see <a href="https://github.com/zeroae/zae-limiter/issues/133">Issue #133</a>):</p>
@@ -3340,7 +3396,7 @@ entity and parent buckets are fetched together, reducing latency from
 See <a href="../../adr/111-flatten-all-records/">ADR-111</a>.</p>
 <div class="language-python lint-only highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Entity record (FLAT structure):</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="p">{</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#user-1&quot;</span><span class="p">,</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="si">{ns}</span><span class="s2">/ENTITY#user-1&quot;</span><span class="p">,</span>
 </span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#META&quot;</span><span class="p">,</span>
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="s2">&quot;entity_id&quot;</span><span class="p">:</span> <span class="s2">&quot;user-1&quot;</span><span class="p">,</span>
 </span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;User One&quot;</span><span class="p">,</span>
@@ -3351,7 +3407,7 @@ See <a href="../../adr/111-flatten-all-records/">ADR-111</a>.</p>
 <p><strong>Bucket records</strong> (composite, one item per entity+resource):</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Bucket record (FLAT structure, ADR-114/115):</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="p">{</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#user-1&quot;</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="si">{ns}</span><span class="s2">/ENTITY#user-1&quot;</span><span class="p">,</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#BUCKET#gpt-4&quot;</span><span class="p">,</span>
 </span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="s2">&quot;entity_id&quot;</span><span class="p">:</span> <span class="s2">&quot;user-1&quot;</span><span class="p">,</span>
 </span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="s2">&quot;resource&quot;</span><span class="p">:</span> <span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
@@ -3362,7 +3418,7 @@ See <a href="../../adr/111-flatten-all-records/">ADR-111</a>.</p>
 </span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="s2">&quot;b_rpm_cp&quot;</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>             <span class="c1"># capacity_milli for rpm limit</span>
 </span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>    <span class="s2">&quot;b_rpm_tc&quot;</span><span class="p">:</span> <span class="mi">5000</span><span class="p">,</span>               <span class="c1"># total_consumed_milli for rpm</span>
 </span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>    <span class="s2">&quot;rf&quot;</span><span class="p">:</span> <span class="mi">1704067200000</span><span class="p">,</span>            <span class="c1"># last_refill_ms (shared across limits)</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>    <span class="s2">&quot;GSI2PK&quot;</span><span class="p">:</span> <span class="s2">&quot;RESOURCE#gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>    <span class="s2">&quot;GSI2PK&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="si">{ns}</span><span class="s2">/RESOURCE#gpt-4&quot;</span><span class="p">,</span>
 </span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>    <span class="s2">&quot;ttl&quot;</span><span class="p">:</span> <span class="mi">1234567890</span>
 </span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="p">}</span>
 </span></code></pre></div>
@@ -3374,7 +3430,7 @@ exceeds consumption rate. See <a href="https://github.com/zeroae/zae-limiter/iss
 <p><strong>Usage snapshots use a FLAT structure</strong> (no nested <code>data</code> map):</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Usage snapshot (FLAT structure):</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="p">{</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;ENTITY#user-1&quot;</span><span class="p">,</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="si">{ns}</span><span class="s2">/ENTITY#user-1&quot;</span><span class="p">,</span>
 </span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#USAGE#gpt-4#2024-01-01T14:00:00Z&quot;</span><span class="p">,</span>
 </span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="s2">&quot;entity_id&quot;</span><span class="p">:</span> <span class="s2">&quot;user-1&quot;</span><span class="p">,</span>
 </span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="s2">&quot;resource&quot;</span><span class="p">:</span> <span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>        <span class="c1"># Top-level attribute</span>
@@ -3382,7 +3438,7 @@ exceeds consumption rate. See <a href="https://github.com/zeroae/zae-limiter/iss
 </span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="s2">&quot;window_start&quot;</span><span class="p">:</span> <span class="s2">&quot;...&quot;</span><span class="p">,</span>      <span class="c1"># Top-level attribute</span>
 </span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">5000</span><span class="p">,</span>                <span class="c1"># Counter at top-level</span>
 </span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    <span class="s2">&quot;total_events&quot;</span><span class="p">:</span> <span class="mi">10</span><span class="p">,</span>         <span class="c1"># Counter at top-level</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>    <span class="s2">&quot;GSI2PK&quot;</span><span class="p">:</span> <span class="s2">&quot;RESOURCE#gpt-4&quot;</span><span class="p">,</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>    <span class="s2">&quot;GSI2PK&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="si">{ns}</span><span class="s2">/RESOURCE#gpt-4&quot;</span><span class="p">,</span>
 </span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>    <span class="s2">&quot;ttl&quot;</span><span class="p">:</span> <span class="mi">1234567890</span>
 </span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="p">}</span>
 </span></code></pre></div>
@@ -3395,7 +3451,7 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 <p><strong>Config records use composite items</strong> (v0.8.0+, ADR-114). All limits for a config level are stored in a single item:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Resource config (composite, FLAT structure):</span>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="p">{</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;RESOURCE#gpt-4&quot;</span><span class="p">,</span>           <span class="c1"># or SYSTEM# or ENTITY#{id}</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="s2">&quot;PK&quot;</span><span class="p">:</span> <span class="s2">&quot;</span><span class="si">{ns}</span><span class="s2">/RESOURCE#gpt-4&quot;</span><span class="p">,</span>       <span class="c1"># or {ns}/SYSTEM# or {ns}/ENTITY#{id}</span>
 </span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#CONFIG&quot;</span><span class="p">,</span>                   <span class="c1"># or #CONFIG#{resource} for entity level</span>
 </span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="s2">&quot;resource&quot;</span><span class="p">:</span> <span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
 </span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="s2">&quot;l_tpm_cp&quot;</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>               <span class="c1"># capacity for tpm limit</span>
@@ -3408,11 +3464,13 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 <p>Config records use four-level precedence: <strong>Entity (resource-specific) &gt; Entity (<em>default</em>) &gt; Resource &gt; System &gt; Constructor defaults</strong>.</p>
 <p><strong>Key builders:</strong></p>
 <ul>
-<li><code>pk_system()</code> - Returns <code>SYSTEM#</code></li>
-<li><code>pk_resource(resource)</code> - Returns <code>RESOURCE#{resource}</code></li>
-<li><code>pk_entity(entity_id)</code> - Returns <code>ENTITY#{entity_id}</code></li>
+<li><code>pk_system(namespace_id)</code> - Returns <code>{ns}/SYSTEM#</code></li>
+<li><code>pk_resource(namespace_id, resource)</code> - Returns <code>{ns}/RESOURCE#{resource}</code></li>
+<li><code>pk_entity(namespace_id, entity_id)</code> - Returns <code>{ns}/ENTITY#{entity_id}</code></li>
 <li><code>sk_config()</code> - Returns <code>#CONFIG</code> (system/resource level)</li>
 <li><code>sk_config(resource)</code> - Returns <code>#CONFIG#{resource}</code> (entity level)</li>
+<li><code>sk_namespace(name)</code> - Returns <code>#NAMESPACE#{name}</code> (forward lookup)</li>
+<li><code>sk_nsid(id)</code> - Returns <code>#NSID#{id}</code> (reverse lookup)</li>
 </ul>
 <p><strong>Audit entity IDs for config levels</strong> (see <a href="../../adr/106-audit-entity-ids-for-config/">ADR-106</a>):</p>
 <ul>
@@ -3788,7 +3846,7 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 </span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
 </span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>├── naming.py              # Resource name validation
 </span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>├── bucket.py              # Token bucket math (integer arithmetic)
-</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>├── schema.py              # DynamoDB key builders
+</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>├── schema.py              # DynamoDB key builders (namespace-prefixed)
 </span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>├── repository_protocol.py # RepositoryProtocol for backend abstraction
 </span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a>├── repository.py          # DynamoDB operations
 </span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a>├── config_cache.py        # Client-side config caching with TTL

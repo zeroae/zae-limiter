@@ -1731,6 +1731,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#namespace-flag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace Flag
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3929,6 +3951,28 @@
     <span class="md-ellipsis">
       
         Exit Codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-flag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace Flag
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Namespace Lifecycle
       
     </span>
   </a>
@@ -7290,6 +7334,41 @@ versions. Checks compatibility between client and infrastructure.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="namespace-flag">Namespace Flag<a class="headerlink" href="#namespace-flag" title="Permanent link">&para;</a></h2>
+<p>Most data-access commands accept <code>--namespace</code> / <code>-N</code> to scope operations to a specific namespace. When omitted, operations default to the <code>"default"</code> namespace.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-101-1"><a id="__codelineno-101-1" name="__codelineno-101-1" href="#__codelineno-101-1"></a><span class="c1"># Entity operations in a specific namespace</span>
+</span><span id="__span-101-2"><a id="__codelineno-101-2" name="__codelineno-101-2" href="#__codelineno-101-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>user-123<span class="w"> </span>--namespace<span class="w"> </span>tenant-alpha<span class="w"> </span>-l<span class="w"> </span>rpm:1000
+</span><span id="__span-101-3"><a id="__codelineno-101-3" name="__codelineno-101-3" href="#__codelineno-101-3"></a>
+</span><span id="__span-101-4"><a id="__codelineno-101-4" name="__codelineno-101-4" href="#__codelineno-101-4"></a><span class="c1"># System defaults for a namespace</span>
+</span><span id="__span-101-5"><a id="__codelineno-101-5" name="__codelineno-101-5" href="#__codelineno-101-5"></a>zae-limiter<span class="w"> </span>system<span class="w"> </span>set-defaults<span class="w"> </span>--namespace<span class="w"> </span>tenant-alpha<span class="w"> </span>-l<span class="w"> </span>rpm:5000
+</span><span id="__span-101-6"><a id="__codelineno-101-6" name="__codelineno-101-6" href="#__codelineno-101-6"></a>
+</span><span id="__span-101-7"><a id="__codelineno-101-7" name="__codelineno-101-7" href="#__codelineno-101-7"></a><span class="c1"># Usage and audit scoped to a namespace</span>
+</span><span id="__span-101-8"><a id="__codelineno-101-8" name="__codelineno-101-8" href="#__codelineno-101-8"></a>zae-limiter<span class="w"> </span>usage<span class="w"> </span>list<span class="w"> </span>--namespace<span class="w"> </span>tenant-alpha
+</span><span id="__span-101-9"><a id="__codelineno-101-9" name="__codelineno-101-9" href="#__codelineno-101-9"></a>zae-limiter<span class="w"> </span>audit<span class="w"> </span>list<span class="w"> </span>--namespace<span class="w"> </span>tenant-alpha
+</span></code></pre></div>
+<h2 id="namespace-lifecycle">Namespace Lifecycle<a class="headerlink" href="#namespace-lifecycle" title="Permanent link">&para;</a></h2>
+<p>The <code>namespace</code> command group manages the namespace registry:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-102-1"><a id="__codelineno-102-1" name="__codelineno-102-1" href="#__codelineno-102-1"></a><span class="c1"># Register namespaces</span>
+</span><span id="__span-102-2"><a id="__codelineno-102-2" name="__codelineno-102-2" href="#__codelineno-102-2"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>register<span class="w"> </span>tenant-alpha<span class="w"> </span>tenant-beta
+</span><span id="__span-102-3"><a id="__codelineno-102-3" name="__codelineno-102-3" href="#__codelineno-102-3"></a>
+</span><span id="__span-102-4"><a id="__codelineno-102-4" name="__codelineno-102-4" href="#__codelineno-102-4"></a><span class="c1"># List active namespaces</span>
+</span><span id="__span-102-5"><a id="__codelineno-102-5" name="__codelineno-102-5" href="#__codelineno-102-5"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>list
+</span><span id="__span-102-6"><a id="__codelineno-102-6" name="__codelineno-102-6" href="#__codelineno-102-6"></a>
+</span><span id="__span-102-7"><a id="__codelineno-102-7" name="__codelineno-102-7" href="#__codelineno-102-7"></a><span class="c1"># Show namespace details (including opaque ID)</span>
+</span><span id="__span-102-8"><a id="__codelineno-102-8" name="__codelineno-102-8" href="#__codelineno-102-8"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>show<span class="w"> </span>tenant-alpha
+</span><span id="__span-102-9"><a id="__codelineno-102-9" name="__codelineno-102-9" href="#__codelineno-102-9"></a>
+</span><span id="__span-102-10"><a id="__codelineno-102-10" name="__codelineno-102-10" href="#__codelineno-102-10"></a><span class="c1"># Soft delete (data preserved, forward lookup removed)</span>
+</span><span id="__span-102-11"><a id="__codelineno-102-11" name="__codelineno-102-11" href="#__codelineno-102-11"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>delete<span class="w"> </span>tenant-alpha
+</span><span id="__span-102-12"><a id="__codelineno-102-12" name="__codelineno-102-12" href="#__codelineno-102-12"></a>
+</span><span id="__span-102-13"><a id="__codelineno-102-13" name="__codelineno-102-13" href="#__codelineno-102-13"></a><span class="c1"># Recover a soft-deleted namespace</span>
+</span><span id="__span-102-14"><a id="__codelineno-102-14" name="__codelineno-102-14" href="#__codelineno-102-14"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>recover<span class="w"> </span>&lt;namespace-id&gt;
+</span><span id="__span-102-15"><a id="__codelineno-102-15" name="__codelineno-102-15" href="#__codelineno-102-15"></a>
+</span><span id="__span-102-16"><a id="__codelineno-102-16" name="__codelineno-102-16" href="#__codelineno-102-16"></a><span class="c1"># List deleted namespaces (candidates for purge)</span>
+</span><span id="__span-102-17"><a id="__codelineno-102-17" name="__codelineno-102-17" href="#__codelineno-102-17"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>orphans
+</span><span id="__span-102-18"><a id="__codelineno-102-18" name="__codelineno-102-18" href="#__codelineno-102-18"></a>
+</span><span id="__span-102-19"><a id="__codelineno-102-19" name="__codelineno-102-19" href="#__codelineno-102-19"></a><span class="c1"># Hard delete all data in a namespace (irreversible)</span>
+</span><span id="__span-102-20"><a id="__codelineno-102-20" name="__codelineno-102-20" href="#__codelineno-102-20"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>purge<span class="w"> </span>&lt;namespace-id&gt;<span class="w"> </span>--yes
+</span></code></pre></div>
 
 
 

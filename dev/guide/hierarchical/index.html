@@ -2905,6 +2905,10 @@
 </span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="p">)</span>
 </span></code></pre></div>
+<div class="admonition warning">
+<p class="admonition-title">Same-Namespace Constraint</p>
+<p>Parent and child entities must belong to the same namespace. Cross-namespace hierarchies are not supported. If you use multiple namespaces, create separate entity hierarchies within each namespace.</p>
+</div>
 <h2 id="cascade-mode">Cascade Mode<a class="headerlink" href="#cascade-mode" title="Permanent link">&para;</a></h2>
 <p>Create entities with <code>cascade=True</code> to apply rate limits to both the child and parent on every <code>acquire()</code> call:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Cascade is set once at entity creation</span>
