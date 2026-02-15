@@ -52,17 +52,36 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
 Namespaces provide logical isolation within a single DynamoDB table. The `"default"` namespace is automatically registered on first deploy or when using `RepositoryBuilder.build()`.
 
-```bash
-# Register additional namespaces
-zae-limiter namespace register tenant-alpha --name limiter
-zae-limiter namespace register tenant-beta --name limiter
+=== "CLI"
 
-# List namespaces
-zae-limiter namespace list --name limiter
+    ```bash
+    # Register additional namespaces
+    zae-limiter namespace register tenant-alpha --name limiter
+    zae-limiter namespace register tenant-beta --name limiter
 
-# Show namespace details
-zae-limiter namespace show tenant-alpha --name limiter
-```
+    # List namespaces
+    zae-limiter namespace list --name limiter
+
+    # Show namespace details
+    zae-limiter namespace show tenant-alpha --name limiter
+    ```
+
+=== "Programmatic"
+
+    ```python
+    from zae_limiter import Repository, RateLimiter
+
+    # Connect to a specific tenant namespace
+    repo = await (
+        Repository.builder("limiter", "us-east-1")
+        .namespace("tenant-alpha")
+        .build()
+    )
+    limiter = RateLimiter(repository=repo)
+
+    # Register additional namespaces from an existing repo
+    await repo.register_namespace("tenant-beta")
+    ```
 
 !!! info "Deploy is per-stack, not per-namespace"
     The `deploy` command creates the underlying infrastructure (DynamoDB table, Lambda, IAM policies). Namespaces are lightweight registry records within the table — registering a new namespace does not require a new deployment.
@@ -505,4 +524,5 @@ For detailed IAM configuration and usage examples, see [CloudFormation - Applica
 - [Production](production.md) - Production checklist, security, cost estimation
 - [CloudFormation](cloudformation.md) - Template details
 - [Monitoring](../monitoring.md) - Dashboards, alerts, Logs Insights
+- [Namespace Keys Migration](../migrations/namespace-keys.md) - Migrating to namespace-prefixed keys
 - [LocalStack](../contributing/localstack.md) - Local development setup

@@ -538,6 +538,11 @@ The template exports:
 | `NamespaceFullAccessPolicyArn` | Namespace-scoped full-access policy ARN |
 | `NamespaceReadOnlyPolicyArn` | Namespace-scoped read-only policy ARN |
 
+!!! tip "Discovering namespace IDs"
+    Namespace IDs are opaque strings stored in DynamoDB, not CloudFormation outputs.
+    Use `zae-limiter namespace show default --name <stack>` to retrieve the ID
+    for the default namespace, or any registered namespace.
+
 Access outputs:
 
 ```bash

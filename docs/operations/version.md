@@ -80,14 +80,11 @@ zae-limiter upgrade --name <name> --region <region>
 Or programmatically:
 
 ```python
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter
 
-# Auto-update Lambda on initialization
-limiter = RateLimiter(
-    name="limiter",
-    region="us-east-1",
-    stack_options=StackOptions(),  # Enables auto-update
-)
+# Auto-update Lambda on initialization (default behavior)
+repo = await Repository.builder("limiter", "us-east-1").build()
+limiter = RateLimiter(repository=repo)
 ```
 
 ### IncompatibleSchemaError

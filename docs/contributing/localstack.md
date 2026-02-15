@@ -93,15 +93,16 @@ async with limiter.acquire(
 
 For quick iteration, declare infrastructure in code:
 
-```python
-from zae_limiter import RateLimiter, StackOptions
+```{.python .requires-localstack}
+from zae_limiter import Repository, RateLimiter
 
-limiter = RateLimiter(
-    name="limiter",
-    endpoint_url="http://localhost:4566",
-    region="us-east-1",
-    stack_options=StackOptions(),  # Declare desired state
+repo = await (
+    Repository.builder("limiter", "us-east-1", endpoint_url="http://localhost:4566")
+    .enable_aggregator(False)
+    .enable_alarms(False)
+    .build()
 )
+limiter = RateLimiter(repository=repo)
 ```
 
 ## Environment Variables

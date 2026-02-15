@@ -219,17 +219,16 @@ zae-limiter deploy --name limiter --no-audit-archival
 #### Programmatic Deployment
 
 ```python
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter
 
 # With custom archival settings
-limiter = RateLimiter(
-    name="limiter",
-    region="us-east-1",
-    stack_options=StackOptions(
-        enable_audit_archival=True,  # Default
-        audit_archive_glacier_days=180,  # Custom transition period
-    ),
+repo = await (
+    Repository.builder("limiter", "us-east-1")
+    .enable_audit_archival(True)  # Default
+    .audit_archive_glacier_days(180)  # Custom transition period
+    .build()
 )
+limiter = RateLimiter(repository=repo)
 ```
 
 ### S3 Bucket Structure
