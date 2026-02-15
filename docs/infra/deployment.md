@@ -48,6 +48,46 @@ zae-limiter deploy \
 
 For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
+### Namespace Registration
+
+Namespaces provide logical isolation within a single DynamoDB table. The `"default"` namespace is automatically registered on first deploy or when using `RepositoryBuilder.build()`.
+
+=== "CLI"
+
+    ```bash
+    # Register additional namespaces
+    zae-limiter namespace register tenant-alpha --name limiter
+    zae-limiter namespace register tenant-beta --name limiter
+
+    # List namespaces
+    zae-limiter namespace list --name limiter
+
+    # Show namespace details
+    zae-limiter namespace show tenant-alpha --name limiter
+    ```
+
+=== "Programmatic"
+
+    ```python
+    from zae_limiter import Repository, RateLimiter
+
+    # Connect to a specific tenant namespace
+    repo = await (
+        Repository.builder("limiter", "us-east-1")
+        .namespace("tenant-alpha")
+        .build()
+    )
+    limiter = RateLimiter(repository=repo)
+
+    # Register additional namespaces from an existing repo
+    await repo.register_namespace("tenant-beta")
+    ```
+
+!!! info "Deploy is per-stack, not per-namespace"
+    The `deploy` command creates the underlying infrastructure (DynamoDB table, Lambda, IAM policies). Namespaces are lightweight registry records within the table — registering a new namespace does not require a new deployment.
+
+For namespace-scoped IAM access control, see [Namespace-Scoped Access Control](production.md#namespace-scoped-access-control).
+
 ### Check Stack Status
 
 === "CLI"
@@ -61,7 +101,7 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
     ```python
     from zae_limiter import Repository
 
-    repo = Repository(name="limiter", region="us-east-1")
+    repo = await Repository.builder("limiter", "us-east-1").build()
 
     available = await repo.ping()  # Returns True if DynamoDB is reachable
 
@@ -158,8 +198,8 @@ Application code connects to existing infrastructure without managing it:
 ```python
 from zae_limiter import Repository, RateLimiter
 
-# Connect only - no stack_options means no infrastructure changes
-repo = Repository(name="prod", region="us-east-1")
+# Connect to existing infrastructure (no infra options = no changes)
+repo = await Repository.builder("prod", "us-east-1").build()
 limiter = RateLimiter(repository=repo)
 
 # Limits are automatically resolved from stored config
@@ -197,15 +237,10 @@ See [Configuration Hierarchy](../guide/config-hierarchy.md) for limit resolution
 In addition to the CLI, you can manage stack lifecycle programmatically using the Repository's `delete_stack()` method:
 
 ```python
-from zae_limiter import Repository, RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter
 
 # Create repository with infrastructure options
-repo = Repository(
-    name="limiter",
-    region="us-east-1",
-    stack_options=StackOptions(),
-)
-await repo.ensure_infrastructure()
+repo = await Repository.builder("limiter", "us-east-1").build()
 
 limiter = RateLimiter(repository=repo)
 
@@ -214,7 +249,6 @@ async with limiter.acquire(
     entity_id="user-123",
     resource="api",
     consume={"requests": 1},
-    limits=[],
 ) as lease:
     pass
 
@@ -229,15 +263,14 @@ await repo.delete_stack()
 For rapid iteration, declare infrastructure with cleanup:
 
 ```python
-from zae_limiter import Repository, RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter
 
 async def dev_session():
-    repo = Repository(
-        name="dev",
-        region="us-east-1",
-        stack_options=StackOptions(enable_aggregator=False),
+    repo = await (
+        Repository.builder("dev", "us-east-1")
+        .enable_aggregator(False)
+        .build()
     )
-    await repo.ensure_infrastructure()
     limiter = RateLimiter(repository=repo)
 
     try:
@@ -295,21 +328,17 @@ aws lambda update-function-code \
 Create infrastructure directly from your application:
 
 ```python
-from zae_limiter import Repository, RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter
 
-repo = Repository(
-    name="limiter",
-    region="us-east-1",
-    stack_options=StackOptions(
-        snapshot_windows="hourly,daily",
-        usage_retention_days=90,
-    ),
+repo = await (
+    Repository.builder("limiter", "us-east-1")
+    .usage_retention_days(90)
+    .build()
 )
-await repo.ensure_infrastructure()
 limiter = RateLimiter(repository=repo)
 ```
 
-`StackOptions` declares the desired infrastructure state. CloudFormation ensures the
+The builder declares the desired infrastructure state. CloudFormation ensures the
 actual infrastructure matches your declaration—creating, updating, or leaving unchanged
 as needed.
 
@@ -330,10 +359,10 @@ as needed.
 
 | Key | Pattern | Purpose |
 |-----|---------|---------|
-| PK | `ENTITY#{id}` | Partition key |
+| PK | `{ns}/ENTITY#{id}` | Partition key |
 | SK | `#META`, `#BUCKET#...`, `#LIMIT#...` | Sort key |
-| GSI1PK | `PARENT#{id}` | Parent lookups |
-| GSI2PK | `RESOURCE#{name}` | Resource aggregation |
+| GSI1PK | `{ns}/PARENT#{id}` | Parent lookups |
+| GSI2PK | `{ns}/RESOURCE#{name}` | Resource aggregation |
 
 ### Lambda Function
 
@@ -375,14 +404,13 @@ Enable X-Ray tracing to gain visibility into Lambda aggregator performance and t
 === "Programmatic"
 
     ```python
-    from zae_limiter import Repository, RateLimiter, StackOptions
+    from zae_limiter import Repository, RateLimiter
 
-    repo = Repository(
-        name="limiter",
-        region="us-east-1",
-        stack_options=StackOptions(enable_tracing=True),
+    repo = await (
+        Repository.builder("limiter", "us-east-1")
+        .enable_tracing(True)
+        .build()
     )
-    await repo.ensure_infrastructure()
     limiter = RateLimiter(repository=repo)
     ```
 
@@ -446,27 +474,23 @@ The stack creates three managed IAM policies by default for different access pat
 === "Programmatic"
 
     ```python
-    from zae_limiter import Repository, StackOptions
+    from zae_limiter import Repository
 
     # With managed policies only (default)
-    repo = Repository(
-        name="limiter",
-        region="us-east-1",
-        stack_options=StackOptions(),
-    )
+    repo = await Repository.builder("limiter", "us-east-1").build()
 
     # With managed policies AND IAM roles
-    repo = Repository(
-        name="limiter",
-        region="us-east-1",
-        stack_options=StackOptions(create_iam_roles=True),
+    repo = await (
+        Repository.builder("limiter", "us-east-1")
+        .create_iam_roles(True)
+        .build()
     )
 
     # Without any IAM resources
-    repo = Repository(
-        name="limiter",
-        region="us-east-1",
-        stack_options=StackOptions(create_iam=False),
+    repo = await (
+        Repository.builder("limiter", "us-east-1")
+        .create_iam(False)
+        .build()
     )
     ```
 
@@ -500,4 +524,5 @@ For detailed IAM configuration and usage examples, see [CloudFormation - Applica
 - [Production](production.md) - Production checklist, security, cost estimation
 - [CloudFormation](cloudformation.md) - Template details
 - [Monitoring](../monitoring.md) - Dashboards, alerts, Logs Insights
+- [Namespace Keys Migration](../migrations/namespace-keys.md) - Migrating to namespace-prefixed keys
 - [LocalStack](../contributing/localstack.md) - Local development setup

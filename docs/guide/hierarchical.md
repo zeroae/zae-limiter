@@ -31,6 +31,9 @@ await limiter.create_entity(
 )
 ```
 
+!!! warning "Same-Namespace Constraint"
+    Parent and child entities must belong to the same namespace. Cross-namespace hierarchies are not supported. If you use multiple namespaces, create separate entity hierarchies within each namespace.
+
 ## Cascade Mode
 
 Create entities with `cascade=True` to apply rate limits to both the child and parent on every `acquire()` call:

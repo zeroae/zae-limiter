@@ -69,7 +69,7 @@ def localstack_endpoint():
 ```python
 import uuid
 import pytest
-from zae_limiter import Repository, RateLimiter, StackOptions
+from zae_limiter import Repository, RateLimiter
 
 @pytest.fixture(scope="function")
 async def limiter(localstack_endpoint):
@@ -84,16 +84,14 @@ async def limiter(localstack_endpoint):
     # Unique name prevents test interference
     name = f"test-{uuid.uuid4().hex[:8]}"
 
-    repo = Repository(
-        name=name,
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-        stack_options=StackOptions(enable_aggregator=False),
+    repo = await (
+        Repository.builder(name, "us-east-1", endpoint_url=localstack_endpoint)
+        .enable_aggregator(False)
+        .build()
     )
     limiter = RateLimiter(repository=repo)
 
-    async with limiter:
-        yield limiter
+    yield limiter
 
     # Cleanup: delete the CloudFormation stack
     await repo.delete_stack()
@@ -122,16 +120,14 @@ async def shared_limiter(localstack_endpoint):
 
     Trade-off: Tests share state, less isolation.
     """
-    repo = Repository(
-        name="integration-test-shared",
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-        stack_options=StackOptions(enable_aggregator=False),
+    repo = await (
+        Repository.builder("integration-test-shared", "us-east-1", endpoint_url=localstack_endpoint)
+        .enable_aggregator(False)
+        .build()
     )
     limiter = RateLimiter(repository=repo)
 
-    async with limiter:
-        yield limiter
+    yield limiter
 
     await repo.delete_stack()
 ```
@@ -142,21 +138,19 @@ async def shared_limiter(localstack_endpoint):
 @pytest.fixture(scope="function")
 def sync_limiter(localstack_endpoint):
     """Synchronous rate limiter with cleanup."""
-    from zae_limiter import SyncRepository, SyncRateLimiter, StackOptions
+    from zae_limiter import SyncRepository, SyncRateLimiter
     import uuid
 
     name = f"test-sync-{uuid.uuid4().hex[:8]}"
 
-    repo = SyncRepository(
-        name=name,
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-        stack_options=StackOptions(enable_aggregator=False),
+    repo = (
+        SyncRepository.builder(name, "us-east-1", endpoint_url=localstack_endpoint)
+        .enable_aggregator(False)
+        .build()
     )
     limiter = SyncRateLimiter(repository=repo)
 
-    with limiter:
-        yield limiter
+    yield limiter
 
     repo.delete_stack()
 ```

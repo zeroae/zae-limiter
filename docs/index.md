@@ -24,7 +24,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 - **Multiple limits** are tracked per call (requests per minute, tokens per minute)
 - **Consumption is unknown upfront** — adjust limits after the operation completes
 - **Hierarchical limits** exist (API key → project, tenant → user)
-- **Cost matters** — ~$0.75/1M requests ([details](performance.md#cost-optimization-strategies))
+- **Cost matters** — ~$0.625/1M requests, $0 for fast rejections ([details](performance.md#6-cost-optimization-strategies))
 
 ## Features
 
@@ -36,19 +36,17 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 - **Stored Limits** - Configure per-entity limits in DynamoDB
 - **Usage Analytics** - Lambda aggregator for hourly/daily usage snapshots
 - **Audit Logging** - Track entity and limit changes for compliance
+- **Multi-Tenant Isolation** - Namespace-scoped data isolation with per-tenant IAM policies
 - **Async + Sync APIs** - First-class async support with sync wrapper
 
 ## Quick Example
 
 ```python
-from zae_limiter import RateLimiter, Limit, StackOptions
+from zae_limiter import Repository, RateLimiter, Limit
 
 # Async rate limiter with declarative infrastructure
-limiter = RateLimiter(
-    name="my-app",
-    region="us-east-1",
-    stack_options=StackOptions(),  # Declare desired state - CloudFormation ensures it
-)
+repo = await Repository.builder("my-app", "us-east-1").build()
+limiter = RateLimiter(repository=repo)
 
 # Define default limits (can be overridden per-entity)
 default_limits = [
@@ -100,5 +98,6 @@ async with limiter.acquire(
 | [Hierarchical Limits](guide/hierarchical.md) | Parent/child entities, cascade mode |
 | [LLM Integration](guide/llm-integration.md) | Token estimation and reconciliation |
 | [Production Guide](infra/production.md) | Security, monitoring, cost |
+| [Multi-Tenant Guide](infra/production.md#multi-tenant-deployments) | Namespace isolation, per-tenant IAM |
 | [CLI Reference](cli.md) | Deploy, status, delete commands |
 
