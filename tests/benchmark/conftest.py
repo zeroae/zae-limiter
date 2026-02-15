@@ -8,7 +8,6 @@ import uuid
 from typing import Any
 
 import pytest
-import pytest_asyncio
 
 from tests.fixtures.capacity import (  # noqa: F401
     CapacityCounter,
@@ -19,67 +18,25 @@ from tests.fixtures.moto import (  # noqa: F401
     _patch_aiobotocore_response,
     aws_credentials,
     mock_dynamodb,
+    sync_limiter,
 )
-from tests.fixtures.names import unique_name, unique_name_class  # noqa: F401
+from tests.fixtures.names import unique_name, unique_name_class, unique_namespace  # noqa: F401
 from tests.fixtures.repositories import make_sync_test_repo
 from tests.fixtures.stacks import (  # noqa: F401
-    get_or_create_shared_stack,
+    aggregator_stack_options,
     localstack_endpoint,
+    minimal_stack_options,
+    shared_aggregator_stack,
+    shared_minimal_stack,
 )
-from zae_limiter import Limit, StackOptions, SyncRateLimiter
+from zae_limiter import Limit, SyncRateLimiter
 from zae_limiter.sync_repository import SyncRepository
-
-# Re-export unit test fixtures for moto-based benchmarks
-
-
-@pytest.fixture
-def sync_limiter(mock_dynamodb):  # noqa: F811
-    """Create a SyncRateLimiter with mocked DynamoDB and native sync."""
-    repo = SyncRepository(
-        name="test-rate-limits",
-        region="us-east-1",
-    )
-    repo.create_table()
-    limiter = SyncRateLimiter(repository=repo)
-    with limiter:
-        yield limiter
-
-
-# Session-scoped shared stacks for LocalStack benchmarks
-
-
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def shared_minimal_stack(localstack_endpoint, tmp_path_factory):  # noqa: F811
-    """Session-scoped shared stack without aggregator or alarms."""
-    return await get_or_create_shared_stack(
-        tmp_path_factory,
-        "shared-minimal",
-        localstack_endpoint,
-    )
-
-
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def shared_aggregator_stack(localstack_endpoint, tmp_path_factory):  # noqa: F811
-    """Session-scoped shared stack with aggregator Lambda."""
-    return await get_or_create_shared_stack(
-        tmp_path_factory,
-        "shared-aggregator",
-        localstack_endpoint,
-        enable_aggregator=True,
-    )
-
 
 # Namespace-scoped sync fixtures for LocalStack benchmarks
 
 
 @pytest.fixture
-def unique_namespace():
-    """Generate unique namespace name for per-test data isolation."""
-    return f"ns-{uuid.uuid4().hex[:8]}"
-
-
-@pytest.fixture
-def sync_localstack_limiter(shared_minimal_stack, unique_namespace):
+def sync_localstack_limiter(shared_minimal_stack, unique_namespace):  # noqa: F811
     """SyncRateLimiter on the shared minimal stack with namespace isolation."""
     parent, scoped = make_sync_test_repo(shared_minimal_stack, unique_namespace)
     limiter = SyncRateLimiter(repository=scoped)
@@ -89,7 +46,7 @@ def sync_localstack_limiter(shared_minimal_stack, unique_namespace):
 
 
 @pytest.fixture
-def sync_localstack_limiter_with_aggregator(shared_aggregator_stack, unique_namespace):
+def sync_localstack_limiter_with_aggregator(shared_aggregator_stack, unique_namespace):  # noqa: F811
     """SyncRateLimiter with Lambda aggregator for benchmark tests."""
     parent, scoped = make_sync_test_repo(shared_aggregator_stack, unique_namespace)
     limiter = SyncRateLimiter(repository=scoped)
@@ -98,23 +55,8 @@ def sync_localstack_limiter_with_aggregator(shared_aggregator_stack, unique_name
     parent.close()
 
 
-# StackOptions fixtures — used by benchmarks that need specific stack config
-
-
-@pytest.fixture(scope="session")
-def minimal_stack_options():
-    """Minimal stack - no aggregator, no alarms. Fastest deployment."""
-    return StackOptions(enable_aggregator=False, enable_alarms=False)
-
-
-@pytest.fixture(scope="session")
-def aggregator_stack_options():
-    """Stack with aggregator Lambda but no CloudWatch alarms."""
-    return StackOptions(enable_aggregator=True, enable_alarms=False)
-
-
 @pytest.fixture
-def benchmark_entities(sync_limiter: Any) -> list[str]:
+def benchmark_entities(sync_limiter: Any) -> list[str]:  # noqa: F811
     """Pre-create entities with pre-warmed buckets for throughput tests.
 
     Creates 100 entities, each with a pre-existing bucket to avoid
@@ -157,7 +99,7 @@ def sync_limiter_no_cache(mock_dynamodb):  # noqa: F811
 
 
 @pytest.fixture
-def sync_localstack_limiter_no_cache(shared_minimal_stack):
+def sync_localstack_limiter_no_cache(shared_minimal_stack):  # noqa: F811
     """SyncRateLimiter on LocalStack with config cache disabled."""
     ns = f"ns-nc-{uuid.uuid4().hex[:8]}"
     parent, scoped = make_sync_test_repo(shared_minimal_stack, ns)

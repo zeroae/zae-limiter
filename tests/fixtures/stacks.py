@@ -20,10 +20,28 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+import pytest_asyncio
 from filelock import FileLock
 
 if TYPE_CHECKING:
+    from zae_limiter import StackOptions
     from zae_limiter.repository import Repository
+
+
+@pytest.fixture(scope="session")
+def minimal_stack_options() -> StackOptions:
+    """Minimal stack - no aggregator, no alarms. Fastest deployment."""
+    from zae_limiter import StackOptions
+
+    return StackOptions(enable_aggregator=False, enable_alarms=False)
+
+
+@pytest.fixture(scope="session")
+def aggregator_stack_options() -> StackOptions:
+    """Stack with aggregator Lambda but no CloudWatch alarms."""
+    from zae_limiter import StackOptions
+
+    return StackOptions(enable_aggregator=True, enable_alarms=False)
 
 
 @pytest.fixture(scope="session")
@@ -153,3 +171,29 @@ def cleanup_shared_stacks(tmp_root: Path) -> None:
             repo.close()
         except Exception as e:
             print(f"Warning: cleanup of {data_file.stem} failed: {e}")
+
+
+# Session-scoped shared stack fixtures
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def shared_minimal_stack(localstack_endpoint, tmp_path_factory):
+    """Session-scoped shared stack without aggregator or alarms."""
+    return await get_or_create_shared_stack(
+        tmp_path_factory,
+        "shared-minimal",
+        localstack_endpoint,
+    )
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def shared_aggregator_stack(localstack_endpoint, tmp_path_factory):
+    """Session-scoped shared stack with aggregator Lambda."""
+    return await get_or_create_shared_stack(
+        tmp_path_factory,
+        "shared-aggregator",
+        localstack_endpoint,
+        enable_aggregator=True,
+        snapshot_windows="hourly",
+        usage_retention_days=7,
+    )

@@ -7,6 +7,9 @@ from unittest.mock import patch
 import pytest
 from moto import mock_aws
 
+from zae_limiter import SyncRateLimiter
+from zae_limiter.sync_repository import SyncRepository
+
 
 @pytest.fixture
 def aws_credentials(monkeypatch):
@@ -52,3 +55,16 @@ def _patch_aiobotocore_response():
         return await original_convert(http_response, operation_model)
 
     return patch.object(endpoint, "convert_to_response_dict", patched_convert)
+
+
+@pytest.fixture
+def sync_limiter(mock_dynamodb):
+    """Create a SyncRateLimiter with mocked DynamoDB."""
+    repo = SyncRepository(
+        name="test-rate-limits",
+        region="us-east-1",
+    )
+    repo.create_table()
+    limiter = SyncRateLimiter(repository=repo)
+    with limiter:
+        yield limiter

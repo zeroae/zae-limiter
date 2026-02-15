@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest_asyncio
+
 if TYPE_CHECKING:
     from zae_limiter import RateLimiter
     from zae_limiter.repository import Repository
@@ -65,3 +67,24 @@ def make_sync_test_repo(
     parent.register_namespace(namespace)
     scoped = parent.namespace(namespace)
     return parent, scoped
+
+
+# Async fixtures
+
+
+@pytest_asyncio.fixture
+async def test_repo(shared_minimal_stack, unique_namespace):
+    """Namespace-scoped async Repository on the shared minimal stack."""
+    parent, scoped = await make_test_repo(shared_minimal_stack, unique_namespace)
+    yield scoped
+    await parent.close()
+
+
+@pytest_asyncio.fixture
+async def localstack_limiter(test_repo):
+    """RateLimiter wrapping the namespace-scoped test_repo."""
+    from zae_limiter import RateLimiter
+
+    limiter = RateLimiter(repository=test_repo)
+    async with limiter:
+        yield limiter
