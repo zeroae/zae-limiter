@@ -93,8 +93,10 @@ This stack update:
 2. Creates **namespace-scoped IAM policies** (`NamespaceAcquirePolicy`, `NamespaceFullAccessPolicy`, `NamespaceReadOnlyPolicy`)
 3. Registers the **"default" namespace** with a random opaque ID in the namespace registry
 
-!!! warning "GSI4 creation time"
-    DynamoDB builds the new GSI by backfilling existing items. On large tables (millions of items), this can take **minutes to hours**. The table remains fully operational during this time, but the GSI won't return results until backfill completes. Monitor progress in the AWS Console or via:
+!!! warning "GSI4 creation time and empty backfill"
+    DynamoDB builds the new GSI by backfilling existing items. However, existing items have **no `GSI4PK` attribute**, so **GSI4 starts empty** after backfill completes -- this is expected. The migration in Step 3 adds `GSI4PK`/`GSI4SK` to every item, which populates the index.
+
+    On large tables (millions of items), backfill can take **minutes to hours**. During this time the table enters `UPDATING` state: reads and writes continue normally, but other schema changes (adding another GSI, modifying attribute definitions) are blocked until the table leaves `UPDATING`. Monitor progress via:
 
     ```bash
     aws dynamodb describe-table --table-name my-app \
