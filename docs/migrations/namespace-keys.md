@@ -125,7 +125,7 @@ After the stack update completes, find the opaque ID assigned to the `default` n
 
 === "Python"
 
-    ```{.python .lint-only}
+    ```python
     import asyncio
     from zae_limiter import Repository
 
@@ -157,7 +157,7 @@ This is the core migration step. It rewrites every existing (unprefixed) item wi
 
 Save the following as `migrate_namespace_keys.py` and run it against your table:
 
-```{.python .lint-only}
+```python
 """
 Namespace key migration script for zae-limiter v0.10.0.
 
@@ -510,7 +510,7 @@ Update your application code to use the namespace-aware API. For existing single
 
 === "Async"
 
-    ```{.python .lint-only}
+    ```python
     from zae_limiter import RateLimiter, Repository
 
     # v0.10.0 automatically uses the "default" namespace
@@ -524,7 +524,7 @@ Update your application code to use the namespace-aware API. For existing single
 
 === "Sync"
 
-    ```{.python .lint-only}
+    ```python
     from zae_limiter import SyncRateLimiter, SyncRepository
 
     repo = SyncRepository("my-app", "us-east-1", None)
