@@ -71,6 +71,7 @@ python scripts/generate_sync.py
 **Generated source files (DO NOT EDIT):**
 - `sync_repository_protocol.py` ← `repository_protocol.py`
 - `sync_repository.py` ← `repository.py`
+- `sync_repository_builder.py` ← `repository_builder.py`
 - `sync_limiter.py` ← `limiter.py`
 - `sync_lease.py` ← `lease.py`
 - `sync_config_cache.py` ← `config_cache.py`
@@ -143,40 +144,40 @@ zae-limiter lambda-export --output lambda.zip
 
 ### Declarative Infrastructure (Recommended)
 
-Pass `StackOptions` to declare the desired state:
+Use `RepositoryBuilder` (preferred) or `StackOptions` to declare the desired state:
 
 ```python
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import RateLimiter, Repository
 
-# Basic deployment
-limiter = RateLimiter(
-    name="my-app",
-    region="us-east-1",
-    stack_options=StackOptions(),  # CloudFormation ensures state matches
+# RepositoryBuilder (preferred) — handles infra + namespace in one call
+repo = await (
+    Repository.builder("my-app", "us-east-1")
+    .namespace("default")
+    .build()
 )
+limiter = RateLimiter(repository=repo)
 
 # Enterprise deployment with permission boundary and custom role naming
-limiter = RateLimiter(
-    name="my-app",
-    region="us-east-1",
-    stack_options=StackOptions(
-        permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
-        role_name_format="pb-{}-PowerUser",
-    ),
+repo = await (
+    Repository.builder("my-app", "us-east-1")
+    .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+    .role_name_format("pb-{}-PowerUser")
+    .policy_name_format("pb-{}-PowerUser")
+    .build()
 )
 ```
 
-Other `StackOptions` fields: `lambda_memory`, `usage_retention_days`, `audit_retention_days`, `enable_alarms`, `alarm_sns_topic`, `enable_audit_archival`, `audit_archive_glacier_days`, `enable_tracing`, `create_iam_roles` (default: False), `role_name_format`, `policy_name_format`, `enable_deletion_protection`, `create_iam` (default: True), `aggregator_role_arn`.
+Other builder methods: `.lambda_memory()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`.
 
 **IAM Resource Defaults (ADR-117):**
-- **Managed policies** are **created by default** (`AcquireOnlyPolicy`, `FullAccessPolicy`, `ReadOnlyPolicy`)
+- **Managed policies** are **created by default** — both table-level (`acq`, `full`, `read`) and namespace-scoped (`ns-acq`, `ns-full`, `ns-read`)
 - **IAM roles** are **opt-in** (set `create_iam_roles=True` to create them)
 - Users can attach managed policies to their own roles, users, or federated identities
 - **Skip all IAM** with `create_iam=False` or `--no-iam` for restricted IAM environments
 - **External Lambda role** with `aggregator_role_arn` or `--aggregator-role-arn` to use pre-existing role
 
-**When to use `StackOptions` vs CLI:**
-- **StackOptions**: Self-contained apps, serverless deployments, minimal onboarding friction
+**When to use `RepositoryBuilder` vs CLI:**
+- **RepositoryBuilder**: Self-contained apps, serverless deployments, minimal onboarding friction
 - **CLI**: Strict infra/app separation, audit requirements, Terraform/CDK integration
 
 ### Local Development with LocalStack
@@ -251,22 +252,24 @@ Cascade classes create child entities under a shared parent and set `cascade=Tru
 src/zae_limiter/
 ├── __init__.py        # Public API exports
 ├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError, EntityNotFoundError, InfrastructureNotFoundError
+├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError, EntityNotFoundError, InfrastructureNotFoundError, NamespaceNotFoundError
 ├── naming.py          # Resource name validation (ZAEL- prefix retained for legacy discovery)
 ├── bucket.py          # Token bucket math (integer arithmetic)
-├── schema.py          # DynamoDB key builders
-├── repository_protocol.py # RepositoryProtocol for backend abstraction
-├── repository.py      # DynamoDB operations
+├── schema.py          # DynamoDB key builders (namespace-prefixed)
+├── repository_protocol.py  # RepositoryProtocol for backend abstraction
+├── repository.py      # DynamoDB operations (namespace-aware)
+├── repository_builder.py   # RepositoryBuilder (fluent async construction)
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter (async)
 ├── config_cache.py    # Client-side config caching with TTL (CacheStats)
 ├── sync_repository_protocol.py  # Generated: SyncRepositoryProtocol
 ├── sync_repository.py           # Generated: SyncRepository
+├── sync_repository_builder.py   # Generated: SyncRepositoryBuilder
 ├── sync_limiter.py              # Generated: SyncRateLimiter
 ├── sync_lease.py                # Generated: SyncLease
 ├── sync_config_cache.py         # Generated: SyncConfigCache
 ├── locust.py          # Locust load testing integration (RateLimiterUser, RateLimiterSession)
-├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, local, loadtest)
+├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, namespace, local, loadtest)
 ├── version.py         # Version tracking and compatibility
 ├── loadtest/          # Load testing infrastructure (deploy, push, ui, run, tune, delete, list)
 │   ├── __init__.py
@@ -304,29 +307,95 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 
 The `Repository` class owns data access and infrastructure management. `RateLimiter` owns business logic.
 
-```python
-from zae_limiter import RateLimiter, Repository, StackOptions
+#### RepositoryBuilder (Preferred)
 
-# New pattern (preferred): Repository with stack_options
+Use `Repository.builder()` for fluent configuration with async initialization:
+
+```python
+from zae_limiter import RateLimiter, Repository
+
+# Basic usage — builder handles infrastructure + namespace resolution
+repo = await (
+    Repository.builder("my-app", "us-east-1")
+    .namespace("default")       # Resolve namespace (default: "default")
+    .config_cache_ttl(120)      # Config cache TTL in seconds
+    .build()                    # Async: creates infra, registers default ns, resolves namespace
+)
+limiter = RateLimiter(repository=repo)
+
+# Multi-tenant — each tenant gets an isolated namespace
+repo_alpha = await (
+    Repository.builder("my-app", "us-east-1")
+    .namespace("tenant-alpha")
+    .build()
+)
+
+# With infrastructure options
+repo = await (
+    Repository.builder("my-app", "us-east-1")
+    .lambda_memory(512)
+    .enable_alarms(False)
+    .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+    .role_name_format("PowerUserPB-{}")
+    .policy_name_format("PowerUserPB-{}")
+    .build()
+)
+
+# LocalStack development
+repo = await (
+    Repository.builder("my-app", "us-east-1", endpoint_url="http://localhost:4566")
+    .enable_aggregator(False)
+    .enable_alarms(False)
+    .build()
+)
+```
+
+**Builder `build()` steps:**
+1. Construct Repository with materialized StackOptions (if any infra options set)
+2. Ensure infrastructure exists (no-op if no infra options)
+3. Register the "default" namespace (conditional PutItem, no-op if exists)
+4. Resolve the requested namespace name to an opaque ID
+5. Reinitialize config cache with resolved namespace ID
+6. Version check and Lambda auto-update (skip for local endpoints)
+
+**Config ownership (RepositoryBuilder vs deprecated RateLimiter params):**
+
+| Parameter | RepositoryBuilder | RateLimiter (deprecated) |
+|-----------|-------------------|--------------------------|
+| `namespace` | `.namespace("tenant-a")` | N/A |
+| `config_cache_ttl` | `.config_cache_ttl(120)` | N/A (was on Repository constructor) |
+| `auto_update` | `.auto_update(True)` | `auto_update=True` (deprecated) |
+| `bucket_ttl_multiplier` | `.bucket_ttl_multiplier(7)` | `bucket_ttl_refill_multiplier=7` (deprecated) |
+| `on_unavailable` | `.on_unavailable("allow")` | `on_unavailable="allow"` (deprecated) |
+| `name/region/endpoint_url` | `Repository.builder(name, region)` | `RateLimiter(name=..., region=...)` (deprecated) |
+| `stack_options` | Individual builder methods | `RateLimiter(stack_options=...)` (deprecated) |
+| Infrastructure options | `.lambda_memory()`, `.enable_alarms()`, etc. | Via `StackOptions` dataclass |
+
+#### Scoped Repositories (Namespace Switching)
+
+After building, use `repo.namespace()` to get a scoped Repository for a different namespace:
+
+```python
+# Register additional namespaces
+await repo.register_namespace("tenant-beta")
+
+# Get scoped repo (shares client, entity cache, namespace cache)
+repo_beta = await repo.namespace("tenant-beta")
+limiter_beta = RateLimiter(repository=repo_beta)
+```
+
+#### Legacy API (Deprecated)
+
+```python
+# Old pattern (deprecated, emits DeprecationWarning):
 repo = Repository(
     name="my-app",
     region="us-east-1",
-    stack_options=StackOptions(lambda_memory=512),  # Pass to constructor
+    stack_options=StackOptions(lambda_memory=512),
 )
-await repo.ensure_infrastructure()  # Creates stack using stored options
+await repo.ensure_infrastructure()
 limiter = RateLimiter(repository=repo)
-
-# Old pattern (deprecated, emits DeprecationWarning):
-# repo.create_stack(stack_options=StackOptions())  # Don't use
-
-# RateLimiter._ensure_initialized() calls repo.ensure_infrastructure() automatically
 ```
-
-**Key API methods:**
-- `Repository(stack_options=...)` - Pass infrastructure config to constructor
-- `Repository(config_cache_ttl=...)` - Config cache TTL in seconds (default: 60, 0 to disable)
-- `repo.ensure_infrastructure()` - Create/update stack using stored options (no-op if None)
-- `repo.create_stack()` - **Deprecated**. Will be removed in v2.0.0
 
 See [ADR-108](docs/adr/108-repository-protocol.md) and [ADR-110](docs/adr/110-deprecation-constructor.md) for details.
 
@@ -363,10 +432,29 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
 
 **IAM Managed Policy Naming (ADR-117):**
 - Pattern: `{policy_name_format}.replace("{}", f"{stack_name}-{component}")`
-- Components: `acq` (AcquireOnlyPolicy), `full` (FullAccessPolicy), `read` (ReadOnlyPolicy)
-- Default names: `{stack}-acq`, `{stack}-full`, `{stack}-read`
-- Maximum policy name length: 128 characters (IAM limit)
+- **Table-level components:** `acq` (AcquireOnlyPolicy), `full` (FullAccessPolicy), `read` (ReadOnlyPolicy)
+- **Namespace-scoped components:** `ns-acq` (NamespaceAcquirePolicy), `ns-full` (NamespaceFullAccessPolicy), `ns-read` (NamespaceReadOnlyPolicy)
+- Default names: `{stack}-acq`, `{stack}-full`, `{stack}-read`, `{stack}-ns-acq`, `{stack}-ns-full`, `{stack}-ns-read`
+- Maximum policy name length: 120 characters (`policy_name_format` max length)
 - Policies are **always created** regardless of `create_iam_roles` setting
+
+**Two-tier IAM Policy Model:**
+
+| Tier | Policies | Scope | Use Case |
+|------|----------|-------|----------|
+| **Table-level** (admin) | `acq`, `full`, `read` | Full table access | Platform admins, cross-namespace operations |
+| **Namespace-scoped** (tenant) | `ns-acq`, `ns-full`, `ns-read` | Single namespace via TBAC | Tenant applications, isolated access |
+
+**Namespace-scoped policies** use Tag-Based Access Control (TBAC) with `dynamodb:LeadingKeys` condition:
+- Restrict DynamoDB access to items prefixed with the caller's `zael_namespace_id` principal tag
+- Also grant read access to the reserved namespace `_/*` (namespace registry, shared config)
+- Attach the `zael_namespace_id` tag to IAM roles/users to scope their access
+
+```bash
+# Tag an IAM role for namespace access
+aws iam tag-role --role-name my-app-role \
+  --tags Key=zael_namespace_id,Value=<opaque-namespace-id>
+```
 
 **Invalid names (rejected by validation):**
 - `rate_limits` (underscores not allowed)
@@ -419,9 +507,11 @@ Primary mitigation: cascade defaults to `False`.
 
 ### DynamoDB Single Table Design
 - All entities, buckets, limits, usage in one table
+- All PK and GSI PK values are namespace-prefixed: `{namespace_id}/PREFIX#value`
 - GSI1: Parent -> Children lookups
 - GSI2: Resource aggregation (capacity tracking)
 - GSI3: Entity config queries (sparse - only entity configs indexed)
+- GSI4: Namespace-scoped item discovery (KEYS_ONLY projection, used by `purge_namespace()`)
 - Uses TransactWriteItems for atomic multi-entity writes (initial consumption)
 - Uses independent single-item writes (`write_each`) for adjustments and rollbacks (1 WCU each)
 
@@ -552,24 +642,29 @@ Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/
 
 ## DynamoDB Access Patterns
 
+All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque namespace ID (e.g., `a7x3kq`). The reserved namespace `_` is used for namespace registry records.
+
 | Pattern | Query |
 |---------|-------|
-| Get entity | `PK=ENTITY#{id}, SK=#META` |
-| Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
+| Get entity | `PK={ns}/ENTITY#{id}, SK=#META` |
+| Get buckets | `PK={ns}/ENTITY#{id}, SK begins_with #BUCKET#` |
 | Batch get buckets | `BatchGetItem` with multiple PK/SK pairs (issue #133) |
 | Batch get configs | `BatchGetItem` with entity/resource/system config keys (issue #298) |
-| Get children | GSI1: `GSI1PK=PARENT#{id}` |
-| Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
-| List resources with defaults | `PK=SYSTEM#, SK=#RESOURCES` (single GetItem: 1 RCU, issue #233) |
-| Get version | `PK=SYSTEM#, SK=#VERSION` |
-| Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
-| Get usage snapshots (by entity) | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
-| Get usage snapshots (by resource) | GSI2: `GSI2PK=RESOURCE#{name}, GSI2SK begins_with USAGE#` |
-| Get system config (limits + on_unavailable) | `PK=SYSTEM#, SK=#CONFIG` |
-| Get resource config (limits) | `PK=RESOURCE#{resource}, SK=#CONFIG` |
-| Get entity config (limits) | `PK=ENTITY#{id}, SK=#CONFIG#{resource}` |
-| List entities with custom limits | GSI3: `GSI3PK=ENTITY_CONFIG#{resource}` |
-| List resources with entity configs | `PK=SYSTEM#, SK=#ENTITY_CONFIG_RESOURCES` (wide column, issue #288) |
+| Get children | GSI1: `GSI1PK={ns}/PARENT#{id}` |
+| Resource capacity | GSI2: `GSI2PK={ns}/RESOURCE#{name}, SK begins_with BUCKET#` |
+| List resources with defaults | `PK={ns}/SYSTEM#, SK=#RESOURCES` (single GetItem: 1 RCU, issue #233) |
+| Get version | `PK={ns}/SYSTEM#, SK=#VERSION` |
+| Get audit events | `PK={ns}/AUDIT#{entity_id}, SK begins_with #AUDIT#` |
+| Get usage snapshots (by entity) | `PK={ns}/ENTITY#{id}, SK begins_with #USAGE#` |
+| Get usage snapshots (by resource) | GSI2: `GSI2PK={ns}/RESOURCE#{name}, GSI2SK begins_with USAGE#` |
+| Get system config (limits + on_unavailable) | `PK={ns}/SYSTEM#, SK=#CONFIG` |
+| Get resource config (limits) | `PK={ns}/RESOURCE#{resource}, SK=#CONFIG` |
+| Get entity config (limits) | `PK={ns}/ENTITY#{id}, SK=#CONFIG#{resource}` |
+| List entities with custom limits | GSI3: `GSI3PK={ns}/ENTITY_CONFIG#{resource}` |
+| List resources with entity configs | `PK={ns}/SYSTEM#, SK=#ENTITY_CONFIG_RESOURCES` (wide column, issue #288) |
+| Namespace forward lookup | `PK=_/SYSTEM#, SK=#NAMESPACE#{name}` |
+| Namespace reverse lookup | `PK=_/SYSTEM#, SK=#NSID#{id}` |
+| List all items in namespace | GSI4: `GSI4PK={ns}` |
 
 **Optimized read patterns (issue #133):**
 - `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
@@ -608,12 +703,14 @@ Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
 
 **Key builders for config records:**
-- `pk_system()` - Returns `SYSTEM#`
-- `pk_resource(resource)` - Returns `RESOURCE#{resource}`
-- `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
+- `pk_system(namespace_id)` - Returns `{ns}/SYSTEM#`
+- `pk_resource(namespace_id, resource)` - Returns `{ns}/RESOURCE#{resource}`
+- `pk_entity(namespace_id, entity_id)` - Returns `{ns}/ENTITY#{entity_id}`
 - `sk_config()` - Returns `#CONFIG` (for system/resource level)
 - `sk_config(resource)` - Returns `#CONFIG#{resource}` (for entity level)
 - `sk_entity_config_resources()` - Returns `#ENTITY_CONFIG_RESOURCES` (registry with ref counts)
+- `sk_namespace(name)` - Returns `#NAMESPACE#{name}` (forward lookup)
+- `sk_nsid(id)` - Returns `#NSID#{id}` (reverse lookup)
 
 **Audit entity IDs for config levels** (ADR-106):
 - System config: Audit events use `$SYSTEM` as entity_id
@@ -649,13 +746,56 @@ zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
 
 Each level also has `get-*` and `delete-*` subcommands. Use `zae-limiter resource list` to list resources with defaults. Use `zae-limiter entity list-resources` to list all resources with entity-level configs. Use `zae-limiter entity list --with-custom-limits <resource>` to list entities with custom limits for a specific resource.
 
+**Namespace CLI commands:**
+
+```bash
+# Register namespaces
+zae-limiter namespace register tenant-alpha tenant-beta
+
+# List active namespaces
+zae-limiter namespace list
+
+# Show namespace details
+zae-limiter namespace show tenant-alpha
+
+# Soft delete a namespace
+zae-limiter namespace delete tenant-alpha
+
+# Recover a deleted namespace (by ID)
+zae-limiter namespace recover <namespace-id>
+
+# List deleted namespaces (candidates for purge)
+zae-limiter namespace orphans
+
+# Hard delete all data in a namespace (irreversible)
+zae-limiter namespace purge <namespace-id> --yes
+```
+
+**`--namespace` / `-N` flag on data-access commands:**
+
+Most data-access commands accept `--namespace` to scope operations to a specific namespace:
+
+```bash
+# Entity operations in a specific namespace
+zae-limiter entity set-limits user-123 --namespace tenant-alpha -l rpm:1000
+
+# Audit events for a namespace
+zae-limiter audit list --namespace tenant-alpha
+
+# Usage snapshots for a namespace
+zae-limiter usage list --namespace tenant-alpha
+
+# System defaults for a namespace
+zae-limiter system set-defaults --namespace tenant-alpha -l rpm:5000
+```
+
 Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for a config level are stored in a single item:
 
 | Level | PK | SK | Attributes |
 |-------|----|----|------------|
-| System | `SYSTEM#` | `#CONFIG` | `on_unavailable`, `l_rpm_cp`, `l_rpm_bx`, `l_rpm_ra`, `l_rpm_rp`, ... |
-| Resource | `RESOURCE#{res}` | `#CONFIG` | `resource`, `l_rpm_cp`, ... |
-| Entity | `ENTITY#{id}` | `#CONFIG#{resource}` | `entity_id`, `resource`, `l_rpm_cp`, ... |
+| System | `{ns}/SYSTEM#` | `#CONFIG` | `on_unavailable`, `l_rpm_cp`, `l_rpm_bx`, `l_rpm_ra`, `l_rpm_rp`, ... |
+| Resource | `{ns}/RESOURCE#{res}` | `#CONFIG` | `resource`, `l_rpm_cp`, ... |
+| Entity | `{ns}/ENTITY#{id}` | `#CONFIG#{resource}` | `entity_id`, `resource`, `l_rpm_cp`, ... |
 
 **Limit attribute format:** `l_{limit_name}_{field}` where field is one of:
 - `cp` (capacity), `bx` (burst), `ra` (refill_amount), `rp` (refill_period_seconds)
@@ -667,6 +807,32 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 **Caching:** 60s TTL in-memory cache per Repository instance (configurable via `config_cache_ttl` parameter on Repository constructor, 0 to disable). Use `repo.invalidate_config_cache()` for immediate refresh. Use `repo.get_cache_stats()` for monitoring. `set_limits()` and `delete_limits()` auto-evict relevant cache entries. Negative caching for entities without custom config. Config resolution is handled by `repo.resolve_limits()` (ADR-122).
 
 **Cost impact:** 1.5 RCU per cache miss (one GetItem per level, reduced from 2 RCU with per-limit items). With caching, `acquire()` costs 1-2 RCU per request regardless of limit count (O(1) via composite items, ADR-114/115).
+
+### Namespace Registry
+
+The namespace registry stores bidirectional records under the reserved namespace `_` (constant: `RESERVED_NAMESPACE`):
+
+| Record | PK | SK | Key Attributes |
+|--------|----|----|----------------|
+| Forward (name→ID) | `_/SYSTEM#` | `#NAMESPACE#{name}` | `namespace_id`, `status`, `created_at` |
+| Reverse (ID→name) | `_/SYSTEM#` | `#NSID#{id}` | `namespace`, `status`, `created_at`, `deleted_at` |
+
+**Status lifecycle:** `active` → `deleted` (soft delete, forward record removed) → `purging` (hard delete in progress) → removed
+
+**Namespace ID format:** 11-character opaque string generated via `secrets.token_urlsafe(8)`
+
+**API methods:**
+
+| Method | Description |
+|--------|-------------|
+| `register_namespace(name)` | Register a new namespace (idempotent, returns ID) |
+| `register_namespaces(names)` | Bulk register multiple namespaces |
+| `list_namespaces()` | List active namespaces (excludes deleted) |
+| `get_namespace(name)` | Get namespace details |
+| `delete_namespace(name)` | Soft delete (removes forward record, marks reverse as deleted) |
+| `recover_namespace(id)` | Restore a soft-deleted namespace |
+| `list_orphan_namespaces()` | List deleted namespaces (candidates for purge) |
+| `purge_namespace(id)` | Hard delete all data items + reverse record (uses GSI4) |
 
 ### Schema Design Notes
 
