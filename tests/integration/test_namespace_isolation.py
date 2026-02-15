@@ -11,6 +11,8 @@ To run:
     pytest tests/integration/test_namespace_isolation.py -v
 """
 
+import uuid
+
 import pytest
 
 from zae_limiter import Limit, RateLimiter
@@ -20,22 +22,21 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-async def base_repo(localstack_endpoint, unique_name):
-    """Repository with table and two registered namespaces."""
+async def ns_repos(shared_minimal_stack):
+    """Two namespace-scoped repositories on the shared stack for isolation tests."""
+    suffix = uuid.uuid4().hex[:8]
+    ns_alpha = f"tenant-alpha-{suffix}"
+    ns_beta = f"tenant-beta-{suffix}"
     repo = Repository(
-        name=unique_name,
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
+        name=shared_minimal_stack.name,
+        endpoint_url=shared_minimal_stack.endpoint_url,
+        region=shared_minimal_stack.region,
     )
-    await repo.create_table()
-    await repo._register_namespace("default")
-    await repo._register_namespace("tenant-alpha")
-    await repo._register_namespace("tenant-beta")
-    yield repo
-    try:
-        await repo.delete_table()
-    except Exception:
-        pass
+    await repo.register_namespace(ns_alpha)
+    await repo.register_namespace(ns_beta)
+    repo_a = await repo.namespace(ns_alpha)
+    repo_b = await repo.namespace(ns_beta)
+    yield repo_a, repo_b
     await repo.close()
 
 
@@ -43,10 +44,9 @@ class TestNamespaceIsolation:
     """Verify that entities in one namespace are invisible from another."""
 
     @pytest.mark.asyncio
-    async def test_entity_invisible_across_namespaces(self, base_repo):
+    async def test_entity_invisible_across_namespaces(self, ns_repos):
         """Entity created in namespace A is not found in namespace B."""
-        repo_a = await base_repo.namespace("tenant-alpha")
-        repo_b = await base_repo.namespace("tenant-beta")
+        repo_a, repo_b = ns_repos
 
         # Create entity in tenant-alpha
         await repo_a.create_entity(entity_id="user-1", name="Alpha User")
@@ -61,10 +61,9 @@ class TestNamespaceIsolation:
         assert entity is None
 
     @pytest.mark.asyncio
-    async def test_same_entity_id_different_namespaces(self, base_repo):
+    async def test_same_entity_id_different_namespaces(self, ns_repos):
         """Same entity_id in different namespaces are independent."""
-        repo_a = await base_repo.namespace("tenant-alpha")
-        repo_b = await base_repo.namespace("tenant-beta")
+        repo_a, repo_b = ns_repos
 
         # Create entity with same ID in both namespaces
         await repo_a.create_entity(entity_id="shared-id", name="Alpha Entity")
@@ -80,10 +79,9 @@ class TestNamespaceIsolation:
         assert entity_b.name == "Beta Entity"
 
     @pytest.mark.asyncio
-    async def test_buckets_isolated_across_namespaces(self, base_repo):
+    async def test_buckets_isolated_across_namespaces(self, ns_repos):
         """Buckets are namespace-scoped — acquire in A doesn't affect B."""
-        repo_a = await base_repo.namespace("tenant-alpha")
-        repo_b = await base_repo.namespace("tenant-beta")
+        repo_a, repo_b = ns_repos
 
         limits = [Limit.per_minute("rpm", 100)]
 
@@ -114,10 +112,9 @@ class TestNamespaceIsolation:
             pass  # Should succeed — namespaces are isolated
 
     @pytest.mark.asyncio
-    async def test_config_isolated_across_namespaces(self, base_repo):
+    async def test_config_isolated_across_namespaces(self, ns_repos):
         """System defaults are namespace-scoped."""
-        repo_a = await base_repo.namespace("tenant-alpha")
-        repo_b = await base_repo.namespace("tenant-beta")
+        repo_a, repo_b = ns_repos
 
         # Set system defaults in tenant-alpha
         await repo_a.set_system_defaults(
@@ -137,10 +134,9 @@ class TestNamespaceIsolation:
         assert on_unavailable_a == "allow"
 
     @pytest.mark.asyncio
-    async def test_delete_entity_scoped_to_namespace(self, base_repo):
+    async def test_delete_entity_scoped_to_namespace(self, ns_repos):
         """Deleting entity in namespace A does not affect namespace B."""
-        repo_a = await base_repo.namespace("tenant-alpha")
-        repo_b = await base_repo.namespace("tenant-beta")
+        repo_a, repo_b = ns_repos
 
         await repo_a.create_entity("user-del", name="Alpha Del")
         await repo_b.create_entity("user-del", name="Beta Del")

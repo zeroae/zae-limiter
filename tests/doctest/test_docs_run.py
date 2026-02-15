@@ -3,7 +3,7 @@
 import pytest
 from pytest_examples import CodeExample, EvalExample, find_examples
 
-from tests.doctest.conftest import (
+from tests.fixtures.doctest_helpers import (
     DOCS_EXAMPLES_CONFIG,
     SKIP_TAGS,
     has_bare_async,

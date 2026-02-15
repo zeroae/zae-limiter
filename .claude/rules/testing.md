@@ -4,20 +4,53 @@
 
 ```
 tests/
-├── conftest.py                  # Shared config (--run-aws flag)
+├── conftest.py                  # Shared config (--run-aws flag, gevent skip)
+├── fixtures/                    # Shared test fixtures package
+│   ├── __init__.py
+│   ├── moto.py                  # aws_credentials, mock_dynamodb, _patch_aiobotocore_response
+│   ├── names.py                 # unique_name, unique_name_class, unique_namespace
+│   ├── stacks.py                # SharedStack dataclass, create/destroy helpers, localstack_endpoint
+│   ├── repositories.py          # make_test_repo, make_test_limiter, make_sync_test_repo
+│   ├── aws_clients.py           # boto3 client factories (cloudwatch, sqs, lambda, s3, dynamodb)
+│   ├── polling.py               # poll_for_snapshots, wait_for_event_source_mapping
+│   ├── capacity.py              # CapacityCounter, _counting_client, capacity_counter
+│   └── doctest_helpers.py       # Mock classes, stubs, DOCS_EXAMPLES_CONFIG, COMMON_ENTITIES
 ├── unit/                        # Fast tests with mocked AWS (moto)
-│   ├── test_limiter.py
-│   ├── test_repository.py
-│   └── test_sync_limiter.py
 ├── integration/                 # LocalStack tests (repository-level)
-│   └── test_repository.py
 ├── e2e/                         # Full workflow tests (LocalStack + AWS)
-│   ├── test_localstack.py
-│   └── test_aws.py
-└── benchmark/                   # Performance benchmarks (pytest-benchmark)
-    ├── test_operations.py       # Mocked benchmarks
-    └── test_localstack.py       # LocalStack benchmarks
+├── benchmark/                   # Performance benchmarks (pytest-benchmark)
+└── doctest/                     # Documentation example tests
 ```
+
+## Fixture Architecture
+
+### Session-scoped shared stacks
+
+Integration, E2E, and benchmark tests share session-scoped CloudFormation stacks instead of creating per-test stacks. Each test gets its own namespace for data isolation within the shared stack.
+
+```
+Session event loop (loop_scope="session")
+  └─ shared_minimal_stack → SharedStack(name, region, endpoint_url)
+  └─ shared_aggregator_stack → same with aggregator Lambda
+
+Function event loop (default)
+  └─ test_repo → Repository() on function loop → register_namespace → namespace()
+
+Class event loop (E2E workflow tests, loop_scope="class")
+  └─ e2e_limiter → Repository() on class loop → register_namespace → RateLimiter
+```
+
+### SharedStack dataclass
+
+`SharedStack` is a frozen dataclass with no active connections. Each consumer creates its own `Repository` on its own event loop, avoiding cross-event-loop async resource sharing.
+
+### Key patterns
+
+- **Session fixtures** use `@pytest_asyncio.fixture(scope="session", loop_scope="session")` with `Repository.builder().build()`
+- **Function fixtures** use `make_test_repo(stack, namespace)` to create namespace-scoped repos
+- **Class fixtures** (E2E workflows) use `@pytest_asyncio.fixture(scope="class", loop_scope="class")`
+- **CLI tests** deploy their own stacks — CLI commands operate on default namespace
+- **No cross-module conftest imports** — all shared code lives in `tests/fixtures/`
 
 ## Test Categories
 

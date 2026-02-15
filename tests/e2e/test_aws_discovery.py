@@ -58,6 +58,7 @@ class TestTagBasedDiscovery:
             enable_alarms=False,
             permission_boundary=PERMISSION_BOUNDARY,
             role_name_format=ROLE_NAME_FORMAT,
+            policy_name_format=ROLE_NAME_FORMAT,
         )
 
         repo = Repository(
@@ -172,6 +173,7 @@ class TestDiscoveryWithUserTags:
             enable_alarms=False,
             permission_boundary=PERMISSION_BOUNDARY,
             role_name_format=ROLE_NAME_FORMAT,
+            policy_name_format=ROLE_NAME_FORMAT,
             tags={"env": "test", "team": "platform"},
         )
 

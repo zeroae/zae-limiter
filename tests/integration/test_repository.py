@@ -25,24 +25,8 @@ from zae_limiter.repository import Repository
 
 pytestmark = pytest.mark.integration
 
-# localstack_endpoint and StackOptions fixtures are defined in conftest.py
-
-
-@pytest.fixture
-async def localstack_repo(localstack_endpoint, unique_name):
-    """Repository connected to LocalStack (direct table creation, no CloudFormation)."""
-    repo = Repository(
-        name=unique_name,
-        endpoint_url=localstack_endpoint,
-        region="us-east-1",
-    )
-    await repo.create_table()
-    yield repo
-    try:
-        await repo.delete_table()
-    except Exception:
-        pass  # Table might not exist
-    await repo.close()
+# Fixtures from conftest.py: test_repo, localstack_limiter, localstack_endpoint,
+# unique_name, shared_minimal_stack, shared_aggregator_stack
 
 
 class TestRepositoryLocalStackCloudFormation:
@@ -120,22 +104,22 @@ class TestRepositoryLocalStackTransactions:
     """Integration tests for transactions with real DynamoDB."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_updates_with_optimistic_locking(self, localstack_repo):
+    async def test_concurrent_updates_with_optimistic_locking(self, test_repo):
         """Test optimistic locking detects concurrent updates."""
         # Create entity and bucket
-        await localstack_repo.create_entity("entity-1")
+        await test_repo.create_entity("entity-1")
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("entity-1", "api", limit, now_ms)
-        await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
+        await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
 
         # Get current bucket state
-        bucket = await localstack_repo.get_bucket("entity-1", "api", "rpm")
+        bucket = await test_repo.get_bucket("entity-1", "api", "rpm")
         assert bucket is not None
         original_tokens = bucket.tokens_milli
 
         # Simulate concurrent update with correct expected value
-        update_item = localstack_repo.build_bucket_update_item(
+        update_item = test_repo.build_bucket_update_item(
             entity_id="entity-1",
             resource="api",
             limit_name="rpm",
@@ -145,14 +129,14 @@ class TestRepositoryLocalStackTransactions:
         )
 
         # This should succeed
-        await localstack_repo.transact_write([update_item])
+        await test_repo.transact_write([update_item])
 
         # Verify update worked
-        bucket = await localstack_repo.get_bucket("entity-1", "api", "rpm")
+        bucket = await test_repo.get_bucket("entity-1", "api", "rpm")
         assert bucket.tokens_milli == 50_000
 
         # Now try to update again with stale expected value (should fail)
-        update_item_stale = localstack_repo.build_bucket_update_item(
+        update_item_stale = test_repo.build_bucket_update_item(
             entity_id="entity-1",
             resource="api",
             limit_name="rpm",
@@ -165,7 +149,7 @@ class TestRepositoryLocalStackTransactions:
         from botocore.exceptions import ClientError
 
         with pytest.raises(ClientError) as exc_info:
-            await localstack_repo.transact_write([update_item_stale])
+            await test_repo.transact_write([update_item_stale])
 
         # Verify it was a conditional check failure
         assert exc_info.value.response["Error"]["Code"] in [
@@ -174,11 +158,11 @@ class TestRepositoryLocalStackTransactions:
         ]
 
     @pytest.mark.asyncio
-    async def test_transaction_atomicity_on_partial_failure(self, localstack_repo):
+    async def test_transaction_atomicity_on_partial_failure(self, test_repo):
         """Verify transactions are all-or-nothing."""
         # Create two entities
-        await localstack_repo.create_entity("entity-1")
-        await localstack_repo.create_entity("entity-2")
+        await test_repo.create_entity("entity-1")
+        await test_repo.create_entity("entity-2")
 
         # Create buckets for both
         limit = Limit.per_minute("rpm", 100)
@@ -187,21 +171,21 @@ class TestRepositoryLocalStackTransactions:
         state1 = BucketState.from_limit("entity-1", "api", limit, now_ms)
         state2 = BucketState.from_limit("entity-2", "api", limit, now_ms)
 
-        await localstack_repo.transact_write(
+        await test_repo.transact_write(
             [
-                localstack_repo.build_bucket_put_item(state1),
-                localstack_repo.build_bucket_put_item(state2),
+                test_repo.build_bucket_put_item(state1),
+                test_repo.build_bucket_put_item(state2),
             ]
         )
 
         # Get both bucket states
-        bucket1 = await localstack_repo.get_bucket("entity-1", "api", "rpm")
-        bucket2 = await localstack_repo.get_bucket("entity-2", "api", "rpm")
+        bucket1 = await test_repo.get_bucket("entity-1", "api", "rpm")
+        bucket2 = await test_repo.get_bucket("entity-2", "api", "rpm")
         assert bucket1 is not None
         assert bucket2 is not None
 
         # Create transaction with one valid update and one that will fail
-        valid_update = localstack_repo.build_bucket_update_item(
+        valid_update = test_repo.build_bucket_update_item(
             entity_id="entity-1",
             resource="api",
             limit_name="rpm",
@@ -209,7 +193,7 @@ class TestRepositoryLocalStackTransactions:
             new_last_refill_ms=now_ms + 1000,
         )
 
-        failing_update = localstack_repo.build_bucket_update_item(
+        failing_update = test_repo.build_bucket_update_item(
             entity_id="entity-2",
             resource="api",
             limit_name="rpm",
@@ -222,23 +206,23 @@ class TestRepositoryLocalStackTransactions:
         from botocore.exceptions import ClientError
 
         with pytest.raises(ClientError):
-            await localstack_repo.transact_write([valid_update, failing_update])
+            await test_repo.transact_write([valid_update, failing_update])
 
         # Verify NEITHER update was applied (atomicity)
-        bucket1_after = await localstack_repo.get_bucket("entity-1", "api", "rpm")
-        bucket2_after = await localstack_repo.get_bucket("entity-2", "api", "rpm")
+        bucket1_after = await test_repo.get_bucket("entity-1", "api", "rpm")
+        bucket2_after = await test_repo.get_bucket("entity-2", "api", "rpm")
 
         # Both should still have original values
         assert bucket1_after.tokens_milli == bucket1.tokens_milli
         assert bucket2_after.tokens_milli == bucket2.tokens_milli
 
     @pytest.mark.asyncio
-    async def test_batch_write_pagination_over_25_items(self, localstack_repo):
+    async def test_batch_write_pagination_over_25_items(self, test_repo):
         """Batch operations should handle >25 items via chunking."""
         # Create 30 entities
         entity_ids = [f"entity-{i}" for i in range(30)]
         for entity_id in entity_ids:
-            await localstack_repo.create_entity(entity_id)
+            await test_repo.create_entity(entity_id)
 
         # Create buckets for all (tests internal batching)
         limit = Limit.per_minute("rpm", 100)
@@ -246,16 +230,16 @@ class TestRepositoryLocalStackTransactions:
 
         for entity_id in entity_ids:
             state = BucketState.from_limit(entity_id, "api", limit, now_ms)
-            await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
+            await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
 
         # Delete first entity - internally handles batch pagination
-        await localstack_repo.delete_entity("entity-0")
+        await test_repo.delete_entity("entity-0")
 
         # Verify entity and bucket are deleted
-        entity = await localstack_repo.get_entity("entity-0")
+        entity = await test_repo.get_entity("entity-0")
         assert entity is None
 
-        bucket = await localstack_repo.get_bucket("entity-0", "api", "rpm")
+        bucket = await test_repo.get_bucket("entity-0", "api", "rpm")
         assert bucket is None
 
 
@@ -263,12 +247,12 @@ class TestRepositoryLocalStackResourceAggregation:
     """Integration tests for GSI2 queries."""
 
     @pytest.mark.asyncio
-    async def test_get_resource_buckets_across_multiple_entities(self, localstack_repo):
+    async def test_get_resource_buckets_across_multiple_entities(self, test_repo):
         """Should query all buckets for a resource across entities."""
         # Create multiple entities
         entity_ids = ["entity-a", "entity-b", "entity-c"]
         for entity_id in entity_ids:
-            await localstack_repo.create_entity(entity_id)
+            await test_repo.create_entity(entity_id)
 
         # Create composite buckets: one item per entity+resource with all limits
         limits = [
@@ -279,12 +263,12 @@ class TestRepositoryLocalStackResourceAggregation:
 
         for entity_id in entity_ids:
             states = [BucketState.from_limit(entity_id, "gpt-4", limit, now_ms) for limit in limits]
-            put_item = localstack_repo.build_composite_create(entity_id, "gpt-4", states, now_ms)
-            await localstack_repo.transact_write([put_item])
+            put_item = test_repo.build_composite_create(entity_id, "gpt-4", states, now_ms)
+            await test_repo.transact_write([put_item])
 
         # Query resource buckets via GSI2
-        rpm_buckets = await localstack_repo.get_resource_buckets("gpt-4", "rpm")
-        tpm_buckets = await localstack_repo.get_resource_buckets("gpt-4", "tpm")
+        rpm_buckets = await test_repo.get_resource_buckets("gpt-4", "rpm")
+        tpm_buckets = await test_repo.get_resource_buckets("gpt-4", "tpm")
 
         # Should get all entities for each limit
         assert len(rpm_buckets) == 3
@@ -307,12 +291,12 @@ class TestRepositoryBatchGetBuckets:
     """Integration tests for batch_get_buckets() using BatchGetItem."""
 
     @pytest.mark.asyncio
-    async def test_batch_get_buckets_multiple_buckets(self, localstack_repo):
+    async def test_batch_get_buckets_multiple_buckets(self, test_repo):
         """Should fetch multiple composite buckets in a single batch call."""
         # Create test entities
         entity_ids = ["batch-entity-1", "batch-entity-2", "batch-entity-3"]
         for entity_id in entity_ids:
-            await localstack_repo.create_entity(entity_id)
+            await test_repo.create_entity(entity_id)
 
         # Create composite buckets: one item per entity+resource with all limits
         limits = [
@@ -323,12 +307,12 @@ class TestRepositoryBatchGetBuckets:
 
         for entity_id in entity_ids:
             states = [BucketState.from_limit(entity_id, "gpt-4", limit, now_ms) for limit in limits]
-            put_item = localstack_repo.build_composite_create(entity_id, "gpt-4", states, now_ms)
-            await localstack_repo.transact_write([put_item])
+            put_item = test_repo.build_composite_create(entity_id, "gpt-4", states, now_ms)
+            await test_repo.transact_write([put_item])
 
         # Batch get composite items (2-tuple keys: entity_id, resource)
         keys = [(entity_id, "gpt-4") for entity_id in entity_ids]
-        result = await localstack_repo.batch_get_buckets(keys)
+        result = await test_repo.batch_get_buckets(keys)
 
         # Should return all 6 bucket states (3 entities × 2 limits per composite item)
         assert len(result) == 6
@@ -344,20 +328,20 @@ class TestRepositoryBatchGetBuckets:
                 assert bucket.limit_name == limit.name
 
     @pytest.mark.asyncio
-    async def test_batch_get_buckets_empty_key_list(self, localstack_repo):
+    async def test_batch_get_buckets_empty_key_list(self, test_repo):
         """Should return empty dict for empty key list."""
-        result = await localstack_repo.batch_get_buckets([])
+        result = await test_repo.batch_get_buckets([])
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_batch_get_buckets_deduplication(self, localstack_repo):
+    async def test_batch_get_buckets_deduplication(self, test_repo):
         """Should deduplicate duplicate keys in the request."""
         # Create entity and composite bucket
-        await localstack_repo.create_entity("dedup-entity")
+        await test_repo.create_entity("dedup-entity")
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("dedup-entity", "api", limit, now_ms)
-        await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
+        await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
 
         # Request with duplicate 2-tuple keys
         keys = [
@@ -365,21 +349,21 @@ class TestRepositoryBatchGetBuckets:
             ("dedup-entity", "api"),  # Duplicate
             ("dedup-entity", "api"),  # Another duplicate
         ]
-        result = await localstack_repo.batch_get_buckets(keys)
+        result = await test_repo.batch_get_buckets(keys)
 
         # Should return single bucket state (deduplication worked)
         assert len(result) == 1
         assert ("dedup-entity", "api", "rpm") in result
 
     @pytest.mark.asyncio
-    async def test_batch_get_buckets_missing_buckets(self, localstack_repo):
+    async def test_batch_get_buckets_missing_buckets(self, test_repo):
         """Should only return existing buckets, omitting missing ones."""
         # Create one entity with one composite bucket (single limit)
-        await localstack_repo.create_entity("exists-entity")
+        await test_repo.create_entity("exists-entity")
         limit = Limit.per_minute("rpm", 100)
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("exists-entity", "api", limit, now_ms)
-        await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
+        await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
 
         # Request mix of existing and non-existing composite items (2-tuple keys)
         keys = [
@@ -387,19 +371,19 @@ class TestRepositoryBatchGetBuckets:
             ("exists-entity", "other"),  # Resource doesn't exist
             ("missing-entity", "api"),  # Entity doesn't exist
         ]
-        result = await localstack_repo.batch_get_buckets(keys)
+        result = await test_repo.batch_get_buckets(keys)
 
         # Should only return the one existing bucket
         assert len(result) == 1
         assert ("exists-entity", "api", "rpm") in result
 
     @pytest.mark.asyncio
-    async def test_batch_get_buckets_chunking_over_100_items(self, localstack_repo):
+    async def test_batch_get_buckets_chunking_over_100_items(self, test_repo):
         """Should automatically chunk requests for >100 items."""
         # Create 110 entities (to test chunking at 100 items)
         entity_ids = [f"chunk-entity-{i}" for i in range(110)]
         for entity_id in entity_ids:
-            await localstack_repo.create_entity(entity_id)
+            await test_repo.create_entity(entity_id)
 
         # Create one composite bucket per entity
         limit = Limit.per_minute("rpm", 100)
@@ -407,11 +391,11 @@ class TestRepositoryBatchGetBuckets:
 
         for entity_id in entity_ids:
             state = BucketState.from_limit(entity_id, "api", limit, now_ms)
-            await localstack_repo.transact_write([localstack_repo.build_bucket_put_item(state)])
+            await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
 
         # Batch get all 110 composite items (2-tuple keys, requires 2 DynamoDB calls)
         keys = [(entity_id, "api") for entity_id in entity_ids]
-        result = await localstack_repo.batch_get_buckets(keys)
+        result = await test_repo.batch_get_buckets(keys)
 
         # Should return all 110 bucket states
         assert len(result) == 110
@@ -427,9 +411,9 @@ class TestRepositoryPing:
     """Integration tests for Repository.ping() health check."""
 
     @pytest.mark.asyncio
-    async def test_ping_returns_true_when_table_exists(self, localstack_repo):
+    async def test_ping_returns_true_when_table_exists(self, test_repo):
         """ping() should return True when table is reachable."""
-        result = await localstack_repo.ping()
+        result = await test_repo.ping()
         assert result is True
 
     @pytest.mark.asyncio
@@ -483,7 +467,8 @@ class TestBucketTTLDowngrade:
             pass
 
         # Verify no TTL (entity has custom config)
-        pk = pk_entity("default", "user-downgrade")
+        ns_id = limiter._repository._namespace_id
+        pk = pk_entity(ns_id, "user-downgrade")
         item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None, "Bucket should exist after acquire"
         assert "ttl" not in item, "Custom config entity should NOT have TTL"
@@ -516,9 +501,9 @@ class TestEntityConfigRegistry:
     """
 
     @pytest.mark.asyncio
-    async def test_set_limits_transaction_atomicity(self, localstack_repo):
+    async def test_set_limits_transaction_atomicity(self, test_repo):
         """Verify set_limits atomically creates config AND increments registry."""
-        repo = localstack_repo
+        repo = test_repo
 
         await repo.create_entity("user-1")
         limits = [Limit.per_minute("rpm", 1000)]
@@ -535,9 +520,9 @@ class TestEntityConfigRegistry:
         assert "gpt-4" in resources
 
     @pytest.mark.asyncio
-    async def test_delete_limits_transaction_atomicity(self, localstack_repo):
+    async def test_delete_limits_transaction_atomicity(self, test_repo):
         """Verify delete_limits atomically removes config AND decrements registry."""
-        repo = localstack_repo
+        repo = test_repo
 
         await repo.create_entity("user-1")
         limits = [Limit.per_minute("rpm", 1000)]
@@ -554,9 +539,9 @@ class TestEntityConfigRegistry:
         assert "gpt-4" not in resources
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent_config_no_side_effects(self, localstack_repo):
+    async def test_delete_nonexistent_config_no_side_effects(self, test_repo):
         """Deleting non-existent config should not affect registry or create audit."""
-        repo = localstack_repo
+        repo = test_repo
 
         await repo.create_entity("user-1")
 
@@ -568,9 +553,9 @@ class TestEntityConfigRegistry:
         assert resources == []
 
     @pytest.mark.asyncio
-    async def test_registry_cleanup_at_zero(self, localstack_repo):
+    async def test_registry_cleanup_at_zero(self, test_repo):
         """Verify registry attribute is removed when count reaches zero."""
-        repo = localstack_repo
+        repo = test_repo
 
         await repo.create_entity("user-1")
         await repo.create_entity("user-2")
@@ -591,11 +576,11 @@ class TestEntityConfigRegistry:
         assert "gpt-4" not in resources
 
     @pytest.mark.asyncio
-    async def test_update_existing_config_no_double_count(self, localstack_repo):
+    async def test_update_existing_config_no_double_count(self, test_repo):
         """Updating existing config should not increment registry twice."""
         from zae_limiter import schema
 
-        repo = localstack_repo
+        repo = test_repo
 
         await repo.create_entity("user-1")
         limits1 = [Limit.per_minute("rpm", 1000)]
@@ -606,11 +591,12 @@ class TestEntityConfigRegistry:
         await repo.set_limits("user-1", limits2, resource="gpt-4")
 
         # Verify registry count is exactly 1
+        ns_id = repo._namespace_id
         client = await repo._get_client()
         response = await client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_system("default")},
+                "PK": {"S": schema.pk_system(ns_id)},
                 "SK": {"S": schema.sk_entity_config_resources()},
             },
         )
@@ -628,9 +614,9 @@ class TestSpeculativeConsume:
     """
 
     @pytest.mark.asyncio
-    async def test_speculative_success_single_limit(self, localstack_repo):
+    async def test_speculative_success_single_limit(self, test_repo):
         """Speculative consume succeeds when bucket has enough tokens."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-entity-1")
 
         # Create composite bucket with 100 rpm
@@ -655,9 +641,9 @@ class TestSpeculativeConsume:
         assert result.buckets[0].tokens_milli == 99_000
 
     @pytest.mark.asyncio
-    async def test_speculative_success_multi_limit(self, localstack_repo):
+    async def test_speculative_success_multi_limit(self, test_repo):
         """Speculative consume succeeds with multiple limits in one bucket."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-entity-2")
 
         rpm_limit = Limit.per_minute("rpm", 100)
@@ -683,9 +669,9 @@ class TestSpeculativeConsume:
         assert bucket_map["tpm"].tokens_milli == 9_500_000  # 10_000_000 - 500_000
 
     @pytest.mark.asyncio
-    async def test_speculative_success_returns_total_consumed(self, localstack_repo):
+    async def test_speculative_success_returns_total_consumed(self, test_repo):
         """ALL_NEW response includes total_consumed_milli counter."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-entity-tc")
 
         limit = Limit.per_minute("rpm", 100)
@@ -709,9 +695,9 @@ class TestSpeculativeConsume:
         assert result2.buckets[0].total_consumed_milli == 10_000
 
     @pytest.mark.asyncio
-    async def test_speculative_failure_insufficient_tokens(self, localstack_repo):
+    async def test_speculative_failure_insufficient_tokens(self, test_repo):
         """Speculative consume fails when bucket has insufficient tokens."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-entity-3")
 
         limit = Limit.per_minute("rpm", 10)
@@ -735,9 +721,9 @@ class TestSpeculativeConsume:
         assert result.old_buckets[0].tokens_milli == 10_000
 
     @pytest.mark.asyncio
-    async def test_speculative_failure_multi_limit_one_exhausted(self, localstack_repo):
+    async def test_speculative_failure_multi_limit_one_exhausted(self, test_repo):
         """Condition fails when ANY limit is insufficient (AND across limits)."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-entity-4")
 
         rpm_limit = Limit.per_minute("rpm", 100)
@@ -766,9 +752,9 @@ class TestSpeculativeConsume:
         assert bucket_map["tpm"].tokens_milli == 5_000
 
     @pytest.mark.asyncio
-    async def test_speculative_failure_bucket_missing(self, localstack_repo):
+    async def test_speculative_failure_bucket_missing(self, test_repo):
         """Speculative consume fails gracefully when bucket doesn't exist."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-entity-5")
 
         # Don't create any bucket — first acquire scenario
@@ -782,9 +768,9 @@ class TestSpeculativeConsume:
         assert result.old_buckets is None  # No ALL_OLD because item doesn't exist
 
     @pytest.mark.asyncio
-    async def test_speculative_success_returns_cascade_and_parent(self, localstack_repo):
+    async def test_speculative_success_returns_cascade_and_parent(self, test_repo):
         """ALL_NEW response includes denormalized cascade and parent_id."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-child", parent_id="spec-parent", cascade=True)
 
         limit = Limit.per_minute("rpm", 100)
@@ -811,9 +797,9 @@ class TestSpeculativeConsume:
         assert result.parent_id == "spec-parent"
 
     @pytest.mark.asyncio
-    async def test_speculative_success_no_cascade(self, localstack_repo):
+    async def test_speculative_success_no_cascade(self, test_repo):
         """ALL_NEW response correctly reports cascade=False."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-nocascade")
 
         limit = Limit.per_minute("rpm", 100)
@@ -839,9 +825,9 @@ class TestSpeculativeConsume:
         assert result.parent_id is None
 
     @pytest.mark.asyncio
-    async def test_speculative_preserves_bucket_fields(self, localstack_repo):
+    async def test_speculative_preserves_bucket_fields(self, test_repo):
         """ALL_NEW returns all bucket fields needed for BucketState reconstruction."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-fields")
 
         limit = Limit.per_minute("rpm", 100, burst=150)
@@ -868,9 +854,9 @@ class TestSpeculativeConsume:
         assert bucket.tokens_milli == 150_000 - 5_000  # burst - consumed
 
     @pytest.mark.asyncio
-    async def test_speculative_drain_then_fail(self, localstack_repo):
+    async def test_speculative_drain_then_fail(self, test_repo):
         """Repeated speculative consumes drain bucket until condition fails."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-drain")
 
         limit = Limit.per_minute("rpm", 10)
@@ -896,9 +882,9 @@ class TestSpeculativeConsume:
         assert result.old_buckets[0].tokens_milli == 1_000
 
     @pytest.mark.asyncio
-    async def test_speculative_rejects_expired_ttl_bucket(self, localstack_repo):
+    async def test_speculative_rejects_expired_ttl_bucket(self, test_repo):
         """Speculative consume rejects buckets with expired TTL."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-expired")
 
         limit = Limit.per_minute("rpm", 100)
@@ -919,9 +905,9 @@ class TestSpeculativeConsume:
         assert result.old_buckets is not None
 
     @pytest.mark.asyncio
-    async def test_speculative_accepts_no_ttl_bucket(self, localstack_repo):
+    async def test_speculative_accepts_no_ttl_bucket(self, test_repo):
         """Speculative consume accepts buckets without TTL attribute."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-no-ttl")
 
         limit = Limit.per_minute("rpm", 100)
@@ -940,9 +926,9 @@ class TestSpeculativeConsume:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_speculative_accepts_future_ttl_bucket(self, localstack_repo):
+    async def test_speculative_accepts_future_ttl_bucket(self, test_repo):
         """Speculative consume accepts buckets with TTL in the future."""
-        repo = localstack_repo
+        repo = test_repo
         await repo.create_entity("spec-future-ttl")
 
         limit = Limit.per_minute("rpm", 100)

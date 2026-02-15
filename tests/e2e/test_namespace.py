@@ -43,21 +43,23 @@ class TestE2ENamespaceMultiTenantLifecycle:
     """
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def multi_tenant_repos(self, localstack_endpoint, unique_name_class):
-        """Deploy stack and create scoped repos for ns-a and ns-b."""
-        repo = await (
-            Repository.builder(unique_name_class, "us-east-1", endpoint_url=localstack_endpoint)
-            .enable_aggregator(False)
-            .enable_alarms(False)
-            .build()
+    async def multi_tenant_repos(self, shared_minimal_stack, unique_name_class):
+        """Create scoped repos for unique ns-a and ns-b on shared stack."""
+        suffix = unique_name_class
+        repo = Repository(
+            name=shared_minimal_stack.name,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+            region=shared_minimal_stack.region,
         )
 
-        # Register test namespaces
-        ns_a_id = await repo.register_namespace("ns-a")
-        ns_b_id = await repo.register_namespace("ns-b")
+        # Register test namespaces with unique suffix
+        ns_a_name = f"ns-a-{suffix}"
+        ns_b_name = f"ns-b-{suffix}"
+        ns_a_id = await repo.register_namespace(ns_a_name)
+        ns_b_id = await repo.register_namespace(ns_b_name)
 
-        repo_a = await repo.namespace("ns-a")
-        repo_b = await repo.namespace("ns-b")
+        repo_a = await repo.namespace(ns_a_name)
+        repo_b = await repo.namespace(ns_b_name)
 
         yield {
             "repo": repo,
@@ -65,26 +67,26 @@ class TestE2ENamespaceMultiTenantLifecycle:
             "repo_b": repo_b,
             "ns_a_id": ns_a_id,
             "ns_b_id": ns_b_id,
+            "ns_a_name": ns_a_name,
+            "ns_b_name": ns_b_name,
         }
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_register_and_list_namespaces(self, multi_tenant_repos):
         """Registered namespaces appear in list."""
         repo = multi_tenant_repos["repo"]
+        ns_a_name = multi_tenant_repos["ns_a_name"]
+        ns_b_name = multi_tenant_repos["ns_b_name"]
 
         namespaces = await repo.list_namespaces()
         names = {ns["name"] for ns in namespaces}
 
-        # "default" is auto-registered by builder, plus ns-a and ns-b
+        # "default" is auto-registered by builder, plus our test namespaces
         assert "default" in names
-        assert "ns-a" in names
-        assert "ns-b" in names
+        assert ns_a_name in names
+        assert ns_b_name in names
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_create_entities_in_namespaces(self, multi_tenant_repos):
@@ -178,13 +180,15 @@ class TestE2ENamespaceMultiTenantLifecycle:
     async def test_delete_namespace_a(self, multi_tenant_repos):
         """Soft-deleting ns-a removes it from list but keeps ns-b."""
         repo = multi_tenant_repos["repo"]
+        ns_a_name = multi_tenant_repos["ns_a_name"]
+        ns_b_name = multi_tenant_repos["ns_b_name"]
 
-        await repo.delete_namespace("ns-a")
+        await repo.delete_namespace(ns_a_name)
 
         namespaces = await repo.list_namespaces()
         names = {ns["name"] for ns in namespaces}
-        assert "ns-a" not in names
-        assert "ns-b" in names
+        assert ns_a_name not in names
+        assert ns_b_name in names
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_namespace_a_data_cleaned_after_purge(self, multi_tenant_repos):
