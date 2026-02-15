@@ -13,11 +13,6 @@ from tests.fixtures.repositories import make_sync_test_repo
 from zae_limiter import Limit, SyncRateLimiter
 from zae_limiter.sync_repository import SyncRepository
 
-pytest_plugins = [
-    "tests.fixtures.capacity",
-    "tests.fixtures.moto",
-]
-
 # Namespace-scoped sync fixtures for LocalStack benchmarks
 
 

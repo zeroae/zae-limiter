@@ -6,11 +6,6 @@ import pytest_asyncio
 from tests.fixtures.stacks import get_or_create_shared_stack
 from zae_limiter import StackOptions
 
-pytest_plugins = [
-    "tests.fixtures.aws_clients",
-    "tests.fixtures.repositories",
-]
-
 # E2E-specific StackOptions fixtures
 
 

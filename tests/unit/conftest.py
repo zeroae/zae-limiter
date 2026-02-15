@@ -6,10 +6,6 @@ from tests.fixtures.moto import _patch_aiobotocore_response
 from zae_limiter import RateLimiter
 from zae_limiter.sync_repository import SyncRepository
 
-pytest_plugins = [
-    "tests.fixtures.moto",
-]
-
 
 @pytest.fixture
 async def limiter(mock_dynamodb):

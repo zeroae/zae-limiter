@@ -20,7 +20,11 @@ import pytest  # noqa: E402
 from tests.fixtures.stacks import cleanup_shared_stacks  # noqa: E402
 
 pytest_plugins = [
+    "tests.fixtures.aws_clients",
+    "tests.fixtures.capacity",
+    "tests.fixtures.moto",
     "tests.fixtures.names",
+    "tests.fixtures.repositories",
     "tests.fixtures.stacks",
 ]
 
