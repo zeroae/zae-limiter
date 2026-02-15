@@ -120,7 +120,7 @@ When you use infrastructure builder methods, zae-limiter creates real AWS infras
 !!! info "Infrastructure Outlives Your Python Session"
     This infrastructure persists beyond your Python session. Restarting your application
     reconnects to existing resources. Rate limit state is preserved across restarts.
-    You only pay when the limiter is used (~$0.75/1M requests).
+    You only pay when the limiter is used (~$0.625/1M requests, $0 for fast rejections).
 
 ## Infrastructure Lifecycle
 
