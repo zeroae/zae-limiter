@@ -85,7 +85,7 @@ zae-limiter local down
 
 Benchmarks detect performance regressions. Files in `tests/benchmark/` track latency, throughput, and DynamoDB capacity.
 
-**Important:** xdist must be disabled for benchmark timing to work. Override `addopts` from pyproject.toml:
+**Important:** `-o "addopts="` disables xdist by overriding `pyproject.toml`. Only use it for benchmarks and gevent tests — all other test runs (unit, integration, E2E) must keep xdist enabled for parallel execution:
 
 ```bash
 # Run benchmarks (disable xdist with -o "addopts=")
