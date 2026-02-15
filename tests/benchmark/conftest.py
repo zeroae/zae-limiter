@@ -23,9 +23,7 @@ from tests.fixtures.moto import (  # noqa: F401
 from tests.fixtures.names import unique_name, unique_name_class, unique_namespace  # noqa: F401
 from tests.fixtures.repositories import make_sync_test_repo
 from tests.fixtures.stacks import (  # noqa: F401
-    aggregator_stack_options,
     localstack_endpoint,
-    minimal_stack_options,
     shared_aggregator_stack,
     shared_minimal_stack,
 )
