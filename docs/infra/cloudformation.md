@@ -93,6 +93,9 @@ The DynamoDB table name is automatically derived from the CloudFormation stack n
 | `EnableTracing` | String | `false` | Enable AWS X-Ray tracing for Lambda |
 | `EnableIAMRoles` | String | `true` | Create App/Admin/ReadOnly IAM roles |
 | `EnableDeletionProtection` | String | `false` | Enable DynamoDB table deletion protection |
+| `NamespaceAcquirePolicyName` | String | _(empty)_ | Custom name for namespace acquire-only policy |
+| `NamespaceFullAccessPolicyName` | String | _(empty)_ | Custom name for namespace full-access policy |
+| `NamespaceReadOnlyPolicyName` | String | _(empty)_ | Custom name for namespace read-only policy |
 
 ## DynamoDB Table
 
@@ -111,6 +114,14 @@ AttributeDefinitions:
   - AttributeName: GSI2PK
     AttributeType: S
   - AttributeName: GSI2SK
+    AttributeType: S
+  - AttributeName: GSI3PK
+    AttributeType: S
+  - AttributeName: GSI3SK
+    AttributeType: S
+  - AttributeName: GSI4PK
+    AttributeType: S
+  - AttributeName: GSI4SK
     AttributeType: S
 
 KeySchema:
@@ -143,6 +154,32 @@ GlobalSecondaryIndexes:
         KeyType: HASH
       - AttributeName: GSI2SK  # BUCKET#{entity_id}#{limit_name}
         KeyType: RANGE
+```
+
+**GSI3** - Entity config queries (sparse index):
+
+```yaml
+  - IndexName: GSI3
+    KeySchema:
+      - AttributeName: GSI3PK  # ENTITY_CONFIG#{resource}
+        KeyType: HASH
+      - AttributeName: GSI3SK  # entity_id
+        KeyType: RANGE
+    Projection:
+      ProjectionType: ALL
+```
+
+**GSI4** - Namespace item discovery (for `purge_namespace()`):
+
+```yaml
+  - IndexName: GSI4
+    KeySchema:
+      - AttributeName: GSI4PK  # namespace_id
+        KeyType: HASH
+      - AttributeName: GSI4SK  # PK (original partition key)
+        KeyType: RANGE
+    Projection:
+      ProjectionType: KEYS_ONLY
 ```
 
 ### Stream Configuration
@@ -346,6 +383,20 @@ session = boto3.Session(
 )
 ```
 
+### Namespace-Scoped IAM Policies
+
+The template also creates three namespace-scoped policies that restrict DynamoDB access to items within a single namespace using tag-based access control (TBAC):
+
+| Policy | Suffix | Use Case | Tag Required |
+|--------|--------|----------|--------------|
+| `NamespaceAcquirePolicy` | `-ns-acq` | Tenant apps calling `acquire()` | `zael_namespace_id` |
+| `NamespaceFullAccessPolicy` | `-ns-full` | Tenant config management | `zael_namespace_id` |
+| `NamespaceReadOnlyPolicy` | `-ns-read` | Tenant monitoring | `zael_namespace_id` |
+
+These policies use `dynamodb:LeadingKeys` with the caller's `zael_namespace_id` principal tag to scope DynamoDB operations to items prefixed with that namespace ID. Read access to the reserved namespace `_/*` (namespace registry, shared config) is always granted.
+
+For setup instructions, see [Namespace-Scoped Access Control](production.md#namespace-scoped-access-control).
+
 ## Customization
 
 ### Add Dead Letter Queue
@@ -483,6 +534,9 @@ The template exports:
 | `AdminRoleName` | IAM role name for admin access |
 | `ReadOnlyRoleArn` | IAM role ARN for read-only access |
 | `ReadOnlyRoleName` | IAM role name for read-only access |
+| `NamespaceAcquirePolicyArn` | Namespace-scoped acquire-only policy ARN |
+| `NamespaceFullAccessPolicyArn` | Namespace-scoped full-access policy ARN |
+| `NamespaceReadOnlyPolicyArn` | Namespace-scoped read-only policy ARN |
 
 Access outputs:
 

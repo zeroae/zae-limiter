@@ -251,17 +251,19 @@ X-Ray tracing is opt-in to avoid unexpected costs:
 ```bash
 # Enable tracing via CLI
 zae-limiter deploy --name my-app --enable-tracing
+```
 
-# Or programmatically
-from zae_limiter import RateLimiter, StackOptions
+Or programmatically:
 
-limiter = RateLimiter(
-    name="my-app",
-    region="us-east-1",
-    stack_options=StackOptions(
-        enable_tracing=True,
-    ),
+```python
+from zae_limiter import RateLimiter, Repository
+
+repo = await (
+    Repository.builder("my-app", "us-east-1")
+    .enable_tracing(True)
+    .build()
 )
+limiter = RateLimiter(repository=repo)
 ```
 
 ### What's Traced (Phase 1)
@@ -481,18 +483,17 @@ zae-limiter deploy --name limiter --region us-east-1 --no-alarms
 ### Programmatic Configuration
 
 ```python
-from zae_limiter import RateLimiter, StackOptions
+from zae_limiter import RateLimiter, Repository
 
-limiter = RateLimiter(
-    name="limiter",
-    region="us-east-1",
-    stack_options=StackOptions(
-        enable_alarms=True,
-        alarm_sns_topic="arn:aws:sns:us-east-1:123456789012:alerts",
-        lambda_duration_threshold_pct=75,  # Alert at 75% of timeout
-        log_retention_days=90,
-    ),
+repo = await (
+    Repository.builder("limiter", "us-east-1")
+    .enable_alarms(True)
+    .alarm_sns_topic("arn:aws:sns:us-east-1:123456789012:alerts")
+    .lambda_duration_threshold_pct(75)  # Alert at 75% of timeout
+    .log_retention_days(90)
+    .build()
 )
+limiter = RateLimiter(repository=repo)
 ```
 
 ## Next Steps

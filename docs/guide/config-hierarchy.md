@@ -25,6 +25,9 @@ flowchart TD
 4. **System defaults** - Global limits for all resources
 5. **Constructor defaults** - Fallback from code
 
+!!! info "Namespace Scoping"
+    All config levels (system, resource, entity) are scoped to a single namespace. Each namespace has its own independent configuration hierarchy. Changing system defaults in one namespace does not affect other namespaces.
+
 ## When to Use Each Level
 
 | Level | Use Case | Example |

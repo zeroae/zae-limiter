@@ -8,39 +8,53 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 
 | Record Type | PK | SK |
 |-------------|----|----|
-| Entity metadata | `ENTITY#{id}` | `#META` |
-| Bucket | `ENTITY#{id}` | `#BUCKET#{resource}#{limit_name}` |
-| Entity config | `ENTITY#{id}` | `#CONFIG#{resource}` |
-| Resource config | `RESOURCE#{resource}` | `#CONFIG` |
-| System config | `SYSTEM#` | `#CONFIG` |
-| Usage snapshot | `ENTITY#{id}` | `#USAGE#{resource}#{window_key}` |
-| System version | `SYSTEM#` | `#VERSION` |
-| Audit events | `AUDIT#{entity_id}` | `#AUDIT#{timestamp}` |
+| Entity metadata | `{ns}/ENTITY#{id}` | `#META` |
+| Bucket | `{ns}/ENTITY#{id}` | `#BUCKET#{resource}#{limit_name}` |
+| Entity config | `{ns}/ENTITY#{id}` | `#CONFIG#{resource}` |
+| Resource config | `{ns}/RESOURCE#{resource}` | `#CONFIG` |
+| System config | `{ns}/SYSTEM#` | `#CONFIG` |
+| Usage snapshot | `{ns}/ENTITY#{id}` | `#USAGE#{resource}#{window_key}` |
+| System version | `{ns}/SYSTEM#` | `#VERSION` |
+| Audit events | `{ns}/AUDIT#{entity_id}` | `#AUDIT#{timestamp}` |
+| Namespace forward | `_/SYSTEM#` | `#NAMESPACE#{name}` |
+| Namespace reverse | `_/SYSTEM#` | `#NSID#{id}` |
 
 ### Global Secondary Indexes
 
 | Index | Purpose | Key Pattern |
 |-------|---------|-------------|
-| **GSI1** | Parent → Children lookup | `GSI1PK=PARENT#{id}` → `GSI1SK=CHILD#{id}` |
-| **GSI2** | Resource aggregation | `GSI2PK=RESOURCE#{name}` → buckets/usage |
-| **GSI3** | Entity config queries (sparse) | `GSI3PK=ENTITY_CONFIG#{resource}` → `GSI3SK=entity_id` |
+| **GSI1** | Parent → Children lookup | `GSI1PK={ns}/PARENT#{id}` → `GSI1SK=CHILD#{id}` |
+| **GSI2** | Resource aggregation | `GSI2PK={ns}/RESOURCE#{name}` → buckets/usage |
+| **GSI3** | Entity config queries (sparse) | `GSI3PK={ns}/ENTITY_CONFIG#{resource}` → `GSI3SK=entity_id` |
+| **GSI4** | Namespace item discovery (KEYS_ONLY) | `GSI4PK={ns}` → `GSI4SK=PK` |
 
 ### Access Patterns
 
 | Pattern | Query |
 |---------|-------|
-| Get entity | `PK=ENTITY#{id}, SK=#META` |
-| Get buckets | `PK=ENTITY#{id}, SK begins_with #BUCKET#` |
+| Get entity | `PK={ns}/ENTITY#{id}, SK=#META` |
+| Get buckets | `PK={ns}/ENTITY#{id}, SK begins_with #BUCKET#` |
 | Batch get buckets | `BatchGetItem` with multiple PK/SK pairs |
-| Get children | GSI1: `GSI1PK=PARENT#{id}` |
-| Resource capacity | GSI2: `GSI2PK=RESOURCE#{name}, SK begins_with BUCKET#` |
-| Get version | `PK=SYSTEM#, SK=#VERSION` |
-| Get audit events | `PK=AUDIT#{entity_id}, SK begins_with #AUDIT#` |
-| Get usage snapshots | `PK=ENTITY#{id}, SK begins_with #USAGE#` |
-| Get system config | `PK=SYSTEM#, SK=#CONFIG` |
-| Get resource config | `PK=RESOURCE#{resource}, SK=#CONFIG` |
-| Get entity config | `PK=ENTITY#{id}, SK=#CONFIG#{resource}` |
-| List entities with custom limits | GSI3: `GSI3PK=ENTITY_CONFIG#{resource}` |
+| Get children | GSI1: `GSI1PK={ns}/PARENT#{id}` |
+| Resource capacity | GSI2: `GSI2PK={ns}/RESOURCE#{name}, SK begins_with BUCKET#` |
+| Get version | `PK={ns}/SYSTEM#, SK=#VERSION` |
+| Get audit events | `PK={ns}/AUDIT#{entity_id}, SK begins_with #AUDIT#` |
+| Get usage snapshots | `PK={ns}/ENTITY#{id}, SK begins_with #USAGE#` |
+| Get system config | `PK={ns}/SYSTEM#, SK=#CONFIG` |
+| Get resource config | `PK={ns}/RESOURCE#{resource}, SK=#CONFIG` |
+| Get entity config | `PK={ns}/ENTITY#{id}, SK=#CONFIG#{resource}` |
+| List entities with custom limits | GSI3: `GSI3PK={ns}/ENTITY_CONFIG#{resource}` |
+| Namespace forward lookup | `PK=_/SYSTEM#, SK=#NAMESPACE#{name}` |
+| Namespace reverse lookup | `PK=_/SYSTEM#, SK=#NSID#{id}` |
+| List all items in namespace | GSI4: `GSI4PK={ns}` |
+
+### Namespace Isolation
+
+All partition key values are prefixed with an opaque namespace ID (`{ns}/`), providing logical isolation between tenants within a single DynamoDB table. The reserved namespace `_` is used for the namespace registry itself (forward and reverse lookup records).
+
+- **Namespace ID format**: 11-character opaque string generated via `secrets.token_urlsafe(8)`
+- **Default namespace**: Automatically registered on first deploy or `RepositoryBuilder.build()`
+- **GSI4**: A KEYS_ONLY index on `GSI4PK=namespace_id` enables `purge_namespace()` to discover and delete all items belonging to a namespace
 
 ### Optimized Read Patterns
 
@@ -80,7 +94,7 @@ See [ADR-111](../adr/111-flatten-all-records.md).
 ```{.python .lint-only}
 # Entity record (FLAT structure):
 {
-    "PK": "ENTITY#user-1",
+    "PK": "{ns}/ENTITY#user-1",
     "SK": "#META",
     "entity_id": "user-1",
     "name": "User One",
@@ -94,7 +108,7 @@ See [ADR-111](../adr/111-flatten-all-records.md).
 ```python
 # Bucket record (FLAT structure, ADR-114/115):
 {
-    "PK": "ENTITY#user-1",
+    "PK": "{ns}/ENTITY#user-1",
     "SK": "#BUCKET#gpt-4",
     "entity_id": "user-1",
     "resource": "gpt-4",
@@ -105,7 +119,7 @@ See [ADR-111](../adr/111-flatten-all-records.md).
     "b_rpm_cp": 100000,             # capacity_milli for rpm limit
     "b_rpm_tc": 5000,               # total_consumed_milli for rpm
     "rf": 1704067200000,            # last_refill_ms (shared across limits)
-    "GSI2PK": "RESOURCE#gpt-4",
+    "GSI2PK": "{ns}/RESOURCE#gpt-4",
     "ttl": 1234567890
 }
 ```
@@ -121,7 +135,7 @@ exceeds consumption rate. See [Issue #179](https://github.com/zeroae/zae-limiter
 ```python
 # Usage snapshot (FLAT structure):
 {
-    "PK": "ENTITY#user-1",
+    "PK": "{ns}/ENTITY#user-1",
     "SK": "#USAGE#gpt-4#2024-01-01T14:00:00Z",
     "entity_id": "user-1",
     "resource": "gpt-4",        # Top-level attribute
@@ -129,7 +143,7 @@ exceeds consumption rate. See [Issue #179](https://github.com/zeroae/zae-limiter
     "window_start": "...",      # Top-level attribute
     "tpm": 5000,                # Counter at top-level
     "total_events": 10,         # Counter at top-level
-    "GSI2PK": "RESOURCE#gpt-4",
+    "GSI2PK": "{ns}/RESOURCE#gpt-4",
     "ttl": 1234567890
 }
 ```
@@ -147,7 +161,7 @@ See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
 ```python
 # Resource config (composite, FLAT structure):
 {
-    "PK": "RESOURCE#gpt-4",           # or SYSTEM# or ENTITY#{id}
+    "PK": "{ns}/RESOURCE#gpt-4",       # or {ns}/SYSTEM# or {ns}/ENTITY#{id}
     "SK": "#CONFIG",                   # or #CONFIG#{resource} for entity level
     "resource": "gpt-4",
     "l_tpm_cp": 100000,               # capacity for tpm limit
@@ -162,11 +176,13 @@ Config records use four-level precedence: **Entity (resource-specific) > Entity 
 
 **Key builders:**
 
-- `pk_system()` - Returns `SYSTEM#`
-- `pk_resource(resource)` - Returns `RESOURCE#{resource}`
-- `pk_entity(entity_id)` - Returns `ENTITY#{entity_id}`
+- `pk_system(namespace_id)` - Returns `{ns}/SYSTEM#`
+- `pk_resource(namespace_id, resource)` - Returns `{ns}/RESOURCE#{resource}`
+- `pk_entity(namespace_id, entity_id)` - Returns `{ns}/ENTITY#{entity_id}`
 - `sk_config()` - Returns `#CONFIG` (system/resource level)
 - `sk_config(resource)` - Returns `#CONFIG#{resource}` (entity level)
+- `sk_namespace(name)` - Returns `#NAMESPACE#{name}` (forward lookup)
+- `sk_nsid(id)` - Returns `#NSID#{id}` (reverse lookup)
 
 **Audit entity IDs for config levels** (see [ADR-106](../adr/106-audit-entity-ids-for-config.md)):
 
@@ -484,7 +500,7 @@ src/zae_limiter/
 ├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
 ├── naming.py              # Resource name validation
 ├── bucket.py              # Token bucket math (integer arithmetic)
-├── schema.py              # DynamoDB key builders
+├── schema.py              # DynamoDB key builders (namespace-prefixed)
 ├── repository_protocol.py # RepositoryProtocol for backend abstraction
 ├── repository.py          # DynamoDB operations
 ├── config_cache.py        # Client-side config caching with TTL

@@ -34,6 +34,9 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
     stored in a single DynamoDB item, and ADD operations eliminate the need for read-modify-write
     cycles on contention retries.
 
+!!! info "Namespace Overhead"
+    Namespace-prefixed keys (e.g., `{ns}/ENTITY#id`) add a few bytes per item but have no measurable impact on RCU/WCU costs. All operations in the table above apply identically regardless of namespace.
+
 !!! info "Capacity Validation"
     These costs are validated by automated tests. Run `uv run pytest tests/benchmark/test_capacity.py -v` to verify.
 
@@ -154,7 +157,7 @@ Configure error handling for production reliability:
 
 ```bash
 # Deploy with DLQ and alarms
-zae-limiter deploy --table-name rate_limits \
+zae-limiter deploy --name my-app \
   --alarm-sns-topic arn:aws:sns:us-east-1:123456789012:alerts
 ```
 
@@ -286,10 +289,10 @@ async with limiter.acquire(api_key_id, "llm-api", {"rpm": 1}, limits=limits):
 
 ```python
 # Config caching reduces RCUs (60s TTL by default)
-repo = Repository(
-    name="rate-limits",
-    region="us-east-1",
-    config_cache_ttl=60,  # seconds (0 to disable)
+repo = await (
+    Repository.builder("rate-limits", "us-east-1")
+    .config_cache_ttl(60)  # seconds (0 to disable)
+    .build()
 )
 limiter = RateLimiter(repository=repo)
 
@@ -546,22 +549,24 @@ async with limiter.acquire("entity", "api", limits, {"rpm": 1}):
     pass
 
 # Disable stored limits if static (saves 2 RCUs per request)
-limiter = RateLimiter(name="rate-limits", region="us-east-1")
+repo = await Repository.builder("rate-limits", "us-east-1").build()
+limiter = RateLimiter(repository=repo)
 ```
 
 #### 2. Optimize TTL Settings
 
 ```python
 # Shorter TTL = faster cleanup = less storage
-# bucket_ttl_seconds is configured via StackOptions or CloudFormation
-limiter = RateLimiter(name="rate-limits", region="us-east-1")
+# bucket_ttl is configured via builder or CloudFormation
+repo = await Repository.builder("rate-limits", "us-east-1").build()
+limiter = RateLimiter(repository=repo)
 ```
 
 #### 3. Reduce Snapshot Granularity
 
 ```bash
 # Deploy without aggregator if usage tracking not needed
-zae-limiter deploy --table-name rate_limits --no-aggregator
+zae-limiter deploy --name my-app --no-aggregator
 ```
 
 #### 4. Switch to Provisioned at Scale
@@ -604,7 +609,7 @@ Set up CloudWatch metrics for cost tracking:
 
 ```bash
 # Deploy with alarms for cost anomalies
-zae-limiter deploy --table-name rate_limits \
+zae-limiter deploy --name my-app \
   --alarm-sns-topic arn:aws:sns:us-east-1:123456789012:billing-alerts
 
 # Set AWS Budgets alert at 80% of expected monthly cost
@@ -626,15 +631,15 @@ The config cache reduces DynamoDB reads by caching system defaults, resource def
 from zae_limiter import RateLimiter, Repository
 
 # Default: 60-second TTL (recommended for most workloads)
-repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=60)
+repo = await Repository.builder("my-app", "us-east-1").config_cache_ttl(60).build()
 limiter = RateLimiter(repository=repo)
 
 # High-frequency updates: Shorter TTL for faster propagation
-repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=10)
+repo = await Repository.builder("my-app", "us-east-1").config_cache_ttl(10).build()
 limiter = RateLimiter(repository=repo)
 
 # Disable caching: For testing or when config changes must be immediate
-repo = Repository(name="my-app", region="us-east-1", config_cache_ttl=0)
+repo = await Repository.builder("my-app", "us-east-1").config_cache_ttl(0).build()
 limiter = RateLimiter(repository=repo)
 ```
 
@@ -702,10 +707,8 @@ Speculative writes (issue #315) enable a fast path for `acquire()` that skips th
 ```python
 from zae_limiter import RateLimiter, Repository
 
-limiter = RateLimiter(
-    repository=Repository(name="my-app", region="us-east-1"),
-    speculative_writes=True,  # Default
-)
+repo = await Repository.builder("my-app", "us-east-1").build()
+limiter = RateLimiter(repository=repo, speculative_writes=True)  # Default
 ```
 
 ### How It Works

@@ -28,18 +28,15 @@ conda install -c conda-forge zae-limiter
 ## Usage
 
 ```python
-from zae_limiter import RateLimiter, SyncRateLimiter, Limit, StackOptions
+from zae_limiter import Repository, RateLimiter, SyncRepository, SyncRateLimiter, Limit
 
-# async-aws-backed-production-ready-rate-limiter
-limiter = RateLimiter(
-    name="my-app",
-    region="us-east-1",
-    # Declare desired infrastructure state - CloudFormation ensures it matches
-    stack_options=StackOptions(),
-)
+# Async — builder handles infrastructure + namespace resolution
+repo = await Repository.builder("my-app", "us-east-1").build()
+limiter = RateLimiter(repository=repo)
 
-# Sync wrapper shares the same infrastructure and API.
-sync_limiter = SyncRateLimiter(name="my-app", region="us-east-1")
+# Sync wrapper shares the same infrastructure and API
+sync_repo = SyncRepository.builder("my-app", "us-east-1").build()
+sync_limiter = SyncRateLimiter(repository=sync_repo)
 
 # Define default limits (can be overridden per-entity)
 default_limits = [
@@ -70,12 +67,15 @@ with sync_limiter.acquire(
     resource="gpt-4",
     limits=default_limits,
     consume={"rpm": 1, "tpm": 500},
-    use_stored_limits=True,  # Uses proj-1's 100k tpm limit
 ):
     call_api()
 
+# Multi-tenant: each tenant gets an isolated namespace
+tenant_repo = await Repository.builder("my-app", "us-east-1").namespace("tenant-alpha").build()
+tenant_limiter = RateLimiter(repository=tenant_repo)
+
 # Cleanup (removes all data)
-await limiter.delete_stack()
+await repo.delete_stack()
 ```
 
 ## Documentation
@@ -89,6 +89,7 @@ await limiter.delete_stack()
 | [Hierarchical Limits](https://zeroae.github.io/zae-limiter/guide/hierarchical/) | Parent/child entities, cascade mode |
 | [LLM Integration](https://zeroae.github.io/zae-limiter/guide/llm-integration/) | Token estimation and reconciliation |
 | [CLI Reference](https://zeroae.github.io/zae-limiter/cli/) | Deploy, status, delete commands |
+| [Multi-Tenant Guide](https://zeroae.github.io/zae-limiter/infra/production/#multi-tenant-deployments) | Namespace isolation, per-tenant IAM |
 | [Production Guide](https://zeroae.github.io/zae-limiter/infra/production/) | Security, monitoring, cost |
 
 ## Production Deployment

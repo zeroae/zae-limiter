@@ -106,6 +106,16 @@ zae-limiter deploy --name myapp --no-iam \
     --aggregator-role-arn arn:aws:iam::123456789012:role/MyLambdaRole
 ```
 
+#### Multi-Tenant Deployments
+
+zae-limiter supports multi-tenant architectures through namespace isolation. All tenants share a single DynamoDB table, but each tenant's data is logically isolated by a namespace ID prefix on all partition keys. This provides:
+
+- **Cost efficiency** — One table, one Lambda, one set of CloudWatch alarms
+- **Isolation** — Namespace-scoped IAM policies prevent cross-tenant access via TBAC
+- **Lifecycle** — Namespaces can be registered, soft-deleted, recovered, and purged independently
+
+Use namespaces when you need per-tenant isolation without deploying separate stacks.
+
 #### Namespace-Scoped Access Control
 
 For multi-tenant deployments, namespace-scoped policies restrict each tenant to its own namespace's DynamoDB items using tag-based access control (TBAC).
@@ -278,8 +288,11 @@ zae-limiter is designed for **single-region deployment**:
 
 ```python
 # Deploy separate stacks per region
-us_limiter = RateLimiter(name="prod", region="us-east-1")
-eu_limiter = RateLimiter(name="prod", region="eu-west-1")
+us_repo = await Repository.builder("prod", "us-east-1").build()
+eu_repo = await Repository.builder("prod", "eu-west-1").build()
+
+us_limiter = RateLimiter(repository=us_repo)
+eu_limiter = RateLimiter(repository=eu_repo)
 
 # Application coordinates between regions if needed
 ```
