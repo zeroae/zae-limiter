@@ -1,5 +1,7 @@
 """Unit tests for namespace registry (issue #369)."""
 
+from unittest.mock import patch
+
 import pytest
 
 from zae_limiter import schema
@@ -87,6 +89,16 @@ class TestRegisterNamespace:
         """register_namespace('_') raises ValueError."""
         with pytest.raises(ValueError, match="reserved"):
             await repo.register_namespace("_")
+
+    @pytest.mark.asyncio
+    async def test_register_namespace_skips_dash_prefixed_id(self, repo):
+        """register_namespace() regenerates IDs that start with '-' (#398)."""
+        with patch("secrets.token_urlsafe") as mock_token:
+            mock_token.side_effect = ["-B3x_9Qw123", "validId12ab"]
+            ns_id = await repo.register_namespace("tenant-dash")
+        assert not ns_id.startswith("-")
+        assert ns_id == "validId12ab"
+        assert mock_token.call_count == 2
 
 
 class TestRegisterNamespaces:
