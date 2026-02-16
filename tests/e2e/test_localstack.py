@@ -147,29 +147,28 @@ class TestE2ELocalStackCLIWorkflow:
             )
 
             # Step 3: Use SyncRateLimiter with deployed infrastructure
-            repo = SyncRepository(
-                name=unique_name,
+            repo = SyncRepository.connect(
+                unique_name,
+                "us-east-1",
                 endpoint_url=localstack_endpoint,
-                region="us-east-1",
             )
             limiter = SyncRateLimiter(repository=repo)
 
-            with limiter:
-                # Create entity and use rate limiting
-                entity = limiter.create_entity("cli-test-user", name="CLI Test")
-                assert entity.id == "cli-test-user"
+            # Create entity and use rate limiting
+            entity = limiter.create_entity("cli-test-user", name="CLI Test")
+            assert entity.id == "cli-test-user"
 
-                limits = [Limit.per_minute("rpm", 10)]
-                with limiter.acquire(
-                    entity_id="cli-test-user",
-                    resource="api",
-                    limits=limits,
-                    consume={"rpm": 1},
-                ) as lease:
-                    assert lease.consumed == {"rpm": 1}
+            limits = [Limit.per_minute("rpm", 10)]
+            with limiter.acquire(
+                entity_id="cli-test-user",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1},
+            ) as lease:
+                assert lease.consumed == {"rpm": 1}
 
-                # Step 3b: Test repository connectivity
-                assert limiter._repository.ping() is True
+            # Step 3b: Test repository connectivity
+            assert limiter._repository.ping() is True
 
         finally:
             # Step 4: Delete stack via CLI
@@ -222,49 +221,48 @@ class TestE2ELocalStackCLIWorkflow:
             assert result.exit_code == 0, f"Deploy failed: {result.output}"
 
             # Step 2: Create entity using SyncRateLimiter (generates audit event)
-            repo = SyncRepository(
-                name=unique_name,
+            repo = SyncRepository.connect(
+                unique_name,
+                "us-east-1",
                 endpoint_url=localstack_endpoint,
-                region="us-east-1",
             )
             limiter = SyncRateLimiter(repository=repo)
 
-            with limiter:
-                entity = limiter.create_entity(
+            entity = limiter.create_entity(
+                "audit-test-user",
+                name="Audit Test User",
+                principal="test-admin@example.com",
+            )
+            assert entity.id == "audit-test-user"
+
+            # Step 3: Run audit list CLI command
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "audit",
+                    "list",
+                    "--name",
+                    unique_name,
+                    "--endpoint-url",
+                    localstack_endpoint,
+                    "--region",
+                    "us-east-1",
+                    "--entity-id",
                     "audit-test-user",
-                    name="Audit Test User",
-                    principal="test-admin@example.com",
-                )
-                assert entity.id == "audit-test-user"
+                ],
+            )
+            assert result.exit_code == 0, f"Audit list failed: {result.output}"
 
-                # Step 3: Run audit list CLI command
-                result = cli_runner.invoke(
-                    cli,
-                    [
-                        "audit",
-                        "list",
-                        "--name",
-                        unique_name,
-                        "--endpoint-url",
-                        localstack_endpoint,
-                        "--region",
-                        "us-east-1",
-                        "--entity-id",
-                        "audit-test-user",
-                    ],
-                )
-                assert result.exit_code == 0, f"Audit list failed: {result.output}"
+            # Step 4: Verify table format output contains expected data
+            # Table should have header row and at least one data row
+            assert "Timestamp" in result.output, "Table header should include Timestamp"
+            assert "Action" in result.output, "Table header should include Action"
+            assert "Principal" in result.output, "Table header should include Principal"
+            assert "Resource" in result.output, "Table header should include Resource"
 
-                # Step 4: Verify table format output contains expected data
-                # Table should have header row and at least one data row
-                assert "Timestamp" in result.output, "Table header should include Timestamp"
-                assert "Action" in result.output, "Table header should include Action"
-                assert "Principal" in result.output, "Table header should include Principal"
-                assert "Resource" in result.output, "Table header should include Resource"
-
-                # Verify audit event data is present
-                assert "entity_created" in result.output, "Should show entity_created action"
-                assert "test-admin@example.com" in result.output, "Should show principal"
+            # Verify audit event data is present
+            assert "entity_created" in result.output, "Should show entity_created action"
+            assert "test-admin@example.com" in result.output, "Should show principal"
 
         finally:
             # Step 5: Delete stack via CLI
@@ -508,16 +506,15 @@ class TestE2ELocalStackFullWorkflow:
     async def e2e_limiter(self, shared_full_stack, unique_name_class):
         """Namespace-scoped RateLimiter on the shared full stack."""
         ns = f"full-{unique_name_class}"
-        repo = Repository(
-            name=shared_full_stack.name,
+        repo = await Repository.connect(
+            shared_full_stack.name,
+            shared_full_stack.region,
             endpoint_url=shared_full_stack.endpoint_url,
-            region=shared_full_stack.region,
         )
         await repo.register_namespace(ns)
         scoped = await repo.namespace(ns)
         limiter = RateLimiter(repository=scoped)
-        async with limiter:
-            yield limiter
+        yield limiter
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
@@ -739,16 +736,15 @@ class TestE2ELocalStackAggregatorWorkflow:
     async def e2e_limiter_with_aggregator(self, shared_aggregator_stack, unique_name_class):
         """Namespace-scoped RateLimiter on the shared aggregator stack."""
         ns = f"aggr-{unique_name_class}"
-        repo = Repository(
-            name=shared_aggregator_stack.name,
+        repo = await Repository.connect(
+            shared_aggregator_stack.name,
+            shared_aggregator_stack.region,
             endpoint_url=shared_aggregator_stack.endpoint_url,
-            region=shared_aggregator_stack.region,
         )
         await repo.register_namespace(ns)
         scoped = await repo.namespace(ns)
         limiter = RateLimiter(repository=scoped)
-        async with limiter:
-            yield limiter
+        yield limiter
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
@@ -805,16 +801,15 @@ class TestE2ELocalStackErrorHandling:
     async def e2e_limiter_minimal(self, shared_minimal_stack, unique_name_class):
         """Namespace-scoped RateLimiter on the shared minimal stack."""
         ns = f"err-{unique_name_class}"
-        repo = Repository(
-            name=shared_minimal_stack.name,
+        repo = await Repository.connect(
+            shared_minimal_stack.name,
+            shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
-            region=shared_minimal_stack.region,
         )
         await repo.register_namespace(ns)
         scoped = await repo.namespace(ns)
         limiter = RateLimiter(repository=scoped)
-        async with limiter:
-            yield limiter
+        yield limiter
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
@@ -927,18 +922,16 @@ class TestE2ECloudFormationStackVariations:
         self, localstack_endpoint, full_stack_options, unique_name
     ):
         """Test full CloudFormation stack creation (with aggregator and alarms)."""
-        repo = Repository(
-            name=unique_name,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=full_stack_options,
+        repo = await (
+            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            .stack_options(full_stack_options)
+            .build()
         )
         limiter = RateLimiter(repository=repo)
 
-        async with limiter:
-            entity = await limiter.create_entity("cfn-full-entity", name="CFN Full Entity")
-            assert entity.id == "cfn-full-entity"
-            assert entity.name == "CFN Full Entity"
+        entity = await limiter.create_entity("cfn-full-entity", name="CFN Full Entity")
+        assert entity.id == "cfn-full-entity"
+        assert entity.name == "CFN Full Entity"
 
         try:
             await repo.delete_stack()
@@ -954,20 +947,16 @@ class TestE2ECloudFormationStackVariations:
         This tests the edge case where EnableAggregator=true but EnableAlarms=false.
         The AggregatorDLQAlarmName output should not be created in this scenario.
         """
-        repo = Repository(
-            name=unique_name,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=aggregator_stack_options,
+        repo = await (
+            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            .stack_options(aggregator_stack_options)
+            .build()
         )
         limiter = RateLimiter(repository=repo)
 
-        async with limiter:
-            entity = await limiter.create_entity(
-                "cfn-no-alarms-entity", name="CFN No Alarms Entity"
-            )
-            assert entity.id == "cfn-no-alarms-entity"
-            assert entity.name == "CFN No Alarms Entity"
+        entity = await limiter.create_entity("cfn-no-alarms-entity", name="CFN No Alarms Entity")
+        assert entity.id == "cfn-no-alarms-entity"
+        assert entity.name == "CFN No Alarms Entity"
 
         try:
             await repo.delete_stack()

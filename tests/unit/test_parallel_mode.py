@@ -98,19 +98,28 @@ class TestParallelModeConstructor:
     """Tests for parallel_mode parameter on SyncRepository constructor."""
 
     def test_default_is_auto(self):
-        repo = SyncRepository(name="test", region="us-east-1")
+        repo = SyncRepository(name="test", region="us-east-1", _skip_deprecation_warning=True)
         assert repo._parallel_mode == "auto"
 
     def test_serial_mode(self):
-        repo = SyncRepository(name="test", region="us-east-1", parallel_mode="serial")
+        repo = SyncRepository(
+            name="test", region="us-east-1", _skip_deprecation_warning=True, parallel_mode="serial"
+        )
         assert repo._parallel_mode == "serial"
         assert repo._executor_fn is not None
 
     def test_threadpool_mode(self):
-        repo = SyncRepository(name="test", region="us-east-1", parallel_mode="threadpool")
+        repo = SyncRepository(
+            name="test",
+            region="us-east-1",
+            _skip_deprecation_warning=True,
+            parallel_mode="threadpool",
+        )
         assert repo._parallel_mode == "threadpool"
         assert repo._thread_pool is None
 
     def test_invalid_mode_raises(self):
         with pytest.raises(ValueError, match="Invalid parallel_mode"):
-            SyncRepository(name="test", region="us-east-1", parallel_mode="bad")
+            SyncRepository(
+                name="test", region="us-east-1", _skip_deprecation_warning=True, parallel_mode="bad"
+            )

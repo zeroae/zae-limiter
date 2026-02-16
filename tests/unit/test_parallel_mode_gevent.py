@@ -41,6 +41,8 @@ class TestGeventParallelMode:
             executor([fail])
 
     def test_run_in_executor_with_gevent_mode(self):
-        repo = SyncRepository(name="test", region="us-east-1", parallel_mode="gevent")
+        repo = SyncRepository(
+            name="test", region="us-east-1", _skip_deprecation_warning=True, parallel_mode="gevent"
+        )
         result = repo._run_in_executor(lambda: 42, lambda: 99)
         assert result == (42, 99)

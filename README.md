@@ -30,12 +30,12 @@ conda install -c conda-forge zae-limiter
 ```python
 from zae_limiter import Repository, RateLimiter, SyncRepository, SyncRateLimiter, Limit
 
-# Async — builder handles infrastructure + namespace resolution
-repo = await Repository.builder("my-app", "us-east-1").build()
+# Connect to existing infrastructure (recommended for application code)
+repo = await Repository.connect("my-app", "us-east-1")
 limiter = RateLimiter(repository=repo)
 
-# Sync wrapper shares the same infrastructure and API
-sync_repo = SyncRepository.builder("my-app", "us-east-1").build()
+# Sync
+sync_repo = SyncRepository.connect("my-app", "us-east-1")
 sync_limiter = SyncRateLimiter(repository=sync_repo)
 
 # Define default limits (can be overridden per-entity)
@@ -71,7 +71,7 @@ with sync_limiter.acquire(
     call_api()
 
 # Multi-tenant: each tenant gets an isolated namespace
-tenant_repo = await Repository.builder("my-app", "us-east-1").namespace("tenant-alpha").build()
+tenant_repo = await Repository.connect("my-app", "us-east-1", namespace="tenant-alpha")
 tenant_limiter = RateLimiter(repository=tenant_repo)
 
 # Cleanup (removes all data)

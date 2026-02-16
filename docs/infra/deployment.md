@@ -72,15 +72,12 @@ Namespaces provide logical isolation within a single DynamoDB table. The `"defau
     from zae_limiter import Repository, RateLimiter
 
     # Connect to a specific tenant namespace
-    repo = await (
-        Repository.builder("limiter", "us-east-1")
-        .namespace("tenant-alpha")
-        .build()
-    )
+    repo = await Repository.connect("limiter", "us-east-1", namespace="tenant-alpha")
     limiter = RateLimiter(repository=repo)
 
-    # Register additional namespaces from an existing repo
-    await repo.register_namespace("tenant-beta")
+    # Register additional namespaces (requires builder or admin access)
+    admin_repo = await Repository.builder("limiter", "us-east-1").build()
+    await admin_repo.register_namespace("tenant-beta")
     ```
 
 !!! info "Deploy is per-stack, not per-namespace"
@@ -101,7 +98,7 @@ For namespace-scoped IAM access control, see [Namespace-Scoped Access Control](p
     ```python
     from zae_limiter import Repository
 
-    repo = await Repository.builder("limiter", "us-east-1").build()
+    repo = await Repository.connect("limiter", "us-east-1")
 
     available = await repo.ping()  # Returns True if DynamoDB is reachable
 
@@ -198,8 +195,8 @@ Application code connects to existing infrastructure without managing it:
 ```python
 from zae_limiter import Repository, RateLimiter
 
-# Connect to existing infrastructure (no infra options = no changes)
-repo = await Repository.builder("prod", "us-east-1").build()
+# Connect to existing infrastructure
+repo = await Repository.connect("prod", "us-east-1")
 limiter = RateLimiter(repository=repo)
 
 # Limits are automatically resolved from stored config

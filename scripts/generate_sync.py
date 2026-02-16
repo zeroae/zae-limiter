@@ -648,7 +648,34 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                             break
                     break
 
-            # 4. Inject executor methods
+            # 4. Inject parallel_mode parameter into connect()
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "connect":
+                    # Add parallel_mode: str = "auto" parameter
+                    item.args.args.append(
+                        ast.arg(
+                            arg="parallel_mode",
+                            annotation=ast.Name(id="str", ctx=ast.Load()),
+                        )
+                    )
+                    item.args.defaults.append(ast.Constant(value="auto"))
+                    # Add parallel_mode= to cls(...) call inside connect()
+                    for stmt in ast.walk(item):
+                        if (
+                            isinstance(stmt, ast.Call)
+                            and isinstance(stmt.func, ast.Name)
+                            and stmt.func.id == "cls"
+                        ):
+                            stmt.keywords.append(
+                                ast.keyword(
+                                    arg="parallel_mode",
+                                    value=ast.Name(id="parallel_mode", ctx=ast.Load()),
+                                )
+                            )
+                            break
+                    break
+
+            # 5. Inject executor methods
             executor_stmts = ast.parse(_EXECUTOR_METHODS).body
             node.body.extend(executor_stmts)
 

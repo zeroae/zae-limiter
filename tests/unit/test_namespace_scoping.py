@@ -9,7 +9,7 @@ from zae_limiter.repository import Repository
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Repository with table created and default namespace registered."""
-    repo = Repository(name="test-ns-scope", region="us-east-1")
+    repo = Repository(name="test-ns-scope", region="us-east-1", _skip_deprecation_warning=True)
     await repo.create_table()
     # Register default and a test namespace
     await repo._register_namespace("default")

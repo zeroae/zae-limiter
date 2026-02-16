@@ -46,10 +46,10 @@ class TestE2ENamespaceMultiTenantLifecycle:
     async def multi_tenant_repos(self, shared_minimal_stack, unique_name_class):
         """Create scoped repos for unique ns-a and ns-b on shared stack."""
         suffix = unique_name_class
-        repo = Repository(
-            name=shared_minimal_stack.name,
+        repo = await Repository.connect(
+            shared_minimal_stack.name,
+            shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
-            region=shared_minimal_stack.region,
         )
 
         # Register test namespaces with unique suffix
@@ -351,10 +351,10 @@ class TestE2ENamespaceCLIWorkflow:
             ns_a_id = ns_a_id_match.group(1)
 
             # Step 5: Create entity in ns-a and set limits via CLI
-            repo = SyncRepository(
-                name=stack_name,
+            repo = SyncRepository.connect(
+                stack_name,
+                "us-east-1",
                 endpoint_url=localstack_endpoint,
-                region="us-east-1",
             )
             try:
                 repo_a = repo.namespace("ns-a")

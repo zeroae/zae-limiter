@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import warnings
 from typing import TYPE_CHECKING, Any, cast
 
 import aioboto3
@@ -71,7 +72,18 @@ class Repository:
         endpoint_url: str | None = None,
         stack_options: StackOptions | None = None,
         config_cache_ttl: int = 60,
+        *,
+        _skip_deprecation_warning: bool = False,
     ) -> None:
+        if not _skip_deprecation_warning:
+            warnings.warn(
+                "Directly calling Repository(...) is deprecated. "
+                "Use Repository.connect(...) for connecting to existing infrastructure "
+                "or Repository.builder(...).build() for infrastructure provisioning. "
+                "This will be removed in v2.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Validate and normalize name
         self.stack_name = normalize_stack_name(name)
         # Table name is always identical to stack name
@@ -142,6 +154,74 @@ class Repository:
         from .repository_builder import RepositoryBuilder
 
         return RepositoryBuilder(name, region, endpoint_url=endpoint_url)
+
+    @classmethod
+    async def connect(
+        cls,
+        name: str,
+        region: str | None = None,
+        *,
+        endpoint_url: str | None = None,
+        namespace: str = "default",
+        config_cache_ttl: int = 60,
+        auto_update: bool = True,
+    ) -> "Repository":
+        """Connect to existing zae-limiter infrastructure.
+
+        This is the recommended entry point for most applications.
+        For infrastructure provisioning, use ``Repository.builder()`` instead.
+
+        Args:
+            name: Stack name (infrastructure must already exist).
+            region: AWS region (e.g., ``"us-east-1"``).
+            endpoint_url: Custom endpoint URL (e.g., LocalStack).
+            namespace: Namespace to connect to (default: ``"default"``).
+                Must already be registered via ``builder().build()`` or CLI.
+            config_cache_ttl: Config cache TTL in seconds (default: 60, 0 to disable).
+            auto_update: Auto-update Lambda on version mismatch (default: True).
+
+        Returns:
+            Fully initialized Repository ready for use.
+
+        Raises:
+            NamespaceNotFoundError: If the namespace doesn't exist.
+            IncompatibleSchemaError: If schema migration is required.
+            VersionMismatchError: If auto_update is False and versions differ.
+
+        Example::
+
+            repo = await Repository.connect("my-app", "us-east-1")
+            limiter = RateLimiter(repository=repo)
+        """
+        from .exceptions import NamespaceNotFoundError
+
+        repo = cls(
+            name=name,
+            region=region,
+            endpoint_url=endpoint_url,
+            config_cache_ttl=config_cache_ttl,
+            _skip_deprecation_warning=True,
+        )
+        repo._auto_update = auto_update
+
+        # Resolve namespace (must already exist)
+        namespace_id = await repo._resolve_namespace(namespace)
+        if namespace_id is None:
+            raise NamespaceNotFoundError(namespace)
+
+        repo._namespace_id = namespace_id
+        repo._namespace_name = namespace
+        repo._reinitialize_config_cache(namespace_id)
+
+        # Version check (skip for local endpoints)
+        if not endpoint_url:
+            if auto_update:
+                await repo._check_and_update_version_auto()
+            else:
+                await repo._check_version_strict()
+
+        repo._builder_initialized = True
+        return repo
 
     @property
     def namespace_name(self) -> str:

@@ -12,7 +12,7 @@ from zae_limiter.repository import Repository
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Repository with table created (for namespace registry tests)."""
-    repo = Repository(name="test-ns-registry", region="us-east-1")
+    repo = Repository(name="test-ns-registry", region="us-east-1", _skip_deprecation_warning=True)
     await repo.create_table()
     yield repo
     await repo.close()

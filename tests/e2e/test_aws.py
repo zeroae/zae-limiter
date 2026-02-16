@@ -96,15 +96,12 @@ class TestE2EAWSFullWorkflow:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = Repository(
-            name=unique_name_class,
-            region="us-east-1",
-            stack_options=stack_options,
+        repo = await (
+            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
         )
         limiter = RateLimiter(repository=repo)
 
-        async with limiter:
-            yield limiter
+        yield limiter
 
         # Clean up stack after test completes
         try:
@@ -347,15 +344,12 @@ class TestE2EAWSUsageSnapshots:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = Repository(
-            name=unique_name_class,
-            region="us-east-1",
-            stack_options=stack_options,
+        repo = await (
+            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
         )
         limiter = RateLimiter(repository=repo)
 
-        async with limiter:
-            yield limiter
+        yield limiter
 
         try:
             await repo.delete_stack()
@@ -512,15 +506,12 @@ class TestE2EAWSRateLimiting:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = Repository(
-            name=unique_name_class,
-            region="us-east-1",
-            stack_options=stack_options,
+        repo = await (
+            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
         )
         limiter = RateLimiter(repository=repo)
 
-        async with limiter:
-            yield limiter
+        yield limiter
 
         try:
             await repo.delete_stack()
@@ -634,15 +625,12 @@ class TestE2EAWSXRayTracingEnabled:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = Repository(
-            name=unique_name_class,
-            region="us-east-1",
-            stack_options=stack_options,
+        repo = await (
+            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
         )
         limiter = RateLimiter(repository=repo)
 
-        async with limiter:
-            yield limiter
+        yield limiter
 
         try:
             await repo.delete_stack()
@@ -868,15 +856,12 @@ class TestE2EAWSXRayTracingDisabled:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = Repository(
-            name=unique_name_class,
-            region="us-east-1",
-            stack_options=stack_options,
+        repo = await (
+            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
         )
         limiter = RateLimiter(repository=repo)
 
-        async with limiter:
-            yield limiter
+        yield limiter
 
         try:
             await repo.delete_stack()
@@ -946,12 +931,9 @@ class TestE2EAWSSpeculativeConsume:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = Repository(
-            name=unique_name_class,
-            region="us-east-1",
-            stack_options=stack_options,
+        repo = await (
+            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
         )
-        await repo.ensure_infrastructure()
         yield repo
 
         try:

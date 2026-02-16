@@ -164,7 +164,7 @@ def doctest_globals(doctest_env):
     )
 
     # Create pre-built limiter with table
-    _repo = Repository(name="limiter", region="us-east-1")
+    _repo = Repository(name="limiter", region="us-east-1", _skip_deprecation_warning=True)
     _asyncio.run(_repo.create_table())
     _ns_id = _asyncio.run(_repo.register_namespace("default"))
     _repo._namespace_id = _ns_id
@@ -172,7 +172,7 @@ def doctest_globals(doctest_env):
     _limiter = RateLimiter(repository=_repo)
 
     # Create "my-app" table used by migration guide examples
-    _my_app_repo = Repository(name="my-app", region="us-east-1")
+    _my_app_repo = Repository(name="my-app", region="us-east-1", _skip_deprecation_warning=True)
     _asyncio.run(_my_app_repo.create_table())
     _my_app_ns_id = _asyncio.run(_my_app_repo.register_namespace("default"))
     _my_app_repo._namespace_id = _my_app_ns_id
