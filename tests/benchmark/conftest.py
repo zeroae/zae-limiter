@@ -34,7 +34,7 @@ class BenchmarkEntities:
     so benchmark iterations measure warm-path performance only.
 
     Attributes:
-        flat: 100 standalone entity IDs (bench-entity-000..099)
+        flat: 15 standalone entity IDs (bench-entity-000..014)
         parents: Parent entity IDs (bench-parent-0)
         children: Mapping of parent_id to child entity IDs (cascade=True)
         limiter: The module-scoped SyncRateLimiter instance
@@ -100,20 +100,20 @@ def benchmark_limiter(mock_dynamodb_module):
 
 @pytest.fixture(scope="module")
 def benchmark_entities(benchmark_limiter):
-    """100 pre-warmed flat entities + 1 parent with 10 cascade children.
+    """15 pre-warmed flat entities + 1 parent with 10 cascade children.
 
     Created once per test file. All entities have completed one acquire
     cycle so buckets exist in DynamoDB (no cold-start overhead).
 
     Contents:
-        flat: bench-entity-000..099 (standalone, pre-warmed on resource "benchmark")
+        flat: bench-entity-000..014 (standalone, pre-warmed on resource "benchmark")
         parents: [bench-parent-0]
         children: {bench-parent-0: [bench-child-0-00..09]} (cascade=True)
     """
     limits = [Limit.per_minute("rpm", 1_000_000)]
 
-    # Create and warm 100 flat entities
-    flat_ids = [f"bench-entity-{i:03d}" for i in range(100)]
+    # Create and warm 15 flat entities (max index used by tests: 12)
+    flat_ids = [f"bench-entity-{i:03d}" for i in range(15)]
     for entity_id in flat_ids:
         benchmark_limiter.create_entity(entity_id, name=f"Benchmark Entity {entity_id}")
         with benchmark_limiter.acquire(
