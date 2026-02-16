@@ -24,6 +24,7 @@ LocalStack to spawn Lambda functions as Docker containers.
 """
 
 import asyncio
+import warnings
 
 import pytest
 import pytest_asyncio
@@ -942,7 +943,7 @@ class TestE2ECloudFormationStackVariations:
         try:
             await repo.delete_stack()
         except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
 
     @pytest.mark.asyncio
     async def test_cloudformation_aggregator_no_alarms(
@@ -971,7 +972,7 @@ class TestE2ECloudFormationStackVariations:
         try:
             await repo.delete_stack()
         except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
 
 
 class TestE2ERoleNaming:

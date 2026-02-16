@@ -25,6 +25,7 @@ Resources are cleaned up after tests, but verify via AWS Console.
 
 import asyncio
 import time
+import warnings
 from datetime import UTC, datetime
 
 import pytest
@@ -109,7 +110,7 @@ class TestE2EAWSFullWorkflow:
         try:
             await repo.delete_stack()
         except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_complete_aws_workflow(self, aws_limiter):
@@ -359,7 +360,7 @@ class TestE2EAWSUsageSnapshots:
         try:
             await repo.delete_stack()
         except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
 
     @pytest.mark.asyncio(loop_scope="class")
     @pytest.mark.slow
@@ -524,7 +525,7 @@ class TestE2EAWSRateLimiting:
         try:
             await repo.delete_stack()
         except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_high_throughput_operations(self, aws_limiter_minimal):
@@ -646,7 +647,7 @@ class TestE2EAWSXRayTracingEnabled:
         try:
             await repo.delete_stack()
         except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_lambda_tracing_enabled(
@@ -880,7 +881,7 @@ class TestE2EAWSXRayTracingDisabled:
         try:
             await repo.delete_stack()
         except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_lambda_tracing_disabled(
@@ -956,7 +957,7 @@ class TestE2EAWSSpeculativeConsume:
         try:
             await repo.delete_table()
         except Exception as e:
-            print(f"Warning: Table cleanup failed: {e}")
+            warnings.warn(f"Table cleanup failed: {e}", ResourceWarning, stacklevel=2)
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
