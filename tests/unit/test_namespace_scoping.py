@@ -9,17 +9,14 @@ from zae_limiter.repository import Repository
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Repository with table created and default namespace registered."""
-    from tests.unit.conftest import _patch_aiobotocore_response
-
-    with _patch_aiobotocore_response():
-        repo = Repository(name="test-ns-scope", region="us-east-1")
-        await repo.create_table()
-        # Register default and a test namespace
-        await repo._register_namespace("default")
-        await repo._register_namespace("tenant-a")
-        await repo._register_namespace("tenant-b")
-        yield repo
-        await repo.close()
+    repo = Repository(name="test-ns-scope", region="us-east-1")
+    await repo.create_table()
+    # Register default and a test namespace
+    await repo._register_namespace("default")
+    await repo._register_namespace("tenant-a")
+    await repo._register_namespace("tenant-b")
+    yield repo
+    await repo.close()
 
 
 class TestNamespaceScopedRepo:

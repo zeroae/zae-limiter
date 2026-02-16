@@ -57,6 +57,13 @@ def _patch_aiobotocore_response():
     return patch.object(endpoint, "convert_to_response_dict", patched_convert)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _patch_aiobotocore_for_moto():
+    """Auto-apply moto compatibility patch for the entire test session."""
+    with _patch_aiobotocore_response():
+        yield
+
+
 @pytest.fixture
 def sync_limiter(mock_dynamodb):
     """Create a SyncRateLimiter with mocked DynamoDB."""
