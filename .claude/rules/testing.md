@@ -52,6 +52,19 @@ Class event loop (E2E workflow tests, loop_scope="class")
 - **CLI tests** deploy their own stacks — CLI commands operate on default namespace
 - **No cross-module conftest imports** — all shared code lives in `tests/fixtures/`
 
+### Fixture scope selection
+
+| Scope | Use When | Example |
+|-------|----------|---------|
+| `function` | Test mutates state, needs isolation | `sync_limiter` (each test gets clean state) |
+| `class` | Expensive setup shared by class | `e2e_limiter` (CloudFormation stack) |
+| `module` | Expensive setup shared by file | `benchmark_entities` (100 pre-warmed entities) |
+| `session` | Immutable configuration | `localstack_endpoint` (env var read) |
+
+**Rule**: If fixture setup takes >100ms and is used by multiple tests in the same file, consider `scope="module"`.
+
+**Module-scoped moto fixtures**: Can't use `monkeypatch` (function-scoped). Use `os.environ` directly with manual cleanup in teardown. The `mock_aws()` context manager scopes the mock to the module.
+
 ## Test Categories
 
 | Category | Directory | Backend | What to Test | Speed |

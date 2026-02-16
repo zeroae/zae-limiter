@@ -1,7 +1,7 @@
 """Throughput benchmark tests for documentation.
 
-These tests measure maximum throughput and contention behavior.
-Results validate the throughput claims in docs/performance.md.
+These tests measure maximum throughput and contention behavior
+using pre-warmed entities (module-scoped) for steady-state measurements.
 
 Run with:
     pytest tests/benchmark/test_throughput.py -v
@@ -16,10 +16,10 @@ For realistic contention behavior, use LocalStack or real AWS.
 
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 
 import pytest
 
+from tests.benchmark.conftest import BenchmarkEntities
 from zae_limiter import Limit
 
 pytestmark = pytest.mark.benchmark
@@ -29,25 +29,28 @@ class TestThroughputBenchmarks:
     """Measure maximum throughput under various conditions.
 
     These tests calculate operations per second (TPS) for different scenarios.
+    All use pre-warmed entities to measure steady-state performance.
     """
 
-    def test_sequential_throughput_single_entity(self, sync_limiter):
+    def test_sequential_throughput_single_entity(self, benchmark_entities: BenchmarkEntities):
         """Measure max sequential TPS for single entity.
 
-        All operations target the same entity, measuring the maximum
+        All operations target the same pre-warmed entity, measuring the maximum
         throughput when there's no parallelism.
 
         Note: With moto, no contention occurs. Real DynamoDB would show
         optimistic locking retries under high load.
         """
+        limiter = benchmark_entities.limiter
+        entity_id = benchmark_entities.flat[0]
         limits = [Limit.per_minute("rpm", 1_000_000)]
         iterations = 100
 
         start = time.perf_counter()
 
         for _ in range(iterations):
-            with sync_limiter.acquire(
-                entity_id="throughput-single",
+            with limiter.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -65,23 +68,25 @@ class TestThroughputBenchmarks:
         assert elapsed < 60, "Sequential operations took too long"
         assert tps > 10, "TPS should be greater than 10 for moto"
 
-    def test_sequential_throughput_multiple_entities(self, sync_limiter):
+    def test_sequential_throughput_multiple_entities(self, benchmark_entities: BenchmarkEntities):
         """Measure max sequential TPS across multiple entities.
 
-        Operations are distributed across 10 entities in round-robin fashion.
-        This should show similar or better throughput than single entity
+        Operations are distributed across 10 pre-warmed entities in round-robin
+        fashion. This should show similar or better throughput than single entity
         since there's no bucket contention.
         """
+        limiter = benchmark_entities.limiter
+        entity_ids = benchmark_entities.flat[:10]
         limits = [Limit.per_minute("rpm", 1_000_000)]
-        num_entities = 10
+        num_entities = len(entity_ids)
         iterations_per_entity = 10
         total_iterations = num_entities * iterations_per_entity
 
         start = time.perf_counter()
 
         for i in range(total_iterations):
-            entity_id = f"throughput-multi-{i % num_entities}"
-            with sync_limiter.acquire(
+            entity_id = entity_ids[i % num_entities]
+            with limiter.acquire(
                 entity_id=entity_id,
                 resource="api",
                 limits=limits,
@@ -100,13 +105,15 @@ class TestThroughputBenchmarks:
         assert elapsed < 60, "Sequential operations took too long"
         assert tps > 10, "TPS should be greater than 10 for moto"
 
-    def test_concurrent_throughput_single_entity(self, sync_limiter):
+    def test_concurrent_throughput_single_entity(self, benchmark_entities: BenchmarkEntities):
         """Measure contention impact on single entity.
 
-        Multiple concurrent threads acquire the same entity's bucket.
+        Multiple concurrent threads acquire the same pre-warmed entity's bucket.
         With real DynamoDB, this would cause optimistic locking retries.
         With moto, operations serialize but don't fail.
         """
+        limiter = benchmark_entities.limiter
+        entity_id = benchmark_entities.flat[0]
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
         iterations_per_task = 10
@@ -116,8 +123,8 @@ class TestThroughputBenchmarks:
             successes = 0
             for _ in range(iterations_per_task):
                 try:
-                    with sync_limiter.acquire(
-                        entity_id="throughput-concurrent-single",
+                    with limiter.acquire(
+                        entity_id=entity_id,
                         resource="api",
                         limits=limits,
                         consume={"rpm": 1},
@@ -148,23 +155,24 @@ class TestThroughputBenchmarks:
             f">=90% should succeed ({total_successes}/{total_iterations})"
         )
 
-    def test_concurrent_throughput_multiple_entities(self, sync_limiter):
+    def test_concurrent_throughput_multiple_entities(self, benchmark_entities: BenchmarkEntities):
         """Measure parallel throughput with no contention.
 
-        Each thread operates on a different entity, so there should be
+        Each thread operates on a different pre-warmed entity, so there should be
         no bucket contention. This represents the ideal scaling scenario.
         """
+        limiter = benchmark_entities.limiter
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
         iterations_per_task = 10
 
         def worker(task_id: int) -> int:
             """Execute iterations on dedicated entity."""
-            entity_id = f"throughput-concurrent-multi-{task_id}"
+            entity_id = benchmark_entities.flat[task_id]
             successes = 0
             for _ in range(iterations_per_task):
                 try:
-                    with sync_limiter.acquire(
+                    with limiter.acquire(
                         entity_id=entity_id,
                         resource="api",
                         limits=limits,
@@ -196,7 +204,7 @@ class TestThroughputBenchmarks:
             f">=90% should succeed ({total_successes}/{total_iterations})"
         )
 
-    def test_contention_retry_rate(self, sync_limiter):
+    def test_contention_retry_rate(self, benchmark_entities: BenchmarkEntities):
         """Measure transaction retry rate under contention.
 
         Note: Moto doesn't simulate true optimistic locking contention,
@@ -204,6 +212,8 @@ class TestThroughputBenchmarks:
         LocalStack, retries would occur when concurrent operations
         try to update the same bucket.
         """
+        limiter = benchmark_entities.limiter
+        entity_id = benchmark_entities.flat[0]
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 20
         iterations_per_task = 5
@@ -214,8 +224,8 @@ class TestThroughputBenchmarks:
             local_successes = 0
             for _ in range(iterations_per_task):
                 try:
-                    with sync_limiter.acquire(
-                        entity_id="contention-test",
+                    with limiter.acquire(
+                        entity_id=entity_id,
                         resource="api",
                         limits=limits,
                         consume={"rpm": 1},
@@ -252,35 +262,28 @@ class TestThroughputBenchmarks:
 
 
 class TestThroughputWithHierarchy:
-    """Throughput tests with hierarchical (cascade) limits."""
+    """Throughput tests with hierarchical (cascade) limits.
 
-    @pytest.fixture
-    def hierarchy_limiter(self, sync_limiter: Any) -> Any:
-        """Setup parent-child hierarchy."""
-        sync_limiter.create_entity("throughput-parent", name="Parent")
-        for i in range(10):
-            sync_limiter.create_entity(
-                f"throughput-child-{i}",
-                name=f"Child {i}",
-                parent_id="throughput-parent",
-                cascade=True,
-            )
-        return sync_limiter
+    Uses pre-warmed parent + children from benchmark_entities.
+    """
 
-    def test_cascade_sequential_throughput(self, hierarchy_limiter):
+    def test_cascade_sequential_throughput(self, benchmark_entities: BenchmarkEntities):
         """Measure sequential TPS with cascade enabled.
 
         Cascade adds parent lookup and dual bucket updates,
         reducing throughput compared to non-cascade operations.
         """
+        limiter = benchmark_entities.limiter
+        parent_id = benchmark_entities.parents[0]
+        child_ids = benchmark_entities.children[parent_id]
         limits = [Limit.per_minute("rpm", 1_000_000)]
         iterations = 50
 
         start = time.perf_counter()
 
         for i in range(iterations):
-            child_id = f"throughput-child-{i % 10}"
-            with hierarchy_limiter.acquire(
+            child_id = child_ids[i % len(child_ids)]
+            with limiter.acquire(
                 entity_id=child_id,
                 resource="api",
                 limits=limits,
@@ -298,23 +301,26 @@ class TestThroughputWithHierarchy:
         # Cascade should still complete reasonably fast
         assert tps > 5, "Cascade TPS should be greater than 5 for moto"
 
-    def test_cascade_concurrent_throughput(self, hierarchy_limiter):
+    def test_cascade_concurrent_throughput(self, benchmark_entities: BenchmarkEntities):
         """Measure concurrent TPS with cascade.
 
         All children share the same parent, creating contention on the
         parent bucket. With real DynamoDB, this would cause retries.
         """
+        limiter = benchmark_entities.limiter
+        parent_id = benchmark_entities.parents[0]
+        child_ids = benchmark_entities.children[parent_id]
         limits = [Limit.per_minute("rpm", 1_000_000)]
         num_concurrent = 10
         iterations_per_task = 5
 
         def worker(task_id: int) -> int:
             """Execute cascade operations on dedicated child."""
-            child_id = f"throughput-child-{task_id}"
+            child_id = child_ids[task_id % len(child_ids)]
             successes = 0
             for _ in range(iterations_per_task):
                 try:
-                    with hierarchy_limiter.acquire(
+                    with limiter.acquire(
                         entity_id=child_id,
                         resource="api",
                         limits=limits,
