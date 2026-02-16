@@ -17,6 +17,7 @@ from tests.fixtures.doctest_helpers import (
     stub_execute_operation,
     stub_premium_operation,
 )
+from tests.fixtures.moto import _patch_aiobotocore_response
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ def moto_env(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
 
-    with mock_aws():
+    with mock_aws(), _patch_aiobotocore_response():
         yield
 
 
