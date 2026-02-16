@@ -2,7 +2,6 @@
 
 import pytest
 
-from tests.fixtures.moto import _patch_aiobotocore_response
 from zae_limiter import RateLimiter
 from zae_limiter.sync_repository import SyncRepository
 
@@ -10,14 +9,13 @@ from zae_limiter.sync_repository import SyncRepository
 @pytest.fixture
 async def limiter(mock_dynamodb):
     """Create a RateLimiter with mocked DynamoDB."""
-    with _patch_aiobotocore_response():
-        limiter = RateLimiter(
-            name="test-rate-limits",
-            region="us-east-1",
-        )
-        await limiter._repository.create_table()
-        async with limiter:
-            yield limiter
+    limiter = RateLimiter(
+        name="test-rate-limits",
+        region="us-east-1",
+    )
+    await limiter._repository.create_table()
+    async with limiter:
+        yield limiter
 
 
 @pytest.fixture

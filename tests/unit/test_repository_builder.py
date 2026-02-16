@@ -19,13 +19,10 @@ from zae_limiter.repository_builder import RepositoryBuilder
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Repository with table created (for namespace tests)."""
-    from tests.unit.conftest import _patch_aiobotocore_response
-
-    with _patch_aiobotocore_response():
-        repo = Repository(name="test-repo", region="us-east-1")
-        await repo.create_table()
-        yield repo
-        await repo.close()
+    repo = Repository(name="test-repo", region="us-east-1")
+    await repo.create_table()
+    yield repo
+    await repo.close()
 
 
 class TestBuilderConstruction:
@@ -147,160 +144,134 @@ class TestBuilderBuild:
     @pytest.mark.asyncio
     async def test_build_creates_repository(self, mock_dynamodb):
         """build() returns a fully initialized Repository."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        builder = RepositoryBuilder("test-build", "us-east-1")
+        # Manually create table since we're not using stack_options
+        # (we need to create the table for namespace registration)
+        temp_repo = Repository(name="test-build", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            builder = RepositoryBuilder("test-build", "us-east-1")
-            # Manually create table since we're not using stack_options
-            # (we need to create the table for namespace registration)
-            temp_repo = Repository(name="test-build", region="us-east-1")
-            await temp_repo.create_table()
-
-            repo = await builder.build()
-            try:
-                assert isinstance(repo, Repository)
-                assert repo.stack_name == "test-build"
-                assert repo._builder_initialized is True
-                assert repo.namespace_name == "default"
-                # namespace_id should be a resolved opaque ID, not "default"
-                assert repo.namespace_id != "default"
-                assert len(repo.namespace_id) > 0
-            finally:
-                await repo.close()
+        repo = await builder.build()
+        try:
+            assert isinstance(repo, Repository)
+            assert repo.stack_name == "test-build"
+            assert repo._builder_initialized is True
+            assert repo.namespace_name == "default"
+            # namespace_id should be a resolved opaque ID, not "default"
+            assert repo.namespace_id != "default"
+            assert len(repo.namespace_id) > 0
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_skips_infra_without_options(self, mock_dynamodb):
         """build() does not call StackManager when no infra options set."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        # Create table manually (simulate pre-existing infra)
+        temp_repo = Repository(name="test-no-infra", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            # Create table manually (simulate pre-existing infra)
-            temp_repo = Repository(name="test-no-infra", region="us-east-1")
-            await temp_repo.create_table()
+        builder = RepositoryBuilder("test-no-infra", "us-east-1")
 
-            builder = RepositoryBuilder("test-no-infra", "us-east-1")
-
-            with patch(
-                "zae_limiter.infra.stack_manager.StackManager", autospec=True
-            ) as mock_stack_manager:
-                repo = await builder.build()
-                try:
-                    # StackManager should not have been called
-                    mock_stack_manager.assert_not_called()
-                finally:
-                    await repo.close()
+        with patch(
+            "zae_limiter.infra.stack_manager.StackManager", autospec=True
+        ) as mock_stack_manager:
+            repo = await builder.build()
+            try:
+                # StackManager should not have been called
+                mock_stack_manager.assert_not_called()
+            finally:
+                await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_creates_infra_with_options(self, mock_dynamodb):
         """build() materializes StackOptions when infra options are set."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        # Pre-create table so namespace registration works
+        temp_repo = Repository(name="test-infra", region="us-east-1")
+        await temp_repo.create_table()
+        await temp_repo.close()
 
-        with _patch_aiobotocore_response():
-            # Pre-create table so namespace registration works
-            temp_repo = Repository(name="test-infra", region="us-east-1")
-            await temp_repo.create_table()
-            await temp_repo.close()
+        builder = RepositoryBuilder("test-infra", "us-east-1").lambda_memory(512)
 
-            builder = RepositoryBuilder("test-infra", "us-east-1").lambda_memory(512)
-
-            # Mock _ensure_infrastructure_internal to avoid real CloudFormation calls
-            with patch.object(
-                Repository, "_ensure_infrastructure_internal", new_callable=AsyncMock
-            ):
-                repo = await builder.build()
-                try:
-                    assert repo._stack_options is not None
-                    assert repo._stack_options.lambda_memory == 512
-                finally:
-                    await repo.close()
+        # Mock _ensure_infrastructure_internal to avoid real CloudFormation calls
+        with patch.object(Repository, "_ensure_infrastructure_internal", new_callable=AsyncMock):
+            repo = await builder.build()
+            try:
+                assert repo._stack_options is not None
+                assert repo._stack_options.lambda_memory == 512
+            finally:
+                await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_registers_default_namespace(self, mock_dynamodb):
         """build() registers the 'default' namespace."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-ns", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-ns", region="us-east-1")
-            await temp_repo.create_table()
-
-            builder = RepositoryBuilder("test-ns", "us-east-1")
-            repo = await builder.build()
-            try:
-                # Verify namespace was registered by resolving it
-                ns_id = await repo._resolve_namespace("default")
-                assert ns_id is not None
-                assert ns_id == repo.namespace_id
-            finally:
-                await repo.close()
+        builder = RepositoryBuilder("test-ns", "us-east-1")
+        repo = await builder.build()
+        try:
+            # Verify namespace was registered by resolving it
+            ns_id = await repo._resolve_namespace("default")
+            assert ns_id is not None
+            assert ns_id == repo.namespace_id
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_resolves_namespace(self, mock_dynamodb):
         """build() resolves the namespace to an opaque ID."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-resolve", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-resolve", region="us-east-1")
-            await temp_repo.create_table()
-
-            repo = await RepositoryBuilder("test-resolve", "us-east-1").build()
-            try:
-                # namespace_id should be a token_urlsafe(8) (11 chars URL-safe)
-                assert len(repo.namespace_id) == 11
-            finally:
-                await repo.close()
+        repo = await RepositoryBuilder("test-resolve", "us-east-1").build()
+        try:
+            # namespace_id should be a token_urlsafe(8) (11 chars URL-safe)
+            assert len(repo.namespace_id) == 11
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_raises_namespace_not_found(self, mock_dynamodb):
         """build() raises NamespaceNotFoundError for non-existent namespace."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-notfound", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-notfound", region="us-east-1")
-            await temp_repo.create_table()
+        builder = RepositoryBuilder("test-notfound", "us-east-1").namespace("nonexistent")
 
-            builder = RepositoryBuilder("test-notfound", "us-east-1").namespace("nonexistent")
+        with pytest.raises(NamespaceNotFoundError) as exc_info:
+            await builder.build()
 
-            with pytest.raises(NamespaceNotFoundError) as exc_info:
-                await builder.build()
-
-            assert exc_info.value.namespace_name == "nonexistent"
+        assert exc_info.value.namespace_name == "nonexistent"
 
     @pytest.mark.asyncio
     async def test_build_with_on_unavailable(self, mock_dynamodb):
         """build() persists on_unavailable as system config."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-on-unavail", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-on-unavail", region="us-east-1")
-            await temp_repo.create_table()
-
-            builder = RepositoryBuilder("test-on-unavail", "us-east-1").on_unavailable("allow")
-            repo = await builder.build()
-            try:
-                _, on_unavailable = await repo.get_system_defaults()
-                assert on_unavailable == "allow"
-            finally:
-                await repo.close()
+        builder = RepositoryBuilder("test-on-unavail", "us-east-1").on_unavailable("allow")
+        repo = await builder.build()
+        try:
+            _, on_unavailable = await repo.get_system_defaults()
+            assert on_unavailable == "allow"
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_idempotent_namespace_registration(self, mock_dynamodb):
         """Building twice doesn't fail on namespace already registered."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-idempotent", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-idempotent", region="us-east-1")
-            await temp_repo.create_table()
+        repo1 = await RepositoryBuilder("test-idempotent", "us-east-1").build()
+        ns_id_1 = repo1.namespace_id
 
-            repo1 = await RepositoryBuilder("test-idempotent", "us-east-1").build()
-            ns_id_1 = repo1.namespace_id
+        repo2 = await RepositoryBuilder("test-idempotent", "us-east-1").build()
+        ns_id_2 = repo2.namespace_id
 
-            repo2 = await RepositoryBuilder("test-idempotent", "us-east-1").build()
-            ns_id_2 = repo2.namespace_id
-
-            # Same namespace should resolve to same ID
-            assert ns_id_1 == ns_id_2
-            await repo1.close()
-            await repo2.close()
+        # Same namespace should resolve to same ID
+        assert ns_id_1 == ns_id_2
+        await repo1.close()
+        await repo2.close()
 
 
 class TestNamespaceProperties:
@@ -363,143 +334,124 @@ class TestVersionManagement:
     @pytest.mark.asyncio
     async def test_build_initializes_version_record(self, mock_dynamodb):
         """build() creates a version record when none exists."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-version-init", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-version-init", region="us-east-1")
-            await temp_repo.create_table()
-
-            repo = await RepositoryBuilder("test-version-init", "us-east-1").build()
-            try:
-                # Version record should have been created
-                version = await repo.get_version_record()
-                assert version is not None
-                assert "schema_version" in version
-            finally:
-                await repo.close()
+        repo = await RepositoryBuilder("test-version-init", "us-east-1").build()
+        try:
+            # Version record should have been created
+            version = await repo.get_version_record()
+            assert version is not None
+            assert "schema_version" in version
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_calls_version_check_auto(self, mock_dynamodb):
         """build() calls _check_and_update_version_auto when auto_update=True."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-version-auto", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-version-auto", region="us-east-1")
-            await temp_repo.create_table()
-
-            with patch.object(
-                Repository, "_check_and_update_version_auto", new_callable=AsyncMock
-            ) as mock_auto:
-                repo = await RepositoryBuilder("test-version-auto", "us-east-1").build()
-                try:
-                    mock_auto.assert_called_once()
-                finally:
-                    await repo.close()
+        with patch.object(
+            Repository, "_check_and_update_version_auto", new_callable=AsyncMock
+        ) as mock_auto:
+            repo = await RepositoryBuilder("test-version-auto", "us-east-1").build()
+            try:
+                mock_auto.assert_called_once()
+            finally:
+                await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_calls_version_check_strict(self, mock_dynamodb):
         """build() calls _check_version_strict when auto_update=False."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-version-strict", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-version-strict", region="us-east-1")
-            await temp_repo.create_table()
-
-            with patch.object(
-                Repository, "_check_version_strict", new_callable=AsyncMock
-            ) as mock_strict:
-                repo = await (
-                    RepositoryBuilder("test-version-strict", "us-east-1").auto_update(False).build()
-                )
-                try:
-                    mock_strict.assert_called_once()
-                finally:
-                    await repo.close()
+        with patch.object(
+            Repository, "_check_version_strict", new_callable=AsyncMock
+        ) as mock_strict:
+            repo = await (
+                RepositoryBuilder("test-version-strict", "us-east-1").auto_update(False).build()
+            )
+            try:
+                mock_strict.assert_called_once()
+            finally:
+                await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_skips_version_check_for_local_endpoint(self, mock_dynamodb):
         """build() skips version check when endpoint_url is set."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-version-local", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-version-local", region="us-east-1")
-            await temp_repo.create_table()
+        with (
+            patch.object(
+                Repository, "_check_and_update_version_auto", new_callable=AsyncMock
+            ) as mock_auto,
+            patch.object(
+                Repository, "_check_version_strict", new_callable=AsyncMock
+            ) as mock_strict,
+        ):
+            # Build with endpoint_url — version check should be skipped
+            # Note: endpoint_url=None for Repository construction (uses moto),
+            # but builder._endpoint_url is set to trigger the skip logic
+            builder = RepositoryBuilder("test-version-local", "us-east-1")
+            builder._endpoint_url = "http://localhost:4566"
 
-            with (
-                patch.object(
-                    Repository, "_check_and_update_version_auto", new_callable=AsyncMock
-                ) as mock_auto,
-                patch.object(
-                    Repository, "_check_version_strict", new_callable=AsyncMock
-                ) as mock_strict,
-            ):
-                # Build with endpoint_url — version check should be skipped
-                # Note: endpoint_url=None for Repository construction (uses moto),
-                # but builder._endpoint_url is set to trigger the skip logic
-                builder = RepositoryBuilder("test-version-local", "us-east-1")
-                builder._endpoint_url = "http://localhost:4566"
+            # Override endpoint_url to None only for Repository construction
+            # so moto intercepts DynamoDB calls, but builder logic sees endpoint
+            original_init = Repository.__init__
 
-                # Override endpoint_url to None only for Repository construction
-                # so moto intercepts DynamoDB calls, but builder logic sees endpoint
-                original_init = Repository.__init__
+            def patched_init(self_repo, *args, **kwargs):
+                kwargs.pop("endpoint_url", None)
+                original_init(self_repo, *args, **kwargs)
 
-                def patched_init(self_repo, *args, **kwargs):
-                    kwargs.pop("endpoint_url", None)
-                    original_init(self_repo, *args, **kwargs)
-
-                with patch.object(Repository, "__init__", patched_init):
-                    repo = await builder.build()
-                try:
-                    mock_auto.assert_not_called()
-                    mock_strict.assert_not_called()
-                finally:
-                    await repo.close()
+            with patch.object(Repository, "__init__", patched_init):
+                repo = await builder.build()
+            try:
+                mock_auto.assert_not_called()
+                mock_strict.assert_not_called()
+            finally:
+                await repo.close()
 
     @pytest.mark.asyncio
     async def test_build_auto_update_false_strict_check(self, mock_dynamodb):
         """build() with auto_update=False uses strict version check."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        temp_repo = Repository(name="test-strict", region="us-east-1")
+        await temp_repo.create_table()
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-strict", region="us-east-1")
-            await temp_repo.create_table()
+        # First build creates version record
+        repo1 = await RepositoryBuilder("test-strict", "us-east-1").build()
+        await repo1.close()
 
-            # First build creates version record
-            repo1 = await RepositoryBuilder("test-strict", "us-east-1").build()
-            await repo1.close()
-
-            # Second build with auto_update=False should succeed (versions match)
-            repo2 = await RepositoryBuilder("test-strict", "us-east-1").auto_update(False).build()
-            try:
-                assert repo2._builder_initialized is True
-            finally:
-                await repo2.close()
+        # Second build with auto_update=False should succeed (versions match)
+        repo2 = await RepositoryBuilder("test-strict", "us-east-1").auto_update(False).build()
+        try:
+            assert repo2._builder_initialized is True
+        finally:
+            await repo2.close()
 
     @pytest.mark.asyncio
     async def test_builder_initialized_skips_limiter_version_check(self, mock_dynamodb):
         """RateLimiter._ensure_initialized() skips checks when builder-initialized."""
         from unittest.mock import AsyncMock
 
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.limiter import RateLimiter
 
-        with _patch_aiobotocore_response():
-            temp_repo = Repository(name="test-skip-limiter", region="us-east-1")
-            await temp_repo.create_table()
+        temp_repo = Repository(name="test-skip-limiter", region="us-east-1")
+        await temp_repo.create_table()
 
-            repo = await RepositoryBuilder("test-skip-limiter", "us-east-1").build()
-            try:
-                limiter = RateLimiter(repository=repo)
+        repo = await RepositoryBuilder("test-skip-limiter", "us-east-1").build()
+        try:
+            limiter = RateLimiter(repository=repo)
 
-                # Mock ensure_infrastructure to verify it's NOT called
-                with patch.object(
-                    repo, "ensure_infrastructure", new_callable=AsyncMock
-                ) as mock_ensure:
-                    await limiter._ensure_initialized()
-                    mock_ensure.assert_not_called()
-                    assert limiter._initialized is True
-            finally:
-                await repo.close()
+            # Mock ensure_infrastructure to verify it's NOT called
+            with patch.object(repo, "ensure_infrastructure", new_callable=AsyncMock) as mock_ensure:
+                await limiter._ensure_initialized()
+                mock_ensure.assert_not_called()
+                assert limiter._initialized is True
+        finally:
+            await repo.close()
 
 
 class TestEnsureInfrastructureDeprecation:
@@ -507,21 +459,18 @@ class TestEnsureInfrastructureDeprecation:
 
     @pytest.mark.asyncio
     async def test_ensure_infrastructure_deprecation_warning(self, mock_dynamodb):
-        from tests.unit.conftest import _patch_aiobotocore_response
+        repo = Repository(name="test-deprecation", region="us-east-1")
+        await repo.create_table()
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-deprecation", region="us-east-1")
-            await repo.create_table()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await repo.ensure_infrastructure()
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "deprecated" in str(w[0].message).lower()
+            assert "builder" in str(w[0].message).lower()
 
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                await repo.ensure_infrastructure()
-                assert len(w) == 1
-                assert issubclass(w[0].category, DeprecationWarning)
-                assert "deprecated" in str(w[0].message).lower()
-                assert "builder" in str(w[0].message).lower()
-
-            await repo.close()
+        await repo.close()
 
 
 class TestNamespaceEdgeCases:
@@ -571,172 +520,150 @@ class TestVersionManagementCodePaths:
     @pytest.mark.asyncio
     async def test_check_and_update_version_auto_no_record(self, mock_dynamodb):
         """_check_and_update_version_auto initializes version when none exists."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-auto-no-rec", region="us-east-1")
-            await repo.create_table()
-            try:
-                await repo._check_and_update_version_auto()
-                version = await repo.get_version_record()
-                assert version is not None
-            finally:
-                await repo.close()
+        repo = Repository(name="test-auto-no-rec", region="us-east-1")
+        await repo.create_table()
+        try:
+            await repo._check_and_update_version_auto()
+            version = await repo.get_version_record()
+            assert version is not None
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_check_and_update_version_auto_compatible(self, mock_dynamodb):
         """_check_and_update_version_auto is no-op when versions match."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-auto-compat", region="us-east-1")
-            await repo.create_table()
-            try:
-                # Initialize version record first
-                await repo._initialize_version_record()
-                # Should be no-op (compatible)
-                await repo._check_and_update_version_auto()
-            finally:
-                await repo.close()
+        repo = Repository(name="test-auto-compat", region="us-east-1")
+        await repo.create_table()
+        try:
+            # Initialize version record first
+            await repo._initialize_version_record()
+            # Should be no-op (compatible)
+            await repo._check_and_update_version_auto()
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_check_and_update_version_auto_schema_migration(self, mock_dynamodb):
         """_check_and_update_version_auto raises IncompatibleSchemaError on schema mismatch."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.version import CompatibilityResult
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-auto-schema", region="us-east-1")
-            await repo.create_table()
-            try:
-                await repo._initialize_version_record()
+        repo = Repository(name="test-auto-schema", region="us-east-1")
+        await repo.create_table()
+        try:
+            await repo._initialize_version_record()
 
-                # Mock check_compatibility to return schema migration needed
-                compat = CompatibilityResult(
-                    is_compatible=False,
-                    requires_schema_migration=True,
-                    message="Major schema version mismatch",
-                )
-                with patch("zae_limiter.version.check_compatibility", return_value=compat):
-                    with pytest.raises(IncompatibleSchemaError):
-                        await repo._check_and_update_version_auto()
-            finally:
-                await repo.close()
+            # Mock check_compatibility to return schema migration needed
+            compat = CompatibilityResult(
+                is_compatible=False,
+                requires_schema_migration=True,
+                message="Major schema version mismatch",
+            )
+            with patch("zae_limiter.version.check_compatibility", return_value=compat):
+                with pytest.raises(IncompatibleSchemaError):
+                    await repo._check_and_update_version_auto()
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_check_and_update_version_auto_lambda_update(self, mock_dynamodb):
         """_check_and_update_version_auto calls _perform_lambda_update when needed."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.version import CompatibilityResult
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-auto-lambda", region="us-east-1")
-            await repo.create_table()
-            try:
-                await repo._initialize_version_record()
+        repo = Repository(name="test-auto-lambda", region="us-east-1")
+        await repo.create_table()
+        try:
+            await repo._initialize_version_record()
 
-                compat = CompatibilityResult(
-                    is_compatible=True,
-                    requires_lambda_update=True,
-                    message="Lambda update available",
-                )
-                with (
-                    patch(
-                        "zae_limiter.version.check_compatibility",
-                        return_value=compat,
-                    ),
-                    patch.object(
-                        repo, "_perform_lambda_update", new_callable=AsyncMock
-                    ) as mock_update,
-                ):
-                    await repo._check_and_update_version_auto()
-                    mock_update.assert_called_once()
-            finally:
-                await repo.close()
+            compat = CompatibilityResult(
+                is_compatible=True,
+                requires_lambda_update=True,
+                message="Lambda update available",
+            )
+            with (
+                patch(
+                    "zae_limiter.version.check_compatibility",
+                    return_value=compat,
+                ),
+                patch.object(repo, "_perform_lambda_update", new_callable=AsyncMock) as mock_update,
+            ):
+                await repo._check_and_update_version_auto()
+                mock_update.assert_called_once()
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_check_version_strict_no_record(self, mock_dynamodb):
         """_check_version_strict initializes version when none exists."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-strict-no-rec", region="us-east-1")
-            await repo.create_table()
-            try:
-                await repo._check_version_strict()
-                version = await repo.get_version_record()
-                assert version is not None
-            finally:
-                await repo.close()
+        repo = Repository(name="test-strict-no-rec", region="us-east-1")
+        await repo.create_table()
+        try:
+            await repo._check_version_strict()
+            version = await repo.get_version_record()
+            assert version is not None
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_check_version_strict_schema_migration(self, mock_dynamodb):
         """_check_version_strict raises IncompatibleSchemaError on schema mismatch."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.version import CompatibilityResult
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-strict-schema", region="us-east-1")
-            await repo.create_table()
-            try:
-                await repo._initialize_version_record()
+        repo = Repository(name="test-strict-schema", region="us-east-1")
+        await repo.create_table()
+        try:
+            await repo._initialize_version_record()
 
-                compat = CompatibilityResult(
-                    is_compatible=False,
-                    requires_schema_migration=True,
-                    message="Major schema version mismatch",
-                )
-                with patch("zae_limiter.version.check_compatibility", return_value=compat):
-                    with pytest.raises(IncompatibleSchemaError):
-                        await repo._check_version_strict()
-            finally:
-                await repo.close()
+            compat = CompatibilityResult(
+                is_compatible=False,
+                requires_schema_migration=True,
+                message="Major schema version mismatch",
+            )
+            with patch("zae_limiter.version.check_compatibility", return_value=compat):
+                with pytest.raises(IncompatibleSchemaError):
+                    await repo._check_version_strict()
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_check_version_strict_lambda_mismatch(self, mock_dynamodb):
         """_check_version_strict raises VersionMismatchError when lambda update needed."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.version import CompatibilityResult
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-strict-mismatch", region="us-east-1")
-            await repo.create_table()
-            try:
-                await repo._initialize_version_record()
+        repo = Repository(name="test-strict-mismatch", region="us-east-1")
+        await repo.create_table()
+        try:
+            await repo._initialize_version_record()
 
-                compat = CompatibilityResult(
-                    is_compatible=True,
-                    requires_lambda_update=True,
-                    message="Lambda version mismatch",
-                )
-                with patch("zae_limiter.version.check_compatibility", return_value=compat):
-                    with pytest.raises(VersionMismatchError):
-                        await repo._check_version_strict()
-            finally:
-                await repo.close()
+            compat = CompatibilityResult(
+                is_compatible=True,
+                requires_lambda_update=True,
+                message="Lambda version mismatch",
+            )
+            with patch("zae_limiter.version.check_compatibility", return_value=compat):
+                with pytest.raises(VersionMismatchError):
+                    await repo._check_version_strict()
+        finally:
+            await repo.close()
 
     @pytest.mark.asyncio
     async def test_perform_lambda_update(self, mock_dynamodb):
         """_perform_lambda_update calls StackManager.deploy_lambda_code."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        repo = Repository(name="test-lambda-update", region="us-east-1")
+        await repo.create_table()
+        try:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=False)
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-lambda-update", region="us-east-1")
-            await repo.create_table()
-            try:
-                mock_manager = AsyncMock()
-                mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
-                mock_manager.__aexit__ = AsyncMock(return_value=False)
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                return_value=mock_manager,
+            ):
+                await repo._perform_lambda_update()
+                mock_manager.deploy_lambda_code.assert_called_once()
 
-                with patch(
-                    "zae_limiter.infra.stack_manager.StackManager",
-                    return_value=mock_manager,
-                ):
-                    await repo._perform_lambda_update()
-                    mock_manager.deploy_lambda_code.assert_called_once()
-
-                # Verify version record was updated
-                version = await repo.get_version_record()
-                assert version is not None
-            finally:
-                await repo.close()
+            # Verify version record was updated
+            version = await repo.get_version_record()
+            assert version is not None
+        finally:
+            await repo.close()

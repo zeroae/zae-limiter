@@ -27,7 +27,7 @@ def aws_credentials(monkeypatch):
 @pytest.fixture
 def mock_dynamodb(aws_credentials):
     """Mock DynamoDB for tests."""
-    with mock_aws():
+    with mock_aws(), _patch_aiobotocore_response():
         yield
 
 

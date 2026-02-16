@@ -10,13 +10,10 @@ from zae_limiter.repository import Repository
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Repository with table created (for namespace registry tests)."""
-    from tests.unit.conftest import _patch_aiobotocore_response
-
-    with _patch_aiobotocore_response():
-        repo = Repository(name="test-ns-registry", region="us-east-1")
-        await repo.create_table()
-        yield repo
-        await repo.close()
+    repo = Repository(name="test-ns-registry", region="us-east-1")
+    await repo.create_table()
+    yield repo
+    await repo.close()
 
 
 class TestRegisterNamespace:

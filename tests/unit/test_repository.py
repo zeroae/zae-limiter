@@ -23,13 +23,10 @@ from zae_limiter.schema import (
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Basic repository instance."""
-    from tests.unit.conftest import _patch_aiobotocore_response
-
-    with _patch_aiobotocore_response():
-        repo = Repository(name="test-repo", region="us-east-1")
-        await repo.create_table()
-        yield repo
-        await repo.close()
+    repo = Repository(name="test-repo", region="us-east-1")
+    await repo.create_table()
+    yield repo
+    await repo.close()
 
 
 @pytest.fixture
@@ -3276,21 +3273,18 @@ class TestDeleteStack:
         """delete_stack() creates a StackManager and calls delete_stack."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from tests.unit.conftest import _patch_aiobotocore_response
+        repo = Repository(name="test-stack", region="us-east-1")
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-stack", region="us-east-1")
+        mock_manager = MagicMock()
+        mock_manager.delete_stack = AsyncMock()
+        mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+        mock_manager.__aexit__ = AsyncMock(return_value=False)
 
-            mock_manager = MagicMock()
-            mock_manager.delete_stack = AsyncMock()
-            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
-            mock_manager.__aexit__ = AsyncMock(return_value=False)
+        with patch("zae_limiter.infra.stack_manager.StackManager", return_value=mock_manager):
+            await repo.delete_stack()
 
-            with patch("zae_limiter.infra.stack_manager.StackManager", return_value=mock_manager):
-                await repo.delete_stack()
-
-            mock_manager.delete_stack.assert_called_once_with("test-stack")
-            await repo.close()
+        mock_manager.delete_stack.assert_called_once_with("test-stack")
+        await repo.close()
 
 
 class TestResolveOnUnavailable:
@@ -3302,79 +3296,67 @@ class TestResolveOnUnavailable:
         """When system config exists but on_unavailable is None, cached value is used."""
         from unittest.mock import AsyncMock, patch
 
-        from tests.unit.conftest import _patch_aiobotocore_response
+        repo = Repository(name="test-cache", region="us-east-1")
+        repo._on_unavailable_cache = "allow"
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-cache", region="us-east-1")
-            repo._on_unavailable_cache = "allow"
+        # Mock config cache to return (None limits, None on_unavailable)
+        with patch.object(
+            repo._config_cache, "get_system_defaults", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = (None, None)
+            result = await repo.resolve_on_unavailable()
 
-            # Mock config cache to return (None limits, None on_unavailable)
-            with patch.object(
-                repo._config_cache, "get_system_defaults", new_callable=AsyncMock
-            ) as mock_get:
-                mock_get.return_value = (None, None)
-                result = await repo.resolve_on_unavailable()
-
-            assert result == "allow"
-            await repo.close()
+        assert result == "allow"
+        await repo.close()
 
     async def test_default_block_when_no_cache_and_no_system_config(self, mock_dynamodb):
         """When no cache and system config has no on_unavailable, default to 'block'."""
         from unittest.mock import AsyncMock, patch
 
-        from tests.unit.conftest import _patch_aiobotocore_response
+        repo = Repository(name="test-default", region="us-east-1")
+        assert repo._on_unavailable_cache is None
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-default", region="us-east-1")
-            assert repo._on_unavailable_cache is None
+        with patch.object(
+            repo._config_cache, "get_system_defaults", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = (None, None)
+            result = await repo.resolve_on_unavailable()
 
-            with patch.object(
-                repo._config_cache, "get_system_defaults", new_callable=AsyncMock
-            ) as mock_get:
-                mock_get.return_value = (None, None)
-                result = await repo.resolve_on_unavailable()
-
-            assert result == "block"
-            await repo.close()
+        assert result == "block"
+        await repo.close()
 
     async def test_cached_value_on_dynamodb_error(self, mock_dynamodb):
         """When DynamoDB is unreachable, cached on_unavailable is returned."""
         from unittest.mock import AsyncMock, patch
 
-        from tests.unit.conftest import _patch_aiobotocore_response
+        repo = Repository(name="test-fallback", region="us-east-1")
+        repo._on_unavailable_cache = "allow"
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-fallback", region="us-east-1")
-            repo._on_unavailable_cache = "allow"
+        with patch.object(
+            repo._config_cache,
+            "get_system_defaults",
+            new_callable=AsyncMock,
+            side_effect=Exception("DynamoDB unavailable"),
+        ):
+            result = await repo.resolve_on_unavailable()
 
-            with patch.object(
-                repo._config_cache,
-                "get_system_defaults",
-                new_callable=AsyncMock,
-                side_effect=Exception("DynamoDB unavailable"),
-            ):
-                result = await repo.resolve_on_unavailable()
-
-            assert result == "allow"
-            await repo.close()
+        assert result == "allow"
+        await repo.close()
 
     async def test_default_block_on_dynamodb_error_without_cache(self, mock_dynamodb):
         """When DynamoDB is unreachable and no cache, default to 'block'."""
         from unittest.mock import AsyncMock, patch
 
-        from tests.unit.conftest import _patch_aiobotocore_response
+        repo = Repository(name="test-no-cache", region="us-east-1")
+        assert repo._on_unavailable_cache is None
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-no-cache", region="us-east-1")
-            assert repo._on_unavailable_cache is None
+        with patch.object(
+            repo._config_cache,
+            "get_system_defaults",
+            new_callable=AsyncMock,
+            side_effect=Exception("DynamoDB unavailable"),
+        ):
+            result = await repo.resolve_on_unavailable()
 
-            with patch.object(
-                repo._config_cache,
-                "get_system_defaults",
-                new_callable=AsyncMock,
-                side_effect=Exception("DynamoDB unavailable"),
-            ):
-                result = await repo.resolve_on_unavailable()
-
-            assert result == "block"
-            await repo.close()
+        assert result == "block"
+        await repo.close()

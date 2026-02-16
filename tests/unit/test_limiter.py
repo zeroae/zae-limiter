@@ -1647,31 +1647,28 @@ class TestRateLimiterStackOptions:
         from unittest.mock import AsyncMock
 
         # mock_dynamodb fixture is needed to set up AWS credentials
-        # Patch aiobotocore for moto compatibility
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import RateLimiter, StackOptions
 
-        with _patch_aiobotocore_response():
-            stack_options = StackOptions(lambda_timeout=120)
-            limiter = RateLimiter(
-                name="test-with-stack-options",
-                region="us-east-1",
-                stack_options=stack_options,
-            )
+        stack_options = StackOptions(lambda_timeout=120)
+        limiter = RateLimiter(
+            name="test-with-stack-options",
+            region="us-east-1",
+            stack_options=stack_options,
+        )
 
-            # Mock ensure_infrastructure to isolate test
-            ensure_infrastructure_mock = AsyncMock(return_value=None)
-            monkeypatch.setattr(
-                limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
-            )
+        # Mock ensure_infrastructure to isolate test
+        ensure_infrastructure_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
+        )
 
-            # Call _ensure_initialized
-            await limiter._ensure_initialized()
+        # Call _ensure_initialized
+        await limiter._ensure_initialized()
 
-            # Verify ensure_infrastructure was called
-            ensure_infrastructure_mock.assert_called_once()
+        # Verify ensure_infrastructure was called
+        ensure_infrastructure_mock.assert_called_once()
 
-            await limiter.close()
+        await limiter.close()
 
     @pytest.mark.asyncio
     async def test_limiter_without_stack_options_calls_ensure_infrastructure(
@@ -1685,29 +1682,27 @@ class TestRateLimiterStackOptions:
         from unittest.mock import AsyncMock
 
         # mock_dynamodb fixture is needed to set up AWS credentials
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import RateLimiter
 
-        with _patch_aiobotocore_response():
-            limiter = RateLimiter(
-                name="test-without-stack-options",
-                region="us-east-1",
-                stack_options=None,  # No stack options
-            )
+        limiter = RateLimiter(
+            name="test-without-stack-options",
+            region="us-east-1",
+            stack_options=None,  # No stack options
+        )
 
-            # Mock ensure_infrastructure to isolate test
-            ensure_infrastructure_mock = AsyncMock(return_value=None)
-            monkeypatch.setattr(
-                limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
-            )
+        # Mock ensure_infrastructure to isolate test
+        ensure_infrastructure_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            limiter._repository, "ensure_infrastructure", ensure_infrastructure_mock
+        )
 
-            # Call _ensure_initialized
-            await limiter._ensure_initialized()
+        # Call _ensure_initialized
+        await limiter._ensure_initialized()
 
-            # Verify ensure_infrastructure WAS called (it's a no-op when no stack_options)
-            ensure_infrastructure_mock.assert_called_once()
+        # Verify ensure_infrastructure WAS called (it's a no-op when no stack_options)
+        ensure_infrastructure_mock.assert_called_once()
 
-            await limiter.close()
+        await limiter.close()
 
 
 class TestRateLimiterResourceCapacity:
@@ -2939,98 +2934,85 @@ class TestRateLimiterRepositoryParameter:
     @pytest.mark.asyncio
     async def test_repository_parameter_accepted(self, mock_dynamodb):
         """Test RateLimiter accepts repository parameter."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import Repository
 
-        with _patch_aiobotocore_response():
-            repo = Repository(
-                name="my-repo-app",
-                region="us-east-1",
-            )
-            limiter = RateLimiter(repository=repo)
+        repo = Repository(
+            name="my-repo-app",
+            region="us-east-1",
+        )
+        limiter = RateLimiter(repository=repo)
 
-            assert limiter._repository is repo
-            assert limiter._repository.stack_name == "my-repo-app"
-            await limiter.close()
+        assert limiter._repository is repo
+        assert limiter._repository.stack_name == "my-repo-app"
+        await limiter.close()
 
     @pytest.mark.asyncio
     async def test_repository_parameter_conflict_with_name_raises(self, mock_dynamodb):
         """Test ValueError when both repository and name are provided."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import Repository
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="my-app", region="us-east-1")
+        repo = Repository(name="my-app", region="us-east-1")
 
-            with pytest.raises(ValueError) as exc_info:
-                RateLimiter(repository=repo, name="other-app")
+        with pytest.raises(ValueError) as exc_info:
+            RateLimiter(repository=repo, name="other-app")
 
-            assert "Cannot specify both 'repository'" in str(exc_info.value)
-            await repo.close()
+        assert "Cannot specify both 'repository'" in str(exc_info.value)
+        await repo.close()
 
     @pytest.mark.asyncio
     async def test_repository_parameter_conflict_with_region_raises(self, mock_dynamodb):
         """Test ValueError when both repository and region are provided."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import Repository
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="my-app", region="us-east-1")
+        repo = Repository(name="my-app", region="us-east-1")
 
-            with pytest.raises(ValueError) as exc_info:
-                RateLimiter(repository=repo, region="eu-west-1")
+        with pytest.raises(ValueError) as exc_info:
+            RateLimiter(repository=repo, region="eu-west-1")
 
-            assert "Cannot specify both 'repository'" in str(exc_info.value)
-            await repo.close()
+        assert "Cannot specify both 'repository'" in str(exc_info.value)
+        await repo.close()
 
     @pytest.mark.asyncio
     async def test_repository_parameter_conflict_with_endpoint_url_raises(self, mock_dynamodb):
         """Test ValueError when both repository and endpoint_url are provided."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import Repository
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="my-app", region="us-east-1")
+        repo = Repository(name="my-app", region="us-east-1")
 
-            with pytest.raises(ValueError) as exc_info:
-                RateLimiter(repository=repo, endpoint_url="http://localhost:4566")
+        with pytest.raises(ValueError) as exc_info:
+            RateLimiter(repository=repo, endpoint_url="http://localhost:4566")
 
-            assert "Cannot specify both 'repository'" in str(exc_info.value)
-            await repo.close()
+        assert "Cannot specify both 'repository'" in str(exc_info.value)
+        await repo.close()
 
     @pytest.mark.asyncio
     async def test_repository_parameter_conflict_with_stack_options_raises(self, mock_dynamodb):
         """Test ValueError when both repository and stack_options are provided."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import Repository, StackOptions
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="my-app", region="us-east-1")
+        repo = Repository(name="my-app", region="us-east-1")
 
-            with pytest.raises(ValueError) as exc_info:
-                RateLimiter(repository=repo, stack_options=StackOptions())
+        with pytest.raises(ValueError) as exc_info:
+            RateLimiter(repository=repo, stack_options=StackOptions())
 
-            assert "Cannot specify both 'repository'" in str(exc_info.value)
-            await repo.close()
+        assert "Cannot specify both 'repository'" in str(exc_info.value)
+        await repo.close()
 
     @pytest.mark.asyncio
     async def test_default_limiter_creates_repository_with_deprecation(self, mock_dynamodb):
         """Test RateLimiter() with no args creates default repository but warns."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        import warnings
 
-        with _patch_aiobotocore_response():
-            import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            limiter = RateLimiter()
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecation_warnings) == 1
+            assert "without a repository" in str(deprecation_warnings[0].message).lower()
 
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                limiter = RateLimiter()
-                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-                assert len(deprecation_warnings) == 1
-                assert "without a repository" in str(deprecation_warnings[0].message).lower()
-
-            assert limiter._repository.stack_name == "limiter"
-            assert limiter._repository is not None
-            await limiter.close()
+        assert limiter._repository.stack_name == "limiter"
+        assert limiter._repository is not None
+        await limiter.close()
 
 
 class TestDeprecatedConstructorParams:
@@ -3038,76 +3020,60 @@ class TestDeprecatedConstructorParams:
 
     async def test_on_unavailable_param_warns(self, mock_dynamodb):
         """Passing on_unavailable to constructor emits DeprecationWarning."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.limiter import OnUnavailable
         from zae_limiter.repository import Repository
 
-        with _patch_aiobotocore_response():
-            with pytest.warns(DeprecationWarning, match="on_unavailable"):
-                limiter = RateLimiter(name="test", on_unavailable=OnUnavailable.ALLOW)
-            repo = limiter._repository
-            assert isinstance(repo, Repository)
-            assert repo._on_unavailable_cache == "allow"
-            await limiter.close()
+        with pytest.warns(DeprecationWarning, match="on_unavailable"):
+            limiter = RateLimiter(name="test", on_unavailable=OnUnavailable.ALLOW)
+        repo = limiter._repository
+        assert isinstance(repo, Repository)
+        assert repo._on_unavailable_cache == "allow"
+        await limiter.close()
 
     async def test_auto_update_param_warns(self, mock_dynamodb):
         """Passing auto_update to constructor emits DeprecationWarning."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            with pytest.warns(DeprecationWarning, match="auto_update"):
-                limiter = RateLimiter(name="test", auto_update=True)
-            await limiter.close()
+        with pytest.warns(DeprecationWarning, match="auto_update"):
+            limiter = RateLimiter(name="test", auto_update=True)
+        await limiter.close()
 
     async def test_name_property_warns(self, mock_dynamodb):
         """Accessing RateLimiter.name emits DeprecationWarning."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            limiter = RateLimiter(name="test")
-            with pytest.warns(DeprecationWarning, match=r"RateLimiter\.name is deprecated"):
-                name = limiter.name
-            assert name == "test"
-            await limiter.close()
+        limiter = RateLimiter(name="test")
+        with pytest.warns(DeprecationWarning, match=r"RateLimiter\.name is deprecated"):
+            name = limiter.name
+        assert name == "test"
+        await limiter.close()
 
     async def test_speculative_writes_does_not_warn(self, mock_dynamodb):
         """Passing speculative_writes does NOT emit DeprecationWarning."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        import warnings
+
         from zae_limiter import Repository
 
-        with _patch_aiobotocore_response():
-            import warnings
-
-            repo = Repository(name="test", region="us-east-1")
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                limiter = RateLimiter(repository=repo, speculative_writes=False)
-                deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-                assert len(deprecation_warnings) == 0
-            assert limiter._speculative_writes is False
-            await limiter.close()
+        repo = Repository(name="test", region="us-east-1")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            limiter = RateLimiter(repository=repo, speculative_writes=False)
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecation_warnings) == 0
+        assert limiter._speculative_writes is False
+        await limiter.close()
 
     async def test_stack_name_property_warns(self, mock_dynamodb):
         """Accessing RateLimiter.stack_name emits DeprecationWarning."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            limiter = RateLimiter(name="test")
-            with pytest.warns(DeprecationWarning, match="stack_name"):
-                name = limiter.stack_name
-            assert name == "test"
-            await limiter.close()
+        limiter = RateLimiter(name="test")
+        with pytest.warns(DeprecationWarning, match="stack_name"):
+            name = limiter.stack_name
+        assert name == "test"
+        await limiter.close()
 
     async def test_table_name_property_warns(self, mock_dynamodb):
         """Accessing RateLimiter.table_name emits DeprecationWarning."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            limiter = RateLimiter(name="test")
-            with pytest.warns(DeprecationWarning, match="table_name"):
-                name = limiter.table_name
-            assert name == "test"
-            await limiter.close()
+        limiter = RateLimiter(name="test")
+        with pytest.warns(DeprecationWarning, match="table_name"):
+            name = limiter.table_name
+        assert name == "test"
+        await limiter.close()
 
 
 class TestRepositoryProtocolCompliance:
@@ -3181,54 +3147,47 @@ class TestRateLimiterConfigCache:
     @pytest.mark.asyncio
     async def test_get_cache_stats_returns_cache_stats(self, mock_dynamodb):
         """Test Repository.get_cache_stats() returns CacheStats object."""
-        from tests.unit.conftest import _patch_aiobotocore_response
+        limiter = RateLimiter()
 
-        with _patch_aiobotocore_response():
-            limiter = RateLimiter()
+        stats = limiter._repository.get_cache_stats()
 
-            stats = limiter._repository.get_cache_stats()
-
-            assert isinstance(stats, CacheStats)
-            assert stats.hits == 0
-            assert stats.misses == 0
-            assert stats.size == 0
-            assert stats.ttl_seconds == 60  # Default TTL
-            await limiter.close()
+        assert isinstance(stats, CacheStats)
+        assert stats.hits == 0
+        assert stats.misses == 0
+        assert stats.size == 0
+        assert stats.ttl_seconds == 60  # Default TTL
+        await limiter.close()
 
     @pytest.mark.asyncio
     async def test_get_cache_stats_with_custom_ttl(self, mock_dynamodb):
         """Test Repository.get_cache_stats() reflects custom TTL."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import Repository
 
-        with _patch_aiobotocore_response():
-            repo = Repository(name="test-rate-limits", region="us-east-1", config_cache_ttl=120)
-            limiter = RateLimiter(repository=repo)
+        repo = Repository(name="test-rate-limits", region="us-east-1", config_cache_ttl=120)
+        limiter = RateLimiter(repository=repo)
 
-            stats = limiter._repository.get_cache_stats()
+        stats = limiter._repository.get_cache_stats()
 
-            assert stats.ttl_seconds == 120
-            await limiter.close()
+        assert stats.ttl_seconds == 120
+        await limiter.close()
 
     @pytest.mark.asyncio
     async def test_invalidate_config_cache(self, mock_dynamodb):
         """Test Repository.invalidate_config_cache() clears cache entries."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter.config_cache import CacheEntry
 
-        with _patch_aiobotocore_response():
-            limiter = RateLimiter()
+        limiter = RateLimiter()
 
-            # Manually populate the cache to verify invalidation
-            entry = CacheEntry(value=[], expires_at=9999999999.0)
-            limiter._repository._config_cache._resource_defaults["gpt-4"] = entry
+        # Manually populate the cache to verify invalidation
+        entry = CacheEntry(value=[], expires_at=9999999999.0)
+        limiter._repository._config_cache._resource_defaults["gpt-4"] = entry
 
-            assert limiter._repository.get_cache_stats().size == 1
+        assert limiter._repository.get_cache_stats().size == 1
 
-            await limiter._repository.invalidate_config_cache()
+        await limiter._repository.invalidate_config_cache()
 
-            assert limiter._repository.get_cache_stats().size == 0
-            await limiter.close()
+        assert limiter._repository.get_cache_stats().size == 0
+        await limiter.close()
 
     @pytest.mark.asyncio
     async def test_resolve_on_unavailable_uses_cache(self, limiter):
@@ -3472,21 +3431,15 @@ class TestBucketTTLConfiguration:
 
     async def test_bucket_ttl_multiplier_default_is_seven(self, mock_dynamodb):
         """Default bucket_ttl_refill_multiplier on Repository is 7."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            limiter = RateLimiter(name="test")
-            assert limiter._repository._bucket_ttl_refill_multiplier == 7
-            await limiter.close()
+        limiter = RateLimiter(name="test")
+        assert limiter._repository._bucket_ttl_refill_multiplier == 7
+        await limiter.close()
 
     async def test_bucket_ttl_multiplier_deprecated_param_warns(self, mock_dynamodb):
         """Passing bucket_ttl_refill_multiplier to constructor emits DeprecationWarning."""
-        from tests.unit.conftest import _patch_aiobotocore_response
-
-        with _patch_aiobotocore_response():
-            with pytest.warns(DeprecationWarning, match="bucket_ttl_refill_multiplier"):
-                limiter = RateLimiter(name="test", bucket_ttl_refill_multiplier=14)
-            await limiter.close()
+        with pytest.warns(DeprecationWarning, match="bucket_ttl_refill_multiplier"):
+            limiter = RateLimiter(name="test", bucket_ttl_refill_multiplier=14)
+        await limiter.close()
 
     async def test_bucket_ttl_multiplier_zero_disables(self, limiter):
         """Setting bucket_ttl_refill_multiplier=0 on Repository disables TTL."""
@@ -3724,33 +3677,31 @@ class TestLeaseCommitTTL:
 
     async def test_ttl_disabled_when_multiplier_zero(self, mock_dynamodb):
         """No TTL when bucket_ttl_refill_multiplier=0."""
-        from tests.unit.conftest import _patch_aiobotocore_response
         from zae_limiter import Repository
 
-        with _patch_aiobotocore_response():
-            repo = Repository(
-                name="test-no-ttl",
-                region="us-east-1",
-            )
-            repo._bucket_ttl_refill_multiplier = 0
-            limiter = RateLimiter(repository=repo)
-            await repo.create_table()
-            async with limiter:
-                await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
-                async with limiter.acquire(
-                    entity_id="user-1",
-                    resource="api",
-                    consume={"rpm": 1},
-                ):
-                    pass
+        repo = Repository(
+            name="test-no-ttl",
+            region="us-east-1",
+        )
+        repo._bucket_ttl_refill_multiplier = 0
+        limiter = RateLimiter(repository=repo)
+        await repo.create_table()
+        async with limiter:
+            await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+            async with limiter.acquire(
+                entity_id="user-1",
+                resource="api",
+                consume={"rpm": 1},
+            ):
+                pass
 
-                # Verify no TTL set
-                from zae_limiter.schema import pk_entity, sk_bucket
+            # Verify no TTL set
+            from zae_limiter.schema import pk_entity, sk_bucket
 
-                pk = pk_entity("default", "user-1")
-                item = await limiter._repository._get_item(pk, sk_bucket("api"))
-                assert item is not None
-                assert "ttl" not in item
+            pk = pk_entity("default", "user-1")
+            item = await limiter._repository._get_item(pk, sk_bucket("api"))
+            assert item is not None
+            assert "ttl" not in item
 
     async def test_commit_sets_ttl_after_deleting_entity_config(self, limiter):
         """Lease._commit() sets TTL when entity downgrades from custom to default limits.
