@@ -12,6 +12,7 @@ To run:
 """
 
 import uuid
+import warnings
 
 import pytest
 
@@ -200,7 +201,7 @@ class TestNamespaceIsolationViaBuilder:
             try:
                 await repo_default.delete_stack()
             except Exception as e:
-                print(f"Warning: Stack cleanup failed: {e}")
+                warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
             await repo_default.close()
             await repo_a.close()
             await repo_b.close()

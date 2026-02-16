@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -102,7 +103,7 @@ async def destroy_shared_stack(repo: Repository) -> None:
     try:
         await repo.delete_stack()
     except Exception as e:
-        print(f"Warning: Stack cleanup failed: {e}")
+        warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
     await repo.close()
 
 
@@ -170,7 +171,7 @@ def cleanup_shared_stacks(tmp_root: Path) -> None:
             repo.delete_stack()
             repo.close()
         except Exception as e:
-            print(f"Warning: cleanup of {data_file.stem} failed: {e}")
+            warnings.warn(f"cleanup of {data_file.stem} failed: {e}", ResourceWarning, stacklevel=2)
 
 
 # Session-scoped shared stack fixtures
