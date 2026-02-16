@@ -340,12 +340,57 @@ class TestLeaseRetryPath:
         exc_cls = type("ConditionalCheckFailedException", (Exception,), {})
         assert _is_condition_check_failure(exc_cls()) is True
 
-    def test_is_condition_check_failure_transaction_canceled(self):
-        """Detects TransactionCanceledException by class name."""
+    def test_is_condition_check_failure_transaction_canceled_with_condition_reason(self):
+        """TransactionCanceledException with ConditionalCheckFailed reason → True."""
         from zae_limiter.lease import _is_condition_check_failure
 
         exc_cls = type("TransactionCanceledException", (Exception,), {})
-        assert _is_condition_check_failure(exc_cls()) is True
+        exc = exc_cls()
+        exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "ConditionalCheckFailed"},
+                {"Code": "None"},
+            ],
+        }
+        assert _is_condition_check_failure(exc) is True
+
+    def test_is_condition_check_failure_transaction_conflict_only(self):
+        """TransactionCanceledException with only TransactionConflict → False."""
+        from zae_limiter.lease import _is_condition_check_failure
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        exc = exc_cls()
+        exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "None"},
+                {"Code": "TransactionConflict"},
+            ],
+        }
+        assert _is_condition_check_failure(exc) is False
+
+    def test_is_condition_check_failure_mixed_reasons(self):
+        """Mixed ConditionalCheckFailed + TransactionConflict → True."""
+        from zae_limiter.lease import _is_condition_check_failure
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        exc = exc_cls()
+        exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "ConditionalCheckFailed"},
+                {"Code": "TransactionConflict"},
+            ],
+        }
+        assert _is_condition_check_failure(exc) is True
+
+    def test_is_condition_check_failure_transaction_canceled_no_response(self):
+        """TransactionCanceledException without response attribute → False."""
+        from zae_limiter.lease import _is_condition_check_failure
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        assert _is_condition_check_failure(exc_cls()) is False
 
     def test_is_condition_check_failure_client_error(self):
         """Detects ConditionalCheckFailedException via botocore ClientError response."""
@@ -363,8 +408,57 @@ class TestLeaseRetryPath:
 
         assert _is_condition_check_failure(ValueError("test")) is False
 
+    def test_is_transaction_conflict_pure_conflict(self):
+        """TransactionCanceledException with TransactionConflict → True."""
+        from zae_limiter.lease import _is_transaction_conflict
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        exc = exc_cls()
+        exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "None"},
+                {"Code": "TransactionConflict"},
+            ],
+        }
+        assert _is_transaction_conflict(exc) is True
+
+    def test_is_transaction_conflict_condition_check_only(self):
+        """TransactionCanceledException with only ConditionalCheckFailed → False."""
+        from zae_limiter.lease import _is_transaction_conflict
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        exc = exc_cls()
+        exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "ConditionalCheckFailed"},
+                {"Code": "None"},
+            ],
+        }
+        assert _is_transaction_conflict(exc) is False
+
+    def test_is_transaction_conflict_unrelated(self):
+        """Returns False for unrelated exceptions."""
+        from zae_limiter.lease import _is_transaction_conflict
+
+        assert _is_transaction_conflict(ValueError("test")) is False
+
+    def test_is_transaction_conflict_client_error(self):
+        """TransactionConflict via botocore ClientError response."""
+        from zae_limiter.lease import _is_transaction_conflict
+
+        exc = Exception("test")
+        exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "TransactionConflict"},
+            ],
+        }
+        assert _is_transaction_conflict(exc) is True
+
     def test_build_retry_failure_statuses(self):
-        """Builds LimitStatus list for retry failure."""
+        """Builds LimitStatus list for retry failure with computed retry_after."""
         from zae_limiter.lease import LeaseEntry, _build_retry_failure_statuses
 
         limit = Limit.per_minute("rpm", 100)
@@ -375,14 +469,34 @@ class TestLeaseRetryPath:
             resource="gpt-4",
             limit=limit,
             state=state,
-            consumed=10,
+            consumed=60,
         )
         statuses = _build_retry_failure_statuses([entry])
         assert len(statuses) == 1
         assert statuses[0].entity_id == "e1"
         assert statuses[0].available == 50
-        assert statuses[0].requested == 10
+        assert statuses[0].requested == 60
         assert statuses[0].exceeded is True
+        # deficit = 60*1000 - 50_000 = 10_000 milli
+        # retry_after = (10_000 * 60_000 / 100_000 + 1) / 1000 = 6.001
+        assert statuses[0].retry_after_seconds > 0.0
+
+    def test_build_retry_failure_statuses_no_deficit(self):
+        """retry_after_seconds is 0 when tokens are sufficient (shouldn't happen in practice)."""
+        from zae_limiter.lease import LeaseEntry, _build_retry_failure_statuses
+
+        limit = Limit.per_minute("rpm", 100)
+        state = MagicMock()
+        state.tokens_milli = 100_000
+        entry = LeaseEntry(
+            entity_id="e1",
+            resource="gpt-4",
+            limit=limit,
+            state=state,
+            consumed=10,
+        )
+        statuses = _build_retry_failure_statuses([entry])
+        assert statuses[0].retry_after_seconds == 0.0
 
     async def test_commit_retry_on_condition_failure(self, limiter):
         """Commit retries with consumption-only on optimistic lock failure."""
@@ -418,10 +532,15 @@ class TestLeaseRetryPath:
             _original_rf_ms=1000,
         )
 
-        # Create a mock repo that always raises TransactionCanceledException
+        # Create a mock repo that raises ConditionalCheckFailed
         mock_repo = AsyncMock()
         exc_cls = type("TransactionCanceledException", (Exception,), {})
-        mock_repo.transact_write.side_effect = exc_cls()
+        condition_exc = exc_cls()
+        condition_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+        }
+        mock_repo.transact_write.side_effect = condition_exc
         mock_repo.build_composite_normal.return_value = {"Update": {}}
         mock_repo.build_composite_retry.return_value = {"Update": {}}
         mock_repo._bucket_ttl_refill_multiplier = 7
@@ -499,7 +618,12 @@ class TestWriteOnEnter:
         mock_repo = self._make_mock_repo()
 
         exc_cls = type("TransactionCanceledException", (Exception,), {})
-        mock_repo.transact_write.side_effect = [exc_cls(), None]
+        exc = exc_cls()
+        exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+        }
+        mock_repo.transact_write.side_effect = [exc, None]
 
         lease = Lease(repository=mock_repo, entries=[entry])
         await lease._commit_initial()
@@ -517,7 +641,12 @@ class TestWriteOnEnter:
         mock_repo = self._make_mock_repo()
 
         exc_cls = type("TransactionCanceledException", (Exception,), {})
-        mock_repo.transact_write.side_effect = [exc_cls(), RuntimeError("retry fail")]
+        condition_exc = exc_cls()
+        condition_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+        }
+        mock_repo.transact_write.side_effect = [condition_exc, RuntimeError("retry fail")]
 
         lease = Lease(repository=mock_repo, entries=[entry])
         with pytest.raises(RuntimeError, match="retry fail"):
@@ -680,7 +809,7 @@ class TestWriteOnEnter:
 
         Two entries with different entity_ids (child + parent) simulate a
         cascade scenario where the shared parent bucket causes the normal
-        transact_write to fail with TransactionCanceledException. The retry
+        transact_write to fail with ConditionalCheckFailed. The retry
         path uses build_composite_retry for both entries and succeeds.
         """
         from zae_limiter.lease import Lease
@@ -690,8 +819,16 @@ class TestWriteOnEnter:
         mock_repo = self._make_mock_repo()
 
         exc_cls = type("TransactionCanceledException", (Exception,), {})
+        condition_exc = exc_cls()
+        condition_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "ConditionalCheckFailed"},
+                {"Code": "None"},
+            ],
+        }
         # Normal path fails, retry path succeeds
-        mock_repo.transact_write.side_effect = [exc_cls(), None]
+        mock_repo.transact_write.side_effect = [condition_exc, None]
 
         lease = Lease(repository=mock_repo, entries=[child_entry, parent_entry])
         await lease._commit_initial()
@@ -714,8 +851,13 @@ class TestWriteOnEnter:
         mock_repo = self._make_mock_repo()
 
         exc_cls = type("TransactionCanceledException", (Exception,), {})
-        # Both normal and retry paths fail
-        mock_repo.transact_write.side_effect = [exc_cls(), exc_cls()]
+        condition_exc = exc_cls()
+        condition_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+        }
+        # Both normal and retry paths fail with ConditionalCheckFailed
+        mock_repo.transact_write.side_effect = condition_exc
 
         lease = Lease(repository=mock_repo, entries=[child_entry, parent_entry])
         with pytest.raises(RateLimitExceeded) as exc_info:
@@ -725,6 +867,165 @@ class TestWriteOnEnter:
         assert len(exc_info.value.statuses) == 2
         entity_ids = {s.entity_id for s in exc_info.value.statuses}
         assert entity_ids == {"child-1", "parent-1"}
+
+    async def test_commit_initial_transaction_conflict_retries_original(self):
+        """TransactionConflict retries original transaction, not consumption-only.
+
+        When transact_write fails with TransactionConflict (not ConditionalCheckFailed),
+        _commit_initial should retry the same transaction with backoff rather than
+        falling through to the retry (consumption-only) path.
+        """
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry()
+        mock_repo = self._make_mock_repo()
+
+        # Build TransactionConflict exception with proper CancellationReasons
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        conflict_exc = exc_cls()
+        conflict_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "None"},
+                {"Code": "TransactionConflict"},
+            ],
+        }
+        # First call: TransactionConflict, second call: success
+        mock_repo.transact_write.side_effect = [conflict_exc, None]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 2
+        # Should NOT have called build_composite_retry (not the consumption-only path)
+        mock_repo.build_composite_retry.assert_not_called()
+
+    async def test_commit_initial_transaction_conflict_exhausts_retries(self):
+        """TransactionConflict exhausts retries then propagates exception.
+
+        After max retries on TransactionConflict, the exception should propagate
+        rather than entering the consumption-only retry path.
+        """
+        from zae_limiter.lease import _CONFLICT_MAX_RETRIES, Lease
+
+        entry = self._make_entry()
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        conflict_exc = exc_cls()
+        conflict_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "TransactionConflict"},
+            ],
+        }
+        # All retries fail with TransactionConflict
+        mock_repo.transact_write.side_effect = conflict_exc
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        with pytest.raises(type(conflict_exc)):
+            await lease._commit_initial()
+
+        # Should have retried _CONFLICT_MAX_RETRIES times + 1 initial attempt
+        assert mock_repo.transact_write.call_count == _CONFLICT_MAX_RETRIES + 1
+        # Should NOT have entered consumption-only path
+        mock_repo.build_composite_retry.assert_not_called()
+
+    async def test_commit_initial_condition_check_still_enters_retry_path(self):
+        """ConditionalCheckFailed still enters consumption-only retry path.
+
+        Regression test: the TransactionConflict fix should not break the
+        existing ConditionalCheckFailed → retry path behavior.
+        """
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry()
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        condition_exc = exc_cls()
+        condition_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "ConditionalCheckFailed"},
+                {"Code": "None"},
+            ],
+        }
+        # First call: ConditionalCheckFailed, second call (retry): success
+        mock_repo.transact_write.side_effect = [condition_exc, None]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 2
+        # Should have entered consumption-only retry path
+        mock_repo.build_composite_retry.assert_called_once()
+
+    async def test_commit_initial_mixed_reasons_prefers_condition_check(self):
+        """Mixed ConditionalCheckFailed + TransactionConflict enters retry path.
+
+        When both codes are present in CancellationReasons, ConditionalCheckFailed
+        takes precedence — the consumption-only retry path should be used rather
+        than the TransactionConflict retry loop.
+        """
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry()
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        mixed_exc = exc_cls()
+        mixed_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "ConditionalCheckFailed"},
+                {"Code": "TransactionConflict"},
+            ],
+        }
+        mock_repo.transact_write.side_effect = [mixed_exc, None]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 2
+        # Should have entered consumption-only retry path (not TransactionConflict loop)
+        mock_repo.build_composite_retry.assert_called_once()
+
+    async def test_cascade_transaction_conflict_does_not_raise_rate_limit_exceeded(self):
+        """Cascade TransactionConflict does not raise false RateLimitExceeded (Issue #332).
+
+        When cascade transact_write fails with TransactionConflict (parent bucket
+        contention), it should retry the original transaction, not enter the
+        consumption-only path that would raise false RateLimitExceeded.
+        """
+        from zae_limiter.lease import Lease
+
+        child_entry = self._make_entry(consumed=5, entity_id="child-1")
+        parent_entry = self._make_entry(consumed=5, entity_id="parent-1")
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        conflict_exc = exc_cls()
+        conflict_exc.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "None"},
+                {"Code": "TransactionConflict"},
+            ],
+        }
+        # First call: TransactionConflict (parent contention), second call: success
+        mock_repo.transact_write.side_effect = [conflict_exc, None]
+
+        lease = Lease(repository=mock_repo, entries=[child_entry, parent_entry])
+        # Should NOT raise RateLimitExceeded
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 2
+        mock_repo.build_composite_retry.assert_not_called()
 
     async def test_acquire_writes_on_enter(self, limiter):
         """Tokens are consumed in DynamoDB immediately on context enter."""
