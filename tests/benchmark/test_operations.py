@@ -11,31 +11,41 @@ Run with:
 
 Skip benchmarks in regular test runs:
     pytest -m "not benchmark" -v
+
+Fixture scoping:
+- TestAcquireReleaseBenchmarks, TestTransactionOverheadBenchmarks,
+  TestCascadeOverheadBenchmarks, TestConcurrentThroughputBenchmarks
+  use module-scoped benchmark_entities for steady-state measurement.
+- TestConfigLookupBenchmarks, TestOptimizationComparison use
+  function-scoped sync_limiter for clean-state optimization comparisons.
 """
 
 from dataclasses import replace
 
 import pytest
 
+from tests.benchmark.conftest import BenchmarkEntities
 from zae_limiter import Limit
 
 pytestmark = pytest.mark.benchmark
 
 
 class TestAcquireReleaseBenchmarks:
-    """Benchmarks for acquire/release operations."""
+    """Benchmarks for acquire/release operations using pre-warmed entities."""
 
-    def test_acquire_release_single_limit(self, benchmark, sync_limiter):
+    def test_acquire_release_single_limit(self, benchmark, benchmark_entities: BenchmarkEntities):
         """Benchmark single limit acquire/release cycle.
 
         Measures p50/p95/p99 latency for the most common operation:
         acquiring and releasing a single rate limit.
         """
-        limits = [Limit.per_minute("rpm", 1_000_000)]  # High limit to avoid rate limiting
+        limiter = benchmark_entities.limiter
+        entity_id = benchmark_entities.flat[0]
+        limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
-            with sync_limiter.acquire(
-                entity_id="bench-single",
+            with limiter.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -44,19 +54,23 @@ class TestAcquireReleaseBenchmarks:
 
         benchmark(operation)
 
-    def test_acquire_release_multiple_limits(self, benchmark, sync_limiter):
+    def test_acquire_release_multiple_limits(
+        self, benchmark, benchmark_entities: BenchmarkEntities
+    ):
         """Benchmark multiple limits acquire/release.
 
         Measures overhead of tracking multiple limits (rpm + tpm) in a single call.
         """
+        limiter = benchmark_entities.limiter
+        entity_id = benchmark_entities.flat[1]
         limits = [
             Limit.per_minute("rpm", 1_000_000),
             Limit.per_minute("tpm", 100_000_000),
         ]
 
         def operation():
-            with sync_limiter.acquire(
-                entity_id="bench-multi",
+            with limiter.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1, "tpm": 100},
@@ -67,44 +81,39 @@ class TestAcquireReleaseBenchmarks:
 
 
 class TestTransactionOverheadBenchmarks:
-    """Benchmarks for DynamoDB transaction overhead."""
+    """Benchmarks for DynamoDB transaction overhead using pre-warmed entities."""
 
-    def test_available_check(self, benchmark, sync_limiter):
+    def test_available_check(self, benchmark, benchmark_entities: BenchmarkEntities):
         """Benchmark non-transactional read (baseline).
 
         The available() method does a simple GetItem, no transaction.
         This serves as a baseline for comparison with transactional operations.
         """
+        limiter = benchmark_entities.limiter
+        entity_id = benchmark_entities.flat[0]
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
-        # Setup: create a bucket first
-        with sync_limiter.acquire(
-            entity_id="bench-available",
-            resource="api",
-            limits=limits,
-            consume={"rpm": 1},
-        ):
-            pass
-
         def operation():
-            sync_limiter.available(
-                entity_id="bench-available",
+            limiter.available(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
             )
 
         benchmark(operation)
 
-    def test_transactional_acquire(self, benchmark, sync_limiter):
+    def test_transactional_acquire(self, benchmark, benchmark_entities: BenchmarkEntities):
         """Benchmark transactional acquire (uses TransactWriteItems).
 
         Compare this with test_available_check to measure transaction overhead.
         """
+        limiter = benchmark_entities.limiter
+        entity_id = benchmark_entities.flat[2]
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
-            with sync_limiter.acquire(
-                entity_id="bench-tx",
+            with limiter.acquire(
+                entity_id=entity_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -115,36 +124,21 @@ class TestTransactionOverheadBenchmarks:
 
 
 class TestCascadeOverheadBenchmarks:
-    """Benchmarks for hierarchical limit overhead."""
+    """Benchmarks for hierarchical limit overhead using pre-warmed entities."""
 
-    @pytest.fixture
-    def hierarchy_limiter(self, sync_limiter):
-        """Setup parent-child hierarchy for cascade tests.
-
-        Creates:
-        - cascade-parent: No parent, cascade=False (baseline entity)
-        - cascade-child: Has parent, cascade=True (cascade-enabled entity)
-        """
-        sync_limiter.create_entity("cascade-parent", name="Parent")
-        sync_limiter.create_entity(
-            "cascade-child",
-            name="Child",
-            parent_id="cascade-parent",
-            cascade=True,
-        )
-        return sync_limiter
-
-    def test_acquire_without_cascade(self, benchmark, hierarchy_limiter):
+    def test_acquire_without_cascade(self, benchmark, benchmark_entities: BenchmarkEntities):
         """Baseline: acquire without cascade.
 
-        Uses an entity with no parent, so cascade never triggers.
+        Uses the parent entity (no cascade), so cascade never triggers.
         Measures single-entity acquire overhead.
         """
+        limiter = benchmark_entities.limiter
+        parent_id = benchmark_entities.parents[0]
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
-            with hierarchy_limiter.acquire(
-                entity_id="cascade-parent",
+            with limiter.acquire(
+                entity_id=parent_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -153,17 +147,20 @@ class TestCascadeOverheadBenchmarks:
 
         benchmark(operation)
 
-    def test_acquire_with_cascade(self, benchmark, hierarchy_limiter):
+    def test_acquire_with_cascade(self, benchmark, benchmark_entities: BenchmarkEntities):
         """Cascade enabled: measure overhead of parent lookup + dual consume.
 
-        Uses an entity with cascade=True and a parent.
+        Uses a pre-warmed child entity with cascade=True and a parent.
         Compare with test_acquire_without_cascade to measure cascade overhead.
         """
+        limiter = benchmark_entities.limiter
+        parent_id = benchmark_entities.parents[0]
+        child_id = benchmark_entities.children[parent_id][0]
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
         def operation():
-            with hierarchy_limiter.acquire(
-                entity_id="cascade-child",
+            with limiter.acquire(
+                entity_id=child_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -172,20 +169,23 @@ class TestCascadeOverheadBenchmarks:
 
         benchmark(operation)
 
-    def test_cascade_with_stored_limits(self, benchmark, hierarchy_limiter):
+    def test_cascade_with_stored_limits(self, benchmark, benchmark_entities: BenchmarkEntities):
         """Cascade with stored limits lookup.
 
         Additional overhead from fetching stored limits for both parent and child.
         """
+        limiter = benchmark_entities.limiter
+        parent_id = benchmark_entities.parents[0]
+        child_id = benchmark_entities.children[parent_id][0]
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
-        # Setup stored limits
-        hierarchy_limiter.set_limits("cascade-parent", limits)
-        hierarchy_limiter.set_limits("cascade-child", limits)
+        # Setup stored limits on the shared limiter
+        limiter.set_limits(parent_id, limits)
+        limiter.set_limits(child_id, limits)
 
         def operation():
-            with hierarchy_limiter.acquire(
-                entity_id="cascade-child",
+            with limiter.acquire(
+                entity_id=child_id,
                 resource="api",
                 limits=limits,
                 consume={"rpm": 1},
@@ -197,7 +197,10 @@ class TestCascadeOverheadBenchmarks:
 
 
 class TestConfigLookupBenchmarks:
-    """Benchmarks for centralized config lookup overhead."""
+    """Benchmarks for centralized config lookup overhead.
+
+    Uses function-scoped sync_limiter for clean cache state per test.
+    """
 
     @pytest.fixture
     def config_setup_limiter(self, sync_limiter):
@@ -308,20 +311,22 @@ class TestConfigLookupBenchmarks:
 
 
 class TestConcurrentThroughputBenchmarks:
-    """Benchmarks for throughput under load."""
+    """Benchmarks for throughput under load using pre-warmed entities."""
 
-    def test_sequential_acquisitions(self, benchmark, sync_limiter):
+    def test_sequential_acquisitions(self, benchmark, benchmark_entities: BenchmarkEntities):
         """Benchmark sequential acquisitions for throughput baseline.
 
         Measures how many acquire/release cycles can be done sequentially.
         """
+        limiter = benchmark_entities.limiter
         limits = [Limit.per_minute("rpm", 1_000_000)]
         iterations = 10
 
         def operation():
             for i in range(iterations):
-                with sync_limiter.acquire(
-                    entity_id=f"bench-seq-{i}",
+                entity_id = benchmark_entities.flat[i]
+                with limiter.acquire(
+                    entity_id=entity_id,
                     resource="api",
                     limits=limits,
                     consume={"rpm": 1},
@@ -330,18 +335,20 @@ class TestConcurrentThroughputBenchmarks:
 
         benchmark(operation)
 
-    def test_same_entity_sequential(self, benchmark, sync_limiter):
+    def test_same_entity_sequential(self, benchmark, benchmark_entities: BenchmarkEntities):
         """Benchmark sequential acquisitions on same entity.
 
         Measures contention overhead when repeatedly hitting the same bucket.
         """
+        limiter = benchmark_entities.limiter
+        entity_id = benchmark_entities.flat[0]
         limits = [Limit.per_minute("rpm", 1_000_000)]
         iterations = 10
 
         def operation():
             for _ in range(iterations):
-                with sync_limiter.acquire(
-                    entity_id="bench-same",
+                with limiter.acquire(
+                    entity_id=entity_id,
                     resource="api",
                     limits=limits,
                     consume={"rpm": 1},
@@ -357,6 +364,9 @@ class TestOptimizationComparison:
     These tests run the same operations with and without optimizations enabled
     to quantify the performance improvement. Tests are grouped for easy
     comparison in benchmark output.
+
+    Uses function-scoped sync_limiter / sync_limiter_no_cache for clean
+    state per test (cache disabled, entity cache cleared per iteration, etc.).
 
     Optimizations compared:
     - Config cache (issue #135): Reduces config lookups from DynamoDB
