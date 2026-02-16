@@ -409,6 +409,8 @@ class SyncRepository:
 
         client = self._get_client()
         namespace_id = secrets.token_urlsafe(8)
+        while namespace_id.startswith("-"):
+            namespace_id = secrets.token_urlsafe(8)
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         pk = schema.pk_system(schema.RESERVED_NAMESPACE)
         try:

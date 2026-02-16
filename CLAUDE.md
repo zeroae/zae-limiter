@@ -819,7 +819,7 @@ The namespace registry stores bidirectional records under the reserved namespace
 
 **Status lifecycle:** `active` → `deleted` (soft delete, forward record removed) → `purging` (hard delete in progress) → removed
 
-**Namespace ID format:** 11-character opaque string generated via `secrets.token_urlsafe(8)`
+**Namespace ID format:** 11-character opaque string generated via `secrets.token_urlsafe(8)`, never starts with `-` (regenerated if so, to avoid CLI argument parsing issues)
 
 **API methods:**
 
