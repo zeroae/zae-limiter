@@ -1,14 +1,19 @@
 """Lease management for rate limit acquisitions."""
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .bucket import calculate_available, force_consume, try_consume
+from .bucket import calculate_available, calculate_retry_after, force_consume, try_consume
 from .exceptions import RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
 from .schema import calculate_bucket_ttl_seconds
+
+# TransactionConflict retry constants (Issue #332)
+_CONFLICT_MAX_RETRIES = 3
+_CONFLICT_BASE_DELAY_S = 0.025  # 25ms, doubles each retry: 25ms, 50ms, 100ms
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -262,12 +267,34 @@ class Lease:
             self._initial_committed = True
             return
 
-        try:
-            await repo.transact_write(items)
-        except Exception as exc:
-            if not _is_condition_check_failure(exc):
-                raise
+        # Retry loop for TransactionConflict (Issue #332)
+        condition_failed = False
+        for attempt in range(_CONFLICT_MAX_RETRIES + 1):
+            try:
+                await repo.transact_write(items)
+                break  # success
+            except Exception as exc:
+                # Check ConditionalCheckFailed first — it takes priority over
+                # TransactionConflict because it means the optimistic lock failed,
+                # requiring the consumption-only retry path.
+                if _is_condition_check_failure(exc):
+                    condition_failed = True
+                    break
+                if _is_transaction_conflict(exc):
+                    if attempt < _CONFLICT_MAX_RETRIES:
+                        delay = _CONFLICT_BASE_DELAY_S * (2**attempt)
+                        logger.debug(
+                            "TransactionConflict (attempt %d/%d), retrying in %.3fs",
+                            attempt + 1,
+                            _CONFLICT_MAX_RETRIES,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise  # exhausted retries, propagate
+                raise  # other errors propagate unchanged
 
+        if condition_failed:
             # Retry path: ADD consumption only, CONDITION tk>=consumed per limit
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
             retry_items: list[dict[str, Any]] = []
@@ -402,19 +429,54 @@ class Lease:
                 )
 
 
-def _is_condition_check_failure(exc: Exception) -> bool:
-    """Check if an exception is a DynamoDB ConditionalCheckFailedException."""
+def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:
+    """Extract CancellationReasons codes from a TransactionCanceledException.
+
+    Returns a list of reason codes (e.g. ["ConditionalCheckFailed", "None"]),
+    or None if the exception is not a TransactionCanceledException or has no reasons.
+    """
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    error_code = response.get("Error", {}).get("Code", "")
     exc_name = type(exc).__name__
-    if exc_name in ("ConditionalCheckFailedException", "TransactionCanceledException"):
+    if exc_name != "TransactionCanceledException" and error_code != "TransactionCanceledException":
+        return None
+    reasons = response.get("CancellationReasons", [])
+    return [r.get("Code", "None") for r in reasons]
+
+
+def _is_condition_check_failure(exc: Exception) -> bool:
+    """Check if an exception is a DynamoDB ConditionalCheckFailedException.
+
+    For TransactionCanceledException, inspects CancellationReasons to distinguish
+    ConditionalCheckFailed (returns True) from TransactionConflict (returns False).
+    """
+    exc_name = type(exc).__name__
+    if exc_name == "ConditionalCheckFailedException":
         return True
-    # botocore wraps it in ClientError
+    # Check CancellationReasons for TransactionCanceledException
+    reason_codes = _get_cancellation_reason_codes(exc)
+    if reason_codes is not None:
+        return "ConditionalCheckFailed" in reason_codes
+    # botocore ClientError fallback (non-transaction)
     if hasattr(exc, "response"):
         error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
-        if error_code in (
-            "ConditionalCheckFailedException",
-            "TransactionCanceledException",
-        ):
+        if error_code == "ConditionalCheckFailedException":
             return True
+    return False
+
+
+def _is_transaction_conflict(exc: Exception) -> bool:
+    """Check if an exception is a DynamoDB TransactionConflict.
+
+    TransactionConflict occurs when concurrent transactions touch the same items.
+    Unlike ConditionalCheckFailed, this indicates transient contention that should
+    be retried as-is (not via the consumption-only retry path).
+    """
+    reason_codes = _get_cancellation_reason_codes(exc)
+    if reason_codes is not None:
+        return "TransactionConflict" in reason_codes
     return False
 
 
@@ -422,6 +484,12 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus
     """Build LimitStatus list for a retry failure (rate limit exceeded)."""
     statuses: list[LimitStatus] = []
     for entry in entries:
+        deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
+        retry_after = calculate_retry_after(
+            deficit_milli=deficit_milli,
+            refill_amount_milli=entry.limit.refill_amount * 1000,
+            refill_period_ms=entry.limit.refill_period_seconds * 1000,
+        )
         statuses.append(
             LimitStatus(
                 entity_id=entry.entity_id,
@@ -431,7 +499,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
-                retry_after_seconds=0.0,
+                retry_after_seconds=retry_after,
             )
         )
     return statuses
