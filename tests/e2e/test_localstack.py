@@ -34,7 +34,6 @@ from zae_limiter import (
     RateLimiter,
     RateLimitExceeded,
     Repository,
-    StackOptions,
     SyncRateLimiter,
     __version__,
 )
@@ -505,28 +504,20 @@ class TestE2ELocalStackFullWorkflow:
     """E2E tests for full rate limiting workflow."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter(self, localstack_endpoint, unique_name_class, e2e_stack_options):
-        """
-        Create and manage the RateLimiter with CloudFormation stack for all tests in this class.
-
-        This fixture creates the stack once when the first test runs and
-        deletes it after all tests in the class complete.
-        """
+    async def e2e_limiter(self, shared_full_stack, unique_name_class):
+        """Namespace-scoped RateLimiter on the shared full stack."""
+        ns = f"full-{unique_name_class}"
         repo = Repository(
-            name=unique_name_class,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=e2e_stack_options,
+            name=shared_full_stack.name,
+            endpoint_url=shared_full_stack.endpoint_url,
+            region=shared_full_stack.region,
         )
-        limiter = RateLimiter(repository=repo)
-
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        limiter = RateLimiter(repository=scoped)
         async with limiter:
             yield limiter
-
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_hierarchical_rate_limiting_workflow(self, e2e_limiter):
@@ -744,31 +735,20 @@ class TestE2ELocalStackAggregatorWorkflow:
     """E2E tests for Lambda aggregator and usage snapshots."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter_with_aggregator(self, localstack_endpoint, unique_name_class):
-        """Create RateLimiter with aggregator enabled. Class-scoped to share stack."""
-        stack_options = StackOptions(
-            enable_aggregator=True,
-            enable_alarms=False,  # Faster deployment
-            snapshot_windows="hourly",
-            usage_retention_days=7,
-        )
-
+    async def e2e_limiter_with_aggregator(self, shared_aggregator_stack, unique_name_class):
+        """Namespace-scoped RateLimiter on the shared aggregator stack."""
+        ns = f"aggr-{unique_name_class}"
         repo = Repository(
-            name=unique_name_class,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=stack_options,
+            name=shared_aggregator_stack.name,
+            endpoint_url=shared_aggregator_stack.endpoint_url,
+            region=shared_aggregator_stack.region,
         )
-        limiter = RateLimiter(repository=repo)
-
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        limiter = RateLimiter(repository=scoped)
         async with limiter:
             yield limiter
-
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            # LocalStack may have issues with stack deletion, log but don't fail
-            print(f"Warning: Stack cleanup failed: {e}")
+        await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_usage_snapshot_generation(self, e2e_limiter_with_aggregator):
@@ -807,7 +787,7 @@ class TestE2ELocalStackAggregatorWorkflow:
             TableName=repo.table_name,
             KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
             ExpressionAttributeValues={
-                ":pk": {"S": "default/ENTITY#snapshot-user"},
+                ":pk": {"S": f"{repo._namespace_id}/ENTITY#snapshot-user"},
                 ":sk_prefix": {"S": "#BUCKET#"},
             },
         )
@@ -821,33 +801,20 @@ class TestE2ELocalStackErrorHandling:
     """E2E tests for error handling scenarios."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter_minimal(self, localstack_endpoint, unique_name_class):
-        """
-        Create and manage the minimal RateLimiter for all tests in this class.
-
-        This fixture creates the stack once when the first test runs and
-        deletes it after all tests in the class complete.
-        """
-        stack_options = StackOptions(
-            enable_aggregator=False,
-            enable_alarms=False,
-        )
-
+    async def e2e_limiter_minimal(self, shared_minimal_stack, unique_name_class):
+        """Namespace-scoped RateLimiter on the shared minimal stack."""
+        ns = f"err-{unique_name_class}"
         repo = Repository(
-            name=unique_name_class,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=stack_options,
+            name=shared_minimal_stack.name,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+            region=shared_minimal_stack.region,
         )
-        limiter = RateLimiter(repository=repo)
-
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        limiter = RateLimiter(repository=scoped)
         async with limiter:
             yield limiter
-
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_concurrent_lease_acquisition(self, e2e_limiter_minimal):

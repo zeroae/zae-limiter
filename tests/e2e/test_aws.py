@@ -380,7 +380,7 @@ class TestE2EAWSUsageSnapshots:
         3. On timeout, checks Lambda invocations for diagnostics
         4. Validates snapshot structure
         """
-        from tests.e2e.conftest import (
+        from tests.fixtures.polling import (
             check_lambda_invocations,
             poll_for_snapshots,
             wait_for_event_source_mapping,
@@ -730,7 +730,7 @@ class TestE2EAWSXRayTracingEnabled:
         import uuid
         from datetime import timedelta
 
-        from tests.e2e.conftest import wait_for_event_source_mapping
+        from tests.fixtures.polling import wait_for_event_source_mapping
 
         function_name = f"{unique_name_class}-aggregator"
 

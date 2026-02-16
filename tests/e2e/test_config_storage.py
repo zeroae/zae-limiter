@@ -31,23 +31,20 @@ class TestE2EResourceConfigStorage:
     """E2E tests for resource-level config storage."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter(self, localstack_endpoint, unique_name_class, minimal_stack_options):
-        """Class-scoped limiter with minimal stack for config tests."""
+    async def e2e_limiter(self, shared_minimal_stack, unique_name_class):
+        """Namespace-scoped limiter on shared minimal stack for config tests."""
+        ns = f"res-{unique_name_class}"
         repo = Repository(
-            name=unique_name_class,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=minimal_stack_options,
+            name=shared_minimal_stack.name,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+            region=shared_minimal_stack.region,
         )
-        limiter = RateLimiter(repository=repo)
-
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        limiter = RateLimiter(repository=scoped)
         async with limiter:
             yield limiter
-
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_resource_config_crud(self, e2e_limiter):
@@ -194,25 +191,20 @@ class TestE2ESystemConfigStorage:
     """E2E tests for system-level config storage."""
 
     @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def e2e_limiter(self, localstack_endpoint, unique_name_class, minimal_stack_options):
-        """Class-scoped limiter with minimal stack for config tests."""
-        # Use different name suffix to avoid conflicts with other test class
-        name = f"{unique_name_class}-sys"
+    async def e2e_limiter(self, shared_minimal_stack, unique_name_class):
+        """Namespace-scoped limiter on shared minimal stack for system config tests."""
+        ns = f"sys-{unique_name_class}"
         repo = Repository(
-            name=name,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=minimal_stack_options,
+            name=shared_minimal_stack.name,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+            region=shared_minimal_stack.region,
         )
-        limiter = RateLimiter(repository=repo)
-
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        limiter = RateLimiter(repository=scoped)
         async with limiter:
             yield limiter
-
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_system_config_crud(self, e2e_limiter):
@@ -330,7 +322,11 @@ class TestE2EConfigCLIWorkflow:
 
     @pytest.fixture(scope="class")
     def e2e_limiter(self, localstack_endpoint, unique_name_class, minimal_stack_options):
-        """Class-scoped limiter with minimal stack for CLI tests."""
+        """Class-scoped sync limiter with own stack for CLI tests.
+
+        CLI tests deploy their own stack because CLI commands operate on the
+        default namespace and don't support --namespace for all operations.
+        """
         from zae_limiter import SyncRateLimiter
         from zae_limiter.sync_repository import SyncRepository
 
@@ -598,29 +594,23 @@ class TestE2ESyncConfigStorage:
     """E2E tests for sync limiter config storage."""
 
     @pytest.fixture(scope="class")
-    def sync_localstack_limiter(
-        self, localstack_endpoint, unique_name_class, minimal_stack_options
-    ):
-        """Class-scoped sync limiter for config tests."""
+    def sync_localstack_limiter(self, shared_minimal_stack, unique_name_class):
+        """Namespace-scoped sync limiter on shared minimal stack for config tests."""
         from zae_limiter import SyncRateLimiter
         from zae_limiter.sync_repository import SyncRepository
 
-        name = f"{unique_name_class}-sync"
+        ns = f"sync-{unique_name_class}"
         repo = SyncRepository(
-            name=name,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=minimal_stack_options,
+            name=shared_minimal_stack.name,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+            region=shared_minimal_stack.region,
         )
-        limiter = SyncRateLimiter(repository=repo)
-
+        repo.register_namespace(ns)
+        scoped = repo.namespace(ns)
+        limiter = SyncRateLimiter(repository=scoped)
         with limiter:
             yield limiter
-
-        try:
-            repo.delete_stack()
-        except Exception as e:
-            print(f"Warning: Stack cleanup failed: {e}")
+        repo.close()
 
     def test_sync_resource_config_workflow(self, sync_localstack_limiter):
         """

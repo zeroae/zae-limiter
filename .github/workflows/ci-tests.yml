@@ -89,7 +89,6 @@ jobs:
           fail_ci_if_error: false
 
   integration:
-    if: ${{ !github.event.pull_request.draft }}
     needs: verify-sync
     runs-on: ubuntu-latest
     strategy:
@@ -238,7 +237,6 @@ jobs:
 
   benchmark-localstack:
     needs: verify-sync
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run-benchmark-localstack }}
     runs-on: ubuntu-latest
     concurrency:
       group: gh-pages-write-${{ github.ref }}
