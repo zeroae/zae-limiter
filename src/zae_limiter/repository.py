@@ -80,7 +80,7 @@ class Repository:
                 "Directly calling Repository(...) is deprecated. "
                 "Use Repository.connect(...) for connecting to existing infrastructure "
                 "or Repository.builder(...).build() for infrastructure provisioning. "
-                "This will be removed in v2.0.0.",
+                "This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -490,7 +490,7 @@ class Repository:
 
         .. deprecated:: 0.6.0
             Use :meth:`ensure_infrastructure` instead. Pass stack_options
-            to the Repository constructor. Will be removed in v2.0.0.
+            to the Repository constructor. Will be removed in v1.0.0.
 
         Args:
             stack_options: Configuration for CloudFormation stack.
@@ -504,7 +504,7 @@ class Repository:
         warnings.warn(
             "create_stack() is deprecated. Use ensure_infrastructure() instead. "
             "Pass stack_options to the Repository constructor. "
-            "This will be removed in v2.0.0.",
+            "This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )

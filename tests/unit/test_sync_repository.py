@@ -1598,7 +1598,7 @@ class TestRepositoryDeprecation:
                     assert len(create_stack_warnings) == 1
                     msg = str(create_stack_warnings[0].message)
                     assert "ensure_infrastructure" in msg
-                    assert "v2.0.0" in msg
+                    assert "v1.0.0" in msg
         repo.close()
 
     def test_create_stack_without_options_uses_constructor_options(self):

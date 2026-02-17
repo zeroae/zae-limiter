@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.unit.conftest import _setup_moto_table
 from zae_limiter import schema
 from zae_limiter.exceptions import EntityNotFoundError
 from zae_limiter.repository import Repository
@@ -12,8 +13,8 @@ from zae_limiter.repository import Repository
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Repository with table created (for namespace registry tests)."""
-    repo = Repository(name="test-ns-registry", region="us-east-1", _skip_deprecation_warning=True)
-    await repo.create_table()
+    await _setup_moto_table("test-ns-registry")
+    repo = await Repository.connect("test-ns-registry", "us-east-1")
     yield repo
     await repo.close()
 
@@ -164,10 +165,11 @@ class TestListNamespaces:
     """Tests for list_namespaces()."""
 
     @pytest.mark.asyncio
-    async def test_list_namespaces_empty(self, repo):
-        """list_namespaces() returns empty list when none registered."""
+    async def test_list_namespaces_default_only(self, repo):
+        """list_namespaces() returns the default namespace when none explicitly registered."""
         result = await repo.list_namespaces()
-        assert result == []
+        names = [ns["name"] for ns in result]
+        assert names == ["default"]
 
     @pytest.mark.asyncio
     async def test_list_namespaces_returns_active(self, repo):
@@ -177,9 +179,10 @@ class TestListNamespaces:
 
         result = await repo.list_namespaces()
         names = [ns["name"] for ns in result]
+        assert "default" in names
         assert "ns-one" in names
         assert "ns-two" in names
-        assert len(result) == 2
+        assert len(result) == 3
 
     @pytest.mark.asyncio
     async def test_list_namespaces_excludes_deleted(self, repo):
@@ -199,9 +202,9 @@ class TestListNamespaces:
         ns_id = await repo.register_namespace("ns-fields")
 
         result = await repo.list_namespaces()
-        assert len(result) == 1
-        ns = result[0]
-        assert ns["name"] == "ns-fields"
+        ns_by_name = {ns["name"]: ns for ns in result}
+        assert "ns-fields" in ns_by_name
+        ns = ns_by_name["ns-fields"]
         assert ns["namespace_id"] == ns_id
         assert ns["created_at"] != ""
 

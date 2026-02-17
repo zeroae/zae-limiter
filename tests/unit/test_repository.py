@@ -2193,7 +2193,7 @@ class TestRepositoryDeprecation:
                     # Message should mention ensure_infrastructure
                     msg = str(create_stack_warnings[0].message)
                     assert "ensure_infrastructure" in msg
-                    assert "v2.0.0" in msg
+                    assert "v1.0.0" in msg
 
         await repo.close()
 

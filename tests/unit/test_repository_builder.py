@@ -34,7 +34,8 @@ async def _create_table(
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Repository with table created (for namespace tests)."""
-    repo = await _create_table("test-repo")
+    await _create_table("test-repo")
+    repo = await Repository.connect("test-repo", "us-east-1")
     yield repo
     await repo.close()
 
@@ -784,7 +785,7 @@ class TestRepositoryDeprecationWarning:
             msg = str(w[0].message)
             assert "connect" in msg
             assert "builder" in msg
-            assert "v2.0.0" in msg
+            assert "v1.0.0" in msg
 
     def test_skip_deprecation_warning_flag(self):
         """_skip_deprecation_warning=True suppresses warning."""

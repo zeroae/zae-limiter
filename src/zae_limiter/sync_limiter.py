@@ -120,19 +120,19 @@ class SyncRateLimiter:
 
         if on_unavailable is not _UNSET:
             warnings.warn(
-                "on_unavailable constructor parameter is deprecated. Use set_system_defaults(on_unavailable=...) or acquire(on_unavailable=...) instead. This will be removed in v2.0.0.",
+                "on_unavailable constructor parameter is deprecated. Use set_system_defaults(on_unavailable=...) or acquire(on_unavailable=...) instead. This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
         if auto_update is not _UNSET:
             warnings.warn(
-                "auto_update constructor parameter is deprecated. Use SyncRepository.builder(...).auto_update(True).build() instead. This will be removed in v2.0.0.",
+                "auto_update constructor parameter is deprecated. Use SyncRepository.builder(...).auto_update(True).build() instead. This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
         if bucket_ttl_refill_multiplier is not _UNSET:
             warnings.warn(
-                "bucket_ttl_refill_multiplier constructor parameter is deprecated. Use SyncRepository.builder(...).bucket_ttl_multiplier(7).build() instead. This will be removed in v2.0.0.",
+                "bucket_ttl_refill_multiplier constructor parameter is deprecated. Use SyncRepository.builder(...).bucket_ttl_multiplier(7).build() instead. This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -147,7 +147,7 @@ class SyncRateLimiter:
             self._repository = repository
         elif old_params_provided:
             warnings.warn(
-                "Passing name/region/endpoint_url/stack_options directly to SyncRateLimiter is deprecated. Use SyncRepository(...) instead. This will be removed in v2.0.0.",
+                "Passing name/region/endpoint_url/stack_options directly to SyncRateLimiter is deprecated. Use SyncRepository(...) instead. This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -160,7 +160,7 @@ class SyncRateLimiter:
             )
         else:
             warnings.warn(
-                "SyncRateLimiter() without a repository argument is deprecated. Use SyncRateLimiter(repository=SyncRepository(...)) instead. This will be removed in v2.0.0.",
+                "SyncRateLimiter() without a repository argument is deprecated. Use SyncRateLimiter(repository=SyncRepository(...)) instead. This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -179,7 +179,7 @@ class SyncRateLimiter:
     def name(self) -> str:
         """DEPRECATED. Use ``repository.stack_name`` instead."""
         warnings.warn(
-            "SyncRateLimiter.name is deprecated. Use repository.stack_name instead. This will be removed in v2.0.0.",
+            "SyncRateLimiter.name is deprecated. Use repository.stack_name instead. This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -189,7 +189,7 @@ class SyncRateLimiter:
     def stack_name(self) -> str:
         """DEPRECATED. Use ``repository.stack_name`` instead."""
         warnings.warn(
-            "SyncRateLimiter.stack_name is deprecated. Use repository.stack_name instead. This will be removed in v2.0.0.",
+            "SyncRateLimiter.stack_name is deprecated. Use repository.stack_name instead. This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -199,7 +199,7 @@ class SyncRateLimiter:
     def table_name(self) -> str:
         """DEPRECATED. Use ``repository.stack_name`` instead."""
         warnings.warn(
-            "SyncRateLimiter.table_name is deprecated. Use repository.stack_name instead. This will be removed in v2.0.0.",
+            "SyncRateLimiter.table_name is deprecated. Use repository.stack_name instead. This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )

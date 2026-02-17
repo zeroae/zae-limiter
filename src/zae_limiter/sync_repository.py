@@ -84,7 +84,7 @@ class SyncRepository:
     ) -> None:
         if not _skip_deprecation_warning:
             warnings.warn(
-                "Directly calling SyncRepository(...) is deprecated. Use SyncRepository.connect(...) for connecting to existing infrastructure or SyncRepository.builder(...).build() for infrastructure provisioning. This will be removed in v2.0.0.",
+                "Directly calling SyncRepository(...) is deprecated. Use SyncRepository.connect(...) for connecting to existing infrastructure or SyncRepository.builder(...).build() for infrastructure provisioning. This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -438,7 +438,7 @@ class SyncRepository:
 
         .. deprecated:: 0.6.0
             Use :meth:`ensure_infrastructure` instead. Pass stack_options
-            to the SyncRepository constructor. Will be removed in v2.0.0.
+            to the SyncRepository constructor. Will be removed in v1.0.0.
 
         Args:
             stack_options: Configuration for CloudFormation stack.
@@ -450,7 +450,7 @@ class SyncRepository:
         import warnings
 
         warnings.warn(
-            "create_stack() is deprecated. Use ensure_infrastructure() instead. Pass stack_options to the SyncRepository constructor. This will be removed in v2.0.0.",
+            "create_stack() is deprecated. Use ensure_infrastructure() instead. Pass stack_options to the SyncRepository constructor. This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )

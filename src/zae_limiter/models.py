@@ -725,7 +725,7 @@ class StackOptions:
         """Validate options and emit deprecation warning."""
         warnings.warn(
             "StackOptions is deprecated. Use Repository.builder(...) with "
-            "fluent methods instead. This will be removed in v2.0.0.",
+            "fluent methods instead. This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )

@@ -91,7 +91,7 @@ class RateLimiter:
         self,
         # New API (preferred)
         repository: "RepositoryProtocol | None" = None,
-        # Old API (deprecated in v0.5.0, removed in v2.0.0)
+        # Old API (deprecated in v0.5.0, removed in v1.0.0)
         name: str | None = None,
         region: str | None = None,
         endpoint_url: str | None = None,
@@ -135,7 +135,7 @@ class RateLimiter:
                 "on_unavailable constructor parameter is deprecated. "
                 "Use set_system_defaults(on_unavailable=...) or "
                 "acquire(on_unavailable=...) instead. "
-                "This will be removed in v2.0.0.",
+                "This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -143,7 +143,7 @@ class RateLimiter:
             warnings.warn(
                 "auto_update constructor parameter is deprecated. "
                 "Use Repository.builder(...).auto_update(True).build() instead. "
-                "This will be removed in v2.0.0.",
+                "This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -151,7 +151,7 @@ class RateLimiter:
             warnings.warn(
                 "bucket_ttl_refill_multiplier constructor parameter is deprecated. "
                 "Use Repository.builder(...).bucket_ttl_multiplier(7).build() instead. "
-                "This will be removed in v2.0.0.",
+                "This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -175,7 +175,7 @@ class RateLimiter:
             warnings.warn(
                 "Passing name/region/endpoint_url/stack_options directly to "
                 "RateLimiter is deprecated. Use Repository(...) instead. "
-                "This will be removed in v2.0.0.",
+                "This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -191,7 +191,7 @@ class RateLimiter:
             warnings.warn(
                 "RateLimiter() without a repository argument is deprecated. "
                 "Use RateLimiter(repository=Repository(...)) instead. "
-                "This will be removed in v2.0.0.",
+                "This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -217,7 +217,7 @@ class RateLimiter:
         warnings.warn(
             "RateLimiter.name is deprecated. "
             "Use repository.stack_name instead. "
-            "This will be removed in v2.0.0.",
+            "This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -229,7 +229,7 @@ class RateLimiter:
         warnings.warn(
             "RateLimiter.stack_name is deprecated. "
             "Use repository.stack_name instead. "
-            "This will be removed in v2.0.0.",
+            "This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -241,7 +241,7 @@ class RateLimiter:
         warnings.warn(
             "RateLimiter.table_name is deprecated. "
             "Use repository.stack_name instead. "
-            "This will be removed in v2.0.0.",
+            "This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )

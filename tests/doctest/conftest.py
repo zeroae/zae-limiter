@@ -181,19 +181,20 @@ def doctest_globals(doctest_env):
     )
 
     # Create pre-built limiter with table
-    _repo = Repository(name="limiter", region="us-east-1", _skip_deprecation_warning=True)
-    _asyncio.run(_repo.create_table())
-    _ns_id = _asyncio.run(_repo.register_namespace("default"))
-    _repo._namespace_id = _ns_id
-    _repo._reinitialize_config_cache(_ns_id)
+    _bootstrap = Repository(name="limiter", region="us-east-1", _skip_deprecation_warning=True)
+    _asyncio.run(_bootstrap.create_table())
+    _asyncio.run(_bootstrap.register_namespace("default"))
+    _asyncio.run(_bootstrap.close())
+    _repo = _asyncio.run(Repository.connect("limiter", "us-east-1"))
     _limiter = RateLimiter(repository=_repo)
 
     # Create "my-app" table used by migration guide examples
-    _my_app_repo = Repository(name="my-app", region="us-east-1", _skip_deprecation_warning=True)
-    _asyncio.run(_my_app_repo.create_table())
-    _my_app_ns_id = _asyncio.run(_my_app_repo.register_namespace("default"))
-    _my_app_repo._namespace_id = _my_app_ns_id
-    _my_app_repo._reinitialize_config_cache(_my_app_ns_id)
+    _my_app_bootstrap = Repository(
+        name="my-app", region="us-east-1", _skip_deprecation_warning=True
+    )
+    _asyncio.run(_my_app_bootstrap.create_table())
+    _asyncio.run(_my_app_bootstrap.register_namespace("default"))
+    _asyncio.run(_my_app_bootstrap.close())
 
     # Pre-create common entities and set up stored limits
     async def _setup():

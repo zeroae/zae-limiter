@@ -2,6 +2,7 @@
 
 import pytest
 
+from tests.unit.conftest import _setup_moto_table
 from zae_limiter.exceptions import NamespaceNotFoundError
 from zae_limiter.repository import Repository
 
@@ -9,12 +10,11 @@ from zae_limiter.repository import Repository
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Repository with table created and default namespace registered."""
-    repo = Repository(name="test-ns-scope", region="us-east-1", _skip_deprecation_warning=True)
-    await repo.create_table()
-    # Register default and a test namespace
-    await repo._register_namespace("default")
-    await repo._register_namespace("tenant-a")
-    await repo._register_namespace("tenant-b")
+    await _setup_moto_table("test-ns-scope")
+    repo = await Repository.connect("test-ns-scope", "us-east-1")
+    # Register additional test namespaces
+    await repo.register_namespace("tenant-a")
+    await repo.register_namespace("tenant-b")
     yield repo
     await repo.close()
 
