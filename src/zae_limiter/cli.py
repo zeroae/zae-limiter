@@ -31,11 +31,30 @@ def namespace_option(func: Callable[..., Any]) -> Callable[..., Any]:
     )(func)
 
 
-async def _resolve_namespace(repo: Repository, namespace: str) -> Repository:
-    """Return a namespace-scoped repository, or the original if namespace is default."""
-    if namespace != "default":
-        return await repo.namespace(namespace)
-    return repo
+async def _connect(
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str = "default",
+) -> Repository:
+    """Connect to existing infrastructure with namespace resolution.
+
+    Handles ValidationError and NamespaceNotFoundError with user-friendly messages.
+    Always returns a valid Repository or exits with an error.
+    """
+    from .exceptions import NamespaceNotFoundError, ValidationError
+    from .repository import Repository
+
+    try:
+        return await Repository.connect(
+            name, region=region, endpoint_url=endpoint_url, namespace=namespace
+        )
+    except ValidationError as e:
+        click.echo(f"Error: {e.reason}", err=True)
+        sys.exit(1)
+    except NamespaceNotFoundError:
+        click.echo(f"Error: Namespace '{namespace}' not found.", err=True)
+        sys.exit(1)
 
 
 @click.group()
@@ -460,7 +479,9 @@ def deploy(
                     click.echo()
                     click.echo("Initializing version record...")
 
-                    repo = Repository(manager.table_name, region, endpoint_url)
+                    repo = Repository(
+                        manager.table_name, region, endpoint_url, _skip_deprecation_warning=True
+                    )
                     await repo.set_version_record(
                         schema_version=get_schema_version(),
                         lambda_version=__version__,
@@ -468,6 +489,10 @@ def deploy(
                         updated_by=f"cli:{__version__}",
                     )
                     click.echo(f"✓ Version record initialized (schema {get_schema_version()})")
+
+                    # Step 4: Register "default" namespace
+                    await repo.register_namespace("default")
+                    click.echo("✓ Default namespace registered")
 
                 if not wait:
                     click.echo()
@@ -901,7 +926,7 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
             pass  # Stack status unavailable
 
         # Create repository for read-only DynamoDB access
-        repository = Repository(stack_name, region, endpoint_url)
+        repository = Repository(stack_name, region, endpoint_url, _skip_deprecation_warning=True)
 
         try:
             # Ping DynamoDB and measure latency
@@ -1195,7 +1220,7 @@ def version_cmd(
         from .repository import Repository
 
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -1329,7 +1354,7 @@ def upgrade(
         from .repository import Repository
 
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -1484,7 +1509,7 @@ def check(
         from .repository import Repository
 
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -1636,18 +1661,10 @@ def audit_list(
         Total: 2 events
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _list() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             events = await repo.get_audit_events(
                 entity_id=entity_id,
                 limit=limit,
@@ -1823,22 +1840,13 @@ def usage_list(
         Total: 2 snapshots
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
-
     if entity_id is None and resource is None:
         click.echo("Error: Either --entity-id or --resource must be provided", err=True)
         sys.exit(1)
 
     async def _list() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             snapshots, next_key = await repo.get_usage_snapshots(
                 entity_id=entity_id,
                 resource=resource,
@@ -2005,22 +2013,13 @@ def usage_summary(
         tpm    450,000  18,750.00
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
-
     if entity_id is None and resource is None:
         click.echo("Error: Either --entity-id or --resource must be provided", err=True)
         sys.exit(1)
 
     async def _summary() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             summary = await repo.get_usage_summary(
                 entity_id=entity_id,
                 resource=resource,
@@ -2183,7 +2182,6 @@ def resource_set_defaults(
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
-    from .repository import Repository
 
     # Parse limits
     parsed_limits: list[LimitModel] = []
@@ -2195,14 +2193,8 @@ def resource_set_defaults(
             sys.exit(1)
 
     async def _set() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             await repo.set_resource_defaults(resource_name, parsed_limits)
             click.echo(f"Set {len(parsed_limits)} default(s) for resource '{resource_name}':")
             for limit in parsed_limits:
@@ -2272,17 +2264,10 @@ def resource_get_defaults(
         ```
     """
     from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _get() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             limits = await repo.get_resource_defaults(resource_name)
             if not limits:
                 click.echo(f"No defaults configured for resource '{resource_name}'")
@@ -2361,7 +2346,6 @@ def resource_delete_defaults(
         ```
     """
     from .exceptions import ValidationError
-    from .repository import Repository
 
     if not yes:
         if not click.confirm(f"Delete all defaults for resource '{resource_name}'?"):
@@ -2369,14 +2353,8 @@ def resource_delete_defaults(
             return
 
     async def _delete() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             await repo.delete_resource_defaults(resource_name)
             click.echo(f"Deleted defaults for resource '{resource_name}'")
         except ValidationError as e:
@@ -2440,18 +2418,10 @@ def resource_list(
           claude-3
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _list() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             resources = await repo.list_resources_with_defaults()
             if not resources:
                 click.echo("No resources with configured defaults")
@@ -2549,7 +2519,6 @@ def system_set_defaults(
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
-    from .repository import Repository
 
     # Parse limits
     parsed_limits: list[LimitModel] = []
@@ -2561,14 +2530,8 @@ def system_set_defaults(
             sys.exit(1)
 
     async def _set() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             from .models import OnUnavailableAction
 
             on_unavailable_action: OnUnavailableAction | None = (
@@ -2644,17 +2607,10 @@ def system_get_defaults(
         ```
     """
     from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _get() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             limits, on_unavailable = await repo.get_system_defaults()
             if not limits and not on_unavailable:
                 click.echo("No system defaults configured")
@@ -2733,7 +2689,6 @@ def system_delete_defaults(
         ```
     """
     from .exceptions import ValidationError
-    from .repository import Repository
 
     if not yes:
         if not click.confirm("Delete all system-wide defaults?"):
@@ -2741,14 +2696,8 @@ def system_delete_defaults(
             return
 
     async def _delete() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             await repo.delete_system_defaults()
             click.echo("Deleted all system-wide defaults")
         except ValidationError as e:
@@ -2852,18 +2801,10 @@ def entity_create(
         zae-limiter entity create user-123 --parent org-456 --cascade
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _create() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             entity = await repo.create_entity(
                 entity_id=entity_id,
                 name=display_name,
@@ -2940,18 +2881,10 @@ def entity_show(
           Metadata:   {'tier': 'premium'}
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _show() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             entity = await repo.get_entity(entity_id)
             if entity is None:
                 click.echo(f"Entity '{entity_id}' not found", err=True)
@@ -3045,7 +2978,6 @@ def entity_set_limits(
     """
     from .exceptions import ValidationError
     from .models import Limit as LimitModel
-    from .repository import Repository
 
     # Parse limits
     parsed_limits: list[LimitModel] = []
@@ -3057,14 +2989,8 @@ def entity_set_limits(
             sys.exit(1)
 
     async def _set() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             await repo.set_limits(entity_id, parsed_limits, resource=resource_name)
             click.echo(
                 f"Set {len(parsed_limits)} limit(s) for entity '{entity_id}' "
@@ -3145,17 +3071,10 @@ def entity_get_limits(
         ```
     """
     from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _get() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             limits = await repo.get_limits(entity_id, resource=resource_name)
             if not limits:
                 click.echo(
@@ -3244,7 +3163,6 @@ def entity_delete_limits(
         ```
     """
     from .exceptions import ValidationError
-    from .repository import Repository
 
     if not yes:
         if not click.confirm(
@@ -3254,14 +3172,8 @@ def entity_delete_limits(
             return
 
     async def _delete() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             await repo.delete_limits(entity_id, resource=resource_name)
             click.echo(f"Deleted limits for entity '{entity_id}' on resource '{resource_name}'")
         except ValidationError as e:
@@ -3339,17 +3251,10 @@ def entity_list(
         ```
     """
     from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _list() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             cursor: str | None = None
             total_count = 0
             while True:
@@ -3430,18 +3335,10 @@ def entity_list_resources(
           claude-3
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _list() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
         try:
-            repo = Repository(name, region, endpoint_url)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
-        try:
-            repo = await _resolve_namespace(repo, namespace)
             resources = await repo.list_resources_with_entity_configs()
             if not resources:
                 click.echo("No resources with entity-level custom limits")
@@ -3525,7 +3422,7 @@ def namespace_register(
 
     async def _register() -> None:
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3592,7 +3489,7 @@ def namespace_list(
 
     async def _list() -> None:
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3664,7 +3561,7 @@ def namespace_show(
 
     async def _show() -> None:
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3749,7 +3646,7 @@ def namespace_delete(
 
     async def _delete() -> None:
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3815,7 +3712,7 @@ def namespace_recover(
 
     async def _recover() -> None:
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3879,7 +3776,7 @@ def namespace_orphans(
 
     async def _orphans() -> None:
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3970,7 +3867,7 @@ def namespace_purge(
 
     async def _purge() -> None:
         try:
-            repo = Repository(name, region, endpoint_url)
+            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)

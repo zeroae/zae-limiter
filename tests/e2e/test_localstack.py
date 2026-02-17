@@ -220,14 +220,10 @@ class TestE2ELocalStackCLIWorkflow:
             assert result.exit_code == 0, f"Deploy failed: {result.output}"
 
             # Step 2: Create entity using SyncRateLimiter (generates audit event)
-            # Use constructor (not connect/builder) to match CLI's internal namespace
-            # handling — CLI uses Repository(name, region, endpoint_url) which defaults
-            # to the literal "default" namespace_id
-            repo = SyncRepository(
+            repo = SyncRepository.connect(
                 unique_name,
                 "us-east-1",
                 endpoint_url=localstack_endpoint,
-                _skip_deprecation_warning=True,
             )
             limiter = SyncRateLimiter(repository=repo)
 
