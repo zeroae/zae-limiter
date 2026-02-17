@@ -1653,6 +1653,20 @@ class TestCLIValidationErrors:
         assert result.exit_code == 1
         assert "underscore" in result.output.lower()
 
+    @patch("zae_limiter.repository.Repository")
+    def test_audit_list_namespace_not_found(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test audit list shows error when namespace is not found."""
+        from zae_limiter.exceptions import NamespaceNotFoundError
+
+        mock_repo_class.connect = AsyncMock(side_effect=NamespaceNotFoundError("missing-ns"))
+
+        result = runner.invoke(
+            cli,
+            ["audit", "list", "--name", "my-app", "-e", "test", "-N", "missing-ns"],
+        )
+        assert result.exit_code == 1
+        assert "Namespace 'missing-ns' not found" in result.output
+
 
 class TestAuditCommands:
     """Test audit CLI commands."""
