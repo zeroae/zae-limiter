@@ -177,9 +177,10 @@ After upgrading, verify the system is healthy:
 
 2. **Run smoke tests:**
    ```python
-   from zae_limiter import RateLimiter, Limit
+   from zae_limiter import Repository, RateLimiter, Limit
 
-   limiter = RateLimiter(name="limiter", region="us-east-1")
+   repo = await Repository.connect("limiter", "us-east-1")
+   limiter = RateLimiter(repository=repo)
 
    # Test basic operation
    async with limiter.acquire(

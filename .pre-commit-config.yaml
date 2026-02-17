@@ -42,9 +42,9 @@ repos:
       - id: verify-sync-generated
         name: Verify generated sync code is up-to-date
         entry: >-
-          bash -c "python scripts/generate_sync.py &&
+          bash -c "uv run python scripts/generate_sync.py &&
           git diff --exit-code src/zae_limiter/sync_*.py src/zae_limiter/infra/sync_*.py tests/unit/test_sync_*.py 2>/dev/null ||
-          (echo 'Generated sync code is out of date. Run: python scripts/generate_sync.py' && exit 1)"
+          (echo 'Generated sync code is out of date. Run: uv run python scripts/generate_sync.py' && exit 1)"
         language: system
         files: ^(src/zae_limiter/(repository_protocol|repository|limiter|lease|config_cache|infra/(stack_manager|discovery))\.py|tests/unit/test_(limiter|repository|stack_manager|discovery|config_cache)\.py)$
         pass_filenames: false

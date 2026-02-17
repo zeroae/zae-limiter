@@ -33,9 +33,10 @@ Query snapshots for an entity:
 
 ```python
 from datetime import datetime
-from zae_limiter import RateLimiter
+from zae_limiter import Repository, RateLimiter
 
-limiter = RateLimiter(name="my-app", region="us-east-1")
+repo = await Repository.connect("my-app", "us-east-1")
+limiter = RateLimiter(repository=repo)
 
 # Get hourly snapshots for a user
 snapshots, next_key = await limiter.get_usage_snapshots(

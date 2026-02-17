@@ -300,8 +300,9 @@ def deploy(
     """Deploy CloudFormation stack with DynamoDB table and Lambda aggregator.
 
     Creates or updates infrastructure including DynamoDB table, Lambda aggregator
-    for usage snapshots, CloudWatch alarms, and IAM roles. The stack is idempotent -
-    running deploy again updates existing resources.
+    for usage snapshots, CloudWatch alarms, and IAM roles. On first deploy, also
+    registers the "default" namespace. The stack is idempotent - running deploy
+    again updates existing resources.
 
     \f
 
