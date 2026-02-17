@@ -1000,6 +1000,7 @@ class TestCLI:
         )
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
+        mock_repository.connect = AsyncMock(return_value=mock_repo_instance)
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
@@ -1028,6 +1029,7 @@ class TestCLI:
         )
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
+        mock_repository.connect = AsyncMock(return_value=mock_repo_instance)
 
         result = runner.invoke(cli, ["status", "--name", "nonexistent"])
 
@@ -1067,6 +1069,7 @@ class TestCLI:
         mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
+        mock_repository.connect = AsyncMock(return_value=mock_repo_instance)
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
@@ -1105,6 +1108,7 @@ class TestCLI:
         mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
+        mock_repository.connect = AsyncMock(return_value=mock_repo_instance)
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
@@ -1195,9 +1199,12 @@ class TestCLI:
         )
 
         assert result.exit_code == 0
-        # Verify Repository was called with endpoint_url
-        mock_repo_class.assert_called_once_with(
-            "test-table", "us-east-1", "http://localhost:4566", _skip_deprecation_warning=True
+        # Verify Repository.connect was called with endpoint_url
+        mock_repo_class.connect.assert_called_once_with(
+            "test-table",
+            region="us-east-1",
+            endpoint_url="http://localhost:4566",
+            namespace="default",
         )
 
     @patch("zae_limiter.repository.Repository")
@@ -1258,9 +1265,12 @@ class TestCLI:
         )
 
         assert result.exit_code == 1  # Not initialized
-        # Verify Repository was called with endpoint_url
-        mock_repo_class.assert_called_once_with(
-            "test-table", "us-east-1", "http://localhost:4566", _skip_deprecation_warning=True
+        # Verify Repository.connect was called with endpoint_url
+        mock_repo_class.connect.assert_called_once_with(
+            "test-table",
+            region="us-east-1",
+            endpoint_url="http://localhost:4566",
+            namespace="default",
         )
 
     @patch("zae_limiter.repository.Repository")
@@ -1301,9 +1311,12 @@ class TestCLI:
         )
 
         assert result.exit_code == 1  # Not initialized
-        # Verify Repository was called with endpoint_url
-        mock_repo_class.assert_called_once_with(
-            "test-table", "us-east-1", "http://localhost:4566", _skip_deprecation_warning=True
+        # Verify Repository.connect was called with endpoint_url
+        mock_repo_class.connect.assert_called_once_with(
+            "test-table",
+            region="us-east-1",
+            endpoint_url="http://localhost:4566",
+            namespace="default",
         )
 
 
@@ -4908,11 +4921,13 @@ class TestNamespaceCommands:
         mock_repo.close.assert_called_once()
 
     def test_namespace_register_validation_error(self, runner: CliRunner) -> None:
-        """Test namespace register handles ValidationError from Repository constructor."""
+        """Test namespace register handles ValidationError from Repository.connect()."""
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+            mock_repo_class.connect = AsyncMock(
+                side_effect=ValidationError("name", "bad_name", "Invalid name format")
+            )
 
             result = runner.invoke(
                 cli, ["namespace", "register", "tenant-alpha", "--name", "bad_name"]
@@ -4999,7 +5014,9 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+            mock_repo_class.connect = AsyncMock(
+                side_effect=ValidationError("name", "bad_name", "Invalid name format")
+            )
 
             result = runner.invoke(cli, ["namespace", "list", "--name", "bad_name"])
 
@@ -5071,7 +5088,9 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+            mock_repo_class.connect = AsyncMock(
+                side_effect=ValidationError("name", "bad_name", "Invalid name format")
+            )
 
             result = runner.invoke(cli, ["namespace", "show", "tenant-alpha", "--name", "bad_name"])
 
@@ -5164,7 +5183,9 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+            mock_repo_class.connect = AsyncMock(
+                side_effect=ValidationError("name", "bad_name", "Invalid name format")
+            )
 
             result = runner.invoke(
                 cli,
@@ -5249,7 +5270,9 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+            mock_repo_class.connect = AsyncMock(
+                side_effect=ValidationError("name", "bad_name", "Invalid name format")
+            )
 
             result = runner.invoke(cli, ["namespace", "recover", "aB3x_9Qw", "--name", "bad_name"])
 
@@ -5328,7 +5351,9 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+            mock_repo_class.connect = AsyncMock(
+                side_effect=ValidationError("name", "bad_name", "Invalid name format")
+            )
 
             result = runner.invoke(cli, ["namespace", "orphans", "--name", "bad_name"])
 
@@ -5419,7 +5444,9 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
+            mock_repo_class.connect = AsyncMock(
+                side_effect=ValidationError("name", "bad_name", "Invalid name format")
+            )
 
             result = runner.invoke(
                 cli, ["namespace", "purge", "aB3x_9Qw", "--name", "bad_name", "--yes"]

@@ -883,7 +883,6 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
     from . import __version__
     from .exceptions import ValidationError
     from .naming import normalize_name
-    from .repository import Repository
 
     try:
         stack_name = normalize_name(name)
@@ -925,8 +924,8 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
         except Exception:
             pass  # Stack status unavailable
 
-        # Create repository for read-only DynamoDB access
-        repository = Repository(stack_name, region, endpoint_url, _skip_deprecation_warning=True)
+        # Connect to existing infrastructure
+        repository = await _connect(name, region, endpoint_url)
 
         try:
             # Ping DynamoDB and measure latency
@@ -1208,7 +1207,6 @@ def version_cmd(
         ```
     """
     from . import __version__
-    from .exceptions import ValidationError
     from .version import (
         InfrastructureVersion,
         check_compatibility,
@@ -1216,15 +1214,7 @@ def version_cmd(
     )
 
     async def _version() -> None:
-        # Import here to avoid loading aioboto3 at CLI startup
-        from .repository import Repository
-
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             click.echo()
             click.echo("zae-limiter Infrastructure Version")
@@ -1350,15 +1340,7 @@ def upgrade(
     )
 
     async def _upgrade() -> None:
-        from .exceptions import ValidationError
-        from .repository import Repository
-
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             click.echo()
             click.echo("Checking infrastructure version...")
@@ -1499,21 +1481,13 @@ def check(
         ```
     """
     from . import __version__
-    from .exceptions import ValidationError
     from .version import (
         InfrastructureVersion,
         check_compatibility,
     )
 
     async def _check() -> None:
-        from .repository import Repository
-
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             click.echo()
             click.echo("Compatibility Check")
@@ -3417,16 +3391,9 @@ def namespace_register(
         zae-limiter namespace register tenant-alpha tenant-beta --name my-app
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _register() -> None:
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             if len(namespaces) == 1:
                 ns_id = await repo.register_namespace(namespaces[0])
@@ -3484,16 +3451,9 @@ def namespace_list(
         zae-limiter namespace list --name my-app
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _list() -> None:
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             namespaces = await repo.list_namespaces()
             if not namespaces:
@@ -3556,16 +3516,9 @@ def namespace_show(
         zae-limiter namespace show tenant-alpha --name my-app
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _show() -> None:
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             ns = await repo.get_namespace(namespace_name)
             if not ns:
@@ -3635,9 +3588,6 @@ def namespace_delete(
         zae-limiter namespace delete tenant-alpha --name my-app --yes
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
-
     if not yes:
         click.confirm(
             f"Delete namespace '{namespace_name}'? Data will be orphaned but recoverable.",
@@ -3645,12 +3595,7 @@ def namespace_delete(
         )
 
     async def _delete() -> None:
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             await repo.delete_namespace(namespace_name)
             click.echo(f"Namespace '{namespace_name}' deleted (data orphaned, recoverable).")
@@ -3707,16 +3652,10 @@ def namespace_recover(
         zae-limiter namespace recover aB3x_9Qw --name my-app
         ```
     """
-    from .exceptions import EntityNotFoundError, ValidationError
-    from .repository import Repository
+    from .exceptions import EntityNotFoundError
 
     async def _recover() -> None:
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             ns_name = await repo.recover_namespace(namespace_id)
             click.echo(f"Recovered namespace '{ns_name}' (ID: {namespace_id}).")
@@ -3771,16 +3710,9 @@ def namespace_orphans(
         zae-limiter namespace orphans --name my-app
         ```
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
 
     async def _orphans() -> None:
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             orphans = await repo.list_orphan_namespaces()
             if not orphans:
@@ -3855,9 +3787,6 @@ def namespace_purge(
         Purging permanently deletes all entities, buckets, configs,
         and audit logs in the namespace. This cannot be undone.
     """
-    from .exceptions import ValidationError
-    from .repository import Repository
-
     if not yes:
         click.confirm(
             f"PERMANENTLY delete ALL data for namespace ID '{namespace_id}'? "
@@ -3866,12 +3795,7 @@ def namespace_purge(
         )
 
     async def _purge() -> None:
-        try:
-            repo = Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
-        except ValidationError as e:
-            click.echo(f"Error: {e.reason}", err=True)
-            sys.exit(1)
-
+        repo = await _connect(name, region, endpoint_url)
         try:
             await repo.purge_namespace(namespace_id)
             click.echo(f"Purged namespace '{namespace_id}'. All data permanently deleted.")
