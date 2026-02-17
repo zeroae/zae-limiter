@@ -548,7 +548,10 @@ class TestListOrphanNamespacesPagination:
 
         async def paginated_query(**kwargs):
             nonlocal call_count
-            result = await original_query(**kwargs)
+            # Strip ExclusiveStartKey since we simulate pagination ourselves;
+            # passing the fake key to moto would return 0 items.
+            clean_kwargs = {k: v for k, v in kwargs.items() if k != "ExclusiveStartKey"}
+            result = await original_query(**clean_kwargs)
             call_count += 1
             if call_count == 1:
                 # First call: return only the first item with continuation
