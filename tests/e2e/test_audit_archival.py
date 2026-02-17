@@ -220,7 +220,7 @@ class TestAuditArchival:
             TableName=scoped_repo.table_name,
             KeyConditionExpression="PK = :pk",
             ExpressionAttributeValues={
-                ":pk": {"S": f"default/AUDIT#{entity.id}"},
+                ":pk": {"S": f"{scoped_repo.namespace_id}/AUDIT#{entity.id}"},
             },
         )
 

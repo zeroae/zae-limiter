@@ -87,6 +87,23 @@ def doctest_env(moto_env, monkeypatch):
     # Builder calls _ensure_infrastructure_internal, not ensure_infrastructure
     monkeypatch.setattr(_Repository, "_ensure_infrastructure_internal", _auto_create_ensure)
 
+    # connect() calls _resolve_namespace directly (not ensure_infrastructure),
+    # so patch it to auto-create the table and namespaces first
+    _original_resolve = _Repository._resolve_namespace
+
+    async def _auto_resolve_namespace(self, namespace_name):
+        await _auto_create_ensure(self)
+        return await _original_resolve(self, namespace_name)
+
+    monkeypatch.setattr(_Repository, "_resolve_namespace", _auto_resolve_namespace)
+
+    # connect() calls version check methods (skip for doctests)
+    async def _noop_version_check(self):
+        pass
+
+    monkeypatch.setattr(_Repository, "_check_and_update_version_auto", _noop_version_check)
+    monkeypatch.setattr(_Repository, "_check_version_strict", _noop_version_check)
+
     # Set sys.argv for standalone scripts (e.g., migration script with argparse)
     import sys
 

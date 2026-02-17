@@ -147,11 +147,10 @@ class TestE2ELocalStackCLIWorkflow:
             )
 
             # Step 3: Use SyncRateLimiter with deployed infrastructure
-            repo = SyncRepository.connect(
-                unique_name,
-                "us-east-1",
-                endpoint_url=localstack_endpoint,
-            )
+            # Use builder (not connect) because CLI deploy doesn't register namespaces
+            repo = SyncRepository.builder(
+                unique_name, "us-east-1", endpoint_url=localstack_endpoint
+            ).build()
             limiter = SyncRateLimiter(repository=repo)
 
             # Create entity and use rate limiting
@@ -221,11 +220,10 @@ class TestE2ELocalStackCLIWorkflow:
             assert result.exit_code == 0, f"Deploy failed: {result.output}"
 
             # Step 2: Create entity using SyncRateLimiter (generates audit event)
-            repo = SyncRepository.connect(
-                unique_name,
-                "us-east-1",
-                endpoint_url=localstack_endpoint,
-            )
+            # Use builder (not connect) because CLI deploy doesn't register namespaces
+            repo = SyncRepository.builder(
+                unique_name, "us-east-1", endpoint_url=localstack_endpoint
+            ).build()
             limiter = SyncRateLimiter(repository=repo)
 
             entity = limiter.create_entity(
