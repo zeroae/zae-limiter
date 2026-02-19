@@ -3368,7 +3368,7 @@
 <p>All partition key values are prefixed with an opaque namespace ID (<code>{ns}/</code>), providing logical isolation between tenants within a single DynamoDB table. The reserved namespace <code>_</code> is used for the namespace registry itself (forward and reverse lookup records).</p>
 <ul>
 <li><strong>Namespace ID format</strong>: 11-character opaque string generated via <code>secrets.token_urlsafe(8)</code></li>
-<li><strong>Default namespace</strong>: Automatically registered on first deploy or <code>RepositoryBuilder.build()</code></li>
+<li><strong>Default namespace</strong>: Automatically registered on first deploy (CLI) or <code>RepositoryBuilder.build()</code></li>
 <li><strong>GSI4</strong>: A KEYS_ONLY index on <code>GSI4PK=namespace_id</code> enables <code>purge_namespace()</code> to discover and delete all items belonging to a namespace</li>
 </ul>
 <h3 id="optimized-read-patterns">Optimized Read Patterns<a class="headerlink" href="#optimized-read-patterns" title="Permanent link">&para;</a></h3>

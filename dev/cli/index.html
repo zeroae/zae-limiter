@@ -4346,8 +4346,9 @@ This action cannot be undone.</p>
 <h4 id="zae-limiter-deploy">zae-limiter deploy<a class="headerlink" href="#zae-limiter-deploy" title="Permanent link">&para;</a></h4>
 <p>Deploy CloudFormation stack with DynamoDB table and Lambda aggregator.</p>
 <p>Creates or updates infrastructure including DynamoDB table, Lambda aggregator
-for usage snapshots, CloudWatch alarms, and IAM roles. The stack is idempotent -
-running deploy again updates existing resources.</p>
+for usage snapshots, CloudWatch alarms, and IAM roles. On first deploy, also
+registers the "default" namespace. The stack is idempotent - running deploy
+again updates existing resources.</p>
 <p><strong>Examples:</strong>
     <div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Basic deployment</span>
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
@@ -7335,7 +7336,11 @@ versions. Checks compatibility between client and infrastructure.</p>
 </tbody>
 </table>
 <h2 id="namespace-flag">Namespace Flag<a class="headerlink" href="#namespace-flag" title="Permanent link">&para;</a></h2>
-<p>Most data-access commands accept <code>--namespace</code> / <code>-N</code> to scope operations to a specific namespace. When omitted, operations default to the <code>"default"</code> namespace.</p>
+<p>Most data-access commands accept <code>--namespace</code> / <code>-N</code> to scope operations to a specific namespace. When omitted, operations default to the <code>"default"</code> namespace. The <code>"default"</code> namespace is automatically registered during <code>zae-limiter deploy</code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Namespace must exist</p>
+<p>Data-access commands internally use <code>Repository.connect()</code>, which requires the namespace to already be registered. If the namespace does not exist, the command exits with an error: <code>Error: Namespace 'name' not found.</code></p>
+</div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-101-1"><a id="__codelineno-101-1" name="__codelineno-101-1" href="#__codelineno-101-1"></a><span class="c1"># Entity operations in a specific namespace</span>
 </span><span id="__span-101-2"><a id="__codelineno-101-2" name="__codelineno-101-2" href="#__codelineno-101-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>user-123<span class="w"> </span>--namespace<span class="w"> </span>tenant-alpha<span class="w"> </span>-l<span class="w"> </span>rpm:1000
 </span><span id="__span-101-3"><a id="__codelineno-101-3" name="__codelineno-101-3" href="#__codelineno-101-3"></a>

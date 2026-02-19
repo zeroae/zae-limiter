@@ -1213,28 +1213,6 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository--basic-usage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic usage
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository--with-infrastructure-management-adr-108" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        With infrastructure management (ADR-108)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.namespace_name" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4075,28 +4053,6 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository--basic-usage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic usage
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository--with-infrastructure-management-adr-108" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        With infrastructure management (ADR-108)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.namespace_name" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5579,6 +5535,12 @@
         <p>Async DynamoDB repository for rate limiter data.</p>
 <p>Handles all DynamoDB operations including entities, buckets,
 limit configs, and transactions.</p>
+<p>Use :meth:<code>connect</code> to connect to existing infrastructure (recommended),
+or :meth:<code>builder</code> to provision infrastructure declaratively.</p>
+<p>.. deprecated::
+    Direct construction via <code>Repository(...)</code> is deprecated and will be
+    removed in v1.0.0. Use <code>Repository.connect(...)</code> or
+    <code>Repository.builder(...).build()</code> instead.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5682,19 +5644,14 @@ Controls caching of resolved limit configs in resolve_limits().</p>
           </tr>
       </tbody>
     </table>
+        <p>Example::</p>
+<div class="language-text highlight"><pre><span></span><code># Connect to existing infrastructure (recommended)
+repo = await Repository.connect(&quot;my-app&quot;, &quot;us-east-1&quot;)
 
+# Provision infrastructure
+repo = await Repository.builder(&quot;my-app&quot;, &quot;us-east-1&quot;).build()
+</code></pre></div>
 
-<details class="example" open>
-  <summary>Example</summary>
-  <h4 id="zae_limiter.repository.Repository--basic-usage">Basic usage<a class="headerlink" href="#zae_limiter.repository.Repository--basic-usage" title="Permanent link">&para;</a></h4>
-<p>repo = Repository(name="my-app", region="us-east-1")</p>
-<h4 id="zae_limiter.repository.Repository--with-infrastructure-management-adr-108">With infrastructure management (ADR-108)<a class="headerlink" href="#zae_limiter.repository.Repository--with-infrastructure-management-adr-108" title="Permanent link">&para;</a></h4>
-<p>repo = Repository(
-    name="my-app",
-    region="us-east-1",
-    stack_options=StackOptions(lambda_memory=512, enable_alarms=True),
-)</p>
-</details>
 
 
 
@@ -5991,7 +5948,7 @@ Must already be registered via <code>builder().build()</code> or CLI.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="zae_limiter.exceptions.NamespaceNotFoundError">NamespaceNotFoundError</span></code>
+                  <code><a class="autorefs autorefs-internal" title="            NamespaceNotFoundError (zae_limiter.exceptions.NamespaceNotFoundError)" href="../exceptions/#zae_limiter.exceptions.NamespaceNotFoundError">NamespaceNotFoundError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -6155,7 +6112,7 @@ this scoped repo.  Defaults to the parent's value.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="zae_limiter.exceptions.NamespaceNotFoundError">NamespaceNotFoundError</span></code>
+                  <code><a class="autorefs autorefs-internal" title="            NamespaceNotFoundError (zae_limiter.exceptions.NamespaceNotFoundError)" href="../exceptions/#zae_limiter.exceptions.NamespaceNotFoundError">NamespaceNotFoundError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -10825,7 +10782,7 @@ assert isinstance(repo, RepositoryProtocol)  # True at runtime</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="zae_limiter.exceptions.NamespaceNotFoundError">NamespaceNotFoundError</span></code>
+                  <code><a class="autorefs autorefs-internal" title="            NamespaceNotFoundError (zae_limiter.exceptions.NamespaceNotFoundError)" href="../exceptions/#zae_limiter.exceptions.NamespaceNotFoundError">NamespaceNotFoundError</a></code>
             </td>
             <td>
               <div class="doc-md-description">

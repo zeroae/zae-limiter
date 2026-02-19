@@ -3552,7 +3552,7 @@
 </table>
 <p>For the full list of options, see the <a href="../../cli/#deploy">CLI Reference</a>.</p>
 <h3 id="namespace-registration">Namespace Registration<a class="headerlink" href="#namespace-registration" title="Permanent link">&para;</a></h3>
-<p>Namespaces provide logical isolation within a single DynamoDB table. The <code>"default"</code> namespace is automatically registered on first deploy or when using <code>RepositoryBuilder.build()</code>.</p>
+<p>Namespaces provide logical isolation within a single DynamoDB table. The <code>"default"</code> namespace is automatically registered by <code>zae-limiter deploy</code> and <code>Repository.builder().build()</code>. Application code then uses <code>Repository.connect()</code> to connect to a registered namespace.</p>
 <div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">CLI</label><label for="__tabbed_1_2">Programmatic</label></div>
 <div class="tabbed-content">
 <div class="tabbed-block">
