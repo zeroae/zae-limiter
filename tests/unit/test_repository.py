@@ -23,7 +23,7 @@ from zae_limiter.schema import (
 @pytest.fixture
 async def repo(mock_dynamodb):
     """Basic repository instance."""
-    repo = Repository(name="test-repo", region="us-east-1")
+    repo = Repository(name="test-repo", region="us-east-1", _skip_deprecation_warning=True)
     await repo.create_table()
     yield repo
     await repo.close()
@@ -2193,7 +2193,7 @@ class TestRepositoryDeprecation:
                     # Message should mention ensure_infrastructure
                     msg = str(create_stack_warnings[0].message)
                     assert "ensure_infrastructure" in msg
-                    assert "v2.0.0" in msg
+                    assert "v1.0.0" in msg
 
         await repo.close()
 
@@ -3273,7 +3273,7 @@ class TestDeleteStack:
         """delete_stack() creates a StackManager and calls delete_stack."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        repo = Repository(name="test-stack", region="us-east-1")
+        repo = Repository(name="test-stack", region="us-east-1", _skip_deprecation_warning=True)
 
         mock_manager = MagicMock()
         mock_manager.delete_stack = AsyncMock()
@@ -3296,7 +3296,7 @@ class TestResolveOnUnavailable:
         """When system config exists but on_unavailable is None, cached value is used."""
         from unittest.mock import AsyncMock, patch
 
-        repo = Repository(name="test-cache", region="us-east-1")
+        repo = Repository(name="test-cache", region="us-east-1", _skip_deprecation_warning=True)
         repo._on_unavailable_cache = "allow"
 
         # Mock config cache to return (None limits, None on_unavailable)
@@ -3313,7 +3313,7 @@ class TestResolveOnUnavailable:
         """When no cache and system config has no on_unavailable, default to 'block'."""
         from unittest.mock import AsyncMock, patch
 
-        repo = Repository(name="test-default", region="us-east-1")
+        repo = Repository(name="test-default", region="us-east-1", _skip_deprecation_warning=True)
         assert repo._on_unavailable_cache is None
 
         with patch.object(
@@ -3329,7 +3329,7 @@ class TestResolveOnUnavailable:
         """When DynamoDB is unreachable, cached on_unavailable is returned."""
         from unittest.mock import AsyncMock, patch
 
-        repo = Repository(name="test-fallback", region="us-east-1")
+        repo = Repository(name="test-fallback", region="us-east-1", _skip_deprecation_warning=True)
         repo._on_unavailable_cache = "allow"
 
         with patch.object(
@@ -3347,7 +3347,7 @@ class TestResolveOnUnavailable:
         """When DynamoDB is unreachable and no cache, default to 'block'."""
         from unittest.mock import AsyncMock, patch
 
-        repo = Repository(name="test-no-cache", region="us-east-1")
+        repo = Repository(name="test-no-cache", region="us-east-1", _skip_deprecation_warning=True)
         assert repo._on_unavailable_cache is None
 
         with patch.object(

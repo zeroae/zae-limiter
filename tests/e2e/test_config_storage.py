@@ -36,16 +36,15 @@ class TestE2EResourceConfigStorage:
     async def e2e_limiter(self, shared_minimal_stack, unique_name_class):
         """Namespace-scoped limiter on shared minimal stack for config tests."""
         ns = f"res-{unique_name_class}"
-        repo = Repository(
-            name=shared_minimal_stack.name,
+        repo = await Repository.connect(
+            shared_minimal_stack.name,
+            shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
-            region=shared_minimal_stack.region,
         )
         await repo.register_namespace(ns)
         scoped = await repo.namespace(ns)
         limiter = RateLimiter(repository=scoped)
-        async with limiter:
-            yield limiter
+        yield limiter
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
@@ -196,16 +195,15 @@ class TestE2ESystemConfigStorage:
     async def e2e_limiter(self, shared_minimal_stack, unique_name_class):
         """Namespace-scoped limiter on shared minimal stack for system config tests."""
         ns = f"sys-{unique_name_class}"
-        repo = Repository(
-            name=shared_minimal_stack.name,
+        repo = await Repository.connect(
+            shared_minimal_stack.name,
+            shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
-            region=shared_minimal_stack.region,
         )
         await repo.register_namespace(ns)
         scoped = await repo.namespace(ns)
         limiter = RateLimiter(repository=scoped)
-        async with limiter:
-            yield limiter
+        yield limiter
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
@@ -333,16 +331,14 @@ class TestE2EConfigCLIWorkflow:
         from zae_limiter.sync_repository import SyncRepository
 
         name = f"{unique_name_class}-cli"
-        repo = SyncRepository(
-            name=name,
-            endpoint_url=localstack_endpoint,
-            region="us-east-1",
-            stack_options=minimal_stack_options,
+        repo = (
+            SyncRepository.builder(name, "us-east-1", endpoint_url=localstack_endpoint)
+            .stack_options(minimal_stack_options)
+            .build()
         )
         limiter = SyncRateLimiter(repository=repo)
 
-        with limiter:
-            yield limiter
+        yield limiter
 
         try:
             repo.delete_stack()
@@ -602,16 +598,15 @@ class TestE2ESyncConfigStorage:
         from zae_limiter.sync_repository import SyncRepository
 
         ns = f"sync-{unique_name_class}"
-        repo = SyncRepository(
-            name=shared_minimal_stack.name,
+        repo = SyncRepository.connect(
+            shared_minimal_stack.name,
+            shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
-            region=shared_minimal_stack.region,
         )
         repo.register_namespace(ns)
         scoped = repo.namespace(ns)
         limiter = SyncRateLimiter(repository=scoped)
-        with limiter:
-            yield limiter
+        yield limiter
         repo.close()
 
     def test_sync_resource_config_workflow(self, sync_localstack_limiter):

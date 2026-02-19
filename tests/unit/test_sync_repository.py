@@ -29,7 +29,7 @@ from zae_limiter.sync_repository import SyncRepository
 @pytest.fixture
 def repo(mock_dynamodb):
     """Basic repository instance."""
-    repo = SyncRepository(name="test-repo", region="us-east-1")
+    repo = SyncRepository(name="test-repo", region="us-east-1", _skip_deprecation_warning=True)
     repo.create_table()
     yield repo
     repo.close()
@@ -1598,7 +1598,7 @@ class TestRepositoryDeprecation:
                     assert len(create_stack_warnings) == 1
                     msg = str(create_stack_warnings[0].message)
                     assert "ensure_infrastructure" in msg
-                    assert "v2.0.0" in msg
+                    assert "v1.0.0" in msg
         repo.close()
 
     def test_create_stack_without_options_uses_constructor_options(self):
@@ -2399,7 +2399,7 @@ class TestDeleteStack:
         """delete_stack() creates a SyncStackManager and calls delete_stack."""
         from unittest.mock import MagicMock, patch
 
-        repo = SyncRepository(name="test-stack", region="us-east-1")
+        repo = SyncRepository(name="test-stack", region="us-east-1", _skip_deprecation_warning=True)
         mock_manager = MagicMock()
         mock_manager.delete_stack = MagicMock()
         mock_manager.__enter__ = MagicMock(return_value=mock_manager)
@@ -2419,7 +2419,7 @@ class TestResolveOnUnavailable:
         """When system config exists but on_unavailable is None, cached value is used."""
         from unittest.mock import MagicMock, patch
 
-        repo = SyncRepository(name="test-cache", region="us-east-1")
+        repo = SyncRepository(name="test-cache", region="us-east-1", _skip_deprecation_warning=True)
         repo._on_unavailable_cache = "allow"
         with patch.object(
             repo._config_cache, "get_system_defaults", new_callable=MagicMock
@@ -2433,7 +2433,9 @@ class TestResolveOnUnavailable:
         """When no cache and system config has no on_unavailable, default to 'block'."""
         from unittest.mock import MagicMock, patch
 
-        repo = SyncRepository(name="test-default", region="us-east-1")
+        repo = SyncRepository(
+            name="test-default", region="us-east-1", _skip_deprecation_warning=True
+        )
         assert repo._on_unavailable_cache is None
         with patch.object(
             repo._config_cache, "get_system_defaults", new_callable=MagicMock
@@ -2447,7 +2449,9 @@ class TestResolveOnUnavailable:
         """When DynamoDB is unreachable, cached on_unavailable is returned."""
         from unittest.mock import MagicMock, patch
 
-        repo = SyncRepository(name="test-fallback", region="us-east-1")
+        repo = SyncRepository(
+            name="test-fallback", region="us-east-1", _skip_deprecation_warning=True
+        )
         repo._on_unavailable_cache = "allow"
         with patch.object(
             repo._config_cache,
@@ -2463,7 +2467,9 @@ class TestResolveOnUnavailable:
         """When DynamoDB is unreachable and no cache, default to 'block'."""
         from unittest.mock import MagicMock, patch
 
-        repo = SyncRepository(name="test-no-cache", region="us-east-1")
+        repo = SyncRepository(
+            name="test-no-cache", region="us-east-1", _skip_deprecation_warning=True
+        )
         assert repo._on_unavailable_cache is None
         with patch.object(
             repo._config_cache,

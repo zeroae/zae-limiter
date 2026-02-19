@@ -91,6 +91,7 @@ def benchmark_limiter(mock_dynamodb_module):
     repo = SyncRepository(
         name="benchmark",
         region="us-east-1",
+        _skip_deprecation_warning=True,
     )
     repo.create_table()
     limiter = SyncRateLimiter(repository=repo)
@@ -184,6 +185,7 @@ def sync_limiter_no_cache(mock_dynamodb):
         name="test-no-cache",
         region="us-east-1",
         config_cache_ttl=0,
+        _skip_deprecation_warning=True,
     )
     repo.create_table()
     limiter = SyncRateLimiter(repository=repo)

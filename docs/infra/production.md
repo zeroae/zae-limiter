@@ -287,9 +287,9 @@ zae-limiter is designed for **single-region deployment**:
 ### Cross-Region Pattern
 
 ```python
-# Deploy separate stacks per region
-us_repo = await Repository.builder("prod", "us-east-1").build()
-eu_repo = await Repository.builder("prod", "eu-west-1").build()
+# Connect to separate stacks per region
+us_repo = await Repository.connect("prod", "us-east-1")
+eu_repo = await Repository.connect("prod", "eu-west-1")
 
 us_limiter = RateLimiter(repository=us_repo)
 eu_limiter = RateLimiter(repository=eu_repo)

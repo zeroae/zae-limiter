@@ -2419,14 +2419,16 @@ class TestRateLimiterUsageSnapshots:
 
         for entity_id, resource, window_type, window_start, counters in snapshots_data:
             item = {
-                "PK": {"S": schema.pk_entity("default", entity_id)},
+                "PK": {"S": schema.pk_entity(limiter._repository.namespace_id, entity_id)},
                 "SK": {"S": schema.sk_usage(resource, window_start)},
                 "entity_id": {"S": entity_id},
                 "resource": {"S": resource},
                 "window": {"S": window_type},
                 "window_start": {"S": window_start},
                 "total_events": {"N": str(sum(counters.values()))},
-                "GSI2PK": {"S": schema.gsi2_pk_resource("default", resource)},
+                "GSI2PK": {
+                    "S": schema.gsi2_pk_resource(limiter._repository.namespace_id, resource)
+                },
                 "GSI2SK": {"S": f"USAGE#{window_start}#{entity_id}"},
             }
             for name, value in counters.items():
@@ -3252,7 +3254,7 @@ class TestRateLimiterRepositoryParameter:
         """Test ValueError when both repository and name are provided."""
         from zae_limiter import Repository
 
-        repo = Repository(name="my-app", region="us-east-1")
+        repo = Repository(name="my-app", region="us-east-1", _skip_deprecation_warning=True)
 
         with pytest.raises(ValueError) as exc_info:
             RateLimiter(repository=repo, name="other-app")
@@ -3265,7 +3267,7 @@ class TestRateLimiterRepositoryParameter:
         """Test ValueError when both repository and region are provided."""
         from zae_limiter import Repository
 
-        repo = Repository(name="my-app", region="us-east-1")
+        repo = Repository(name="my-app", region="us-east-1", _skip_deprecation_warning=True)
 
         with pytest.raises(ValueError) as exc_info:
             RateLimiter(repository=repo, region="eu-west-1")
@@ -3278,7 +3280,7 @@ class TestRateLimiterRepositoryParameter:
         """Test ValueError when both repository and endpoint_url are provided."""
         from zae_limiter import Repository
 
-        repo = Repository(name="my-app", region="us-east-1")
+        repo = Repository(name="my-app", region="us-east-1", _skip_deprecation_warning=True)
 
         with pytest.raises(ValueError) as exc_info:
             RateLimiter(repository=repo, endpoint_url="http://localhost:4566")
@@ -3291,7 +3293,7 @@ class TestRateLimiterRepositoryParameter:
         """Test ValueError when both repository and stack_options are provided."""
         from zae_limiter import Repository, StackOptions
 
-        repo = Repository(name="my-app", region="us-east-1")
+        repo = Repository(name="my-app", region="us-east-1", _skip_deprecation_warning=True)
 
         with pytest.raises(ValueError) as exc_info:
             RateLimiter(repository=repo, stack_options=StackOptions())
@@ -3308,8 +3310,11 @@ class TestRateLimiterRepositoryParameter:
             warnings.simplefilter("always")
             limiter = RateLimiter()
             deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecation_warnings) == 1
-            assert "without a repository" in str(deprecation_warnings[0].message).lower()
+            assert len(deprecation_warnings) >= 1
+            limiter_warnings = [
+                x for x in deprecation_warnings if "without a repository" in str(x.message).lower()
+            ]
+            assert len(limiter_warnings) == 1
 
         assert limiter._repository.stack_name == "limiter"
         assert limiter._repository is not None
@@ -3351,7 +3356,7 @@ class TestDeprecatedConstructorParams:
 
         from zae_limiter import Repository
 
-        repo = Repository(name="test", region="us-east-1")
+        repo = Repository(name="test", region="us-east-1", _skip_deprecation_warning=True)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             limiter = RateLimiter(repository=repo, speculative_writes=False)
@@ -3384,7 +3389,7 @@ class TestRepositoryProtocolCompliance:
         """Test that Repository passes isinstance check for RepositoryProtocol."""
         from zae_limiter import Repository, RepositoryProtocol
 
-        repo = Repository(name="test", region="us-east-1")
+        repo = Repository(name="test", region="us-east-1", _skip_deprecation_warning=True)
         assert isinstance(repo, RepositoryProtocol)
 
     def test_repository_protocol_is_runtime_checkable(self):
@@ -3398,7 +3403,7 @@ class TestRepositoryProtocolCompliance:
         """Test that Repository exposes capabilities."""
         from zae_limiter import BackendCapabilities, Repository
 
-        repo = Repository(name="test", region="us-east-1")
+        repo = Repository(name="test", region="us-east-1", _skip_deprecation_warning=True)
         caps = repo.capabilities
 
         assert isinstance(caps, BackendCapabilities)
@@ -3464,7 +3469,12 @@ class TestRateLimiterConfigCache:
         """Test Repository.get_cache_stats() reflects custom TTL."""
         from zae_limiter import Repository
 
-        repo = Repository(name="test-rate-limits", region="us-east-1", config_cache_ttl=120)
+        repo = Repository(
+            name="test-rate-limits",
+            region="us-east-1",
+            config_cache_ttl=120,
+            _skip_deprecation_warning=True,
+        )
         limiter = RateLimiter(repository=repo)
 
         stats = limiter._repository.get_cache_stats()
@@ -3833,7 +3843,9 @@ class TestLeaseCommitTTL:
         # We need to check the raw item has ttl - let's query directly
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
         assert item is not None
         assert "ttl" in item
 
@@ -3842,7 +3854,7 @@ class TestLeaseCommitTTL:
         from zae_limiter.schema import pk_entity, sk_bucket
 
         # Query for a bucket that doesn't exist
-        pk = pk_entity("default", "nonexistent-user")
+        pk = pk_entity(limiter._repository.namespace_id, "nonexistent-user")
         item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is None
 
@@ -3874,7 +3886,9 @@ class TestLeaseCommitTTL:
         # Verify TTL was removed
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
         assert item is not None
         assert "ttl" not in item
 
@@ -3899,7 +3913,7 @@ class TestLeaseCommitTTL:
         # Verify TTL IS set (entity_default is treated as a default, not custom)
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        pk = pk_entity("default", "user-1")
+        pk = pk_entity(limiter._repository.namespace_id, "user-1")
         item = await limiter._repository._get_item(pk, sk_bucket("gpt-4"))
         assert item is not None
         assert "ttl" in item, "entity_default config should have TTL (treated as default)"
@@ -3923,7 +3937,9 @@ class TestLeaseCommitTTL:
         # Get TTL from item
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
 
         # TTL = now + (60 seconds * 7 multiplier) = now + 420
         # Allow ±1 second for timing
@@ -3962,7 +3978,7 @@ class TestLeaseCommitTTL:
 
         from zae_limiter.schema import pk_entity, sk_bucket
 
-        pk = pk_entity("default", "user-slow")
+        pk = pk_entity(limiter._repository.namespace_id, "user-slow")
         item = await limiter._repository._get_item(pk, sk_bucket("api"))
 
         # Time to fill = (capacity / refill_amount) × refill_period = 100 × 60 = 6000 seconds
@@ -3999,7 +4015,7 @@ class TestLeaseCommitTTL:
             # Verify no TTL set
             from zae_limiter.schema import pk_entity, sk_bucket
 
-            pk = pk_entity("default", "user-1")
+            pk = pk_entity(limiter._repository.namespace_id, "user-1")
             item = await limiter._repository._get_item(pk, sk_bucket("api"))
             assert item is not None
             assert "ttl" not in item
@@ -4027,7 +4043,9 @@ class TestLeaseCommitTTL:
             pass
 
         # Verify no TTL (entity has custom config)
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
         assert item is not None
         assert "ttl" not in item
 
@@ -4046,7 +4064,9 @@ class TestLeaseCommitTTL:
             pass
 
         # Verify TTL is now set (entity uses default config)
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
         assert item is not None
         assert "ttl" in item
 
@@ -4081,7 +4101,9 @@ class TestBucketLimitSync:
             pass
 
         # Verify bucket was created with capacity=100
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Initial capacity should be 100 RPM"
 
@@ -4089,7 +4111,9 @@ class TestBucketLimitSync:
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
 
         # Verify bucket capacity was updated immediately (no acquire needed)
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"
 
@@ -4116,7 +4140,9 @@ class TestBucketLimitSync:
             pass
 
         # Verify bucket was created with capacity=200
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Initial capacity should be 200 RPM"
 
@@ -4124,7 +4150,9 @@ class TestBucketLimitSync:
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="api")
 
         # Verify bucket capacity was updated immediately (no acquire needed)
-        item = await limiter._repository._get_item(pk_entity("default", "user-1"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+        )
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Bucket capacity should be synced to 100 RPM"
 
@@ -4150,7 +4178,9 @@ class TestBucketLimitSync:
             pass
 
         # Verify initial values
-        item = await limiter._repository._get_item(pk_entity("default", "user-2"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-2"), sk_bucket("api")
+        )
         assert item is not None
         assert item["b_rpm_cp"] == 100000
         assert item["b_tpm_cp"] == 10000000
@@ -4163,7 +4193,9 @@ class TestBucketLimitSync:
         )
 
         # Verify both buckets synced
-        item = await limiter._repository._get_item(pk_entity("default", "user-2"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-2"), sk_bucket("api")
+        )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "rpm capacity should be synced"
         assert item["b_tpm_cp"] == 20000000, "tpm capacity should be synced"
@@ -4186,7 +4218,9 @@ class TestBucketLimitSync:
             pass
 
         # Verify initial values (per minute: refill_period=60s)
-        item = await limiter._repository._get_item(pk_entity("default", "user-3"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-3"), sk_bucket("api")
+        )
         assert item is not None
         assert item["b_rpm_cp"] == 100000  # capacity: 100 * 1000
         assert item["b_rpm_bx"] == 150000  # burst: 150 * 1000
@@ -4201,7 +4235,9 @@ class TestBucketLimitSync:
         )
 
         # Verify all params updated
-        item = await limiter._repository._get_item(pk_entity("default", "user-3"), sk_bucket("api"))
+        item = await limiter._repository._get_item(
+            pk_entity(limiter._repository.namespace_id, "user-3"), sk_bucket("api")
+        )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "capacity should be synced"
         assert item["b_rpm_bx"] == 300000, "burst should be synced"
@@ -4280,7 +4316,7 @@ class TestBucketReconciliation:
             pass
 
         # Verify bucket has TTL
-        pk = pk_entity("default", "user-ttl")
+        pk = pk_entity(limiter._repository.namespace_id, "user-ttl")
         item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "ttl" in item
@@ -4312,7 +4348,7 @@ class TestBucketReconciliation:
         async with limiter.acquire(entity_id="user-del", resource="api", consume={"rpm": 1}):
             pass
 
-        pk = pk_entity("default", "user-del")
+        pk = pk_entity(limiter._repository.namespace_id, "user-del")
         item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "ttl" not in item
@@ -4352,7 +4388,7 @@ class TestBucketReconciliation:
         ):
             pass
 
-        pk = pk_entity("default", "user-stale")
+        pk = pk_entity(limiter._repository.namespace_id, "user-stale")
         item = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item is not None
         assert "b_tpm_cp" in item, "tpm limit should exist in bucket"
@@ -4381,14 +4417,14 @@ class TestBucketReconciliation:
             pass
 
         item_before = await limiter._repository._get_item(
-            pk_entity("default", "user-orphan"), sk_bucket("api")
+            pk_entity(limiter._repository.namespace_id, "user-orphan"), sk_bucket("api")
         )
         assert item_before is not None
 
         # Delete entity config — no fallback, bucket left as-is
         await limiter.delete_limits("user-orphan", resource="api")
 
-        pk = pk_entity("default", "user-orphan")
+        pk = pk_entity(limiter._repository.namespace_id, "user-orphan")
         item_after = await limiter._repository._get_item(pk, sk_bucket("api"))
         assert item_after is not None
         # Bucket should be unchanged (no reconciliation)
@@ -4432,7 +4468,8 @@ class TestBucketReconciliation:
             pass
 
         # Verify entity config is cached (not _NO_CONFIG)
-        cache_key = ("default", "user-dcache", "api")
+        ns_id = limiter._repository.namespace_id
+        cache_key = (ns_id, "user-dcache", "api")
         entry = limiter._repository._config_cache._entity_limits.get(cache_key)
         assert entry is not None and entry.value is not _NO_CONFIG
 
@@ -5515,8 +5552,9 @@ class TestCascadeEntityCache:
             pass
 
         cache = limiter._repository._entity_cache
-        assert ("default", "entity-1") in cache
-        cascade, parent_id = cache[("default", "entity-1")]
+        ns_id = limiter._repository.namespace_id
+        assert (ns_id, "entity-1") in cache
+        cascade, parent_id = cache[(ns_id, "entity-1")]
         assert cascade is False
         assert parent_id is None
 
@@ -5532,8 +5570,9 @@ class TestCascadeEntityCache:
             pass
 
         cache = limiter._repository._entity_cache
-        assert ("default", "entity-1") in cache
-        cascade, parent_id = cache[("default", "entity-1")]
+        ns_id = limiter._repository.namespace_id
+        assert (ns_id, "entity-1") in cache
+        cascade, parent_id = cache[(ns_id, "entity-1")]
         assert cascade is False
         assert parent_id is None
 
@@ -5548,8 +5587,9 @@ class TestCascadeEntityCache:
             pass
 
         cache = limiter._repository._entity_cache
-        assert ("default", "child-1") in cache
-        cascade, parent_id = cache[("default", "child-1")]
+        ns_id = limiter._repository.namespace_id
+        assert (ns_id, "child-1") in cache
+        cascade, parent_id = cache[(ns_id, "child-1")]
         assert cascade is True
         assert parent_id == "parent-1"
 

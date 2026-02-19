@@ -8,6 +8,7 @@ Changes should be made to the source file, then regenerated.
 
 import logging
 import time
+import warnings
 from typing import TYPE_CHECKING, Any, cast
 
 import boto3
@@ -78,7 +79,15 @@ class SyncRepository:
         stack_options: StackOptions | None = None,
         config_cache_ttl: int = 60,
         parallel_mode: str = "auto",
+        *,
+        _skip_deprecation_warning: bool = False,
     ) -> None:
+        if not _skip_deprecation_warning:
+            warnings.warn(
+                "Directly calling SyncRepository(...) is deprecated. Use SyncRepository.connect(...) for connecting to existing infrastructure or SyncRepository.builder(...).build() for infrastructure provisioning. This will be removed in v1.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self.stack_name = normalize_stack_name(name)
         self.table_name = self.stack_name
         self.region = region
@@ -130,6 +139,70 @@ class SyncRepository:
         from .sync_repository_builder import SyncRepositoryBuilder
 
         return SyncRepositoryBuilder(name, region, endpoint_url=endpoint_url)
+
+    @classmethod
+    def connect(
+        cls,
+        name: str,
+        region: str | None = None,
+        parallel_mode: str = "auto",
+        *,
+        endpoint_url: str | None = None,
+        namespace: str = "default",
+        config_cache_ttl: int = 60,
+        auto_update: bool = True,
+    ) -> "SyncRepository":
+        """Connect to existing zae-limiter infrastructure.
+
+        This is the recommended entry point for most applications.
+        For infrastructure provisioning, use ``SyncRepository.builder()`` instead.
+
+        Args:
+            name: Stack name (infrastructure must already exist).
+            region: AWS region (e.g., ``"us-east-1"``).
+            endpoint_url: Custom endpoint URL (e.g., LocalStack).
+            namespace: Namespace to connect to (default: ``"default"``).
+                Must already be registered via ``builder().build()`` or CLI.
+            config_cache_ttl: Config cache TTL in seconds (default: 60, 0 to disable).
+            auto_update: Auto-update Lambda on version mismatch (default: True).
+
+        Returns:
+            Fully initialized SyncRepository ready for use.
+
+        Raises:
+            NamespaceNotFoundError: If the namespace doesn't exist.
+            IncompatibleSchemaError: If schema migration is required.
+            VersionMismatchError: If auto_update is False and versions differ.
+
+        Example::
+
+            repo = SyncRepository.connect("my-app", "us-east-1")
+            limiter = SyncRateLimiter(repository=repo)
+        """
+        from .exceptions import NamespaceNotFoundError
+
+        repo = cls(
+            name=name,
+            region=region,
+            endpoint_url=endpoint_url,
+            config_cache_ttl=config_cache_ttl,
+            _skip_deprecation_warning=True,
+            parallel_mode=parallel_mode,
+        )
+        repo._auto_update = auto_update
+        namespace_id = repo._resolve_namespace(namespace)
+        if namespace_id is None:
+            raise NamespaceNotFoundError(namespace)
+        repo._namespace_id = namespace_id
+        repo._namespace_name = namespace
+        repo._reinitialize_config_cache(namespace_id)
+        if not endpoint_url:
+            if auto_update:
+                repo._check_and_update_version_auto()
+            else:
+                repo._check_version_strict()
+        repo._builder_initialized = True
+        return repo
 
     @property
     def namespace_name(self) -> str:
@@ -365,7 +438,7 @@ class SyncRepository:
 
         .. deprecated:: 0.6.0
             Use :meth:`ensure_infrastructure` instead. Pass stack_options
-            to the SyncRepository constructor. Will be removed in v2.0.0.
+            to the SyncRepository constructor. Will be removed in v1.0.0.
 
         Args:
             stack_options: Configuration for CloudFormation stack.
@@ -377,7 +450,7 @@ class SyncRepository:
         import warnings
 
         warnings.warn(
-            "create_stack() is deprecated. Use ensure_infrastructure() instead. Pass stack_options to the SyncRepository constructor. This will be removed in v2.0.0.",
+            "create_stack() is deprecated. Use ensure_infrastructure() instead. Pass stack_options to the SyncRepository constructor. This will be removed in v1.0.0.",
             DeprecationWarning,
             stacklevel=2,
         )

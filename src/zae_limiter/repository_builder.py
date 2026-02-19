@@ -252,6 +252,7 @@ class RepositoryBuilder:
             endpoint_url=self._endpoint_url,
             stack_options=stack_opts,
             config_cache_ttl=self._config_cache_ttl,
+            _skip_deprecation_warning=True,
         )
         repo._bucket_ttl_refill_multiplier = self._bucket_ttl_multiplier
         repo._auto_update = self._auto_update

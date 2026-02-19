@@ -6,16 +6,14 @@ The `Repository` class owns all DynamoDB data access and infrastructure manageme
 ## Preferred Usage Pattern
 
 ```python
-from zae_limiter import RateLimiter, Repository, StackOptions
+from zae_limiter import RateLimiter, Repository
 
-# Create repository with infrastructure config
-repo = Repository(
-    name="my-app",
-    region="us-east-1",
-    stack_options=StackOptions(lambda_memory=512),
-)
+# Connect to existing infrastructure (recommended)
+repo = await Repository.connect("my-app", region="us-east-1")
+limiter = RateLimiter(repository=repo)
 
-# Infrastructure is created/updated automatically on first use
+# For infrastructure provisioning, use builder:
+repo = await Repository.builder("my-app", "us-east-1").build()
 limiter = RateLimiter(repository=repo)
 ```
 

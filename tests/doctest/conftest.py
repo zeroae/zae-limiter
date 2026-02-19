@@ -87,6 +87,23 @@ def doctest_env(moto_env, monkeypatch):
     # Builder calls _ensure_infrastructure_internal, not ensure_infrastructure
     monkeypatch.setattr(_Repository, "_ensure_infrastructure_internal", _auto_create_ensure)
 
+    # connect() calls _resolve_namespace directly (not ensure_infrastructure),
+    # so patch it to auto-create the table and namespaces first
+    _original_resolve = _Repository._resolve_namespace
+
+    async def _auto_resolve_namespace(self, namespace_name):
+        await _auto_create_ensure(self)
+        return await _original_resolve(self, namespace_name)
+
+    monkeypatch.setattr(_Repository, "_resolve_namespace", _auto_resolve_namespace)
+
+    # connect() calls version check methods (skip for doctests)
+    async def _noop_version_check(self):
+        pass
+
+    monkeypatch.setattr(_Repository, "_check_and_update_version_auto", _noop_version_check)
+    monkeypatch.setattr(_Repository, "_check_version_strict", _noop_version_check)
+
     # Set sys.argv for standalone scripts (e.g., migration script with argparse)
     import sys
 
@@ -164,19 +181,20 @@ def doctest_globals(doctest_env):
     )
 
     # Create pre-built limiter with table
-    _repo = Repository(name="limiter", region="us-east-1")
-    _asyncio.run(_repo.create_table())
-    _ns_id = _asyncio.run(_repo.register_namespace("default"))
-    _repo._namespace_id = _ns_id
-    _repo._reinitialize_config_cache(_ns_id)
+    _bootstrap = Repository(name="limiter", region="us-east-1", _skip_deprecation_warning=True)
+    _asyncio.run(_bootstrap.create_table())
+    _asyncio.run(_bootstrap.register_namespace("default"))
+    _asyncio.run(_bootstrap.close())
+    _repo = _asyncio.run(Repository.connect("limiter", "us-east-1"))
     _limiter = RateLimiter(repository=_repo)
 
     # Create "my-app" table used by migration guide examples
-    _my_app_repo = Repository(name="my-app", region="us-east-1")
-    _asyncio.run(_my_app_repo.create_table())
-    _my_app_ns_id = _asyncio.run(_my_app_repo.register_namespace("default"))
-    _my_app_repo._namespace_id = _my_app_ns_id
-    _my_app_repo._reinitialize_config_cache(_my_app_ns_id)
+    _my_app_bootstrap = Repository(
+        name="my-app", region="us-east-1", _skip_deprecation_warning=True
+    )
+    _asyncio.run(_my_app_bootstrap.create_table())
+    _asyncio.run(_my_app_bootstrap.register_namespace("default"))
+    _asyncio.run(_my_app_bootstrap.close())
 
     # Pre-create common entities and set up stored limits
     async def _setup():

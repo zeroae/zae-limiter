@@ -92,7 +92,7 @@ For production, configure limits once and keep application code simple.
 ```python
 from zae_limiter import Repository, RateLimiter, RateLimitExceeded
 
-repo = await Repository.builder("my-app", "us-east-1").build()
+repo = await Repository.connect("my-app", "us-east-1")
 limiter = RateLimiter(repository=repo)
 
 try:
@@ -149,16 +149,15 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 
 ### Connecting to Existing Infrastructure
 
-When no infrastructure builder methods are called, the builder connects to existing infrastructure without
-attempting to create or modify it:
+Use `Repository.connect()` to connect to existing infrastructure without attempting to create or modify it:
 
 ```python
-# Connect only — no infra builder methods = no create/update
-repo = await Repository.builder("my-app", "us-east-1").build()
+# Connect to existing infrastructure (recommended for application code)
+repo = await Repository.connect("my-app", "us-east-1")
 limiter = RateLimiter(repository=repo)
 ```
 
-This is useful when infrastructure is managed separately (e.g., via CLI or Terraform).
+This is the recommended entry point for application code when infrastructure is managed separately (e.g., via CLI or Terraform).
 
 !!! warning "Declarative State Management"
     Builder methods declare the desired infrastructure state. If multiple applications
@@ -359,11 +358,7 @@ For multi-tenant applications, namespaces provide logical isolation within a sin
 from zae_limiter import Repository, RateLimiter
 
 # Each tenant gets an isolated namespace
-repo = await (
-    Repository.builder("my-app", "us-east-1")
-    .namespace("tenant-alpha")
-    .build()
-)
+repo = await Repository.connect("my-app", "us-east-1", namespace="tenant-alpha")
 limiter = RateLimiter(repository=repo)
 
 # All operations are scoped to tenant-alpha's namespace
