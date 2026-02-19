@@ -195,6 +195,7 @@ from zae_limiter import (
     StackCreationError,
     StackAlreadyExistsError,
     InfrastructureNotFoundError,
+    NamespaceNotFoundError,
 
     # Exceptions - Version
     VersionMismatchError,

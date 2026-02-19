@@ -104,6 +104,7 @@ pytest
 The library uses CloudFormation for infrastructure deployment. The `deploy` command automatically:
 1. Creates CloudFormation stack with DynamoDB table, streams, and Lambda function
 2. Packages and deploys the Lambda aggregator code from the installed package
+3. Initializes the version record and registers the "default" namespace
 
 ```bash
 # Basic deployment
@@ -342,7 +343,7 @@ repo = await Repository.connect(
 3. Reinitialize config cache with resolved namespace ID
 4. Version check and Lambda auto-update (skip for local endpoints)
 
-**`connect()` does NOT:** create tables, register namespaces, or provision infrastructure.
+**`connect()` does NOT:** create tables, register namespaces, or provision infrastructure. Raises `NamespaceNotFoundError` if the namespace is not registered.
 
 #### RepositoryBuilder (Infrastructure Provisioning)
 

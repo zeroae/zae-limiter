@@ -36,11 +36,16 @@ When DynamoDB is unavailable, reject all rate-limited requests by raising `RateL
     When using `BLOCK` mode (the default), your application **must** catch `RateLimiterUnavailable` to handle infrastructure failures gracefully. This exception inherits from `InfrastructureError`, not `RateLimitExceeded`.
 
 ```python
-from zae_limiter import RateLimiter, OnUnavailable, RateLimiterUnavailable
+from zae_limiter import Repository, RateLimiter, Limit, OnUnavailable, RateLimiterUnavailable
 
-limiter = RateLimiter(
-    name="limiter",
-    on_unavailable=OnUnavailable.BLOCK,  # Default
+# Connect to existing infrastructure (must be deployed first)
+repo = await Repository.connect("limiter", "us-east-1")
+limiter = RateLimiter(repository=repo)
+
+# Set BLOCK mode via system defaults (persisted in DynamoDB)
+await limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 1000)],
+    on_unavailable=OnUnavailable.BLOCK,
 )
 
 try:
@@ -71,8 +76,12 @@ except RateLimiterUnavailable as e:
 When DynamoDB is unavailable, allow requests to proceed:
 
 ```python
-limiter = RateLimiter(
-    name="limiter",
+repo = await Repository.connect("limiter", "us-east-1")
+limiter = RateLimiter(repository=repo)
+
+# Set ALLOW mode via system defaults (persisted in DynamoDB)
+await limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 1000)],
     on_unavailable=OnUnavailable.ALLOW,
 )
 
@@ -122,11 +131,13 @@ async def acquire_with_metrics(limiter, **kwargs):
 Override the default mode for specific requests:
 
 ```python
-# Default to BLOCK
-limiter = RateLimiter(
-    name="limiter",
-    on_unavailable=OnUnavailable.BLOCK,
+# Default to BLOCK via builder
+repo = await (
+    Repository.builder("limiter", "us-east-1")
+    .on_unavailable("block")
+    .build()
 )
+limiter = RateLimiter(repository=repo)
 
 # But allow this specific request to proceed
 async with limiter.acquire(
@@ -171,15 +182,19 @@ except RateLimiterUnavailable as e:
 ### 1. Choose Based on Risk
 
 ```python
-# High-risk: billing, security
-billing_limiter = RateLimiter(
-    name="billing",
+# High-risk: billing, security (BLOCK set via system defaults)
+billing_repo = await Repository.connect("billing", "us-east-1")
+billing_limiter = RateLimiter(repository=billing_repo)
+await billing_limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 1000)],
     on_unavailable=OnUnavailable.BLOCK,
 )
 
-# Lower-risk: general API
-api_limiter = RateLimiter(
-    name="api",
+# Lower-risk: general API (ALLOW set via system defaults)
+api_repo = await Repository.connect("api", "us-east-1")
+api_limiter = RateLimiter(repository=api_repo)
+await api_limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 1000)],
     on_unavailable=OnUnavailable.ALLOW,
 )
 ```

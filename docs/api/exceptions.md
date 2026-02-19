@@ -15,7 +15,8 @@ ZAELimiterError (base)
 ├── InfrastructureError
 │   ├── StackCreationError
 │   ├── StackAlreadyExistsError
-│   └── InfrastructureNotFoundError
+│   ├── InfrastructureNotFoundError
+│   └── NamespaceNotFoundError
 └── VersionError
     ├── VersionMismatchError
     └── IncompatibleSchemaError
@@ -80,6 +81,12 @@ ZAELimiterError (base)
       show_source: false
       heading_level: 3
 
+::: zae_limiter.exceptions.NamespaceNotFoundError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
 ## Version Exceptions
 
 ::: zae_limiter.exceptions.VersionMismatchError
@@ -95,6 +102,18 @@ ZAELimiterError (base)
       heading_level: 3
 
 ## Exception Handling Examples
+
+### Connection Errors
+
+```python
+from zae_limiter import Repository, NamespaceNotFoundError
+
+try:
+    repo = await Repository.connect("my-app", "us-east-1", namespace="tenant-alpha")
+except NamespaceNotFoundError as e:
+    # Namespace not registered — register it first or check for typos
+    print(f"Namespace not found: {e.namespace_name}")
+```
 
 ### Basic Handling
 

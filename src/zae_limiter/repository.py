@@ -37,11 +37,18 @@ logger = logging.getLogger(__name__)
 
 
 class Repository:
-    """
-    Async DynamoDB repository for rate limiter data.
+    """Async DynamoDB repository for rate limiter data.
 
     Handles all DynamoDB operations including entities, buckets,
     limit configs, and transactions.
+
+    Use :meth:`connect` to connect to existing infrastructure (recommended),
+    or :meth:`builder` to provision infrastructure declaratively.
+
+    .. deprecated::
+        Direct construction via ``Repository(...)`` is deprecated and will be
+        removed in v1.0.0. Use ``Repository.connect(...)`` or
+        ``Repository.builder(...).build()`` instead.
 
     Args:
         name: Resource identifier (e.g., "my-app"). Used as the
@@ -53,16 +60,13 @@ class Repository:
         config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable).
             Controls caching of resolved limit configs in resolve_limits().
 
-    Example:
-        # Basic usage
-        repo = Repository(name="my-app", region="us-east-1")
+    Example::
 
-        # With infrastructure management (ADR-108)
-        repo = Repository(
-            name="my-app",
-            region="us-east-1",
-            stack_options=StackOptions(lambda_memory=512, enable_alarms=True),
-        )
+        # Connect to existing infrastructure (recommended)
+        repo = await Repository.connect("my-app", "us-east-1")
+
+        # Provision infrastructure
+        repo = await Repository.builder("my-app", "us-east-1").build()
     """
 
     def __init__(

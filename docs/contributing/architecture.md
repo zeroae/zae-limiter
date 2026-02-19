@@ -53,7 +53,7 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 All partition key values are prefixed with an opaque namespace ID (`{ns}/`), providing logical isolation between tenants within a single DynamoDB table. The reserved namespace `_` is used for the namespace registry itself (forward and reverse lookup records).
 
 - **Namespace ID format**: 11-character opaque string generated via `secrets.token_urlsafe(8)`
-- **Default namespace**: Automatically registered on first deploy or `RepositoryBuilder.build()`
+- **Default namespace**: Automatically registered on first deploy (CLI) or `RepositoryBuilder.build()`
 - **GSI4**: A KEYS_ONLY index on `GSI4PK=namespace_id` enables `purge_namespace()` to discover and delete all items belonging to a namespace
 
 ### Optimized Read Patterns

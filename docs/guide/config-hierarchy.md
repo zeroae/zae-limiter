@@ -44,9 +44,10 @@ flowchart TD
 System defaults apply to **all resources** unless overridden:
 
 ```python
-from zae_limiter import RateLimiter, Limit, OnUnavailable
+from zae_limiter import Repository, RateLimiter, Limit, OnUnavailable
 
-limiter = RateLimiter(name="my-app", region="us-east-1")
+repo = await Repository.connect("my-app", "us-east-1")
+limiter = RateLimiter(repository=repo)
 
 # Set system-wide defaults (no resource parameter)
 await limiter.set_system_defaults(
