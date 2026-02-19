@@ -36,14 +36,17 @@ When DynamoDB is unavailable, reject all rate-limited requests by raising `RateL
     When using `BLOCK` mode (the default), your application **must** catch `RateLimiterUnavailable` to handle infrastructure failures gracefully. This exception inherits from `InfrastructureError`, not `RateLimitExceeded`.
 
 ```python
-from zae_limiter import Repository, RateLimiter, OnUnavailable, RateLimiterUnavailable
+from zae_limiter import Repository, RateLimiter, Limit, OnUnavailable, RateLimiterUnavailable
 
 # Connect to existing infrastructure (must be deployed first)
 repo = await Repository.connect("limiter", "us-east-1")
 limiter = RateLimiter(repository=repo)
 
 # Set BLOCK mode via system defaults (persisted in DynamoDB)
-await limiter.set_system_defaults(on_unavailable=OnUnavailable.BLOCK)
+await limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 1000)],
+    on_unavailable=OnUnavailable.BLOCK,
+)
 
 try:
     async with limiter.acquire(
@@ -77,7 +80,10 @@ repo = await Repository.connect("limiter", "us-east-1")
 limiter = RateLimiter(repository=repo)
 
 # Set ALLOW mode via system defaults (persisted in DynamoDB)
-await limiter.set_system_defaults(on_unavailable=OnUnavailable.ALLOW)
+await limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 1000)],
+    on_unavailable=OnUnavailable.ALLOW,
+)
 
 # Requests proceed even if DynamoDB is down
 async with limiter.acquire(
@@ -179,12 +185,18 @@ except RateLimiterUnavailable as e:
 # High-risk: billing, security (BLOCK set via system defaults)
 billing_repo = await Repository.connect("billing", "us-east-1")
 billing_limiter = RateLimiter(repository=billing_repo)
-await billing_limiter.set_system_defaults(on_unavailable=OnUnavailable.BLOCK)
+await billing_limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 1000)],
+    on_unavailable=OnUnavailable.BLOCK,
+)
 
 # Lower-risk: general API (ALLOW set via system defaults)
 api_repo = await Repository.connect("api", "us-east-1")
 api_limiter = RateLimiter(repository=api_repo)
-await api_limiter.set_system_defaults(on_unavailable=OnUnavailable.ALLOW)
+await api_limiter.set_system_defaults(
+    limits=[Limit.per_minute("rpm", 1000)],
+    on_unavailable=OnUnavailable.ALLOW,
+)
 ```
 
 ### 2. Graceful Degradation
