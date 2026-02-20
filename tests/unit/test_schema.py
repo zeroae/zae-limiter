@@ -353,3 +353,17 @@ class TestGetTableDefinitionGSI4:
         assert "GSI1" in gsi_names
         assert "GSI2" in gsi_names
         assert "GSI3" in gsi_names
+
+
+# =============================================================================
+# Provisioner state key builder (Issue #405)
+# =============================================================================
+
+
+class TestProvisionerKey:
+    """Tests for provisioner state sort key builder."""
+
+    def test_sk_provisioner(self):
+        from zae_limiter.schema import sk_provisioner
+
+        assert sk_provisioner() == "#PROVISIONER"
