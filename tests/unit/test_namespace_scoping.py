@@ -11,7 +11,7 @@ from zae_limiter.repository import Repository
 async def repo(mock_dynamodb):
     """Repository with table created and default namespace registered."""
     await _setup_moto_table("test-ns-scope")
-    repo = await Repository.connect("test-ns-scope", "us-east-1")
+    repo = await Repository.open(stack="test-ns-scope")
     # Register additional test namespaces
     await repo.register_namespace("tenant-a")
     await repo.register_namespace("tenant-b")

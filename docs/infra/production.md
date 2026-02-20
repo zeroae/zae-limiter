@@ -288,8 +288,8 @@ zae-limiter is designed for **single-region deployment**:
 
 ```python
 # Connect to separate stacks per region
-us_repo = await Repository.connect("prod", "us-east-1")
-eu_repo = await Repository.connect("prod", "eu-west-1")
+us_repo = await Repository.open(stack="prod", region="us-east-1")
+eu_repo = await Repository.open(stack="prod", region="eu-west-1")
 
 us_limiter = RateLimiter(repository=us_repo)
 eu_limiter = RateLimiter(repository=eu_repo)

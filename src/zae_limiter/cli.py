@@ -37,7 +37,7 @@ async def _connect(
     endpoint_url: str | None,
     namespace: str = "default",
 ) -> Repository:
-    """Connect to existing infrastructure with namespace resolution.
+    """Open a repository with namespace resolution.
 
     Handles ValidationError and NamespaceNotFoundError with user-friendly messages.
     Always returns a valid Repository or exits with an error.
@@ -46,8 +46,8 @@ async def _connect(
     from .repository import Repository
 
     try:
-        return await Repository.connect(
-            name, region=region, endpoint_url=endpoint_url, namespace=namespace
+        return await Repository.open(
+            namespace, stack=name, region=region, endpoint_url=endpoint_url
         )
     except ValidationError as e:
         click.echo(f"Error: {e.reason}", err=True)

@@ -9,10 +9,10 @@ This library provides a token bucket rate limiter with:
 - Usage analytics via Lambda aggregator
 - Pluggable backends via RepositoryProtocol
 
-Example (connect to existing infrastructure - recommended):
+Example (most users):
     from zae_limiter import RateLimiter, Repository, Limit
 
-    repo = await Repository.connect("my-app", "us-east-1")
+    repo = await Repository.open("my-app")
     limiter = RateLimiter(repository=repo)
 
     async with limiter.acquire(
@@ -27,10 +27,15 @@ Example (connect to existing infrastructure - recommended):
         response = await llm_call()
         await lease.adjust(tpm=response.usage.total_tokens - 500)
 
-Example (provision infrastructure):
+Example (custom infrastructure options):
     from zae_limiter import RateLimiter, Repository
 
-    repo = await Repository.builder("my-app", "us-east-1").build()
+    repo = await (
+        Repository.builder()
+        .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+        .role_name_format("PowerUserPB-{}")
+        .build()
+    )
     limiter = RateLimiter(repository=repo)
 """
 

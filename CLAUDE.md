@@ -56,7 +56,7 @@ Native sync code is generated from async source via AST transformation (see ADR-
 All explicit modes warn (not error) when conditions are suboptimal. Auto mode silently selects the best strategy without warnings. Resolution happens once at `SyncRepository.__init__` time (not per-call). Usage:
 
 ```python
-repo = SyncRepository.connect("my-app", "us-east-1", parallel_mode="gevent")
+repo = SyncRepository.open(parallel_mode="gevent")
 limiter = SyncRateLimiter(repository=repo)
 ```
 
@@ -145,25 +145,18 @@ zae-limiter lambda-export --output lambda.zip
 
 ### Declarative Infrastructure
 
-Use `Repository.builder()` or CLI to provision infrastructure, then `Repository.connect()` in application code:
+Use `Repository.open()` for application code (auto-provisions if needed), or `Repository.builder()` / CLI for enterprise deployments:
 
 ```python
 from zae_limiter import RateLimiter, Repository
 
-# Application code — connect to existing infrastructure
-repo = await Repository.connect("my-app", "us-east-1")
+# Application code — open handles everything (auto-provisions if needed)
+repo = await Repository.open("my-app")
 limiter = RateLimiter(repository=repo)
 
-# Infrastructure provisioning — builder handles infra + namespace in one call
+# Enterprise deployment — builder for permission boundaries and custom config
 repo = await (
-    Repository.builder("my-app", "us-east-1")
-    .namespace("default")
-    .build()
-)
-
-# Enterprise deployment with permission boundary and custom role naming
-repo = await (
-    Repository.builder("my-app", "us-east-1")
+    Repository.builder()
     .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
     .role_name_format("pb-{}-PowerUser")
     .policy_name_format("pb-{}-PowerUser")
@@ -171,7 +164,7 @@ repo = await (
 )
 ```
 
-Other builder methods: `.lambda_memory()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`.
+Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()`, `.lambda_memory()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`.
 
 **IAM Resource Defaults (ADR-117):**
 - **Managed policies** are **created by default** — both table-level (`acq`, `full`, `read`) and namespace-scoped (`ns-acq`, `ns-full`, `ns-read`)
@@ -180,9 +173,9 @@ Other builder methods: `.lambda_memory()`, `.usage_retention_days()`, `.audit_re
 - **Skip all IAM** with `create_iam=False` or `--no-iam` for restricted IAM environments
 - **External Lambda role** with `aggregator_role_arn` or `--aggregator-role-arn` to use pre-existing role
 
-**When to use `connect()` vs `builder()` vs CLI:**
-- **`connect()`**: Application code at startup, connecting to pre-existing infrastructure
-- **`builder().build()`**: Self-contained apps, serverless deployments, minimal onboarding friction
+**When to use `open()` vs `builder()` vs CLI:**
+- **`open()`**: 90% of users. Application code, prototyping, LocalStack dev. Auto-provisions infrastructure if missing
+- **`builder().build()`**: Enterprise deployments needing permission boundaries, custom Lambda config, IAM role naming
 - **CLI**: Strict infra/app separation, audit requirements, Terraform/CDK integration
 
 ### Local Development with LocalStack
@@ -312,49 +305,54 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 
 The `Repository` class owns data access and infrastructure management. `RateLimiter` owns business logic.
 
-#### Repository.connect() (Recommended)
+#### Repository.open() (Recommended)
 
-Use `Repository.connect()` for application code connecting to existing infrastructure:
+Use `Repository.open()` for application code. It auto-provisions infrastructure and registers namespaces as needed:
 
 ```python
 from zae_limiter import RateLimiter, Repository
 
-# Basic usage — connect to existing infrastructure
-repo = await Repository.connect("my-app", "us-east-1")
+# Basic usage — namespace defaults via ZAEL_NAMESPACE env var or "default"
+# Stack defaults via ZAEL_STACK env var or "zae-limiter"
+repo = await Repository.open()
+limiter = RateLimiter(repository=repo)
+
+# Explicit namespace (positional arg)
+repo = await Repository.open("my-app")
 limiter = RateLimiter(repository=repo)
 
 # Multi-tenant — each tenant gets an isolated namespace
-repo_alpha = await Repository.connect("my-app", "us-east-1", namespace="tenant-alpha")
+repo_alpha = await Repository.open("tenant-alpha")
 limiter_alpha = RateLimiter(repository=repo_alpha)
 
 # With custom config cache TTL
-repo = await Repository.connect("my-app", "us-east-1", config_cache_ttl=120)
+repo = await Repository.open(config_cache_ttl=120)
 
 # LocalStack development
-repo = await Repository.connect(
-    "my-app", "us-east-1",
-    endpoint_url="http://localhost:4566",
-)
+repo = await Repository.open(endpoint_url="http://localhost:4566")
 ```
 
-**`connect()` steps:**
-1. Create Repository instance (no deprecation warning)
-2. Resolve namespace name to opaque ID (must already exist)
-3. Reinitialize config cache with resolved namespace ID
-4. Version check and Lambda auto-update (skip for local endpoints)
+**`open()` signature:** `Repository.open(namespace, *, stack=..., region=..., endpoint_url=..., config_cache_ttl=...)`
+- `namespace`: positional arg, defaults via `ZAEL_NAMESPACE` env var or `"default"`
+- `stack`: defaults via `ZAEL_STACK` env var or `"zae-limiter"`
 
-**`connect()` does NOT:** create tables, register namespaces, or provision infrastructure. Raises `NamespaceNotFoundError` if the namespace is not registered.
+**`open()` steps:**
+1. Try to resolve namespace name to opaque ID
+2. If table is missing, deploy stack with defaults
+3. If namespace is missing, register it (always registers "default" on new stack)
+4. Reinitialize config cache with resolved namespace ID
+5. Version check and Lambda auto-update
 
 #### RepositoryBuilder (Infrastructure Provisioning)
 
-Use `Repository.builder()` for infrastructure provisioning (like `terraform deploy`):
+Use `Repository.builder()` for enterprise infrastructure provisioning (like `terraform deploy`):
 
 ```python
 from zae_limiter import RateLimiter, Repository
 
 # Provision infrastructure + register namespace
 repo = await (
-    Repository.builder("my-app", "us-east-1")
+    Repository.builder()
     .namespace("default")       # Resolve namespace (default: "default")
     .config_cache_ttl(120)      # Config cache TTL in seconds
     .build()                    # Async: creates infra, registers default ns, resolves namespace
@@ -363,7 +361,7 @@ limiter = RateLimiter(repository=repo)
 
 # With infrastructure options
 repo = await (
-    Repository.builder("my-app", "us-east-1")
+    Repository.builder()
     .lambda_memory(512)
     .enable_alarms(False)
     .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
@@ -374,9 +372,8 @@ repo = await (
 
 # LocalStack development
 repo = await (
-    Repository.builder("my-app", "us-east-1", endpoint_url="http://localhost:4566")
-    .enable_aggregator(False)
-    .enable_alarms(False)
+    Repository.builder()
+    .endpoint_url("http://localhost:4566")
     .build()
 )
 ```
@@ -387,28 +384,29 @@ repo = await (
 3. Register the "default" namespace (conditional PutItem, no-op if exists)
 4. Resolve the requested namespace name to an opaque ID
 5. Reinitialize config cache with resolved namespace ID
-6. Version check and Lambda auto-update (skip for local endpoints)
+6. Version check and Lambda auto-update
 
-**When to use `connect()` vs `builder()`:**
-- **`connect()`**: Application code at startup, connecting to pre-existing infrastructure
-- **`builder().build()`**: Infrastructure provisioning, first-time setup, CI/CD pipelines
+**When to use `open()` vs `builder()`:**
+- **`open()`**: 90% of users. Application code, prototyping, LocalStack dev. Auto-provisions infrastructure
+- **`builder().build()`**: Enterprise deployments needing permission boundaries, custom Lambda config, IAM role naming
 
-**Config ownership (connect/builder vs deprecated RateLimiter params):**
+**Config ownership (open/builder vs deprecated RateLimiter params):**
 
-| Parameter | `connect()` / `builder()` | RateLimiter (deprecated) |
-|-----------|---------------------------|--------------------------|
-| `namespace` | `connect(namespace=...)` / `.namespace("tenant-a")` | N/A |
-| `config_cache_ttl` | `connect(config_cache_ttl=...)` / `.config_cache_ttl(120)` | N/A (was on Repository constructor) |
-| `auto_update` | `connect(auto_update=...)` / `.auto_update(True)` | `auto_update=True` (deprecated) |
+| Parameter | `open()` / `builder()` | RateLimiter (deprecated) |
+|-----------|------------------------|--------------------------|
+| `namespace` | `open("tenant-a")` or `ZAEL_NAMESPACE` env var / `.namespace("tenant-a")` | N/A |
+| `stack` | `open(stack=...)` or `ZAEL_STACK` env var / `.stack("my-app")` | N/A |
+| `config_cache_ttl` | `open(config_cache_ttl=...)` / `.config_cache_ttl(120)` | N/A (was on Repository constructor) |
+| `auto_update` | `open(auto_update=...)` / `.auto_update(True)` | `auto_update=True` (deprecated) |
 | `bucket_ttl_multiplier` | `.bucket_ttl_multiplier(7)` | `bucket_ttl_refill_multiplier=7` (deprecated) |
 | `on_unavailable` | `.on_unavailable("allow")` | `on_unavailable="allow"` (deprecated) |
-| `name/region/endpoint_url` | `connect(name, region)` / `builder(name, region)` | `RateLimiter(name=..., region=...)` (deprecated) |
+| `region/endpoint_url` | `open(region=..., endpoint_url=...)` / `.region()`, `.endpoint_url()` | `RateLimiter(name=..., region=...)` (deprecated) |
 | `stack_options` | Individual builder methods | `RateLimiter(stack_options=...)` (deprecated) |
 | Infrastructure options | `.lambda_memory()`, `.enable_alarms()`, etc. | Via `StackOptions` dataclass |
 
 #### Scoped Repositories (Namespace Switching)
 
-After connecting or building, use `repo.namespace()` to get a scoped Repository for a different namespace:
+After opening or building, use `repo.namespace()` to get a scoped Repository for a different namespace:
 
 ```python
 # Register additional namespaces (requires builder or admin access)

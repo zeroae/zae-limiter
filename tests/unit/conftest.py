@@ -26,7 +26,7 @@ def _setup_moto_table_sync(name: str = "test-rate-limits", region: str = "us-eas
 async def limiter(mock_dynamodb):
     """Create a RateLimiter with mocked DynamoDB."""
     await _setup_moto_table()
-    repo = await Repository.connect("test-rate-limits", "us-east-1")
+    repo = await Repository.open(stack="test-rate-limits")
     limiter = RateLimiter(repository=repo)
     async with limiter:
         yield limiter
@@ -36,6 +36,6 @@ async def limiter(mock_dynamodb):
 def sync_repository(mock_dynamodb):
     """Create a SyncRepository with mocked DynamoDB."""
     _setup_moto_table_sync()
-    repo = SyncRepository.connect("test-rate-limits", "us-east-1")
+    repo = SyncRepository.open(stack="test-rate-limits")
     yield repo
     repo.close()

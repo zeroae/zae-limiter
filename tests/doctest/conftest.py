@@ -185,7 +185,7 @@ def doctest_globals(doctest_env):
     _asyncio.run(_bootstrap.create_table())
     _asyncio.run(_bootstrap.register_namespace("default"))
     _asyncio.run(_bootstrap.close())
-    _repo = _asyncio.run(Repository.connect("limiter", "us-east-1"))
+    _repo = _asyncio.run(Repository.open(stack="limiter"))
     _limiter = RateLimiter(repository=_repo)
 
     # Create "my-app" table used by migration guide examples

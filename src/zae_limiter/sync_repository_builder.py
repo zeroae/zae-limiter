@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from .exceptions import NamespaceNotFoundError
 from .limiter import OnUnavailable as OnUnavailable
-from .naming import normalize_stack_name
+from .naming import resolve_stack_name
 
 if TYPE_CHECKING:
     from .models import OnUnavailableAction, StackOptions
@@ -23,15 +23,16 @@ class SyncRepositoryBuilder:
 
     All configuration methods return ``self`` for chaining. Call ``build()``
     to perform initialization and get a ``SyncRepository``.
+
+    Stack defaults mirror ``SyncRepository.open()``: ``ZAEL_STACK`` env
+    var or ``"zae-limiter"``, namespace ``"default"``.
     """
 
-    def __init__(
-        self, name: str, region: str | None = None, *, endpoint_url: str | None = None
-    ) -> None:
-        self._name = normalize_stack_name(name)
-        self._region = region
-        self._endpoint_url = endpoint_url
-        self._namespace_name = "default"
+    def __init__(self) -> None:
+        self._stack: str | None = None
+        self._region: str | None = None
+        self._endpoint_url: str | None = None
+        self._namespace_name: str | None = None
         self._config_cache_ttl = 60
         self._auto_update = True
         self._bucket_ttl_multiplier = 7
@@ -39,8 +40,26 @@ class SyncRepositoryBuilder:
         self._infra_options: dict[str, Any] = {}
         self._parallel_mode: str = "auto"
 
+    def stack(self, name: str) -> "SyncRepositoryBuilder":
+        """Set the stack name (default: ``ZAEL_STACK`` env var or ``"zae-limiter"``)."""
+        self._stack = name
+        return self
+
+    def region(self, name: str) -> "SyncRepositoryBuilder":
+        """Set the AWS region (e.g., ``"us-east-1"``)."""
+        self._region = name
+        return self
+
+    def endpoint_url(self, url: str) -> "SyncRepositoryBuilder":
+        """Set a custom endpoint URL (e.g., ``"http://localhost:4566"`` for LocalStack)."""
+        self._endpoint_url = url
+        return self
+
     def namespace(self, name: str) -> "SyncRepositoryBuilder":
-        """Set the namespace to resolve during build (default: "default")."""
+        """Set the namespace to resolve during build.
+
+        Defaults to ``ZAEL_NAMESPACE`` env var or ``"default"``.
+        """
         self._namespace_name = name
         return self
 
@@ -210,7 +229,7 @@ class SyncRepositoryBuilder:
             3. Register the "default" namespace (conditional PutItem, no-op if exists)
             4. Resolve the requested namespace name to an opaque ID
             5. Reinitialize config cache with resolved namespace ID
-            6. Version check and Lambda auto-update (skip for local endpoints)
+            6. Version check and Lambda auto-update
             7. Return fully initialized SyncRepository
 
         Raises:
@@ -219,11 +238,14 @@ class SyncRepositoryBuilder:
             VersionMismatchError: If auto_update is False and versions differ
         """
         from .models import StackOptions as StackOptionsModel
+        from .naming import resolve_namespace_name
         from .sync_repository import SyncRepository
 
+        name = resolve_stack_name(self._stack)
+        ns_name = resolve_namespace_name(self._namespace_name)
         stack_opts = StackOptionsModel(**self._infra_options) if self._infra_options else None
         repo = SyncRepository(
-            name=self._name,
+            name=name,
             region=self._region,
             endpoint_url=self._endpoint_url,
             stack_options=stack_opts,
@@ -235,19 +257,18 @@ class SyncRepositoryBuilder:
         repo._auto_update = self._auto_update
         repo._ensure_infrastructure_internal()
         repo._register_namespace("default")
-        namespace_id = repo._resolve_namespace(self._namespace_name)
+        namespace_id = repo._resolve_namespace(ns_name)
         if namespace_id is None:
-            raise NamespaceNotFoundError(self._namespace_name)
+            raise NamespaceNotFoundError(ns_name)
         repo._namespace_id = namespace_id
-        repo._namespace_name = self._namespace_name
+        repo._namespace_name = ns_name
         repo._reinitialize_config_cache(namespace_id)
         if self._on_unavailable is not None:
             existing_limits, _ = repo.get_system_defaults()
             repo.set_system_defaults(limits=existing_limits, on_unavailable=self._on_unavailable)
-        if not self._endpoint_url:
-            if self._auto_update:
-                repo._check_and_update_version_auto()
-            else:
-                repo._check_version_strict()
+        if self._auto_update:
+            repo._check_and_update_version_auto()
+        else:
+            repo._check_version_strict()
         repo._builder_initialized = True
         return repo

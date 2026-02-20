@@ -97,7 +97,8 @@ For quick iteration, declare infrastructure in code:
 from zae_limiter import Repository, RateLimiter
 
 repo = await (
-    Repository.builder("limiter", "us-east-1", endpoint_url="http://localhost:4566")
+    Repository.builder()
+    .endpoint_url("http://localhost:4566")
     .enable_aggregator(False)
     .enable_alarms(False)
     .build()

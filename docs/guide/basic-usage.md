@@ -275,11 +275,11 @@ zae-limiter caches config data (system defaults, resource defaults, entity limit
 from zae_limiter import Repository, RateLimiter
 
 # Default: 60-second cache TTL
-repo = await Repository.connect("my-app", "us-east-1", config_cache_ttl=60)
+repo = await Repository.open(config_cache_ttl=60)
 limiter = RateLimiter(repository=repo)
 
 # Disable caching (for testing)
-repo = await Repository.connect("my-app", "us-east-1", config_cache_ttl=0)
+repo = await Repository.open(config_cache_ttl=0)
 limiter = RateLimiter(repository=repo)
 ```
 
@@ -310,7 +310,7 @@ See [Config Cache Tuning](../performance.md#7-config-cache-tuning) for advanced 
 Speculative writes are enabled by default, skipping the read round trip for pre-warmed buckets. To disable them:
 
 ```python
-repo = await Repository.connect("my-app", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(
     repository=repo,
     speculative_writes=False,  # Disable speculative writes

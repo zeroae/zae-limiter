@@ -25,12 +25,12 @@ The main components of the API are:
 ```python
 from zae_limiter import RateLimiter, SyncRateLimiter, Repository, SyncRepository
 
-# Async — connect to existing infrastructure (recommended)
-repo = await Repository.connect("my-app", "us-east-1")
+# Async — open repository (auto-provisions if needed, recommended)
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Sync
-repo = SyncRepository.connect("my-app", "us-east-1")
+repo = SyncRepository.open()
 limiter = SyncRateLimiter(repository=repo)
 ```
 
@@ -57,7 +57,7 @@ Limit.custom("requests", capacity=50, refill_amount=50, refill_period_seconds=30
 ```python
 from zae_limiter import RateLimiter, Limit, RateLimitExceeded
 
-repo = await Repository.connect("limiter", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 try:
