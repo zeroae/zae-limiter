@@ -411,6 +411,66 @@ class TestInvokeProvisioner:
                 payload = json.loads(call_args[1]["Payload"])
                 assert payload["namespace_id"] == "abc123"
 
+    def test_invoke_provisioner_auto_registers_namespace(self):
+        """_invoke_provisioner auto-registers namespace on NamespaceNotFoundError."""
+        from zae_limiter.exceptions import NamespaceNotFoundError
+
+        yaml_content = {"namespace": "new-ns"}
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(yaml_content, f)
+            f.flush()
+
+            runner = CliRunner()
+
+            # First connect (with namespace="new-ns") raises NamespaceNotFoundError
+            # Second connect (default namespace) succeeds
+            mock_default_repo = MagicMock()
+            mock_default_repo.close = AsyncMock()
+            mock_default_repo.register_namespace = AsyncMock()
+
+            mock_scoped_repo = MagicMock()
+            mock_scoped_repo._namespace_id = "new-ns-id"
+
+            mock_default_repo.namespace = AsyncMock(return_value=mock_scoped_repo)
+
+            call_count = 0
+
+            async def _mock_connect(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # First call with namespace="new-ns" fails
+                    raise NamespaceNotFoundError("new-ns")
+                # Second call (default namespace) succeeds
+                return mock_default_repo
+
+            with (
+                patch(
+                    "zae_limiter.repository.Repository.connect",
+                    side_effect=_mock_connect,
+                ),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                response_payload = {"status": "planned", "changes": []}
+                mock_lambda.invoke.return_value = {
+                    "Payload": io.BytesIO(json.dumps(response_payload).encode()),
+                }
+                mock_boto3_client.return_value = mock_lambda
+
+                result = runner.invoke(
+                    cli,
+                    ["limits", "plan", "--name", "test-app", "-f", f.name],
+                )
+                assert result.exit_code == 0
+                # Verify namespace was auto-registered
+                mock_default_repo.register_namespace.assert_awaited_once_with("new-ns")
+                mock_default_repo.namespace.assert_awaited_once_with("new-ns")
+                # Verify the resolved namespace_id was used
+                call_args = mock_lambda.invoke.call_args
+                payload = json.loads(call_args[1]["Payload"])
+                assert payload["namespace_id"] == "new-ns-id"
+
     def test_invoke_provisioner_lambda_error_exits(self):
         """_invoke_provisioner exits on Lambda error response."""
         yaml_content = {"namespace": "test-ns"}

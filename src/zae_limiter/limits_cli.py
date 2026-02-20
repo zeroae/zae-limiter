@@ -245,19 +245,35 @@ def _invoke_provisioner(
     """
     import asyncio
 
+    from .exceptions import NamespaceNotFoundError
     from .repository import Repository
 
     async def _resolve() -> str:
-        repo = await Repository.connect(
-            name,
-            region=region,
-            endpoint_url=endpoint_url,
-            namespace=manifest_data.get("namespace", "default"),
-        )
+        ns = manifest_data.get("namespace", "default")
         try:
-            return repo._namespace_id
-        finally:
-            await repo.close()
+            repo = await Repository.connect(
+                name,
+                region=region,
+                endpoint_url=endpoint_url,
+                namespace=ns,
+            )
+            try:
+                return repo._namespace_id
+            finally:
+                await repo.close()
+        except NamespaceNotFoundError:
+            # Auto-register namespace on first apply
+            repo = await Repository.connect(
+                name,
+                region=region,
+                endpoint_url=endpoint_url,
+            )
+            try:
+                await repo.register_namespace(ns)
+                scoped = await repo.namespace(ns)
+                return scoped._namespace_id
+            finally:
+                await repo.close()
 
     try:
         namespace_id = asyncio.run(_resolve())
