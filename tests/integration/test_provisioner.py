@@ -52,8 +52,8 @@ class TestProvisionerIntegration:
         assert result.errors == []
 
         # Verify via Repository API
-        system = await test_repo.get_system_defaults()
-        assert any(lim.name == "rpm" and lim.capacity == 1000 for lim in system.limits)
+        system_limits, on_unavailable = await test_repo.get_system_defaults()
+        assert any(lim.name == "rpm" and lim.capacity == 1000 for lim in system_limits)
 
         resource_limits = await test_repo.get_resource_defaults("gpt-4")
         assert any(lim.name == "tpm" and lim.capacity == 50000 for lim in resource_limits)

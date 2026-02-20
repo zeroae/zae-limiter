@@ -374,7 +374,7 @@ class TestInvokeProvisioner:
                 assert payload["table_name"] == "test-app"
 
     def test_invoke_provisioner_resolves_namespace(self):
-        """_invoke_provisioner resolves namespace_id via Repository.connect()."""
+        """_invoke_provisioner resolves namespace_id via Repository.open()."""
         yaml_content = {"namespace": "test-ns"}
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             yaml.dump(yaml_content, f)
@@ -390,7 +390,7 @@ class TestInvokeProvisioner:
 
             with (
                 patch(
-                    "zae_limiter.repository.Repository.connect",
+                    "zae_limiter.repository.Repository.open",
                     side_effect=_mock_connect,
                 ),
                 patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
@@ -446,7 +446,7 @@ class TestInvokeProvisioner:
 
             with (
                 patch(
-                    "zae_limiter.repository.Repository.connect",
+                    "zae_limiter.repository.Repository.open",
                     side_effect=_mock_connect,
                 ),
                 patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,

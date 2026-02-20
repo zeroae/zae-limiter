@@ -251,11 +251,11 @@ def _invoke_provisioner(
     async def _resolve() -> str:
         ns = manifest_data.get("namespace", "default")
         try:
-            repo = await Repository.connect(
-                name,
+            repo = await Repository.open(
+                ns,
+                stack=name,
                 region=region,
                 endpoint_url=endpoint_url,
-                namespace=ns,
             )
             try:
                 return repo._namespace_id
@@ -263,8 +263,8 @@ def _invoke_provisioner(
                 await repo.close()
         except NamespaceNotFoundError:
             # Auto-register namespace on first apply
-            repo = await Repository.connect(
-                name,
+            repo = await Repository.open(
+                stack=name,
                 region=region,
                 endpoint_url=endpoint_url,
             )

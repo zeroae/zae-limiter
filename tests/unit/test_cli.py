@@ -3672,7 +3672,7 @@ class TestLimitParsing:
         mock_repo.set_resource_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
 
         result = runner.invoke(
             cli,
@@ -3696,7 +3696,7 @@ class TestLimitParsing:
         mock_repo.set_system_defaults = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
 
         result = runner.invoke(
             cli,
@@ -3715,7 +3715,7 @@ class TestLimitParsing:
         mock_repo.set_limits = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
 
         result = runner.invoke(
             cli,
