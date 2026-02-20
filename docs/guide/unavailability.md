@@ -181,21 +181,23 @@ except RateLimiterUnavailable as e:
 ### 1. Choose Based on Risk
 
 ```python
-# High-risk: billing, security (BLOCK set via system defaults)
-billing_repo = await Repository.open("billing")
+# High-risk: billing, security → BLOCK
+billing_repo = await (
+    Repository.builder()
+    .namespace("billing")
+    .on_unavailable("block")
+    .build()
+)
 billing_limiter = RateLimiter(repository=billing_repo)
-await billing_limiter.set_system_defaults(
-    limits=[Limit.per_minute("rpm", 1000)],
-    on_unavailable=OnUnavailable.BLOCK,
-)
 
-# Lower-risk: general API (ALLOW set via system defaults)
-api_repo = await Repository.open("api")
-api_limiter = RateLimiter(repository=api_repo)
-await api_limiter.set_system_defaults(
-    limits=[Limit.per_minute("rpm", 1000)],
-    on_unavailable=OnUnavailable.ALLOW,
+# Lower-risk: general API → ALLOW
+api_repo = await (
+    Repository.builder()
+    .namespace("api")
+    .on_unavailable("allow")
+    .build()
 )
+api_limiter = RateLimiter(repository=api_repo)
 ```
 
 ### 2. Graceful Degradation

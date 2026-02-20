@@ -73,7 +73,13 @@ def doctest_env(moto_env, monkeypatch):
             _created_tables.add(table_key)
             # Register namespaces and set defaults for each
             saved_ns_id = self._namespace_id
-            for ns_name in ["default", "tenant-alpha", "tenant-beta"]:
+            for ns_name in [
+                "default",
+                "tenant-alpha",
+                "tenant-beta",
+                "billing",
+                "api",
+            ]:
                 ns_id = await self._register_namespace(ns_name)
                 self._namespace_id = ns_id
                 self._reinitialize_config_cache(ns_id)
@@ -115,7 +121,13 @@ def doctest_env(moto_env, monkeypatch):
             self.create_table()
             _created_tables.add(table_key)
             saved_ns_id = self._namespace_id
-            for ns_name in ["default", "tenant-alpha", "tenant-beta"]:
+            for ns_name in [
+                "default",
+                "tenant-alpha",
+                "tenant-beta",
+                "billing",
+                "api",
+            ]:
                 ns_id = self._register_namespace(ns_name)
                 self._namespace_id = ns_id
                 self._reinitialize_config_cache(ns_id)
