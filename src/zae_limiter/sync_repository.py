@@ -48,13 +48,13 @@ class SyncRepository:
     Handles all DynamoDB operations including entities, buckets,
     limit configs, and transactions.
 
-    Use :meth:`connect` to connect to existing infrastructure (recommended),
-    or :meth:`builder` to provision infrastructure declaratively.
+    Use :meth:`open` to open a repository (recommended), or :meth:`builder`
+    for custom infrastructure options (permission boundaries, IAM config).
 
     .. deprecated::
         Direct construction via ``SyncRepository(...)`` is deprecated and will be
-        removed in v1.0.0. Use ``SyncRepository.connect(...)`` or
-        ``SyncRepository.builder(...).build()`` instead.
+        removed in v1.0.0. Use ``SyncRepository.open(...)`` or
+        ``SyncRepository.builder().build()`` instead.
 
     Args:
         name: Resource identifier (e.g., "my-app"). Used as the
@@ -68,11 +68,11 @@ class SyncRepository:
 
     Example::
 
-        # Connect to existing infrastructure (recommended)
-        repo = SyncRepository.connect("my-app", "us-east-1")
+        # Most users (auto-provisions if needed)
+        repo = SyncRepository.open("my-app")
 
-        # Provision infrastructure
-        repo = SyncRepository.builder("my-app", "us-east-1").build()
+        # Custom infrastructure options
+        repo = SyncRepository.builder().namespace("my-app").build()
     """
 
     def __init__(
@@ -88,7 +88,7 @@ class SyncRepository:
     ) -> None:
         if not _skip_deprecation_warning:
             warnings.warn(
-                "Directly calling SyncRepository(...) is deprecated. Use SyncRepository.connect(...) for connecting to existing infrastructure or SyncRepository.builder(...).build() for infrastructure provisioning. This will be removed in v1.0.0.",
+                "Directly calling SyncRepository(...) is deprecated. Use SyncRepository.open(...) for most use cases or SyncRepository.builder().build() for custom infrastructure options. This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -127,64 +127,100 @@ class SyncRepository:
         self._thread_pool: Any = None
 
     @classmethod
-    def builder(
-        cls, name: str, region: str | None = None, *, endpoint_url: str | None = None
-    ) -> "SyncRepositoryBuilder":
+    def builder(cls) -> "SyncRepositoryBuilder":
         """Create a SyncRepositoryBuilder for fluent configuration.
+
+        For most use cases, prefer :meth:`open` instead. Use ``builder()``
+        when you need custom infrastructure options (permission boundaries,
+        Lambda config, IAM role naming).
+
+        Stack defaults mirror :meth:`open`: ``ZAEL_STACK`` env var
+        or ``"zae-limiter"``, namespace ``"default"``.
 
         Example:
             repo = (
-                SyncRepository.builder("my-app", "us-east-1")
-                .namespace("default")
+                SyncRepository.builder()
+                .namespace("my-app")
                 .lambda_memory(512)
                 .build()
             )
         """
         from .sync_repository_builder import SyncRepositoryBuilder
 
-        return SyncRepositoryBuilder(name, region, endpoint_url=endpoint_url)
+        return SyncRepositoryBuilder()
 
     @classmethod
-    def connect(
+    def open(
         cls,
-        name: str,
-        region: str | None = None,
+        namespace: str | None = None,
         parallel_mode: str = "auto",
         *,
+        stack: str | None = None,
+        region: str | None = None,
         endpoint_url: str | None = None,
-        namespace: str = "default",
         config_cache_ttl: int = 60,
         auto_update: bool = True,
     ) -> "SyncRepository":
-        """Connect to existing zae-limiter infrastructure.
+        """Open a repository, auto-provisioning infrastructure if needed.
 
         This is the recommended entry point for most applications.
-        For infrastructure provisioning, use ``SyncRepository.builder()`` instead.
+        Namespace is the primary parameter — stack name defaults to
+        ``"zae-limiter"`` and is rarely needed.
+
+        **Auto-provision behavior:**
+
+        - If the DynamoDB table doesn't exist, deploys a new stack with
+          default options (aggregator enabled).
+        - If the table exists but the namespace isn't registered, registers it.
+        - The ``"default"`` namespace is always registered.
+        - Version check and Lambda auto-update run on every call.
+
+        For custom infrastructure options (permission boundaries, Lambda
+        config, IAM role naming), use ``SyncRepository.builder()`` instead.
+
+        **Stack resolution:** ``stack`` arg → ``ZAEL_STACK`` env var
+        → ``"zae-limiter"``.
+
+        **Namespace resolution:** ``namespace`` arg → ``ZAEL_NAMESPACE``
+        env var → ``"default"``.
 
         Args:
-            name: Stack name (infrastructure must already exist).
+            namespace: Namespace to open. Defaults to ``ZAEL_NAMESPACE``
+                env var or ``"default"``.
+            stack: Stack name. Defaults to ``ZAEL_STACK`` env var
+                or ``"zae-limiter"``.
             region: AWS region (e.g., ``"us-east-1"``).
             endpoint_url: Custom endpoint URL (e.g., LocalStack).
-            namespace: Namespace to connect to (default: ``"default"``).
-                Must already be registered via ``builder().build()`` or CLI.
-            config_cache_ttl: Config cache TTL in seconds (default: 60, 0 to disable).
-            auto_update: Auto-update Lambda on version mismatch (default: True).
+            config_cache_ttl: Config cache TTL in seconds (default: 60,
+                0 to disable).
+            auto_update: Auto-update Lambda on version mismatch
+                (default: True).
 
         Returns:
             Fully initialized SyncRepository ready for use.
 
         Raises:
-            NamespaceNotFoundError: If the namespace doesn't exist.
             IncompatibleSchemaError: If schema migration is required.
             VersionMismatchError: If auto_update is False and versions differ.
 
         Example::
 
-            repo = SyncRepository.connect("my-app", "us-east-1")
-            limiter = SyncRateLimiter(repository=repo)
-        """
-        from .exceptions import NamespaceNotFoundError
+            # Most users
+            repo = SyncRepository.open("my-app")
 
+            # Multi-tenant
+            repo_alpha = SyncRepository.open("tenant-alpha")
+
+            # Explicit stack
+            repo = SyncRepository.open("my-app", stack="custom-stack")
+
+            # Simplest (stack="zae-limiter", namespace="default")
+            repo = SyncRepository.open()
+        """
+        from .naming import resolve_namespace_name, resolve_stack_name
+
+        name = resolve_stack_name(stack)
+        ns_name = resolve_namespace_name(namespace)
         repo = cls(
             name=name,
             region=region,
@@ -194,17 +230,26 @@ class SyncRepository:
             parallel_mode=parallel_mode,
         )
         repo._auto_update = auto_update
-        namespace_id = repo._resolve_namespace(namespace)
-        if namespace_id is None:
-            raise NamespaceNotFoundError(namespace)
-        repo._namespace_id = namespace_id
-        repo._namespace_name = namespace
-        repo._reinitialize_config_cache(namespace_id)
-        if not endpoint_url:
-            if auto_update:
-                repo._check_and_update_version_auto()
+        try:
+            namespace_id = repo._resolve_namespace(ns_name)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ResourceNotFoundException":
+                repo._stack_options = StackOptions()
+                repo._ensure_infrastructure_internal()
+                repo._register_namespace("default")
+                namespace_id = repo._register_namespace(ns_name)
             else:
-                repo._check_version_strict()
+                raise
+        else:
+            if namespace_id is None:
+                namespace_id = repo._register_namespace(ns_name)
+        repo._namespace_id = namespace_id
+        repo._namespace_name = ns_name
+        repo._reinitialize_config_cache(namespace_id)
+        if auto_update:
+            repo._check_and_update_version_auto()
+        else:
+            repo._check_version_strict()
         repo._builder_initialized = True
         return repo
 
@@ -922,7 +967,7 @@ class SyncRepository:
                 schema_version=infra_version.schema_version,
                 message=compatibility.message,
             )
-        if compatibility.requires_lambda_update and (not self.endpoint_url):
+        if compatibility.requires_lambda_update:
             self._perform_lambda_update()
 
     def _check_version_strict(self) -> None:
@@ -957,7 +1002,7 @@ class SyncRepository:
                 schema_version=infra_version.schema_version,
                 lambda_version=infra_version.lambda_version,
                 message=compatibility.message,
-                can_auto_update=not self.endpoint_url,
+                can_auto_update=True,
             )
 
     def _initialize_version_record(self) -> None:

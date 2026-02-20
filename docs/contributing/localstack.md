@@ -96,12 +96,7 @@ For quick iteration, declare infrastructure in code:
 ```{.python .requires-localstack}
 from zae_limiter import Repository, RateLimiter
 
-repo = await (
-    Repository.builder("limiter", "us-east-1", endpoint_url="http://localhost:4566")
-    .enable_aggregator(False)
-    .enable_alarms(False)
-    .build()
-)
+repo = await Repository.open(endpoint_url="http://localhost:4566")
 limiter = RateLimiter(repository=repo)
 ```
 

@@ -35,10 +35,10 @@ The CLI respects standard AWS environment variables:
 
 ## Namespace Flag
 
-Most data-access commands accept `--namespace` / `-N` to scope operations to a specific namespace. When omitted, operations default to the `"default"` namespace. The `"default"` namespace is automatically registered during `zae-limiter deploy`.
+Most data-access commands accept `--namespace` / `-N` to scope operations to a specific namespace. When omitted, operations default to the `"default"` namespace.
 
-!!! note "Namespace must exist"
-    Data-access commands internally use `Repository.connect()`, which requires the namespace to already be registered. If the namespace does not exist, the command exits with an error: `Error: Namespace 'name' not found.`
+!!! note "Namespace auto-registration"
+    Data-access commands internally use `Repository.open()`, which auto-registers the namespace if it doesn't exist yet. The `"default"` namespace is always registered automatically.
 
 ```bash
 # Entity operations in a specific namespace

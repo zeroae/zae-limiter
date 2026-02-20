@@ -39,7 +39,7 @@ For scripts and quick demos, pass limits inline:
 ```python
 from zae_limiter import Repository, RateLimiter, Limit, RateLimitExceeded
 
-repo = await Repository.builder("my-app", "us-east-1").build()
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 try:
@@ -78,7 +78,7 @@ For production, configure limits once and keep application code simple.
     ```python
     from zae_limiter import Repository, RateLimiter, Limit
 
-    repo = await Repository.builder("my-app", "us-east-1").build()
+    repo = await Repository.open()
     limiter = RateLimiter(repository=repo)
 
     await limiter.set_system_defaults(limits=[
@@ -92,7 +92,7 @@ For production, configure limits once and keep application code simple.
 ```python
 from zae_limiter import Repository, RateLimiter, RateLimitExceeded
 
-repo = await Repository.connect("my-app", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 try:
@@ -130,10 +130,10 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 
 === "Programmatic"
 
-    Use builder methods to declare the desired infrastructure state:
+    Use `open()` which auto-provisions infrastructure if needed:
 
     ```python
-    repo = await Repository.builder("my-app", "us-east-1").build()
+    repo = await Repository.open()
     limiter = RateLimiter(repository=repo)
     ```
 
@@ -149,15 +149,15 @@ Both programmatic API and CLI are fully supported for managing infrastructure.
 
 ### Connecting to Existing Infrastructure
 
-Use `Repository.connect()` to connect to existing infrastructure without attempting to create or modify it:
+Use `Repository.open()` to connect to infrastructure, auto-provisioning if the table is missing and registering the namespace if not found:
 
 ```python
-# Connect to existing infrastructure (recommended for application code)
-repo = await Repository.connect("my-app", "us-east-1")
+# Open repository (auto-provisions if needed)
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 ```
 
-This is the recommended entry point for application code when infrastructure is managed separately (e.g., via CLI or Terraform).
+Stack defaults to the `ZAEL_STACK` environment variable or `"zae-limiter"`. Namespace defaults to `ZAEL_NAMESPACE` or `"default"`.
 
 !!! warning "Declarative State Management"
     Builder methods declare the desired infrastructure state. If multiple applications
@@ -358,7 +358,7 @@ For multi-tenant applications, namespaces provide logical isolation within a sin
 from zae_limiter import Repository, RateLimiter
 
 # Each tenant gets an isolated namespace
-repo = await Repository.connect("my-app", "us-east-1", namespace="tenant-alpha")
+repo = await Repository.open("tenant-alpha")
 limiter = RateLimiter(repository=repo)
 
 # All operations are scoped to tenant-alpha's namespace

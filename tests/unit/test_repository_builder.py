@@ -1,5 +1,6 @@
 """Unit tests for RepositoryBuilder."""
 
+import os
 import warnings
 from unittest.mock import AsyncMock, patch
 
@@ -22,7 +23,7 @@ async def _create_table(
     """Create a DynamoDB table for testing (bypasses deprecation warning).
 
     When register_default_ns=True (default), also registers the "default"
-    namespace so that Repository.connect() can resolve it.
+    namespace so that Repository.open() can resolve it.
     """
     repo = Repository(name=name, region=region, _skip_deprecation_warning=True)
     await repo.create_table()
@@ -35,7 +36,7 @@ async def _create_table(
 async def repo(mock_dynamodb):
     """Repository with table created (for namespace tests)."""
     await _create_table("test-repo")
-    repo = await Repository.connect("test-repo", "us-east-1")
+    repo = await Repository.open("default", stack="test-repo")
     yield repo
     await repo.close()
 
@@ -44,13 +45,15 @@ class TestBuilderConstruction:
     """Test RepositoryBuilder construction and method chaining."""
 
     def test_builder_returns_builder_instance(self):
-        builder = Repository.builder("my-app", "us-east-1")
+        builder = Repository.builder()
         assert isinstance(builder, RepositoryBuilder)
 
     def test_builder_methods_return_self(self):
-        builder = Repository.builder("my-app", "us-east-1")
+        builder = Repository.builder()
         result = (
-            builder.namespace("default")
+            builder.stack("my-app")
+            .region("us-east-1")
+            .namespace("default")
             .config_cache_ttl(120)
             .auto_update(False)
             .bucket_ttl_multiplier(14)
@@ -62,23 +65,33 @@ class TestBuilderConstruction:
         assert result is builder
 
     def test_builder_stores_name_and_region(self):
-        builder = RepositoryBuilder("my-app", "us-east-1")
-        assert builder._name == "my-app"
-        assert builder._region == "us-east-1"
-        assert builder._endpoint_url is None
+        builder = RepositoryBuilder()
+        assert builder._stack is None
+        assert builder._region is None
 
     def test_builder_stores_endpoint_url(self):
-        builder = RepositoryBuilder("my-app", "us-east-1", endpoint_url="http://localhost:4566")
+        builder = RepositoryBuilder()
+        builder.endpoint_url("http://localhost:4566")
         assert builder._endpoint_url == "http://localhost:4566"
 
     def test_builder_default_namespace(self):
-        builder = RepositoryBuilder("my-app", "us-east-1")
-        assert builder._namespace_name == "default"
+        builder = RepositoryBuilder()
+        assert builder._namespace_name is None
 
     def test_builder_custom_namespace(self):
-        builder = RepositoryBuilder("my-app", "us-east-1")
+        builder = RepositoryBuilder()
         builder.namespace("tenant-a")
         assert builder._namespace_name == "tenant-a"
+
+    def test_builder_stores_stack(self):
+        builder = RepositoryBuilder()
+        builder.stack("my-app")
+        assert builder._stack == "my-app"
+
+    def test_builder_stores_region(self):
+        builder = RepositoryBuilder()
+        builder.region("us-east-1")
+        assert builder._region == "us-east-1"
 
 
 class TestBuilderInfraOptions:
@@ -86,7 +99,7 @@ class TestBuilderInfraOptions:
 
     def test_all_infra_methods_store_options(self):
         builder = (
-            RepositoryBuilder("my-app", "us-east-1")
+            RepositoryBuilder()
             .snapshot_windows("hourly")
             .usage_retention_days(30)
             .audit_retention_days(365)
@@ -140,7 +153,7 @@ class TestBuilderStackOptionsMigration:
 
     def test_stack_options_copies_fields(self):
         opts = StackOptions(lambda_memory=512, enable_alarms=False)
-        builder = RepositoryBuilder("my-app", "us-east-1")
+        builder = RepositoryBuilder()
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -159,7 +172,7 @@ class TestBuilderBuild:
     @pytest.mark.asyncio
     async def test_build_creates_repository(self, mock_dynamodb):
         """build() returns a fully initialized Repository."""
-        builder = RepositoryBuilder("test-build", "us-east-1")
+        builder = RepositoryBuilder().stack("test-build")
         # Manually create table since we're not using stack_options
         # (we need to create the table for namespace registration)
         await _create_table("test-build")
@@ -182,7 +195,7 @@ class TestBuilderBuild:
         # Create table manually (simulate pre-existing infra)
         await _create_table("test-no-infra")
 
-        builder = RepositoryBuilder("test-no-infra", "us-east-1")
+        builder = RepositoryBuilder().stack("test-no-infra")
 
         with patch(
             "zae_limiter.infra.stack_manager.StackManager", autospec=True
@@ -201,7 +214,7 @@ class TestBuilderBuild:
         temp_repo = await _create_table("test-infra")
         await temp_repo.close()
 
-        builder = RepositoryBuilder("test-infra", "us-east-1").lambda_memory(512)
+        builder = RepositoryBuilder().stack("test-infra").lambda_memory(512)
 
         # Mock _ensure_infrastructure_internal to avoid real CloudFormation calls
         with patch.object(Repository, "_ensure_infrastructure_internal", new_callable=AsyncMock):
@@ -217,7 +230,7 @@ class TestBuilderBuild:
         """build() registers the 'default' namespace."""
         await _create_table("test-ns")
 
-        builder = RepositoryBuilder("test-ns", "us-east-1")
+        builder = RepositoryBuilder().stack("test-ns")
         repo = await builder.build()
         try:
             # Verify namespace was registered by resolving it
@@ -232,7 +245,7 @@ class TestBuilderBuild:
         """build() resolves the namespace to an opaque ID."""
         await _create_table("test-resolve")
 
-        repo = await RepositoryBuilder("test-resolve", "us-east-1").build()
+        repo = await RepositoryBuilder().stack("test-resolve").build()
         try:
             # namespace_id should be a token_urlsafe(8) (11 chars URL-safe)
             assert len(repo.namespace_id) == 11
@@ -244,7 +257,7 @@ class TestBuilderBuild:
         """build() raises NamespaceNotFoundError for non-existent namespace."""
         await _create_table("test-notfound")
 
-        builder = RepositoryBuilder("test-notfound", "us-east-1").namespace("nonexistent")
+        builder = RepositoryBuilder().stack("test-notfound").namespace("nonexistent")
 
         with pytest.raises(NamespaceNotFoundError) as exc_info:
             await builder.build()
@@ -256,7 +269,7 @@ class TestBuilderBuild:
         """build() persists on_unavailable as system config."""
         await _create_table("test-on-unavail")
 
-        builder = RepositoryBuilder("test-on-unavail", "us-east-1").on_unavailable("allow")
+        builder = RepositoryBuilder().stack("test-on-unavail").on_unavailable("allow")
         repo = await builder.build()
         try:
             _, on_unavailable = await repo.get_system_defaults()
@@ -269,10 +282,10 @@ class TestBuilderBuild:
         """Building twice doesn't fail on namespace already registered."""
         await _create_table("test-idempotent")
 
-        repo1 = await RepositoryBuilder("test-idempotent", "us-east-1").build()
+        repo1 = await RepositoryBuilder().stack("test-idempotent").build()
         ns_id_1 = repo1.namespace_id
 
-        repo2 = await RepositoryBuilder("test-idempotent", "us-east-1").build()
+        repo2 = await RepositoryBuilder().stack("test-idempotent").build()
         ns_id_2 = repo2.namespace_id
 
         # Same namespace should resolve to same ID
@@ -286,9 +299,9 @@ class TestNamespaceProperties:
 
     @pytest.mark.asyncio
     async def test_namespace_name_default(self, mock_dynamodb):
-        """connect() resolves namespace_name from the requested namespace."""
+        """open() resolves namespace_name from the requested namespace."""
         await _create_table("test-ns-prop")
-        repo = await Repository.connect("test-ns-prop", "us-east-1")
+        repo = await Repository.open(stack="test-ns-prop")
         try:
             assert repo.namespace_name == "default"
         finally:
@@ -296,9 +309,9 @@ class TestNamespaceProperties:
 
     @pytest.mark.asyncio
     async def test_namespace_id_resolved(self, mock_dynamodb):
-        """connect() resolves namespace_id to an opaque ID (not 'default')."""
+        """open() resolves namespace_id to an opaque ID (not 'default')."""
         await _create_table("test-ns-prop2")
-        repo = await Repository.connect("test-ns-prop2", "us-east-1")
+        repo = await Repository.open(stack="test-ns-prop2")
         try:
             assert repo.namespace_id != "default"
             assert len(repo.namespace_id) == 11
@@ -356,7 +369,7 @@ class TestVersionManagement:
         """build() creates a version record when none exists."""
         await _create_table("test-version-init")
 
-        repo = await RepositoryBuilder("test-version-init", "us-east-1").build()
+        repo = await RepositoryBuilder().stack("test-version-init").build()
         try:
             # Version record should have been created
             version = await repo.get_version_record()
@@ -373,7 +386,7 @@ class TestVersionManagement:
         with patch.object(
             Repository, "_check_and_update_version_auto", new_callable=AsyncMock
         ) as mock_auto:
-            repo = await RepositoryBuilder("test-version-auto", "us-east-1").build()
+            repo = await RepositoryBuilder().stack("test-version-auto").build()
             try:
                 mock_auto.assert_called_once()
             finally:
@@ -387,46 +400,9 @@ class TestVersionManagement:
         with patch.object(
             Repository, "_check_version_strict", new_callable=AsyncMock
         ) as mock_strict:
-            repo = await (
-                RepositoryBuilder("test-version-strict", "us-east-1").auto_update(False).build()
-            )
+            repo = await RepositoryBuilder().stack("test-version-strict").auto_update(False).build()
             try:
                 mock_strict.assert_called_once()
-            finally:
-                await repo.close()
-
-    @pytest.mark.asyncio
-    async def test_build_skips_version_check_for_local_endpoint(self, mock_dynamodb):
-        """build() skips version check when endpoint_url is set."""
-        await _create_table("test-version-local")
-
-        with (
-            patch.object(
-                Repository, "_check_and_update_version_auto", new_callable=AsyncMock
-            ) as mock_auto,
-            patch.object(
-                Repository, "_check_version_strict", new_callable=AsyncMock
-            ) as mock_strict,
-        ):
-            # Build with endpoint_url — version check should be skipped
-            # Note: endpoint_url=None for Repository construction (uses moto),
-            # but builder._endpoint_url is set to trigger the skip logic
-            builder = RepositoryBuilder("test-version-local", "us-east-1")
-            builder._endpoint_url = "http://localhost:4566"
-
-            # Override endpoint_url to None only for Repository construction
-            # so moto intercepts DynamoDB calls, but builder logic sees endpoint
-            original_init = Repository.__init__
-
-            def patched_init(self_repo, *args, **kwargs):
-                kwargs.pop("endpoint_url", None)
-                original_init(self_repo, *args, **kwargs)
-
-            with patch.object(Repository, "__init__", patched_init):
-                repo = await builder.build()
-            try:
-                mock_auto.assert_not_called()
-                mock_strict.assert_not_called()
             finally:
                 await repo.close()
 
@@ -436,11 +412,11 @@ class TestVersionManagement:
         await _create_table("test-strict")
 
         # First build creates version record
-        repo1 = await RepositoryBuilder("test-strict", "us-east-1").build()
+        repo1 = await RepositoryBuilder().stack("test-strict").build()
         await repo1.close()
 
         # Second build with auto_update=False should succeed (versions match)
-        repo2 = await RepositoryBuilder("test-strict", "us-east-1").auto_update(False).build()
+        repo2 = await RepositoryBuilder().stack("test-strict").auto_update(False).build()
         try:
             assert repo2._builder_initialized is True
         finally:
@@ -455,7 +431,7 @@ class TestVersionManagement:
 
         await _create_table("test-skip-limiter")
 
-        repo = await RepositoryBuilder("test-skip-limiter", "us-east-1").build()
+        repo = await RepositoryBuilder().stack("test-skip-limiter").build()
         try:
             limiter = RateLimiter(repository=repo)
 
@@ -674,14 +650,14 @@ class TestVersionManagementCodePaths:
             await repo.close()
 
 
-class TestConnect:
-    """Test Repository.connect() classmethod."""
+class TestOpen:
+    """Test Repository.open() classmethod."""
 
     @pytest.mark.asyncio
-    async def test_connect_returns_initialized_repository(self, mock_dynamodb):
-        """connect() returns a fully initialized Repository."""
+    async def test_open_returns_initialized_repository(self, mock_dynamodb):
+        """open() returns a fully initialized Repository."""
         await _create_table("test-connect")
-        repo = await Repository.connect("test-connect", "us-east-1")
+        repo = await Repository.open(stack="test-connect")
         try:
             assert isinstance(repo, Repository)
             assert repo.stack_name == "test-connect"
@@ -693,13 +669,13 @@ class TestConnect:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_connect_passes_namespace(self, mock_dynamodb):
-        """connect() resolves the requested namespace."""
+    async def test_open_passes_namespace(self, mock_dynamodb):
+        """open() resolves the requested namespace."""
         setup = await _create_table("test-connect-ns")
         await setup._register_namespace("tenant-a")
         await setup.close()
 
-        repo = await Repository.connect("test-connect-ns", "us-east-1", namespace="tenant-a")
+        repo = await Repository.open("tenant-a", stack="test-connect-ns")
         try:
             assert repo.namespace_name == "tenant-a"
             assert repo.namespace_id != "default"
@@ -707,65 +683,213 @@ class TestConnect:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_connect_passes_config_cache_ttl(self, mock_dynamodb):
-        """connect() passes config_cache_ttl to the Repository."""
+    async def test_open_passes_config_cache_ttl(self, mock_dynamodb):
+        """open() passes config_cache_ttl to the Repository."""
         await _create_table("test-connect-ttl")
-        repo = await Repository.connect("test-connect-ttl", "us-east-1", config_cache_ttl=120)
+        repo = await Repository.open(stack="test-connect-ttl", config_cache_ttl=120)
         try:
             assert repo._config_cache_ttl == 120
         finally:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_connect_passes_auto_update(self, mock_dynamodb):
-        """connect() passes auto_update to the Repository."""
+    async def test_open_passes_auto_update(self, mock_dynamodb):
+        """open() passes auto_update to the Repository."""
         await _create_table("test-connect-au")
-        repo = await Repository.connect("test-connect-au", "us-east-1", auto_update=False)
+        repo = await Repository.open(stack="test-connect-au", auto_update=False)
         try:
             assert repo._auto_update is False
         finally:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_connect_raises_namespace_not_found(self, mock_dynamodb):
-        """connect() raises NamespaceNotFoundError for non-existent namespace."""
-        await _create_table("test-connect-nf")
-
-        with pytest.raises(NamespaceNotFoundError) as exc_info:
-            await Repository.connect("test-connect-nf", "us-east-1", namespace="nonexistent")
-        assert exc_info.value.namespace_name == "nonexistent"
-
-    @pytest.mark.asyncio
-    async def test_connect_does_not_register_namespace(self, mock_dynamodb):
-        """connect() does NOT register namespaces (unlike builder().build())."""
-        setup = await _create_table("test-connect-noreg", register_default_ns=False)
-        await setup.close()
-
-        # connect() should fail because "default" was never registered
-        with pytest.raises(NamespaceNotFoundError):
-            await Repository.connect("test-connect-noreg", "us-east-1")
-
-    @pytest.mark.asyncio
-    async def test_connect_does_not_emit_deprecation_warning(self, mock_dynamodb):
-        """connect() does NOT emit DeprecationWarning."""
+    async def test_open_does_not_emit_deprecation_warning(self, mock_dynamodb):
+        """open() does NOT emit DeprecationWarning."""
         await _create_table("test-connect-nowarn")
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            repo = await Repository.connect("test-connect-nowarn", "us-east-1")
+            repo = await Repository.open(stack="test-connect-nowarn")
             deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
             assert len(deprecation_warnings) == 0
         await repo.close()
 
     @pytest.mark.asyncio
-    async def test_connect_no_stack_options(self, mock_dynamodb):
-        """connect() does not set stack_options (no infrastructure provisioning)."""
+    async def test_open_no_stack_options(self, mock_dynamodb):
+        """open() does not set stack_options (no infrastructure provisioning)."""
         await _create_table("test-connect-noso")
-        repo = await Repository.connect("test-connect-noso", "us-east-1")
+        repo = await Repository.open(stack="test-connect-noso")
         try:
             assert repo._stack_options is None
         finally:
             await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_open_auto_registers_namespace(self, mock_dynamodb):
+        """open() auto-registers a namespace that doesn't exist yet."""
+        await _create_table("test-open-autoreg", register_default_ns=False)
+        repo = await Repository.open(stack="test-open-autoreg")
+        try:
+            assert repo.namespace_name == "default"
+            assert repo.namespace_id != "default"
+            assert len(repo.namespace_id) == 11
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_open_auto_provisions_infrastructure(self, mock_dynamodb):
+        """open() auto-provisions infrastructure when table doesn't exist."""
+        # Do NOT create a table — simulate ResourceNotFoundException
+        with (
+            patch.object(
+                Repository, "_ensure_infrastructure_internal", new_callable=AsyncMock
+            ) as mock_ensure,
+            patch.object(
+                Repository,
+                "_register_namespace",
+                new_callable=AsyncMock,
+                return_value="abc12345678",
+            ) as mock_register,
+            patch.object(
+                Repository,
+                "_resolve_namespace",
+                new_callable=AsyncMock,
+                side_effect=[
+                    ClientError(
+                        {
+                            "Error": {
+                                "Code": "ResourceNotFoundException",
+                                "Message": "Table not found",
+                            }
+                        },
+                        "GetItem",
+                    ),
+                ],
+            ),
+            patch.object(Repository, "_check_and_update_version_auto", new_callable=AsyncMock),
+            patch.object(
+                Repository,
+                "_reinitialize_config_cache",
+            ),
+        ):
+            repo = await Repository.open(stack="test-open-provision")
+            try:
+                mock_ensure.assert_called_once()
+                # "default" is always registered, plus the requested namespace
+                assert mock_register.call_count >= 1
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_open_reraises_non_resource_not_found_errors(self, mock_dynamodb):
+        """open() re-raises ClientError when it's not ResourceNotFoundException."""
+        with (
+            patch.object(
+                Repository,
+                "_resolve_namespace",
+                new_callable=AsyncMock,
+                side_effect=ClientError(
+                    {
+                        "Error": {
+                            "Code": "AccessDeniedException",
+                            "Message": "Access denied",
+                        }
+                    },
+                    "GetItem",
+                ),
+            ),
+        ):
+            with pytest.raises(ClientError, match="AccessDeniedException"):
+                await Repository.open(stack="test-open-access-denied")
+
+    @pytest.mark.asyncio
+    async def test_open_resolves_stack_from_env(self, mock_dynamodb):
+        """open() resolves stack name from ZAEL_STACK env var."""
+        await _create_table("test-env-stack")
+
+        old_val = os.environ.get("ZAEL_STACK")
+        try:
+            os.environ["ZAEL_STACK"] = "test-env-stack"
+            repo = await Repository.open()
+            try:
+                assert repo.stack_name == "test-env-stack"
+            finally:
+                await repo.close()
+        finally:
+            if old_val is None:
+                os.environ.pop("ZAEL_STACK", None)
+            else:
+                os.environ["ZAEL_STACK"] = old_val
+
+    @pytest.mark.asyncio
+    async def test_open_resolves_namespace_from_env(self, mock_dynamodb):
+        """open() resolves namespace from ZAEL_NAMESPACE env var."""
+        setup = await _create_table("test-env-ns")
+        await setup._register_namespace("env-ns")
+        await setup.close()
+
+        old_stack = os.environ.get("ZAEL_STACK")
+        old_ns = os.environ.get("ZAEL_NAMESPACE")
+        try:
+            os.environ["ZAEL_STACK"] = "test-env-ns"
+            os.environ["ZAEL_NAMESPACE"] = "env-ns"
+            repo = await Repository.open()
+            try:
+                assert repo.namespace_name == "env-ns"
+            finally:
+                await repo.close()
+        finally:
+            if old_stack is None:
+                os.environ.pop("ZAEL_STACK", None)
+            else:
+                os.environ["ZAEL_STACK"] = old_stack
+            if old_ns is None:
+                os.environ.pop("ZAEL_NAMESPACE", None)
+            else:
+                os.environ["ZAEL_NAMESPACE"] = old_ns
+
+    @pytest.mark.asyncio
+    async def test_open_version_check_runs_with_endpoint_url(self, mock_dynamodb):
+        """open() runs version check even when endpoint_url is set (no local skip)."""
+        with (
+            patch.object(
+                Repository,
+                "_resolve_namespace",
+                new_callable=AsyncMock,
+                return_value="abc12345678",
+            ),
+            patch.object(Repository, "_reinitialize_config_cache"),
+            patch.object(
+                Repository, "_check_and_update_version_auto", new_callable=AsyncMock
+            ) as mock_version,
+        ):
+            repo = await Repository.open(
+                stack="test-open-local",
+                endpoint_url="http://localhost:4566",
+            )
+            try:
+                mock_version.assert_called_once()
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_open_default_stack_name(self, mock_dynamodb):
+        """open() defaults to stack name 'zae-limiter' when no args given."""
+        await _create_table("zae-limiter")
+
+        old_val = os.environ.get("ZAEL_STACK")
+        try:
+            os.environ.pop("ZAEL_STACK", None)
+            repo = await Repository.open()
+            try:
+                assert repo.stack_name == "zae-limiter"
+            finally:
+                await repo.close()
+        finally:
+            if old_val is None:
+                os.environ.pop("ZAEL_STACK", None)
+            else:
+                os.environ["ZAEL_STACK"] = old_val
 
 
 class TestRepositoryDeprecationWarning:
@@ -776,14 +900,14 @@ class TestRepositoryDeprecationWarning:
         with pytest.warns(DeprecationWarning, match="deprecated"):
             Repository(name="test-depr", region="us-east-1")
 
-    def test_deprecation_message_mentions_connect(self):
-        """Deprecation message mentions connect() as replacement."""
+    def test_deprecation_message_mentions_open(self):
+        """Deprecation message mentions open() as replacement."""
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             Repository(name="test-depr-msg", region="us-east-1")
             assert len(w) == 1
             msg = str(w[0].message)
-            assert "connect" in msg
+            assert "open" in msg
             assert "builder" in msg
             assert "v1.0.0" in msg
 
@@ -806,7 +930,7 @@ class TestRepositoryDeprecationWarning:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            repo = await RepositoryBuilder("test-depr-builder", "us-east-1").build()
+            repo = await RepositoryBuilder().stack("test-depr-builder").build()
             deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
             assert len(deprecation_warnings) == 0
         await repo.close()

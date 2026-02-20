@@ -46,9 +46,9 @@ class TestE2ENamespaceMultiTenantLifecycle:
     async def multi_tenant_repos(self, shared_minimal_stack, unique_name_class):
         """Create scoped repos for unique ns-a and ns-b on shared stack."""
         suffix = unique_name_class
-        repo = await Repository.connect(
-            shared_minimal_stack.name,
-            shared_minimal_stack.region,
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
         )
 
@@ -352,9 +352,13 @@ class TestE2ENamespaceCLIWorkflow:
 
             # Step 5: Create entity in ns-a and set limits via CLI
             # Use builder (not connect) because CLI deploy doesn't register "default" namespace
-            repo = SyncRepository.builder(
-                stack_name, "us-east-1", endpoint_url=localstack_endpoint
-            ).build()
+            repo = (
+                SyncRepository.builder()
+                .stack(stack_name)
+                .region("us-east-1")
+                .endpoint_url(localstack_endpoint)
+                .build()
+            )
             try:
                 repo_a = repo.namespace("ns-a")
                 repo_a.create_entity("cli-user", name="CLI User")

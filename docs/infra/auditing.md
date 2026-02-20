@@ -58,7 +58,7 @@ Track who performed each action by passing the `principal` parameter to entity a
 ```python
 from zae_limiter import Repository, RateLimiter, Limit
 
-repo = await Repository.connect("limiter", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Track who created the entity
@@ -120,7 +120,7 @@ Retrieve audit events for an entity using the `get_audit_events()` method:
 ```python
 from zae_limiter import Repository, RateLimiter
 
-repo = await Repository.connect("limiter", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Get recent audit events (most recent first)
@@ -140,7 +140,7 @@ For synchronous code, use `SyncRateLimiter`:
 ```python
 from zae_limiter import SyncRepository, SyncRateLimiter
 
-repo = SyncRepository.connect("limiter", "us-east-1")
+repo = SyncRepository.open()
 limiter = SyncRateLimiter(repository=repo)
 
 events = limiter.get_audit_events(entity_id="api-key-123", limit=100)
@@ -226,7 +226,7 @@ from zae_limiter import Repository, RateLimiter
 
 # With custom archival settings
 repo = await (
-    Repository.builder("limiter", "us-east-1")
+    Repository.builder()
     .enable_audit_archival(True)  # Default
     .audit_archive_glacier_days(180)  # Custom transition period
     .build()
@@ -350,7 +350,7 @@ Answer "who changed what, when?" for SOC2, HIPAA, or internal audits:
 ```python
 from zae_limiter import Repository, RateLimiter
 
-repo = await Repository.connect("limiter", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Find all changes to a specific entity
@@ -372,7 +372,7 @@ Investigate when limits were changed:
 ```python
 from zae_limiter import Repository, RateLimiter, AuditAction
 
-repo = await Repository.connect("limiter", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Filter for limit changes
@@ -396,7 +396,7 @@ Track entity deletions during an incident window:
 ```python
 from zae_limiter import Repository, RateLimiter, AuditAction
 
-repo = await Repository.connect("limiter", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 events = await limiter.get_audit_events(entity_id="compromised-key")

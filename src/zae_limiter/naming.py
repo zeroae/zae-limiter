@@ -7,12 +7,29 @@ Names must satisfy the most restrictive cloud provider rules (currently AWS):
 - Maximum 55 characters (IAM role name limit with 8-char component suffix room)
 """
 
+import os
 import re
 
 from .exceptions import ValidationError
 
 PREFIX = "ZAEL-"
 """Legacy prefix kept for backwards compatibility with pre-v0.7 stacks."""
+
+DEFAULT_STACK_NAME = "zae-limiter"
+"""Default stack name used by ``Repository.open()`` and ``Repository.builder()``."""
+
+STACK_ENV_VAR = "ZAEL_STACK"
+"""Environment variable for overriding the default stack name."""
+
+DEFAULT_OPEN_NAMESPACE = "default"
+"""Default namespace selected by ``Repository.open()`` and ``Repository.builder()``.
+
+This is the namespace *selected* when none is specified. It is distinct from
+the ``"default"`` namespace that is always *created* during provisioning.
+"""
+
+NAMESPACE_ENV_VAR = "ZAEL_NAMESPACE"
+"""Environment variable for overriding the default namespace."""
 
 # Name validation pattern (cloud-agnostic, satisfies AWS rules):
 # - Alphanumeric and hyphens only
@@ -93,6 +110,35 @@ def normalize_name(name: str) -> str:
     """
     validate_name(name)
     return name
+
+
+def resolve_stack_name(stack: str | None) -> str:
+    """Resolve stack name from explicit arg, env var, or default.
+
+    Resolution order: ``stack`` arg → ``ZAEL_STACK`` env var → ``"zae-limiter"``.
+
+    Args:
+        stack: Explicit stack name, or ``None`` to use env/default.
+
+    Returns:
+        Validated and normalized stack name.
+    """
+    name = stack or os.environ.get(STACK_ENV_VAR) or DEFAULT_STACK_NAME
+    return normalize_name(name)
+
+
+def resolve_namespace_name(namespace: str | None) -> str:
+    """Resolve namespace name from explicit arg, env var, or default.
+
+    Resolution order: ``namespace`` arg → ``ZAEL_NAMESPACE`` env var → ``"default"``.
+
+    Args:
+        namespace: Explicit namespace name, or ``None`` to use env/default.
+
+    Returns:
+        Resolved namespace name.
+    """
+    return namespace or os.environ.get(NAMESPACE_ENV_VAR) or DEFAULT_OPEN_NAMESPACE
 
 
 # Aliases for internal AWS-specific code

@@ -289,7 +289,7 @@ async with limiter.acquire(api_key_id, "llm-api", {"rpm": 1}, limits=limits):
 
 ```python
 # Config caching reduces RCUs (60s TTL by default)
-repo = await Repository.connect("rate-limits", "us-east-1", config_cache_ttl=60)  # seconds (0 to disable)
+repo = await Repository.open(config_cache_ttl=60)  # seconds (0 to disable)
 limiter = RateLimiter(repository=repo)
 
 # Pass explicit limits to skip config resolution entirely
@@ -545,7 +545,7 @@ async with limiter.acquire("entity", "api", limits, {"rpm": 1}):
     pass
 
 # Disable stored limits if static (saves 2 RCUs per request)
-repo = await Repository.connect("rate-limits", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 ```
 
@@ -554,7 +554,7 @@ limiter = RateLimiter(repository=repo)
 ```python
 # Shorter TTL = faster cleanup = less storage
 # bucket_ttl is configured via builder or CloudFormation
-repo = await Repository.connect("rate-limits", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 ```
 
@@ -627,15 +627,15 @@ The config cache reduces DynamoDB reads by caching system defaults, resource def
 from zae_limiter import RateLimiter, Repository
 
 # Default: 60-second TTL (recommended for most workloads)
-repo = await Repository.connect("my-app", "us-east-1", config_cache_ttl=60)
+repo = await Repository.open(config_cache_ttl=60)
 limiter = RateLimiter(repository=repo)
 
 # High-frequency updates: Shorter TTL for faster propagation
-repo = await Repository.connect("my-app", "us-east-1", config_cache_ttl=10)
+repo = await Repository.open(config_cache_ttl=10)
 limiter = RateLimiter(repository=repo)
 
 # Disable caching: For testing or when config changes must be immediate
-repo = await Repository.connect("my-app", "us-east-1", config_cache_ttl=0)
+repo = await Repository.open(config_cache_ttl=0)
 limiter = RateLimiter(repository=repo)
 ```
 
@@ -703,7 +703,7 @@ Speculative writes (issue #315) enable a fast path for `acquire()` that skips th
 ```python
 from zae_limiter import RateLimiter, Repository
 
-repo = await Repository.connect("my-app", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo, speculative_writes=True)  # Default
 ```
 

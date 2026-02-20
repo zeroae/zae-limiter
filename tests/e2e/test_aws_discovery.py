@@ -63,7 +63,13 @@ class TestTagBasedDiscovery:
             policy_name_format=ROLE_NAME_FORMAT,
         )
 
-        repo = await Repository.builder(discovery_name, REGION).stack_options(stack_options).build()
+        repo = await (
+            Repository.builder()
+            .stack(discovery_name)
+            .region(REGION)
+            .stack_options(stack_options)
+            .build()
+        )
         limiter = RateLimiter(repository=repo)
 
         yield limiter
@@ -174,7 +180,13 @@ class TestDiscoveryWithUserTags:
             tags={"env": "test", "team": "platform"},
         )
 
-        repo = await Repository.builder(discovery_name, REGION).stack_options(stack_options).build()
+        repo = await (
+            Repository.builder()
+            .stack(discovery_name)
+            .region(REGION)
+            .stack_options(stack_options)
+            .build()
+        )
         limiter = RateLimiter(repository=repo)
 
         yield limiter

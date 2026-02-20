@@ -38,8 +38,7 @@ When DynamoDB is unavailable, reject all rate-limited requests by raising `RateL
 ```python
 from zae_limiter import Repository, RateLimiter, Limit, OnUnavailable, RateLimiterUnavailable
 
-# Connect to existing infrastructure (must be deployed first)
-repo = await Repository.connect("limiter", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Set BLOCK mode via system defaults (persisted in DynamoDB)
@@ -76,7 +75,7 @@ except RateLimiterUnavailable as e:
 When DynamoDB is unavailable, allow requests to proceed:
 
 ```python
-repo = await Repository.connect("limiter", "us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Set ALLOW mode via system defaults (persisted in DynamoDB)
@@ -133,7 +132,7 @@ Override the default mode for specific requests:
 ```python
 # Default to BLOCK via builder
 repo = await (
-    Repository.builder("limiter", "us-east-1")
+    Repository.builder()
     .on_unavailable("block")
     .build()
 )
@@ -182,21 +181,23 @@ except RateLimiterUnavailable as e:
 ### 1. Choose Based on Risk
 
 ```python
-# High-risk: billing, security (BLOCK set via system defaults)
-billing_repo = await Repository.connect("billing", "us-east-1")
+# High-risk: billing, security → BLOCK
+billing_repo = await (
+    Repository.builder()
+    .namespace("billing")
+    .on_unavailable("block")
+    .build()
+)
 billing_limiter = RateLimiter(repository=billing_repo)
-await billing_limiter.set_system_defaults(
-    limits=[Limit.per_minute("rpm", 1000)],
-    on_unavailable=OnUnavailable.BLOCK,
-)
 
-# Lower-risk: general API (ALLOW set via system defaults)
-api_repo = await Repository.connect("api", "us-east-1")
-api_limiter = RateLimiter(repository=api_repo)
-await api_limiter.set_system_defaults(
-    limits=[Limit.per_minute("rpm", 1000)],
-    on_unavailable=OnUnavailable.ALLOW,
+# Lower-risk: general API → ALLOW
+api_repo = await (
+    Repository.builder()
+    .namespace("api")
+    .on_unavailable("allow")
+    .build()
 )
+api_limiter = RateLimiter(repository=api_repo)
 ```
 
 ### 2. Graceful Degradation

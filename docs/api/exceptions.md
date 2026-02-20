@@ -109,7 +109,7 @@ ZAELimiterError (base)
 from zae_limiter import Repository, NamespaceNotFoundError
 
 try:
-    repo = await Repository.connect("my-app", "us-east-1", namespace="tenant-alpha")
+    repo = await Repository.open("tenant-alpha")
 except NamespaceNotFoundError as e:
     # Namespace not registered — register it first or check for typos
     print(f"Namespace not found: {e.namespace_name}")

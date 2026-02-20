@@ -177,7 +177,10 @@ class TestAuditArchival:
         6. Verify audit event is in S3 as gzip-compressed JSONL
         """
         repo = await (
-            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            Repository.builder()
+            .stack(unique_name)
+            .region("us-east-1")
+            .endpoint_url(localstack_endpoint)
             .stack_options(archival_stack_options)
             .build()
         )
@@ -307,7 +310,10 @@ class TestAuditArchival:
         )
 
         repo = await (
-            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            Repository.builder()
+            .stack(unique_name)
+            .region("us-east-1")
+            .endpoint_url(localstack_endpoint)
             .stack_options(stack_options)
             .build()
         )

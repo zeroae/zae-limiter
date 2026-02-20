@@ -14,7 +14,7 @@ from zae_limiter.repository import Repository
 async def repo(mock_dynamodb):
     """Repository with table created (for namespace registry tests)."""
     await _setup_moto_table("test-ns-registry")
-    repo = await Repository.connect("test-ns-registry", "us-east-1")
+    repo = await Repository.open(stack="test-ns-registry")
     yield repo
     await repo.close()
 

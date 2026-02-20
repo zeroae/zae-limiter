@@ -140,7 +140,7 @@ from zae_limiter.repository import Repository
 
 async def rollback_migration(name: str, region: str, target_version: str):
     """Rollback a reversible migration."""
-    repo = await Repository.connect(name, region=region)
+    repo = await Repository.open(stack=name, region=region)
 
     try:
         migrations = get_migrations()

@@ -97,7 +97,11 @@ class TestE2EAWSFullWorkflow:
         )
 
         repo = await (
-            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
         )
         limiter = RateLimiter(repository=repo)
 
@@ -345,7 +349,11 @@ class TestE2EAWSUsageSnapshots:
         )
 
         repo = await (
-            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
         )
         limiter = RateLimiter(repository=repo)
 
@@ -507,7 +515,11 @@ class TestE2EAWSRateLimiting:
         )
 
         repo = await (
-            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
         )
         limiter = RateLimiter(repository=repo)
 
@@ -626,7 +638,11 @@ class TestE2EAWSXRayTracingEnabled:
         )
 
         repo = await (
-            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
         )
         limiter = RateLimiter(repository=repo)
 
@@ -857,7 +873,11 @@ class TestE2EAWSXRayTracingDisabled:
         )
 
         repo = await (
-            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
         )
         limiter = RateLimiter(repository=repo)
 
@@ -932,7 +952,11 @@ class TestE2EAWSSpeculativeConsume:
         )
 
         repo = await (
-            Repository.builder(unique_name_class, "us-east-1").stack_options(stack_options).build()
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
         )
         yield repo
 

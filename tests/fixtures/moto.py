@@ -60,7 +60,7 @@ def _patch_aiobotocore_response():
 @pytest.fixture
 def sync_limiter(mock_dynamodb):
     """Create a SyncRateLimiter with mocked DynamoDB."""
-    # Setup table + default namespace for SyncRepository.connect()
+    # Setup table + default namespace for SyncRepository.open()
     setup = SyncRepository(
         name="test-rate-limits", region="us-east-1", _skip_deprecation_warning=True
     )
@@ -68,7 +68,7 @@ def sync_limiter(mock_dynamodb):
     setup._register_namespace("default")
     setup.close()
 
-    repo = SyncRepository.connect("test-rate-limits", "us-east-1")
+    repo = SyncRepository.open(stack="test-rate-limits")
     limiter = SyncRateLimiter(repository=repo)
     with limiter:
         yield limiter

@@ -58,6 +58,7 @@ def doctest_env(moto_env, monkeypatch):
     from zae_limiter.limiter import RateLimiter as _RateLimiter
     from zae_limiter.repository import Repository as _Repository
     from zae_limiter.sync_limiter import SyncRateLimiter as _SyncRateLimiter
+    from zae_limiter.sync_repository import SyncRepository as _SyncRepository
 
     _created_tables: set[tuple[str, str | None]] = set()
 
@@ -72,7 +73,13 @@ def doctest_env(moto_env, monkeypatch):
             _created_tables.add(table_key)
             # Register namespaces and set defaults for each
             saved_ns_id = self._namespace_id
-            for ns_name in ["default", "tenant-alpha", "tenant-beta"]:
+            for ns_name in [
+                "default",
+                "tenant-alpha",
+                "tenant-beta",
+                "billing",
+                "api",
+            ]:
                 ns_id = await self._register_namespace(ns_name)
                 self._namespace_id = ns_id
                 self._reinitialize_config_cache(ns_id)
@@ -103,6 +110,51 @@ def doctest_env(moto_env, monkeypatch):
 
     monkeypatch.setattr(_Repository, "_check_and_update_version_auto", _noop_version_check)
     monkeypatch.setattr(_Repository, "_check_version_strict", _noop_version_check)
+
+    # ---- Sync patches (SyncRepository) ----
+    # SyncRepository.open() uses sync methods that need equivalent patches.
+
+    def _sync_auto_create_ensure(self):
+        """Sync auto-create DynamoDB table instead of CloudFormation stack."""
+        table_key = (self.table_name, self.region)
+        if table_key not in _created_tables:
+            self.create_table()
+            _created_tables.add(table_key)
+            saved_ns_id = self._namespace_id
+            for ns_name in [
+                "default",
+                "tenant-alpha",
+                "tenant-beta",
+                "billing",
+                "api",
+            ]:
+                ns_id = self._register_namespace(ns_name)
+                self._namespace_id = ns_id
+                self._reinitialize_config_cache(ns_id)
+                _tmp = _SyncRateLimiter(repository=self)
+                _tmp.set_system_defaults(limits=_default_limits)
+                for _r in _default_resources:
+                    _tmp.set_resource_defaults(resource=_r, limits=_default_limits)
+            self._namespace_id = saved_ns_id
+
+    monkeypatch.setattr(_SyncRepository, "ensure_infrastructure", _sync_auto_create_ensure)
+    monkeypatch.setattr(
+        _SyncRepository, "_ensure_infrastructure_internal", _sync_auto_create_ensure
+    )
+
+    _original_sync_resolve = _SyncRepository._resolve_namespace
+
+    def _sync_auto_resolve_namespace(self, namespace_name):
+        _sync_auto_create_ensure(self)
+        return _original_sync_resolve(self, namespace_name)
+
+    monkeypatch.setattr(_SyncRepository, "_resolve_namespace", _sync_auto_resolve_namespace)
+
+    def _sync_noop_version_check(self):
+        pass
+
+    monkeypatch.setattr(_SyncRepository, "_check_and_update_version_auto", _sync_noop_version_check)
+    monkeypatch.setattr(_SyncRepository, "_check_version_strict", _sync_noop_version_check)
 
     # Set sys.argv for standalone scripts (e.g., migration script with argparse)
     import sys
@@ -185,7 +237,7 @@ def doctest_globals(doctest_env):
     _asyncio.run(_bootstrap.create_table())
     _asyncio.run(_bootstrap.register_namespace("default"))
     _asyncio.run(_bootstrap.close())
-    _repo = _asyncio.run(Repository.connect("limiter", "us-east-1"))
+    _repo = _asyncio.run(Repository.open(stack="limiter"))
     _limiter = RateLimiter(repository=_repo)
 
     # Create "my-app" table used by migration guide examples

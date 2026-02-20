@@ -50,7 +50,7 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
 ### Namespace Registration
 
-Namespaces provide logical isolation within a single DynamoDB table. The `"default"` namespace is automatically registered by `zae-limiter deploy` and `Repository.builder().build()`. Application code then uses `Repository.connect()` to connect to a registered namespace.
+Namespaces provide logical isolation within a single DynamoDB table. The `"default"` namespace is automatically registered by `zae-limiter deploy`, `Repository.open()`, and `Repository.builder().build()`. Application code then uses `Repository.open()` to connect to a registered namespace.
 
 === "CLI"
 
@@ -72,12 +72,11 @@ Namespaces provide logical isolation within a single DynamoDB table. The `"defau
     from zae_limiter import Repository, RateLimiter
 
     # Connect to a specific tenant namespace
-    repo = await Repository.connect("limiter", "us-east-1", namespace="tenant-alpha")
+    repo = await Repository.open("tenant-alpha")
     limiter = RateLimiter(repository=repo)
 
-    # Register additional namespaces (requires builder or admin access)
-    admin_repo = await Repository.builder("limiter", "us-east-1").build()
-    await admin_repo.register_namespace("tenant-beta")
+    # Register additional namespaces
+    await repo.register_namespace("tenant-beta")
     ```
 
 !!! info "Deploy is per-stack, not per-namespace"
@@ -98,7 +97,7 @@ For namespace-scoped IAM access control, see [Namespace-Scoped Access Control](p
     ```python
     from zae_limiter import Repository
 
-    repo = await Repository.connect("limiter", "us-east-1")
+    repo = await Repository.open()
 
     available = await repo.ping()  # Returns True if DynamoDB is reachable
 
@@ -195,8 +194,8 @@ Application code connects to existing infrastructure without managing it:
 ```python
 from zae_limiter import Repository, RateLimiter
 
-# Connect to existing infrastructure
-repo = await Repository.connect("prod", "us-east-1")
+# Open repository (auto-provisions if needed)
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Limits are automatically resolved from stored config
@@ -236,8 +235,8 @@ In addition to the CLI, you can manage stack lifecycle programmatically using th
 ```python
 from zae_limiter import Repository, RateLimiter
 
-# Create repository with infrastructure options
-repo = await Repository.builder("limiter", "us-east-1").build()
+# Create repository with infrastructure
+repo = await Repository.builder().build()
 
 limiter = RateLimiter(repository=repo)
 
@@ -264,7 +263,7 @@ from zae_limiter import Repository, RateLimiter
 
 async def dev_session():
     repo = await (
-        Repository.builder("dev", "us-east-1")
+        Repository.builder()
         .enable_aggregator(False)
         .build()
     )
@@ -328,7 +327,7 @@ Create infrastructure directly from your application:
 from zae_limiter import Repository, RateLimiter
 
 repo = await (
-    Repository.builder("limiter", "us-east-1")
+    Repository.builder()
     .usage_retention_days(90)
     .build()
 )
@@ -404,7 +403,7 @@ Enable X-Ray tracing to gain visibility into Lambda aggregator performance and t
     from zae_limiter import Repository, RateLimiter
 
     repo = await (
-        Repository.builder("limiter", "us-east-1")
+        Repository.builder()
         .enable_tracing(True)
         .build()
     )
@@ -474,18 +473,18 @@ The stack creates three managed IAM policies by default for different access pat
     from zae_limiter import Repository
 
     # With managed policies only (default)
-    repo = await Repository.builder("limiter", "us-east-1").build()
+    repo = await Repository.builder().build()
 
     # With managed policies AND IAM roles
     repo = await (
-        Repository.builder("limiter", "us-east-1")
+        Repository.builder()
         .create_iam_roles(True)
         .build()
     )
 
     # Without any IAM resources
     repo = await (
-        Repository.builder("limiter", "us-east-1")
+        Repository.builder()
         .create_iam(False)
         .build()
     )

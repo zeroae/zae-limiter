@@ -5,11 +5,17 @@ The RepositoryBuilder separates sync configuration from async I/O operations
 fluent method chaining, then ``build()`` performs all async work and returns
 a fully initialized Repository.
 
+Use ``Repository.builder()`` when you need custom infrastructure options
+that ``Repository.open()`` doesn't expose. For most use cases, prefer
+``Repository.open()``.
+
 Example:
     repo = await (
-        Repository.builder("my-app", "us-east-1")
-        .namespace("default")
-        .config_cache_ttl(120)
+        Repository.builder()
+        .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+        .role_name_format("PowerUserPB-{}")
+        .policy_name_format("PowerUserPB-{}")
+        .lambda_memory(512)
         .build()
     )
     limiter = RateLimiter(repository=repo)
@@ -19,7 +25,7 @@ import warnings
 from typing import TYPE_CHECKING, Any
 
 from .exceptions import NamespaceNotFoundError
-from .naming import normalize_stack_name
+from .naming import resolve_stack_name
 
 if TYPE_CHECKING:
     from .models import OnUnavailableAction, StackOptions
@@ -31,19 +37,16 @@ class RepositoryBuilder:
 
     All configuration methods return ``self`` for chaining. Call ``build()``
     to perform async initialization and get a ``Repository``.
+
+    Stack defaults mirror ``Repository.open()``: ``ZAEL_STACK`` env
+    var or ``"zae-limiter"``, namespace ``"default"``.
     """
 
-    def __init__(
-        self,
-        name: str,
-        region: str | None = None,
-        *,
-        endpoint_url: str | None = None,
-    ) -> None:
-        self._name = normalize_stack_name(name)
-        self._region = region
-        self._endpoint_url = endpoint_url
-        self._namespace_name = "default"
+    def __init__(self) -> None:
+        self._stack: str | None = None
+        self._region: str | None = None
+        self._endpoint_url: str | None = None
+        self._namespace_name: str | None = None
         self._config_cache_ttl = 60
         self._auto_update = True
         self._bucket_ttl_multiplier = 7
@@ -51,11 +54,33 @@ class RepositoryBuilder:
         self._infra_options: dict[str, Any] = {}
 
     # -------------------------------------------------------------------------
+    # Connection configuration
+    # -------------------------------------------------------------------------
+
+    def stack(self, name: str) -> "RepositoryBuilder":
+        """Set the stack name (default: ``ZAEL_STACK`` env var or ``"zae-limiter"``)."""
+        self._stack = name
+        return self
+
+    def region(self, name: str) -> "RepositoryBuilder":
+        """Set the AWS region (e.g., ``"us-east-1"``)."""
+        self._region = name
+        return self
+
+    def endpoint_url(self, url: str) -> "RepositoryBuilder":
+        """Set a custom endpoint URL (e.g., ``"http://localhost:4566"`` for LocalStack)."""
+        self._endpoint_url = url
+        return self
+
+    # -------------------------------------------------------------------------
     # Behavioral configuration
     # -------------------------------------------------------------------------
 
     def namespace(self, name: str) -> "RepositoryBuilder":
-        """Set the namespace to resolve during build (default: "default")."""
+        """Set the namespace to resolve during build.
+
+        Defaults to ``ZAEL_NAMESPACE`` env var or ``"default"``.
+        """
         self._namespace_name = name
         return self
 
@@ -233,7 +258,7 @@ class RepositoryBuilder:
             3. Register the "default" namespace (conditional PutItem, no-op if exists)
             4. Resolve the requested namespace name to an opaque ID
             5. Reinitialize config cache with resolved namespace ID
-            6. Version check and Lambda auto-update (skip for local endpoints)
+            6. Version check and Lambda auto-update
             7. Return fully initialized Repository
 
         Raises:
@@ -242,12 +267,15 @@ class RepositoryBuilder:
             VersionMismatchError: If auto_update is False and versions differ
         """
         from .models import StackOptions as StackOptionsModel
+        from .naming import resolve_namespace_name
         from .repository import Repository
 
         # 1. Construct Repository
+        name = resolve_stack_name(self._stack)
+        ns_name = resolve_namespace_name(self._namespace_name)
         stack_opts = StackOptionsModel(**self._infra_options) if self._infra_options else None
         repo = Repository(
-            name=self._name,
+            name=name,
             region=self._region,
             endpoint_url=self._endpoint_url,
             stack_options=stack_opts,
@@ -264,13 +292,13 @@ class RepositoryBuilder:
         await repo._register_namespace("default")
 
         # 4. Resolve the requested namespace
-        namespace_id = await repo._resolve_namespace(self._namespace_name)
+        namespace_id = await repo._resolve_namespace(ns_name)
         if namespace_id is None:
-            raise NamespaceNotFoundError(self._namespace_name)
+            raise NamespaceNotFoundError(ns_name)
 
         # 5. Set resolved namespace and reinitialize config cache
         repo._namespace_id = namespace_id
-        repo._namespace_name = self._namespace_name
+        repo._namespace_name = ns_name
         repo._reinitialize_config_cache(namespace_id)
 
         # 5b. Persist on_unavailable as system config if set
@@ -281,12 +309,11 @@ class RepositoryBuilder:
                 on_unavailable=self._on_unavailable,
             )
 
-        # 6. Version check (skip for local DynamoDB without CloudFormation)
-        if not self._endpoint_url:
-            if self._auto_update:
-                await repo._check_and_update_version_auto()
-            else:
-                await repo._check_version_strict()
+        # 6. Version check + Lambda auto-update (always, no endpoint_url guard)
+        if self._auto_update:
+            await repo._check_and_update_version_auto()
+        else:
+            await repo._check_version_strict()
 
         # 7. Mark as builder-initialized
         repo._builder_initialized = True

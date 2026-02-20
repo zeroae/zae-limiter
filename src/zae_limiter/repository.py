@@ -42,13 +42,13 @@ class Repository:
     Handles all DynamoDB operations including entities, buckets,
     limit configs, and transactions.
 
-    Use :meth:`connect` to connect to existing infrastructure (recommended),
-    or :meth:`builder` to provision infrastructure declaratively.
+    Use :meth:`open` to open a repository (recommended), or :meth:`builder`
+    for custom infrastructure options (permission boundaries, IAM config).
 
     .. deprecated::
         Direct construction via ``Repository(...)`` is deprecated and will be
-        removed in v1.0.0. Use ``Repository.connect(...)`` or
-        ``Repository.builder(...).build()`` instead.
+        removed in v1.0.0. Use ``Repository.open(...)`` or
+        ``Repository.builder().build()`` instead.
 
     Args:
         name: Resource identifier (e.g., "my-app"). Used as the
@@ -62,11 +62,11 @@ class Repository:
 
     Example::
 
-        # Connect to existing infrastructure (recommended)
-        repo = await Repository.connect("my-app", "us-east-1")
+        # Most users (auto-provisions if needed)
+        repo = await Repository.open("my-app")
 
-        # Provision infrastructure
-        repo = await Repository.builder("my-app", "us-east-1").build()
+        # Custom infrastructure options
+        repo = await Repository.builder().namespace("my-app").build()
     """
 
     def __init__(
@@ -82,8 +82,8 @@ class Repository:
         if not _skip_deprecation_warning:
             warnings.warn(
                 "Directly calling Repository(...) is deprecated. "
-                "Use Repository.connect(...) for connecting to existing infrastructure "
-                "or Repository.builder(...).build() for infrastructure provisioning. "
+                "Use Repository.open(...) for most use cases "
+                "or Repository.builder().build() for custom infrastructure options. "
                 "This will be removed in v1.0.0.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -138,66 +138,99 @@ class Repository:
         self._namespace_cache: dict[str, str] = {}
 
     @classmethod
-    def builder(
-        cls,
-        name: str,
-        region: str | None = None,
-        *,
-        endpoint_url: str | None = None,
-    ) -> "RepositoryBuilder":
+    def builder(cls) -> "RepositoryBuilder":
         """Create a RepositoryBuilder for fluent configuration.
+
+        For most use cases, prefer :meth:`open` instead. Use ``builder()``
+        when you need custom infrastructure options (permission boundaries,
+        Lambda config, IAM role naming).
+
+        Stack defaults mirror :meth:`open`: ``ZAEL_STACK`` env var
+        or ``"zae-limiter"``, namespace ``"default"``.
 
         Example:
             repo = await (
-                Repository.builder("my-app", "us-east-1")
-                .namespace("default")
+                Repository.builder()
+                .namespace("my-app")
                 .lambda_memory(512)
                 .build()
             )
         """
         from .repository_builder import RepositoryBuilder
 
-        return RepositoryBuilder(name, region, endpoint_url=endpoint_url)
+        return RepositoryBuilder()
 
     @classmethod
-    async def connect(
+    async def open(
         cls,
-        name: str,
-        region: str | None = None,
+        namespace: str | None = None,
         *,
+        stack: str | None = None,
+        region: str | None = None,
         endpoint_url: str | None = None,
-        namespace: str = "default",
         config_cache_ttl: int = 60,
         auto_update: bool = True,
     ) -> "Repository":
-        """Connect to existing zae-limiter infrastructure.
+        """Open a repository, auto-provisioning infrastructure if needed.
 
         This is the recommended entry point for most applications.
-        For infrastructure provisioning, use ``Repository.builder()`` instead.
+        Namespace is the primary parameter — stack name defaults to
+        ``"zae-limiter"`` and is rarely needed.
+
+        **Auto-provision behavior:**
+
+        - If the DynamoDB table doesn't exist, deploys a new stack with
+          default options (aggregator enabled).
+        - If the table exists but the namespace isn't registered, registers it.
+        - The ``"default"`` namespace is always registered.
+        - Version check and Lambda auto-update run on every call.
+
+        For custom infrastructure options (permission boundaries, Lambda
+        config, IAM role naming), use ``Repository.builder()`` instead.
+
+        **Stack resolution:** ``stack`` arg → ``ZAEL_STACK`` env var
+        → ``"zae-limiter"``.
+
+        **Namespace resolution:** ``namespace`` arg → ``ZAEL_NAMESPACE``
+        env var → ``"default"``.
 
         Args:
-            name: Stack name (infrastructure must already exist).
+            namespace: Namespace to open. Defaults to ``ZAEL_NAMESPACE``
+                env var or ``"default"``.
+            stack: Stack name. Defaults to ``ZAEL_STACK`` env var
+                or ``"zae-limiter"``.
             region: AWS region (e.g., ``"us-east-1"``).
             endpoint_url: Custom endpoint URL (e.g., LocalStack).
-            namespace: Namespace to connect to (default: ``"default"``).
-                Must already be registered via ``builder().build()`` or CLI.
-            config_cache_ttl: Config cache TTL in seconds (default: 60, 0 to disable).
-            auto_update: Auto-update Lambda on version mismatch (default: True).
+            config_cache_ttl: Config cache TTL in seconds (default: 60,
+                0 to disable).
+            auto_update: Auto-update Lambda on version mismatch
+                (default: True).
 
         Returns:
             Fully initialized Repository ready for use.
 
         Raises:
-            NamespaceNotFoundError: If the namespace doesn't exist.
             IncompatibleSchemaError: If schema migration is required.
             VersionMismatchError: If auto_update is False and versions differ.
 
         Example::
 
-            repo = await Repository.connect("my-app", "us-east-1")
-            limiter = RateLimiter(repository=repo)
+            # Most users
+            repo = await Repository.open("my-app")
+
+            # Multi-tenant
+            repo_alpha = await Repository.open("tenant-alpha")
+
+            # Explicit stack
+            repo = await Repository.open("my-app", stack="custom-stack")
+
+            # Simplest (stack="zae-limiter", namespace="default")
+            repo = await Repository.open()
         """
-        from .exceptions import NamespaceNotFoundError
+        from .naming import resolve_namespace_name, resolve_stack_name
+
+        name = resolve_stack_name(stack)
+        ns_name = resolve_namespace_name(namespace)
 
         repo = cls(
             name=name,
@@ -208,21 +241,34 @@ class Repository:
         )
         repo._auto_update = auto_update
 
-        # Resolve namespace (must already exist)
-        namespace_id = await repo._resolve_namespace(namespace)
-        if namespace_id is None:
-            raise NamespaceNotFoundError(namespace)
+        # Try resolve namespace — auto-provision if needed
+        try:
+            namespace_id = await repo._resolve_namespace(ns_name)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ResourceNotFoundException":
+                # Table doesn't exist — deploy stack with defaults
+                repo._stack_options = StackOptions()
+                await repo._ensure_infrastructure_internal()
+                # Always register "default" namespace
+                await repo._register_namespace("default")
+                # Register requested namespace (no-op if "default")
+                namespace_id = await repo._register_namespace(ns_name)
+            else:
+                raise
+        else:
+            if namespace_id is None:
+                # Table exists but namespace not found — register it
+                namespace_id = await repo._register_namespace(ns_name)
 
         repo._namespace_id = namespace_id
-        repo._namespace_name = namespace
+        repo._namespace_name = ns_name
         repo._reinitialize_config_cache(namespace_id)
 
-        # Version check (skip for local endpoints)
-        if not endpoint_url:
-            if auto_update:
-                await repo._check_and_update_version_auto()
-            else:
-                await repo._check_version_strict()
+        # Version check + Lambda auto-update (always, no endpoint_url guard)
+        if auto_update:
+            await repo._check_and_update_version_auto()
+        else:
+            await repo._check_version_strict()
 
         repo._builder_initialized = True
         return repo
@@ -1103,7 +1149,7 @@ class Repository:
                 message=compatibility.message,
             )
 
-        if compatibility.requires_lambda_update and not self.endpoint_url:
+        if compatibility.requires_lambda_update:
             await self._perform_lambda_update()
 
     async def _check_version_strict(self) -> None:
@@ -1143,7 +1189,7 @@ class Repository:
                 schema_version=infra_version.schema_version,
                 lambda_version=infra_version.lambda_version,
                 message=compatibility.message,
-                can_auto_update=not self.endpoint_url,
+                can_auto_update=True,
             )
 
     async def _initialize_version_record(self) -> None:

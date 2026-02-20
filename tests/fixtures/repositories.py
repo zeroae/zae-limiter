@@ -26,8 +26,8 @@ async def make_test_repo(stack: SharedStack, namespace: str) -> tuple[Repository
     """
     from zae_limiter.repository import Repository
 
-    parent = await Repository.connect(
-        name=stack.name,
+    parent = await Repository.open(
+        stack=stack.name,
         region=stack.region,
         endpoint_url=stack.endpoint_url,
     )
@@ -59,8 +59,8 @@ def make_sync_test_repo(
     """
     from zae_limiter.sync_repository import SyncRepository
 
-    parent = SyncRepository.connect(
-        name=stack.name,
+    parent = SyncRepository.open(
+        stack=stack.name,
         region=stack.region,
         endpoint_url=stack.endpoint_url,
     )

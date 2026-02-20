@@ -648,9 +648,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                             break
                     break
 
-            # 4. Inject parallel_mode parameter into connect()
+            # 4. Inject parallel_mode parameter into open()
             for item in node.body:
-                if isinstance(item, ast.FunctionDef) and item.name == "connect":
+                if isinstance(item, ast.FunctionDef) and item.name == "open":
                     # Add parallel_mode: str = "auto" parameter
                     item.args.args.append(
                         ast.arg(
