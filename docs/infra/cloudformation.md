@@ -92,6 +92,17 @@ The DynamoDB table name is automatically derived from the CloudFormation stack n
 | `AuditArchiveGlacierDays` | Number | `90` | Days before Glacier IR transition (1-3650) |
 | `EnableTracing` | String | `false` | Enable AWS X-Ray tracing for Lambda |
 | `EnableIAMRoles` | String | `true` | Create App/Admin/ReadOnly IAM roles |
+| `EnableIAM` | String | `true` | Create all IAM resources (policies + roles) |
+| `AggregatorRoleArn` | String | _(empty)_ | External IAM role ARN for aggregator Lambda |
+| `AggregatorRoleName` | String | _(empty)_ | Custom name for aggregator Lambda role |
+| `AppRoleName` | String | _(empty)_ | Custom name for application IAM role |
+| `AdminRoleName` | String | _(empty)_ | Custom name for admin IAM role |
+| `ReadOnlyRoleName` | String | _(empty)_ | Custom name for read-only IAM role |
+| `ProvisionerRoleName` | String | _(empty)_ | Custom name for provisioner Lambda role |
+| `AcquireOnlyPolicyName` | String | _(empty)_ | Custom name for acquire-only policy |
+| `FullAccessPolicyName` | String | _(empty)_ | Custom name for full-access policy |
+| `ReadOnlyPolicyName` | String | _(empty)_ | Custom name for read-only policy |
+| `EnableProvisioner` | String | `true` | Deploy limits provisioner Lambda |
 | `EnableDeletionProtection` | String | `false` | Enable DynamoDB table deletion protection |
 | `NamespaceAcquirePolicyName` | String | _(empty)_ | Custom name for namespace acquire-only policy |
 | `NamespaceFullAccessPolicyName` | String | _(empty)_ | Custom name for namespace full-access policy |
@@ -152,7 +163,7 @@ GlobalSecondaryIndexes:
     KeySchema:
       - AttributeName: GSI2PK  # RESOURCE#{resource}
         KeyType: HASH
-      - AttributeName: GSI2SK  # BUCKET#{entity_id}#{limit_name}
+      - AttributeName: GSI2SK  # BUCKET#{entity_id}
         KeyType: RANGE
 ```
 
@@ -166,7 +177,7 @@ GlobalSecondaryIndexes:
       - AttributeName: GSI3SK  # entity_id
         KeyType: RANGE
     Projection:
-      ProjectionType: ALL
+      ProjectionType: KEYS_ONLY
 ```
 
 **GSI4** - Namespace item discovery (for `purge_namespace()`):
@@ -518,25 +529,40 @@ sam deploy --guided
 
 The template exports:
 
-| Output | Description |
-|--------|-------------|
-| `TableArn` | DynamoDB table ARN |
-| `StreamArn` | DynamoDB stream ARN |
-| `FunctionArn` | Lambda function ARN |
-| `AuditArchiveBucketName` | S3 bucket for audit archives (when enabled) |
-| `AuditArchiveBucketArn` | S3 bucket ARN (when enabled) |
-| `AcquireOnlyPolicyArn` | IAM policy ARN for acquire-only access |
-| `FullAccessPolicyArn` | IAM policy ARN for full access |
-| `ReadOnlyPolicyArn` | IAM policy ARN for read-only access |
-| `AppRoleArn` | IAM role ARN for application access (when IAM roles enabled) |
-| `AppRoleName` | IAM role name for application access |
-| `AdminRoleArn` | IAM role ARN for admin access |
-| `AdminRoleName` | IAM role name for admin access |
-| `ReadOnlyRoleArn` | IAM role ARN for read-only access |
-| `ReadOnlyRoleName` | IAM role name for read-only access |
-| `NamespaceAcquirePolicyArn` | Namespace-scoped acquire-only policy ARN |
-| `NamespaceFullAccessPolicyArn` | Namespace-scoped full-access policy ARN |
-| `NamespaceReadOnlyPolicyArn` | Namespace-scoped read-only policy ARN |
+| Output | Condition | Description |
+|--------|-----------|-------------|
+| `TableName` | Always | DynamoDB table name |
+| `TableArn` | Always | DynamoDB table ARN |
+| `StreamArn` | Always | DynamoDB stream ARN |
+| `AggregatorFunctionArn` | Aggregator deployed | Aggregator Lambda function ARN |
+| `AggregatorFunctionName` | Aggregator deployed | Aggregator Lambda function name |
+| `AggregatorDLQUrl` | Aggregator enabled | Dead Letter Queue URL |
+| `AggregatorDLQArn` | Aggregator enabled | Dead Letter Queue ARN |
+| `AggregatorDLQAlarmName` | Aggregator alarms | CloudWatch alarm for DLQ monitoring |
+| `LambdaErrorRateAlarmName` | Aggregator alarms | CloudWatch alarm for Lambda error rate |
+| `LambdaDurationAlarmName` | Aggregator alarms | CloudWatch alarm for Lambda duration |
+| `DynamoDBReadThrottleAlarmName` | Alarms enabled | CloudWatch alarm for read throttles |
+| `DynamoDBWriteThrottleAlarmName` | Alarms enabled | CloudWatch alarm for write throttles |
+| `StreamIteratorAgeAlarmName` | Aggregator alarms | CloudWatch alarm for stream iterator age |
+| `AuditArchiveBucketName` | Audit archival | S3 bucket for audit archives |
+| `AuditArchiveBucketArn` | Audit archival | S3 bucket ARN |
+| `AcquireOnlyPolicyArn` | IAM enabled | IAM policy ARN for acquire-only access |
+| `FullAccessPolicyArn` | IAM enabled | IAM policy ARN for full access |
+| `ReadOnlyPolicyArn` | IAM enabled | IAM policy ARN for read-only access |
+| `NamespaceAcquirePolicyArn` | IAM enabled | Namespace-scoped acquire-only policy ARN |
+| `NamespaceFullAccessPolicyArn` | IAM enabled | Namespace-scoped full-access policy ARN |
+| `NamespaceReadOnlyPolicyArn` | IAM enabled | Namespace-scoped read-only policy ARN |
+| `AppRoleArn` | IAM roles enabled | IAM role ARN for application access |
+| `AppRoleName` | IAM roles enabled | IAM role name for application access |
+| `AdminRoleArn` | IAM roles enabled | IAM role ARN for admin access |
+| `AdminRoleName` | IAM roles enabled | IAM role name for admin access |
+| `ReadOnlyRoleArn` | IAM roles enabled | IAM role ARN for read-only access |
+| `ReadOnlyRoleName` | IAM roles enabled | IAM role name for read-only access |
+| `PermissionBoundaryArn` | Always | Permission boundary ARN (empty if none) |
+| `RoleNameFormat` | Always | Role name format template (empty if default) |
+| `CodeBucketName` | Audit archival | S3 bucket for deployment artifacts |
+| `ProvisionerFunctionArn` | Provisioner deployed | Limits provisioner Lambda function ARN |
+| `ProvisionerFunctionName` | Provisioner deployed | Limits provisioner Lambda function name |
 
 !!! tip "Discovering namespace IDs"
     Namespace IDs are opaque strings stored in DynamoDB, not CloudFormation outputs.

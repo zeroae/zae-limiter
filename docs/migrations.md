@@ -296,7 +296,7 @@ def mock_dynamodb():
 @pytest.mark.asyncio
 async def test_migration_v1_1_0(mock_dynamodb):
     """Test v1.1.0 migration adds metrics to entities."""
-    repo = Repository("test_table", "us-east-1", None)
+    repo = await Repository.open(stack="test_table")
 
     # Create test entity without metrics
     await repo.create_entity(entity_id="test-1", name="Test Entity")
@@ -311,17 +311,17 @@ async def test_migration_v1_1_0(mock_dynamodb):
     client = await repo._get_client()
     response = await client.get_item(
         TableName=repo.table_name,
-        Key={"PK": {"S": "ENTITY#test-1"}, "SK": {"S": "#META"}},
+        Key={"PK": {"S": "{ns}/ENTITY#test-1"}, "SK": {"S": "#META"}},
     )
     item = response["Item"]
-    assert "metrics" in item["data"]["M"]
-    assert item["data"]["M"]["metrics"]["M"]["requests"]["N"] == "0"
+    assert "metrics" in item
+    assert item["metrics"]["M"]["requests"]["N"] == "0"
 
 
 @pytest.mark.asyncio
 async def test_migration_idempotent(mock_dynamodb):
     """Test migration can be safely run multiple times."""
-    repo = Repository("test_table", "us-east-1", None)
+    repo = await Repository.open(stack="test_table")
 
     # Create test entity
     await repo.create_entity(entity_id="test-1", name="Test Entity")
@@ -334,10 +334,10 @@ async def test_migration_idempotent(mock_dynamodb):
     client = await repo._get_client()
     response = await client.get_item(
         TableName=repo.table_name,
-        Key={"PK": {"S": "ENTITY#test-1"}, "SK": {"S": "#META"}},
+        Key={"PK": {"S": "{ns}/ENTITY#test-1"}, "SK": {"S": "#META"}},
     )
     item = response["Item"]
-    assert item["data"]["M"]["metrics"]["M"]["requests"]["N"] == "0"
+    assert item["metrics"]["M"]["requests"]["N"] == "0"
 ```
 
 ### Integration Testing with LocalStack
@@ -362,10 +362,10 @@ async def test_migration_with_localstack():
     """Test migration against LocalStack."""
     endpoint_url = os.environ["AWS_ENDPOINT_URL"]
 
-    repo = Repository(
-        "test_migrations",
-        "us-east-1",
-        endpoint_url,
+    repo = await Repository.open(
+        stack="test_migrations",
+        region="us-east-1",
+        endpoint_url=endpoint_url,
     )
 
     # Deploy infrastructure
@@ -491,7 +491,7 @@ from zae_limiter.migrations import get_migrations
 from zae_limiter.repository import Repository
 
 async def emergency_rollback():
-    repo = Repository("limiter", "us-east-1", None)
+    repo = await Repository.open(stack="limiter", region="us-east-1")
 
     migrations = get_migrations()
     target_migration = next(m for m in migrations if m.version == "1.1.0")
@@ -704,7 +704,7 @@ from zae_limiter.migrations import apply_migrations
 from zae_limiter.repository import Repository
 
 async def run():
-    repo = Repository('limiter', 'us-east-1', None)
+    repo = await Repository.open(stack='limiter', region='us-east-1')
     applied = await apply_migrations(repo, '1.0.0', '2.0.0')
     print(f'Applied migrations: {applied}')
     await repo.close()
@@ -722,7 +722,7 @@ zae-limiter version --name limiter --region us-east-1
 @pytest.mark.asyncio
 async def test_v2_migration_adds_created_at(mock_dynamodb):
     """Test v2.0.0 migration adds created_at to entities."""
-    repo = Repository("test_table", "us-east-1", None)
+    repo = await Repository.open(stack="test_table")
 
     # Create entities without created_at (v1 schema)
     await repo.create_entity(entity_id="entity-1", name="Test 1")
@@ -741,7 +741,7 @@ async def test_v2_migration_adds_created_at(mock_dynamodb):
     client = await repo._get_client()
     response = await client.get_item(
         TableName=repo.table_name,
-        Key={"PK": {"S": "ENTITY#entity-1"}, "SK": {"S": "#META"}},
+        Key={"PK": {"S": "{ns}/ENTITY#entity-1"}, "SK": {"S": "#META"}},
     )
     item = response["Item"]
     assert "created_at" in item
@@ -753,7 +753,7 @@ async def test_v2_migration_adds_created_at(mock_dynamodb):
 @pytest.mark.asyncio
 async def test_v2_migration_idempotent(mock_dynamodb):
     """Test v2.0.0 migration is idempotent."""
-    repo = Repository("test_table", "us-east-1", None)
+    repo = await Repository.open(stack="test_table")
 
     # Create entity with created_at already set
     # (simulating an entity created after v2.0.0 code deployed)
@@ -762,12 +762,13 @@ async def test_v2_migration_idempotent(mock_dynamodb):
     await client.put_item(
         TableName=repo.table_name,
         Item={
-            "PK": {"S": "ENTITY#entity-1"},
+            "PK": {"S": "{ns}/ENTITY#entity-1"},
             "SK": {"S": "#META"},
-            "data": {"M": {"name": {"S": "Test"}}},
+            "entity_id": {"S": "entity-1"},
+            "name": {"S": "Test"},
             "created_at": {"S": original_time},
             "GSI3PK": {"S": "CREATED#2024-01"},
-            "GSI3SK": {"S": "ENTITY#entity-1"},
+            "GSI3SK": {"S": "{ns}/ENTITY#entity-1"},
         },
     )
 
@@ -777,7 +778,7 @@ async def test_v2_migration_idempotent(mock_dynamodb):
     # Verify original created_at preserved (if_not_exists)
     response = await client.get_item(
         TableName=repo.table_name,
-        Key={"PK": {"S": "ENTITY#entity-1"}, "SK": {"S": "#META"}},
+        Key={"PK": {"S": "{ns}/ENTITY#entity-1"}, "SK": {"S": "#META"}},
     )
     item = response["Item"]
     assert item["created_at"]["S"] == original_time
@@ -791,7 +792,7 @@ The version record is stored in DynamoDB:
 
 | Attribute | Value | Description |
 |-----------|-------|-------------|
-| PK | `SYSTEM#` | Partition key |
+| PK | `{ns}/SYSTEM#` | Partition key (namespace-prefixed) |
 | SK | `#VERSION` | Sort key |
 | schema_version | `"1.0.0"` | Current schema version |
 | lambda_version | `"1.2.0"` | Deployed Lambda version |
@@ -803,11 +804,11 @@ The version record is stored in DynamoDB:
 
 | Pattern | Example | Description |
 |---------|---------|-------------|
-| Entity metadata | `PK=ENTITY#123, SK=#META` | Entity configuration |
-| Bucket state | `PK=ENTITY#123, SK=#BUCKET#gpt-4#rpm` | Token bucket state |
-| Limit config | `PK=ENTITY#123, SK=#LIMIT#gpt-4#rpm` | Stored limit config |
-| Usage snapshot | `PK=ENTITY#123, SK=#USAGE#gpt-4#2024-01-15` | Usage data |
-| Version | `PK=SYSTEM#, SK=#VERSION` | Infrastructure version |
+| Entity metadata | `PK={ns}/ENTITY#123, SK=#META` | Entity configuration |
+| Bucket state | `PK={ns}/ENTITY#123, SK=#BUCKET#gpt-4` | Token bucket state (composite, one item per resource) |
+| Entity config | `PK={ns}/ENTITY#123, SK=#CONFIG#gpt-4` | Stored limit config |
+| Usage snapshot | `PK={ns}/ENTITY#123, SK=#USAGE#gpt-4#2024-01-15` | Usage data |
+| Version | `PK={ns}/SYSTEM#, SK=#VERSION` | Infrastructure version |
 
 ### Migration API Reference
 

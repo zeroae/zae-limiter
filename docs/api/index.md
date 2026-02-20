@@ -107,6 +107,8 @@ zae_limiter/
 ├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, ...
 ├── repository.py          # Repository (async DynamoDB operations)
 ├── sync_repository.py     # Generated: SyncRepository
+├── repository_builder.py  # RepositoryBuilder (fluent async construction)
+├── sync_repository_builder.py  # Generated: SyncRepositoryBuilder
 ├── repository_protocol.py # RepositoryProtocol (backend abstraction)
 ├── sync_repository_protocol.py  # Generated: SyncRepositoryProtocol
 ├── lease.py               # Lease (async context manager)
@@ -119,6 +121,9 @@ zae_limiter/
 ├── locust.py              # Locust load testing integration (RateLimiterUser, RateLimiterSession)
 ├── local.py               # LocalStack management commands
 ├── cli.py                 # CLI commands
+├── limits_cli.py          # Declarative limits CLI (plan, apply, diff, cfn-template)
+├── loadtest/              # Load testing infrastructure
+├── visualization/         # Usage snapshot formatting and display
 └── infra/
     ├── stack_manager.py   # StackManager (async CloudFormation operations)
     ├── sync_stack_manager.py    # Generated: SyncStackManager

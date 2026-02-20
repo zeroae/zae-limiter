@@ -7,19 +7,22 @@ Exception types raised by zae-limiter.
 ```
 ZAELimiterError (base)
 ├── RateLimitError
-│   ├── RateLimitExceeded
-│   └── RateLimiterUnavailable
+│   └── RateLimitExceeded
 ├── EntityError
 │   ├── EntityNotFoundError
 │   └── EntityExistsError
 ├── InfrastructureError
+│   ├── RateLimiterUnavailable
 │   ├── StackCreationError
-│   ├── StackAlreadyExistsError
+│   │   └── StackAlreadyExistsError
 │   ├── InfrastructureNotFoundError
 │   └── NamespaceNotFoundError
-└── VersionError
-    ├── VersionMismatchError
-    └── IncompatibleSchemaError
+├── VersionError
+│   ├── VersionMismatchError
+│   └── IncompatibleSchemaError
+└── ValidationError
+    ├── InvalidIdentifierError
+    └── InvalidNameError
 ```
 
 ## Base Exception
@@ -33,13 +36,6 @@ ZAELimiterError (base)
 ## Rate Limit Exceptions
 
 ::: zae_limiter.exceptions.RateLimitExceeded
-    options:
-      show_root_heading: true
-      show_source: false
-      members_order: source
-      heading_level: 3
-
-::: zae_limiter.exceptions.RateLimiterUnavailable
     options:
       show_root_heading: true
       show_source: false
@@ -61,6 +57,13 @@ ZAELimiterError (base)
       heading_level: 3
 
 ## Infrastructure Exceptions
+
+::: zae_limiter.exceptions.RateLimiterUnavailable
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
 
 ::: zae_limiter.exceptions.StackCreationError
     options:
@@ -96,6 +99,26 @@ ZAELimiterError (base)
       heading_level: 3
 
 ::: zae_limiter.exceptions.IncompatibleSchemaError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+## Validation Exceptions
+
+::: zae_limiter.exceptions.ValidationError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: zae_limiter.exceptions.InvalidIdentifierError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: zae_limiter.exceptions.InvalidNameError
     options:
       show_root_heading: true
       show_source: false

@@ -9,7 +9,7 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 | Record Type | PK | SK |
 |-------------|----|----|
 | Entity metadata | `{ns}/ENTITY#{id}` | `#META` |
-| Bucket | `{ns}/ENTITY#{id}` | `#BUCKET#{resource}#{limit_name}` |
+| Bucket | `{ns}/ENTITY#{id}` | `#BUCKET#{resource}` |
 | Entity config | `{ns}/ENTITY#{id}` | `#CONFIG#{resource}` |
 | Resource config | `{ns}/RESOURCE#{resource}` | `#CONFIG` |
 | System config | `{ns}/SYSTEM#` | `#CONFIG` |
