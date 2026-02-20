@@ -515,6 +515,151 @@ Policies respect `--permission-boundary` if configured.
 
 For detailed IAM configuration and usage examples, see [CloudFormation - Application IAM Policies](cloudformation.md#application-iam-policies).
 
+## Declarative Limits Management
+
+Instead of configuring limits one at a time with `system set-defaults`, `resource set-defaults`, and `entity set-limits`, you can define all limits in a YAML manifest and apply them declaratively. A Lambda provisioner computes diffs and applies only the necessary changes.
+
+### YAML Manifest
+
+Create a `limits.yaml` file defining your desired limit configuration:
+
+```yaml
+namespace: default
+
+system:
+  on_unavailable: block
+  limits:
+    rpm:
+      capacity: 1000
+    tpm:
+      capacity: 100000
+
+resources:
+  gpt-4:
+    limits:
+      rpm:
+        capacity: 500
+      tpm:
+        capacity: 50000
+  gpt-3.5-turbo:
+    limits:
+      rpm:
+        capacity: 2000
+      tpm:
+        capacity: 500000
+
+entities:
+  user-premium:
+    resources:
+      gpt-4:
+        limits:
+          rpm:
+            capacity: 1000
+          tpm:
+            capacity: 100000
+```
+
+**Limit fields:** Only `capacity` is required. When omitted, `burst` defaults to `capacity`, `refill_amount` defaults to `capacity`, and `refill_period` defaults to `60` seconds. To customize:
+
+```yaml
+limits:
+  rpm:
+    capacity: 1000
+    burst: 1500          # Allow bursting above capacity
+    refill_amount: 100   # Refill 100 tokens per period
+    refill_period: 6     # Every 6 seconds (= 1000/min)
+```
+
+### CLI Workflow
+
+The typical workflow mirrors `terraform plan` / `terraform apply`:
+
+```bash
+# 1. Preview what would change
+zae-limiter limits plan -n my-app -f limits.yaml
+
+# 2. Apply the changes
+zae-limiter limits apply -n my-app -f limits.yaml
+
+# 3. Later, check for drift
+zae-limiter limits diff -n my-app -f limits.yaml
+```
+
+The provisioner tracks which items it manages in a `#PROVISIONER` state record. When you remove an item from the manifest and re-apply, the provisioner deletes it from DynamoDB. Items created outside the manifest (via `set-defaults` or `set-limits` CLI commands) are not affected.
+
+### Multi-Namespace
+
+Each manifest targets a single namespace. To manage limits for multiple namespaces, use separate YAML files:
+
+```bash
+# Different limits per tenant
+zae-limiter limits apply -n my-app -N tenant-alpha -f alpha-limits.yaml
+zae-limiter limits apply -n my-app -N tenant-beta -f beta-limits.yaml
+```
+
+### CloudFormation Integration
+
+Generate a CloudFormation template to manage limits as infrastructure-as-code:
+
+```bash
+# Generate the template
+zae-limiter limits cfn-template -n my-app -f limits.yaml > limits-stack.yaml
+
+# Deploy with AWS CLI
+aws cloudformation deploy \
+    --template-file limits-stack.yaml \
+    --stack-name my-app-limits
+```
+
+The generated template creates a `Custom::ZaeLimiterLimits` resource backed by the provisioner Lambda. The Lambda ARN is imported from the main zae-limiter stack via `Fn::ImportValue`:
+
+```yaml
+Resources:
+  TenantLimits:
+    Type: Custom::ZaeLimiterLimits
+    Properties:
+      ServiceToken: !ImportValue my-app-ProvisionerArn
+      TableName: my-app
+      Namespace: default
+      System:
+        OnUnavailable: block
+        Limits:
+          rpm:
+            Capacity: 1000
+      Resources:
+        gpt-4:
+          Limits:
+            rpm:
+              Capacity: 500
+```
+
+This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).
+
+### Provisioner Architecture
+
+The provisioner is a Lambda function (`{stack}-limits-provisioner`) that:
+
+1. **Receives** either a CLI event (action + manifest) or a CloudFormation custom resource event
+2. **Reads** the previous managed state from the `#PROVISIONER` DynamoDB record
+3. **Computes** a diff between the manifest and previous state (create/update/delete changes)
+4. **Applies** changes via DynamoDB PutItem (create/update) and DeleteItem (delete)
+5. **Updates** the `#PROVISIONER` record with the new managed set and a SHA-256 hash of the applied manifest
+
+The provisioner uses the same DynamoDB config records (system `#CONFIG`, resource `#CONFIG`, entity `#CONFIG#{resource}`) as the imperative API, so limits set declaratively are immediately visible to `acquire()` calls.
+
+### Imperative vs Declarative
+
+| Aspect | Imperative | Declarative |
+|--------|-----------|-------------|
+| Commands | `system set-defaults`, `resource set-defaults`, `entity set-limits` | `limits plan`, `limits apply` |
+| State tracking | None (each command is independent) | `#PROVISIONER` record tracks managed items |
+| Drift detection | Manual comparison | `limits diff` |
+| Bulk changes | Multiple commands | Single YAML file |
+| CFN integration | Not available | `limits cfn-template` |
+| Best for | Ad-hoc changes, interactive use | Reproducible config, CI/CD pipelines |
+
+Both approaches write to the same DynamoDB config records and can coexist. However, mixing imperative and declarative management for the same items may cause the provisioner to overwrite manual changes on the next apply.
+
 ## Next Steps
 
 - [Production](production.md) - Production checklist, security, cost estimation
