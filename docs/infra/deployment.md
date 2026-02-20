@@ -559,13 +559,12 @@ entities:
             capacity: 100000
 ```
 
-**Limit fields:** Only `capacity` is required. When omitted, `burst` defaults to `capacity`, `refill_amount` defaults to `capacity`, and `refill_period` defaults to `60` seconds. To customize:
+**Limit fields:** Only `capacity` is required. When omitted, `refill_amount` defaults to `capacity` and `refill_period` defaults to `60` seconds. `capacity` is the bucket ceiling (max tokens). To customize:
 
 ```yaml
 limits:
   rpm:
-    capacity: 1000
-    burst: 1500          # Allow bursting above capacity
+    capacity: 1000       # Max tokens (bucket ceiling)
     refill_amount: 100   # Refill 100 tokens per period
     refill_period: 6     # Every 6 seconds (= 1000/min)
 ```

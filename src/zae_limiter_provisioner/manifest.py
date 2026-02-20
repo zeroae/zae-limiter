@@ -8,19 +8,25 @@ from typing import Any
 
 @dataclass(frozen=True)
 class LimitDecl:
-    """A single limit declaration with shorthand defaults."""
+    """A single limit declaration with shorthand defaults.
+
+    ``capacity`` is the bucket ceiling (max tokens). The separate ``burst``
+    field was removed in the Limit model refactor — callers that want burst
+    behaviour should set ``capacity`` to the burst value directly.
+    """
 
     capacity: int
-    burst: int
     refill_amount: int
     refill_period: int
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LimitDecl:
         capacity = d["capacity"]
+        # Accept "burst" from YAML for backwards-compat: use it as capacity
+        if "burst" in d:
+            capacity = d["burst"]
         return cls(
             capacity=capacity,
-            burst=d.get("burst", capacity),
             refill_amount=d.get("refill_amount", capacity),
             refill_period=d.get("refill_period", 60),
         )
@@ -28,7 +34,6 @@ class LimitDecl:
     def to_dict(self) -> dict[str, int]:
         return {
             "capacity": self.capacity,
-            "burst": self.burst,
             "refill_amount": self.refill_amount,
             "refill_period": self.refill_period,
         }

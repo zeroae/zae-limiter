@@ -76,7 +76,6 @@ resources:
         capacity: 500
       tpm:
         capacity: 50000
-        burst: 75000
   gpt-3.5-turbo:
     limits:
       rpm:
@@ -95,7 +94,7 @@ entities:
             capacity: 100000
 ```
 
-Only `capacity` is required per limit. Defaults: `burst` = `capacity`, `refill_amount` = `capacity`, `refill_period` = `60` seconds.
+Only `capacity` is required per limit. Defaults: `refill_amount` = `capacity`, `refill_period` = `60` seconds.
 
 ### Preview Changes
 

@@ -34,7 +34,6 @@ class TestApplyChanges:
                         "limits": {
                             "rpm": {
                                 "capacity": 1000,
-                                "burst": 1000,
                                 "refill_amount": 1000,
                                 "refill_period": 60,
                             }
@@ -81,7 +80,6 @@ class TestApplyChanges:
                         "limits": {
                             "rpm": {
                                 "capacity": 500,
-                                "burst": 500,
                                 "refill_amount": 500,
                                 "refill_period": 60,
                             }
@@ -113,7 +111,6 @@ class TestApplyChanges:
                         "limits": {
                             "tpm": {
                                 "capacity": 50000,
-                                "burst": 50000,
                                 "refill_amount": 50000,
                                 "refill_period": 60,
                             }
@@ -184,7 +181,6 @@ class TestApplyChanges:
                         "limits": {
                             "rpm": {
                                 "capacity": 1000,
-                                "burst": 1000,
                                 "refill_amount": 1000,
                                 "refill_period": 60,
                             }

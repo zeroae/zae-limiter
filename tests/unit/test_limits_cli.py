@@ -270,8 +270,8 @@ class TestLimitsCfnTemplate:
             assert "Entities" in props
             assert "user-123" in props["Entities"]
 
-    def test_cfn_template_limits_with_burst_and_refill(self):
-        """cfn-template converts burst/refill fields to PascalCase."""
+    def test_cfn_template_limits_with_refill(self):
+        """cfn-template converts refill fields to PascalCase."""
         yaml_content = {
             "namespace": "test-ns",
             "resources": {
@@ -279,7 +279,6 @@ class TestLimitsCfnTemplate:
                     "limits": {
                         "rpm": {
                             "capacity": 1000,
-                            "burst": 1500,
                             "refill_amount": 100,
                             "refill_period": 60,
                         },
@@ -289,7 +288,6 @@ class TestLimitsCfnTemplate:
         }
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             yaml.dump(yaml_content, f)
-            f.flush()
 
             runner = CliRunner()
             result = runner.invoke(
@@ -302,7 +300,7 @@ class TestLimitsCfnTemplate:
                 "rpm"
             ]
             assert rpm["Capacity"] == 1000
-            assert rpm["Burst"] == 1500
+            assert "Burst" not in rpm
             assert rpm["RefillAmount"] == 100
             assert rpm["RefillPeriod"] == 60
 

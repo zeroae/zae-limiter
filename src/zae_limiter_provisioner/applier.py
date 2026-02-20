@@ -54,7 +54,6 @@ def _build_limit_item(
 
     for name, decl in limits.items():
         item[limit_attr(name, "cp")] = {"N": str(decl["capacity"])}
-        item[limit_attr(name, "bx")] = {"N": str(decl["burst"])}
         item[limit_attr(name, "ra")] = {"N": str(decl["refill_amount"])}
         item[limit_attr(name, "rp")] = {"N": str(decl["refill_period"])}
 

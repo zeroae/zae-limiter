@@ -34,7 +34,6 @@ class TestLimitsManifestParsing:
         assert len(manifest.system.limits) == 1
         limit = manifest.system.limits["rpm"]
         assert limit.capacity == 1000
-        assert limit.burst == 1000  # default: capacity
         assert limit.refill_amount == 1000  # default: capacity
         assert limit.refill_period == 60  # default: 60
 
@@ -46,7 +45,6 @@ class TestLimitsManifestParsing:
                 "limits": {
                     "tpm": {
                         "capacity": 50000,
-                        "burst": 75000,
                         "refill_amount": 50000,
                         "refill_period": 120,
                     },
@@ -56,9 +54,25 @@ class TestLimitsManifestParsing:
         manifest = LimitsManifest.from_dict(raw)
         limit = manifest.system.limits["tpm"]
         assert limit.capacity == 50000
-        assert limit.burst == 75000
         assert limit.refill_amount == 50000
         assert limit.refill_period == 120
+
+    def test_parse_burst_overrides_capacity(self):
+        """Legacy burst field overrides capacity for backwards compatibility."""
+        raw = {
+            "namespace": "test-ns",
+            "system": {
+                "limits": {
+                    "tpm": {
+                        "capacity": 50000,
+                        "burst": 75000,
+                    },
+                },
+            },
+        }
+        manifest = LimitsManifest.from_dict(raw)
+        limit = manifest.system.limits["tpm"]
+        assert limit.capacity == 75000  # burst overrides capacity
 
     def test_parse_resources(self):
         """Resource-level limits parse correctly."""

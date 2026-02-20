@@ -156,8 +156,6 @@ def _cfn_limits_to_manifest(cfn_limits: dict[str, Any]) -> dict[str, Any]:
     result = {}
     for name, cfn_limit in cfn_limits.items():
         limit: dict[str, Any] = {"capacity": cfn_limit["Capacity"]}
-        if "Burst" in cfn_limit:
-            limit["burst"] = cfn_limit["Burst"]
         if "RefillAmount" in cfn_limit:
             limit["refill_amount"] = cfn_limit["RefillAmount"]
         if "RefillPeriod" in cfn_limit:

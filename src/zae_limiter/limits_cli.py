@@ -204,8 +204,6 @@ def _limits_to_cfn(limits: dict[str, Any]) -> dict[str, Any]:
     result = {}
     for name, limit in limits.items():
         cfn_limit: dict[str, Any] = {"Capacity": limit["capacity"]}
-        if "burst" in limit:
-            cfn_limit["Burst"] = limit["burst"]
         if "refill_amount" in limit:
             cfn_limit["RefillAmount"] = limit["refill_amount"]
         if "refill_period" in limit:
