@@ -49,8 +49,7 @@ DEFAULT_RESOURCE = "_default_"
 # Composite bucket attribute prefix and field suffixes (ADR-114)
 BUCKET_ATTR_PREFIX = "b_"
 BUCKET_FIELD_TK = "tk"  # tokens (millitokens)
-BUCKET_FIELD_CP = "cp"  # capacity (millitokens)
-BUCKET_FIELD_BX = "bx"  # burst maximum (millitokens)
+BUCKET_FIELD_CP = "cp"  # capacity / ceiling (millitokens)
 BUCKET_FIELD_RA = "ra"  # refill amount (millitokens)
 BUCKET_FIELD_RP = "rp"  # refill period (ms)
 BUCKET_FIELD_TC = "tc"  # total consumed counter (millitokens)
@@ -58,8 +57,7 @@ BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 
 # Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
 LIMIT_ATTR_PREFIX = "l_"
-LIMIT_FIELD_CP = "cp"  # capacity
-LIMIT_FIELD_BX = "bx"  # burst
+LIMIT_FIELD_CP = "cp"  # capacity (ceiling)
 LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 

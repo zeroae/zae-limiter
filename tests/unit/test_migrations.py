@@ -239,8 +239,7 @@ class TestMigration080CompositeLimits:
         )
         assert "Item" in result
         item = result["Item"]
-        assert item.get("l_rpm_cp", {}).get("N") == "1000"
-        assert item.get("l_rpm_bx", {}).get("N") == "1200"
+        assert item.get("l_rpm_cp", {}).get("N") == "1200"
         assert item.get("l_rpm_ra", {}).get("N") == "1000"
         assert item.get("l_rpm_rp", {}).get("N") == "60"
 
@@ -295,7 +294,7 @@ class TestMigration080CompositeLimits:
         )
         item = result["Item"]
         assert item.get("on_unavailable", {}).get("S") == "allow"
-        assert item.get("l_tpm_cp", {}).get("N") == "100000"
+        assert item.get("l_tpm_cp", {}).get("N") == "120000"
 
     @pytest.mark.asyncio
     async def test_migrate_system_limits_multiple_limits(self, limiter):
@@ -384,7 +383,7 @@ class TestMigration080CompositeLimits:
         assert "Item" in result
         item = result["Item"]
         assert item.get("resource", {}).get("S") == "gpt-4"
-        assert item.get("l_rpm_cp", {}).get("N") == "500"
+        assert item.get("l_rpm_cp", {}).get("N") == "600"
 
         # Verify old item was deleted
         old_result = await client.get_item(
@@ -442,7 +441,7 @@ class TestMigration080CompositeLimits:
         item = result["Item"]
         assert item.get("entity_id", {}).get("S") == "user-123"
         assert item.get("resource", {}).get("S") == "gpt-4"
-        assert item.get("l_rpm_cp", {}).get("N") == "100"
+        assert item.get("l_rpm_cp", {}).get("N") == "120"
 
         # Verify old item was deleted
         old_result = await client.get_item(
@@ -491,8 +490,8 @@ class TestMigration080CompositeLimits:
             )
             assert "Item" in result
             item = result["Item"]
-            assert item.get("l_rpm_cp", {}).get("N") == "100"
-            assert item.get("l_tpm_cp", {}).get("N") == "100"
+            assert item.get("l_rpm_cp", {}).get("N") == "120"
+            assert item.get("l_tpm_cp", {}).get("N") == "120"
 
     @pytest.mark.asyncio
     async def test_full_migration_all_levels(self, limiter):
@@ -562,7 +561,7 @@ class TestMigration080CompositeLimits:
             TableName=table,
             Key={"PK": {"S": schema.pk_system("default")}, "SK": {"S": schema.sk_config()}},
         )
-        assert result["Item"].get("l_rpm_cp", {}).get("N") == "1000"
+        assert result["Item"].get("l_rpm_cp", {}).get("N") == "1200"
 
         # Verify resource level
         result = await client.get_item(
@@ -572,7 +571,7 @@ class TestMigration080CompositeLimits:
                 "SK": {"S": schema.sk_config()},
             },
         )
-        assert result["Item"].get("l_rpm_cp", {}).get("N") == "500"
+        assert result["Item"].get("l_rpm_cp", {}).get("N") == "600"
 
         # Verify entity level
         result = await client.get_item(
@@ -582,7 +581,7 @@ class TestMigration080CompositeLimits:
                 "SK": {"S": schema.sk_config("api")},
             },
         )
-        assert result["Item"].get("l_rpm_cp", {}).get("N") == "100"
+        assert result["Item"].get("l_rpm_cp", {}).get("N") == "120"
 
     @pytest.mark.asyncio
     async def test_migrate_system_limits_items_without_limit_name(self, limiter):
@@ -692,7 +691,7 @@ class TestMigration080CompositeLimits:
             },
         )
         assert "Item" in result
-        assert result["Item"].get("l_rpm_cp", {}).get("N") == "500"
+        assert result["Item"].get("l_rpm_cp", {}).get("N") == "600"
 
     @pytest.mark.asyncio
     async def test_migrate_resource_limits_items_without_limit_name(self, limiter):
@@ -820,4 +819,4 @@ class TestMigration080CompositeLimits:
             },
         )
         assert "Item" in result
-        assert result["Item"].get("l_rpm_cp", {}).get("N") == "100"
+        assert result["Item"].get("l_rpm_cp", {}).get("N") == "120"

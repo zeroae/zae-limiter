@@ -25,15 +25,8 @@ class TestLimit:
         limit = Limit.per_minute("rpm", 100)
         assert limit.name == "rpm"
         assert limit.capacity == 100
-        assert limit.burst == 100
         assert limit.refill_amount == 100
         assert limit.refill_period_seconds == 60
-
-    def test_per_minute_with_burst(self):
-        """Test per_minute with custom burst."""
-        limit = Limit.per_minute("rpm", 100, burst=150)
-        assert limit.capacity == 100
-        assert limit.burst == 150
 
     def test_per_hour(self):
         """Test per_hour factory."""
@@ -57,10 +50,8 @@ class TestLimit:
             capacity=100,
             refill_amount=50,
             refill_period_seconds=30,
-            burst=200,
         )
         assert limit.capacity == 100
-        assert limit.burst == 200
         assert limit.refill_amount == 50
         assert limit.refill_period_seconds == 30
 
@@ -73,11 +64,6 @@ class TestLimit:
         """Test validation of capacity."""
         with pytest.raises(ValueError, match="capacity must be positive"):
             Limit.per_minute("rpm", 0)
-
-    def test_invalid_burst(self):
-        """Test validation of burst < capacity."""
-        with pytest.raises(ValueError, match="burst must be >= capacity"):
-            Limit.per_minute("rpm", 100, burst=50)
 
     def test_invalid_refill_amount(self):
         """Test validation of refill_amount must be positive."""
@@ -101,7 +87,7 @@ class TestLimit:
 
     def test_to_dict_from_dict(self):
         """Test serialization round-trip."""
-        limit = Limit.per_minute("rpm", 100, burst=150)
+        limit = Limit.per_minute("rpm", 100)
         data = limit.to_dict()
         restored = Limit.from_dict(data)
         assert restored == limit
@@ -121,14 +107,12 @@ class TestLimit:
             tokens_milli=50_000,
             last_refill_ms=1000,
             capacity_milli=100_000,
-            burst_milli=150_000,
             refill_amount_milli=100_000,
             refill_period_ms=60_000,
         )
         limit = Limit.from_bucket_state(state)
         assert limit.name == "rpm"
         assert limit.capacity == 100
-        assert limit.burst == 150
         assert limit.refill_amount == 100
         assert limit.refill_period_seconds == 60
 
@@ -878,7 +862,6 @@ class TestInputValidation:
             tokens_milli=100000,
             last_refill_ms=1000000,
             capacity_milli=100000,
-            burst_milli=100000,
             refill_amount_milli=100000,
             refill_period_ms=60000,
         )
@@ -899,7 +882,6 @@ class TestInputValidation:
             tokens_milli=100000,
             last_refill_ms=1000000,
             capacity_milli=100000,
-            burst_milli=100000,
             refill_amount_milli=100000,
             refill_period_ms=60000,
         )
@@ -1002,7 +984,6 @@ class TestBucketStateProperties:
             tokens_milli=150500,  # 150.5 tokens
             last_refill_ms=1000000,
             capacity_milli=100000,
-            burst_milli=200000,
             refill_amount_milli=100000,
             refill_period_ms=60000,
         )
@@ -1017,7 +998,6 @@ class TestBucketStateProperties:
             tokens_milli=100000,  # exactly 100 tokens
             last_refill_ms=1000000,
             capacity_milli=100000,
-            burst_milli=100000,
             refill_amount_milli=100000,
             refill_period_ms=60000,
         )
@@ -1032,41 +1012,10 @@ class TestBucketStateProperties:
             tokens_milli=100000,
             last_refill_ms=1000000,
             capacity_milli=250000,  # 250 tokens
-            burst_milli=300000,
             refill_amount_milli=100000,
             refill_period_ms=60000,
         )
         assert bucket.capacity == 250
-
-    def test_burst_property(self):
-        """Test burst property converts millitokens to tokens."""
-        bucket = BucketState(
-            entity_id="user-123",
-            resource="api",
-            limit_name="rpm",
-            tokens_milli=100000,
-            last_refill_ms=1000000,
-            capacity_milli=100000,
-            burst_milli=500000,  # 500 tokens
-            refill_amount_milli=100000,
-            refill_period_ms=60000,
-        )
-        assert bucket.burst == 500
-
-    def test_burst_property_with_fractional_millitokens(self):
-        """Test burst property truncates fractional tokens."""
-        bucket = BucketState(
-            entity_id="user-123",
-            resource="api",
-            limit_name="rpm",
-            tokens_milli=100000,
-            last_refill_ms=1000000,
-            capacity_milli=100000,
-            burst_milli=199999,  # 199.999 tokens
-            refill_amount_milli=100000,
-            refill_period_ms=60000,
-        )
-        assert bucket.burst == 199  # truncates to 199
 
 
 class TestLimitStatusDeficit:

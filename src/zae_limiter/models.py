@@ -184,15 +184,13 @@ class Limit:
 
     Attributes:
         name: Unique identifier for this limit type (e.g., "rpm", "tpm")
-        capacity: Max tokens that refill over the period (sustained rate)
-        burst: Max tokens in bucket (>= capacity, allows bursting)
+        capacity: Max tokens in the bucket (ceiling)
         refill_amount: Numerator of refill rate
         refill_period_seconds: Denominator of refill rate
     """
 
     name: str
     capacity: int
-    burst: int
     refill_amount: int
     refill_period_seconds: int
 
@@ -200,8 +198,6 @@ class Limit:
         validate_name(self.name, "name")
         if self.capacity <= 0:
             raise ValueError("capacity must be positive")
-        if self.burst < self.capacity:
-            raise ValueError("burst must be >= capacity")
         if self.refill_amount <= 0:
             raise ValueError("refill_amount must be positive")
         if self.refill_period_seconds <= 0:
@@ -211,15 +207,23 @@ class Limit:
     def per_second(
         cls,
         name: str,
-        capacity: int,
+        rate: int,
         burst: int | None = None,
     ) -> "Limit":
-        """Create a limit that refills `capacity` tokens per second."""
+        """Create a limit that refills ``rate`` tokens per second.
+
+        Args:
+            name: Limit name (e.g., "rps")
+            rate: Sustained tokens per second (also the refill amount)
+            burst: Optional burst ceiling. When set, ``capacity`` is
+                ``burst`` and ``refill_amount`` is ``rate``, allowing
+                temporary spikes above the sustained rate.
+        """
+        capacity = burst if burst is not None else rate
         return cls(
             name=name,
             capacity=capacity,
-            burst=burst if burst is not None else capacity,
-            refill_amount=capacity,
+            refill_amount=rate,
             refill_period_seconds=1,
         )
 
@@ -227,15 +231,23 @@ class Limit:
     def per_minute(
         cls,
         name: str,
-        capacity: int,
+        rate: int,
         burst: int | None = None,
     ) -> "Limit":
-        """Create a limit that refills `capacity` tokens per minute."""
+        """Create a limit that refills ``rate`` tokens per minute.
+
+        Args:
+            name: Limit name (e.g., "rpm", "tpm")
+            rate: Sustained tokens per minute (also the refill amount)
+            burst: Optional burst ceiling. When set, ``capacity`` is
+                ``burst`` and ``refill_amount`` is ``rate``, allowing
+                temporary spikes above the sustained rate.
+        """
+        capacity = burst if burst is not None else rate
         return cls(
             name=name,
             capacity=capacity,
-            burst=burst if burst is not None else capacity,
-            refill_amount=capacity,
+            refill_amount=rate,
             refill_period_seconds=60,
         )
 
@@ -243,15 +255,23 @@ class Limit:
     def per_hour(
         cls,
         name: str,
-        capacity: int,
+        rate: int,
         burst: int | None = None,
     ) -> "Limit":
-        """Create a limit that refills `capacity` tokens per hour."""
+        """Create a limit that refills ``rate`` tokens per hour.
+
+        Args:
+            name: Limit name (e.g., "rph")
+            rate: Sustained tokens per hour (also the refill amount)
+            burst: Optional burst ceiling. When set, ``capacity`` is
+                ``burst`` and ``refill_amount`` is ``rate``, allowing
+                temporary spikes above the sustained rate.
+        """
+        capacity = burst if burst is not None else rate
         return cls(
             name=name,
             capacity=capacity,
-            burst=burst if burst is not None else capacity,
-            refill_amount=capacity,
+            refill_amount=rate,
             refill_period_seconds=3600,
         )
 
@@ -259,15 +279,23 @@ class Limit:
     def per_day(
         cls,
         name: str,
-        capacity: int,
+        rate: int,
         burst: int | None = None,
     ) -> "Limit":
-        """Create a limit that refills `capacity` tokens per day."""
+        """Create a limit that refills ``rate`` tokens per day.
+
+        Args:
+            name: Limit name (e.g., "rpd")
+            rate: Sustained tokens per day (also the refill amount)
+            burst: Optional burst ceiling. When set, ``capacity`` is
+                ``burst`` and ``refill_amount`` is ``rate``, allowing
+                temporary spikes above the sustained rate.
+        """
+        capacity = burst if burst is not None else rate
         return cls(
             name=name,
             capacity=capacity,
-            burst=burst if burst is not None else capacity,
-            refill_amount=capacity,
+            refill_amount=rate,
             refill_period_seconds=86400,
         )
 
@@ -278,19 +306,17 @@ class Limit:
         capacity: int,
         refill_amount: int,
         refill_period_seconds: int,
-        burst: int | None = None,
     ) -> "Limit":
         """
         Create a custom limit with explicit refill rate.
 
-        Example: Sustain 100/sec with burst of 1000
-            Limit.custom("requests", capacity=100, refill_amount=100,
-                        refill_period_seconds=1, burst=1000)
+        Example: Allow ceiling of 1000 tokens, sustained at 100/sec
+            Limit.custom("requests", capacity=1000, refill_amount=100,
+                        refill_period_seconds=1)
         """
         return cls(
             name=name,
             capacity=capacity,
-            burst=burst if burst is not None else capacity,
             refill_amount=refill_amount,
             refill_period_seconds=refill_period_seconds,
         )
@@ -305,7 +331,6 @@ class Limit:
         return {
             "name": self.name,
             "capacity": self.capacity,
-            "burst": self.burst,
             "refill_amount": self.refill_amount,
             "refill_period_seconds": self.refill_period_seconds,
         }
@@ -316,7 +341,6 @@ class Limit:
         return cls(
             name=data["name"],
             capacity=data["capacity"],
-            burst=data["burst"],
             refill_amount=data["refill_amount"],
             refill_period_seconds=data["refill_period_seconds"],
         )
@@ -327,7 +351,6 @@ class Limit:
         return cls.custom(
             name=state.limit_name,
             capacity=state.capacity_milli // 1000,
-            burst=state.burst_milli // 1000,
             refill_amount=state.refill_amount_milli // 1000,
             refill_period_seconds=state.refill_period_ms // 1000,
         )
@@ -408,8 +431,7 @@ class BucketState:
     limit_name: str
     tokens_milli: int  # current tokens (in millitokens)
     last_refill_ms: int  # epoch milliseconds
-    capacity_milli: int  # max sustained (in millitokens)
-    burst_milli: int  # max burst (in millitokens)
+    capacity_milli: int  # max tokens / ceiling (in millitokens)
     refill_amount_milli: int  # refill numerator (in millitokens)
     refill_period_ms: int  # refill denominator (in milliseconds)
     # Net consumption counter (millitokens). Stored as FLAT top-level attribute
@@ -424,13 +446,8 @@ class BucketState:
 
     @property
     def capacity(self) -> int:
-        """Capacity (not millitokens)."""
+        """Capacity / ceiling (not millitokens)."""
         return self.capacity_milli // 1000
-
-    @property
-    def burst(self) -> int:
-        """Burst (not millitokens)."""
-        return self.burst_milli // 1000
 
     @classmethod
     def from_limit(
@@ -457,10 +474,9 @@ class BucketState:
             entity_id=entity_id,
             resource=resource,
             limit_name=limit.name,
-            tokens_milli=limit.burst * 1000,  # start at burst capacity
+            tokens_milli=limit.capacity * 1000,  # start at full capacity
             last_refill_ms=now_ms,
             capacity_milli=limit.capacity * 1000,
-            burst_milli=limit.burst * 1000,
             refill_amount_milli=limit.refill_amount * 1000,
             refill_period_ms=limit.refill_period_seconds * 1000,
             total_consumed_milli=0,  # initialize counter for new buckets

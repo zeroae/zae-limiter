@@ -536,7 +536,7 @@ Primary mitigation: cascade defaults to `False`.
 ### Token Bucket Algorithm
 - Buckets can go **negative** for post-hoc reconciliation
 - Refill is calculated lazily on each access
-- `burst >= capacity` allows controlled bursting
+- `capacity` is the bucket ceiling; factory methods accept `burst` to set `capacity > refill_amount`
 
 ### DynamoDB Single Table Design
 - All entities, buckets, limits, usage in one table
@@ -826,12 +826,12 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 
 | Level | PK | SK | Attributes |
 |-------|----|----|------------|
-| System | `{ns}/SYSTEM#` | `#CONFIG` | `on_unavailable`, `l_rpm_cp`, `l_rpm_bx`, `l_rpm_ra`, `l_rpm_rp`, ... |
+| System | `{ns}/SYSTEM#` | `#CONFIG` | `on_unavailable`, `l_rpm_cp`, `l_rpm_ra`, `l_rpm_rp`, ... |
 | Resource | `{ns}/RESOURCE#{res}` | `#CONFIG` | `resource`, `l_rpm_cp`, ... |
 | Entity | `{ns}/ENTITY#{id}` | `#CONFIG#{resource}` | `entity_id`, `resource`, `l_rpm_cp`, ... |
 
 **Limit attribute format:** `l_{limit_name}_{field}` where field is one of:
-- `cp` (capacity), `bx` (burst), `ra` (refill_amount), `rp` (refill_period_seconds)
+- `cp` (capacity), `ra` (refill_amount), `rp` (refill_period_seconds)
 
 **Config fields:**
 - `config_version` (int): Atomic counter for cache invalidation

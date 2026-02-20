@@ -2053,36 +2053,83 @@ def usage_summary(
 # -------------------------------------------------------------------------
 
 
+_PERIOD_UNITS = {"sec": 1, "min": 60, "hour": 3600, "day": 86400}
+
+
+def _parse_period(period_str: str) -> int:
+    """Parse a period string like ``5min``, ``hour``, ``2day`` into seconds."""
+    import re
+
+    m = re.match(r"^(\d+)?(sec|min|hour|day)$", period_str)
+    if not m:
+        raise click.BadParameter(
+            f"Invalid period: '/{period_str}'. Use /[N]sec, /[N]min, /[N]hour, or /[N]day"
+        )
+    n = int(m.group(1)) if m.group(1) else 1
+    return n * _PERIOD_UNITS[m.group(2)]
+
+
+def _format_period(seconds: int) -> str:
+    """Format a period in seconds to a human-readable suffix like ``/min`` or ``/5min``."""
+    for unit, base in [("day", 86400), ("hour", 3600), ("min", 60), ("sec", 1)]:
+        if seconds % base == 0:
+            n = seconds // base
+            return f"/{n}{unit}" if n != 1 else f"/{unit}"
+    raise AssertionError(f"unreachable: {seconds} is not divisible by 1")  # pragma: no cover
+
+
 def _parse_limit(limit_str: str) -> Limit:
-    """Parse a limit string in format 'name:capacity:burst' or 'name:capacity'."""
+    """Parse a limit string in format ``name:rate[/period][:burst]``.
+
+    Period defaults to ``/min`` (per minute) when omitted, preserving backward compatibility.
+    """
     from .models import Limit as LimitModel
 
     parts = limit_str.split(":")
     if len(parts) < 2:
         raise click.BadParameter(
-            f"Invalid limit format: {limit_str}. Expected 'name:capacity[:burst]'"
+            f"Invalid limit format: {limit_str}. "
+            "Expected 'name:rate[/period]' or 'name:rate[/period]:burst'"
         )
 
     name = parts[0]
+    rate_period = parts[1]
+    burst_str = parts[2] if len(parts) > 2 else None
+
+    # Split rate from optional period suffix
+    if "/" in rate_period:
+        rate_str, period_str = rate_period.split("/", 1)
+    else:
+        rate_str = rate_period
+        period_str = None
+
     try:
-        capacity = int(parts[1])
-        burst = int(parts[2]) if len(parts) > 2 else capacity
+        rate = int(rate_str)
+        burst = int(burst_str) if burst_str is not None else None
     except ValueError as e:
         raise click.BadParameter(f"Invalid limit values in '{limit_str}': {e}") from e
 
-    # Default to per-minute refill
+    if period_str is not None:
+        refill_period = _parse_period(period_str)
+    else:
+        refill_period = 60  # default: per minute
+
+    capacity = burst if burst is not None else rate
     return LimitModel(
         name=name,
         capacity=capacity,
-        burst=burst,
-        refill_amount=capacity,
-        refill_period_seconds=60,
+        refill_amount=rate,
+        refill_period_seconds=refill_period,
     )
 
 
 def _format_limit(limit: Limit) -> str:
     """Format a limit for display."""
-    return f"{limit.name}: {limit.capacity:,}/min (burst: {limit.burst:,})"
+    suffix = _format_period(limit.refill_period_seconds)
+    base = f"{limit.name}: {limit.refill_amount:,}{suffix}"
+    if limit.capacity != limit.refill_amount:
+        return f"{base} (burst: {limit.capacity:,})"
+    return base
 
 
 @cli.group()
@@ -2103,8 +2150,8 @@ Examples:
     # Set TPM and RPM defaults for gpt-4
     zae-limiter resource set-defaults gpt-4 -l tpm:100000 -l rpm:1000
     \b
-    # Set limits with burst capacity
-    zae-limiter resource set-defaults claude-3 -l tpm:50000:75000
+    # Set limits with explicit period
+    zae-limiter resource set-defaults gpt-4 -l rpm:1000/min -l tph:50000/hour
 """,
 )
 @click.argument("resource_name")
@@ -2128,7 +2175,8 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
+    "Period: /sec, /min (default), /hour, /day.",
 )
 @namespace_option
 def resource_set_defaults(
@@ -2151,8 +2199,8 @@ def resource_set_defaults(
         # Set TPM and RPM defaults for gpt-4
         zae-limiter resource set-defaults gpt-4 -l tpm:100000 -l rpm:1000
 
-        # Set limits with burst capacity
-        zae-limiter resource set-defaults claude-3 -l tpm:50000:75000
+        # Set limits with explicit period
+        zae-limiter resource set-defaults gpt-4 -l rpm:1000/min -l tph:50000/hour
         ```
     """
     from .exceptions import ValidationError
@@ -2234,8 +2282,8 @@ def resource_get_defaults(
     **Sample Output:**
         ```
         Defaults for resource 'gpt-4':
-          rpm: 500/min (burst: 500)
-          tpm: 50000/min (burst: 50000)
+          rpm: 500/min
+          tpm: 50000/min
         ```
     """
     from .exceptions import ValidationError
@@ -2439,6 +2487,9 @@ Examples:
     \b
     # Set defaults with unavailability behavior
     zae-limiter system set-defaults -l tpm:10000 --on-unavailable allow
+    \b
+    # Set per-hour limits
+    zae-limiter system set-defaults -l tph:100000/hour -l rph:5000/hour
 """,
 )
 @click.option(
@@ -2461,7 +2512,8 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
+    "Period: /sec, /min (default), /hour, /day.",
 )
 @click.option(
     "--on-unavailable",
@@ -2576,8 +2628,8 @@ def system_get_defaults(
         ```
         System-wide defaults:
           Limits:
-            rpm: 1000/min (burst: 1000)
-            tpm: 100000/min (burst: 100000)
+            rpm: 1000/min
+            tpm: 100000/min
           on_unavailable: allow
         ```
     """
@@ -2891,8 +2943,8 @@ Examples:
     # Set premium user limits for gpt-4
     zae-limiter entity set-limits user-premium -r gpt-4 -l tpm:100000 -l rpm:1000
     \b
-    # Set limits with burst
-    zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000:75000
+    # Set limits for claude-3 with per-hour period
+    zae-limiter entity set-limits api-key-123 -r claude-3 -l tph:50000/hour
 """,
 )
 @click.argument("entity_id")
@@ -2923,7 +2975,8 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
+    "Period: /sec, /min (default), /hour, /day.",
 )
 @namespace_option
 def entity_set_limits(
@@ -2947,8 +3000,8 @@ def entity_set_limits(
         # Set premium user limits for gpt-4
         zae-limiter entity set-limits user-premium -r gpt-4 -l tpm:100000 -l rpm:1000
 
-        # Set limits with burst
-        zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000:75000
+        # Set limits for claude-3 with per-hour period
+        zae-limiter entity set-limits api-key-123 -r claude-3 -l tph:50000/hour
         ```
     """
     from .exceptions import ValidationError
@@ -3041,8 +3094,8 @@ def entity_get_limits(
     **Sample Output:**
         ```
         Limits for entity 'user-premium' on resource 'gpt-4':
-          rpm: 1000/min (burst: 1000)
-          tpm: 100000/min (burst: 100000)
+          rpm: 1000/min
+          tpm: 100000/min
         ```
     """
     from .exceptions import ValidationError

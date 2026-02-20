@@ -165,7 +165,6 @@ See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
     "SK": "#CONFIG",                   # or #CONFIG#{resource} for entity level
     "resource": "gpt-4",
     "l_tpm_cp": 100000,               # capacity for tpm limit
-    "l_tpm_bx": 100000,               # burst for tpm limit
     "l_tpm_ra": 100000,               # refill_amount for tpm limit
     "l_tpm_rp": 60,                   # refill_period_seconds for tpm limit
     "config_version": 1               # Atomic counter for cache invalidation
@@ -303,18 +302,6 @@ new_tokens_milli = refill.new_tokens_milli - (amount * 1000)
 ```
 
 The debt is repaid as tokens refill over time. A bucket at -1500 millitokens needs 1.5 minutes to reach 0 (at 1000 tokens/minute).
-
-### Burst Capacity
-
-Burst allows temporary exceeding of sustained rate:
-
-```python
-# Sustained: 10k tokens/minute
-# Burst: 15k tokens (one-time)
-Limit.per_minute("tpm", 10_000, burst=15_000)
-```
-
-When `burst > capacity`, users can consume up to `burst` tokens immediately, then sustain at `capacity` rate.
 
 ### Design Decisions
 
@@ -461,7 +448,7 @@ The aggregator processes DynamoDB Stream records in each batch to:
 ```
 Aggregator refill flow (per composite bucket):
 1. Aggregate tc deltas + last NewImage across stream batch
-2. For each limit: refill_bucket(tk, rf, now, bx, ra, rp)
+2. For each limit: refill_bucket(tk, rf, now, cp, ra, rp)
    +- refill_delta = new_tk - current_tk
    +- projected = new_tk after refill
    +- consumption_estimate = max(0, accumulated tc_delta)

@@ -66,7 +66,7 @@ When using stored config, configure multiple limits at setup time:
 
 ## Burst Capacity
 
-Allow temporary bursts above the sustained rate:
+Allow temporary bursts above the sustained rate by setting `burst` higher than the rate:
 
 ```python
 # Sustain 10k tokens/minute, but allow bursts up to 15k
@@ -75,7 +75,7 @@ limits = [
 ]
 ```
 
-The bucket starts full at `burst` capacity and refills at `capacity` tokens per period. See [Token Bucket Algorithm](token-bucket.md#capacity-and-burst) for details on how burst and capacity interact.
+The bucket starts full at `burst` capacity and refills at `rate` tokens per period. See [Token Bucket Algorithm](token-bucket.md#capacity-and-burst) for details on how burst and rate interact.
 
 ## Adjusting Consumption
 

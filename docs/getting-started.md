@@ -275,10 +275,10 @@ Limit.custom("requests", capacity=50, refill_amount=50, refill_period_seconds=30
 | Parameter | Description |
 |-----------|-------------|
 | `name` | Unique identifier (e.g., "rpm", "tpm") |
-| `capacity` | Tokens that refill per period (sustained rate) |
-| `burst` | Maximum bucket size (defaults to capacity) |
+| `rate` | Sustained tokens per period (positional) |
+| `burst` | Optional burst ceiling (defaults to `rate`) |
 
-See [Token Bucket Algorithm](guide/token-bucket.md) for details on how capacity, burst, and refill work together.
+See [Token Bucket Algorithm](guide/token-bucket.md) for details on how rate, burst, and refill work together.
 
 ## Handling Rate Limit Errors
 

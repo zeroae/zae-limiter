@@ -23,7 +23,7 @@ flowchart LR
     Check -->|No| Reject[Reject + retry_after]
 ```
 
-This creates a natural rate limit: requests can burst up to the bucket's capacity, but sustained traffic is limited by the refill rate.
+This creates a natural rate limit: requests can consume up to the bucket's capacity, but sustained traffic is limited by the refill rate.
 
 ## How zae-limiter Implements It
 
@@ -46,14 +46,14 @@ These modifications enable:
 
 ### Capacity and Burst
 
-Every limit has two key parameters:
-
-- **Capacity**: The sustained rate (tokens that refill per period)
-- **Burst**: The maximum bucket size (can be larger than capacity)
+Every limit has a **rate** (sustained throughput) and an optional **burst** (the bucket ceiling):
 
 ```python
-# 10,000 tokens/minute sustained, 15,000 burst
-Limit.per_minute("tpm", capacity=10_000, burst=15_000)
+# 10,000 tokens/minute sustained, bucket holds up to 10k
+Limit.per_minute("tpm", 10_000)
+
+# 10,000 tokens/minute sustained, but allow bursts up to 15k
+Limit.per_minute("tpm", 10_000, burst=15_000)
 ```
 
 ```mermaid
@@ -71,9 +71,9 @@ graph TD
     style E fill:#87CEEB
 ```
 
-**Key insight**: The bucket is larger (15k) but refills at the same rate (10k/minute). After fully depleting the burst, it takes **1.5 minutes** to return to full capacity—not 1 minute.
+**Key insight**: When `burst` is set, the bucket is larger than the refill rate. After fully depleting a 15k burst bucket that refills at 10k/minute, it takes **1.5 minutes** to return to full capacity. Without `burst`, the bucket ceiling equals the rate.
 
-**When to use burst > capacity:**
+**When to use burst:**
 
 - **Startup surge**: Handle initial traffic before steady state
 - **Bursty workloads**: Allow temporary spikes followed by quiet periods
@@ -192,9 +192,9 @@ except RateLimitExceeded as e:
 
 ### Choosing the right limits
 
-| Scenario | Capacity | Burst | Rationale |
-|----------|----------|-------|-----------|
-| Steady API traffic | 100 rpm | 100 | No bursting needed |
+| Scenario | Rate | Burst | Rationale |
+|----------|------|-------|-----------|
+| Steady API traffic | 100 rpm | -- | No bursting needed |
 | Bursty batch jobs | 100 rpm | 500 | Allow 5x burst, then sustain |
 | LLM tokens | 10k tpm | 15k | Handle variable response sizes |
 | Database queries | 1k rows/min | 5k | Allow large result sets occasionally |

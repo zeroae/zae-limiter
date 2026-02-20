@@ -1143,7 +1143,7 @@ class SyncRateLimiter:
         for limit in resolved_limits:
             state = self._repository.get_bucket(entity_id, resource, limit.name)
             if state is None:
-                result[limit.name] = limit.burst
+                result[limit.name] = limit.capacity
             else:
                 result[limit.name] = calculate_available(state, now_ms)
         return result

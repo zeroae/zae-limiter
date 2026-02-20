@@ -248,8 +248,8 @@ for shard in range(num_shards):
     await limiter.set_limits(
         parent_id,
         [
-            Limit.per_minute("rpm", capacity=10000),
-            Limit.per_minute("tpm", capacity=100000),
+            Limit.per_minute("rpm", 10000),
+            Limit.per_minute("tpm", 100000),
         ],
         resource="llm-api"
     )
@@ -447,7 +447,7 @@ Each retry adds ~10-30ms latency.
 
 ```python
 # Strategy 1: Higher capacity (reduces contention per request)
-rpm_limit = Limit.per_minute("rpm", capacity=1000)
+rpm_limit = Limit.per_minute("rpm", 1000)
 
 # Strategy 2: Distribute load across entities
 # Instead of one shared entity, use sharded entities:

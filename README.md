@@ -41,8 +41,7 @@ sync_limiter = SyncRateLimiter(repository=sync_repo)
 # Define default limits (can be overridden per-entity)
 default_limits = [
     Limit.per_minute("rpm", 100),
-    # Token bucket with burst capacity
-    Limit.per_minute("tpm", 10_000, burst=50_000),
+    Limit.per_minute("tpm", 10_000),
 ]
 
 async with limiter.acquire(

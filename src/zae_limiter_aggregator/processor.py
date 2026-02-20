@@ -13,7 +13,6 @@ from botocore.exceptions import ClientError
 from zae_limiter.bucket import refill_bucket
 from zae_limiter.schema import (
     BUCKET_ATTR_PREFIX,
-    BUCKET_FIELD_BX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
@@ -94,8 +93,7 @@ class LimitRefillInfo:
 
     tc_delta: int  # accumulated tc delta (millitokens)
     tk_milli: int  # last NewImage tokens (millitokens)
-    cp_milli: int  # capacity (millitokens)
-    bx_milli: int  # burst (millitokens)
+    cp_milli: int  # capacity / ceiling (millitokens)
     ra_milli: int  # refill_amount (millitokens)
     rp_ms: int  # refill_period (milliseconds)
 
@@ -241,8 +239,7 @@ class ParsedBucketLimit:
 
     tc_delta: int  # new_tc - old_tc (millitokens)
     tk_milli: int  # tokens from NewImage
-    cp_milli: int  # capacity from NewImage
-    bx_milli: int  # burst from NewImage
+    cp_milli: int  # capacity / ceiling from NewImage
     ra_milli: int  # refill_amount from NewImage
     rp_ms: int  # refill_period from NewImage
 
@@ -330,7 +327,6 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
 
         tk_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_TK}"
         cp_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_CP}"
-        bx_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_BX}"
         ra_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_RA}"
         rp_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_RP}"
 
@@ -338,7 +334,6 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             tc_delta=tc_delta,
             tk_milli=int(new_image.get(tk_attr, {}).get("N", "0")),
             cp_milli=int(new_image.get(cp_attr, {}).get("N", "0")),
-            bx_milli=int(new_image.get(bx_attr, {}).get("N", "0")),
             ra_milli=int(new_image.get(ra_attr, {}).get("N", "0")),
             rp_ms=int(new_image.get(rp_attr, {}).get("N", "0")),
         )
@@ -399,7 +394,7 @@ def aggregate_bucket_states(
 
     For each (namespace_id, entity_id, resource) composite bucket:
     - Accumulates ``tc`` deltas across all events per limit
-    - Keeps the last NewImage's bucket fields (tk, cp, bx, ra, rp) per limit
+    - Keeps the last NewImage's bucket fields (tk, cp, ra, rp) per limit
     - Keeps the last shared ``rf`` timestamp (optimistic lock target)
 
     Args:
@@ -438,7 +433,6 @@ def aggregate_bucket_states(
                 existing.tc_delta += parsed_limit.tc_delta
                 existing.tk_milli = parsed_limit.tk_milli
                 existing.cp_milli = parsed_limit.cp_milli
-                existing.bx_milli = parsed_limit.bx_milli
                 existing.ra_milli = parsed_limit.ra_milli
                 existing.rp_ms = parsed_limit.rp_ms
             else:
@@ -446,7 +440,6 @@ def aggregate_bucket_states(
                     tc_delta=parsed_limit.tc_delta,
                     tk_milli=parsed_limit.tk_milli,
                     cp_milli=parsed_limit.cp_milli,
-                    bx_milli=parsed_limit.bx_milli,
                     ra_milli=parsed_limit.ra_milli,
                     rp_ms=parsed_limit.rp_ms,
                 )
@@ -494,7 +487,7 @@ def try_refill_bucket(
             tokens_milli=info.tk_milli,
             last_refill_ms=state.rf_ms,
             now_ms=now_ms,
-            burst_milli=info.bx_milli,
+            capacity_milli=info.cp_milli,
             refill_amount_milli=info.ra_milli,
             refill_period_ms=info.rp_ms,
         )

@@ -831,7 +831,7 @@ class TestSpeculativeConsume:
         repo = test_repo
         await repo.create_entity("spec-fields")
 
-        limit = Limit.per_minute("rpm", 100, burst=150)
+        limit = Limit.per_minute("rpm", 150)
         now_ms = int(time.time() * 1000)
         state = BucketState.from_limit("spec-fields", "api", limit, now_ms)
         put_item = repo.build_composite_create("spec-fields", "api", [state], now_ms)
@@ -848,11 +848,10 @@ class TestSpeculativeConsume:
         assert bucket.entity_id == "spec-fields"
         assert bucket.resource == "api"
         assert bucket.limit_name == "rpm"
-        assert bucket.capacity_milli == 100_000
-        assert bucket.burst_milli == 150_000
-        assert bucket.refill_amount_milli == 100_000
+        assert bucket.capacity_milli == 150_000
+        assert bucket.refill_amount_milli == 150_000
         assert bucket.refill_period_ms == 60_000
-        assert bucket.tokens_milli == 150_000 - 5_000  # burst - consumed
+        assert bucket.tokens_milli == 150_000 - 5_000  # capacity - consumed
 
     @pytest.mark.asyncio
     async def test_speculative_drain_then_fail(self, test_repo):

@@ -890,7 +890,7 @@ class TestAggregateBucketStates:
         """Helper to create a composite bucket stream record with full config.
 
         Args:
-            limits: Dict of limit_name -> {old_tc, new_tc, tk, cp, bx, ra, rp}
+            limits: Dict of limit_name -> {old_tc, new_tc, tk, cp, ra, rp}
         """
         if limits is None:
             limits = {
@@ -899,7 +899,6 @@ class TestAggregateBucketStates:
                     "new_tc": 5000000,
                     "tk": 95000000,
                     "cp": 100000000,
-                    "bx": 100000000,
                     "ra": 100000000,
                     "rp": 60000,
                 },
@@ -923,7 +922,7 @@ class TestAggregateBucketStates:
                 new_image[f"b_{name}_tc"] = {"N": str(fields["new_tc"])}
             if "old_tc" in fields:
                 old_image[f"b_{name}_tc"] = {"N": str(fields["old_tc"])}
-            for attr in ("tk", "cp", "bx", "ra", "rp"):
+            for attr in ("tk", "cp", "ra", "rp"):
                 if attr in fields:
                     new_image[f"b_{name}_{attr}"] = {"N": str(fields[attr])}
 
@@ -961,7 +960,6 @@ class TestAggregateBucketStates:
                         "new_tc": 5000000,
                         "tk": 95000000,
                         "cp": 100000000,
-                        "bx": 100000000,
                         "ra": 100000000,
                         "rp": 60000,
                     },
@@ -970,7 +968,6 @@ class TestAggregateBucketStates:
                         "new_tc": 1000,
                         "tk": 999000,
                         "cp": 1000000,
-                        "bx": 1000000,
                         "ra": 1000000,
                         "rp": 60000,
                     },
@@ -996,7 +993,6 @@ class TestAggregateBucketStates:
                         "new_tc": 2000000,
                         "tk": 98000000,
                         "cp": 100000000,
-                        "bx": 100000000,
                         "ra": 100000000,
                         "rp": 60000,
                     }
@@ -1010,7 +1006,6 @@ class TestAggregateBucketStates:
                         "new_tc": 5000000,
                         "tk": 95000000,
                         "cp": 100000000,
-                        "bx": 100000000,
                         "ra": 100000000,
                         "rp": 60000,
                     }
@@ -1058,7 +1053,6 @@ class TestAggregateBucketStates:
                     "tpm": {
                         "tk": 95000000,
                         "cp": 100000000,
-                        "bx": 100000000,
                         "ra": 100000000,
                         "rp": 60000,
                         # no old_tc or new_tc
@@ -1089,7 +1083,6 @@ class TestTryRefillBucket:
                     tc_delta=5000000,
                     tk_milli=50000000,  # 50% of capacity
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,  # 100k tokens/min
                     rp_ms=60000,
                 ),
@@ -1113,7 +1106,6 @@ class TestTryRefillBucket:
                     tc_delta=20000000,  # consumed 20k tokens this window
                     tk_milli=5000000,  # only 5k tokens left
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,  # 100k/min refill
                     rp_ms=60000,
                 ),
@@ -1141,7 +1133,6 @@ class TestTryRefillBucket:
                     tc_delta=1000000,  # consumed 1k tokens
                     tk_milli=90000000,  # 90k tokens remaining
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,
                     rp_ms=60000,
                 ),
@@ -1179,7 +1170,6 @@ class TestTryRefillBucket:
                     tc_delta=20000000,
                     tk_milli=5000000,
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,
                     rp_ms=60000,
                 ),
@@ -1206,7 +1196,6 @@ class TestTryRefillBucket:
                     tc_delta=20000000,
                     tk_milli=5000000,
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,
                     rp_ms=60000,
                 ),
@@ -1237,7 +1226,6 @@ class TestTryRefillBucket:
                     tc_delta=20000000,
                     tk_milli=5000000,
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,
                     rp_ms=60000,
                 ),
@@ -1245,7 +1233,6 @@ class TestTryRefillBucket:
                     tc_delta=200,
                     tk_milli=10,
                     cp_milli=1000,
-                    bx_milli=1000,
                     ra_milli=1000,
                     rp_ms=60000,
                 ),
@@ -1274,7 +1261,6 @@ class TestTryRefillBucket:
                     tc_delta=20000000,
                     tk_milli=5000000,
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,
                     rp_ms=60000,
                 ),
@@ -1304,7 +1290,6 @@ class TestTryRefillBucket:
                     tc_delta=-5000000,  # tokens were returned
                     tk_milli=50000000,
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,
                     rp_ms=60000,
                 ),
@@ -1336,7 +1321,6 @@ class TestProcessStreamRecordsRefill:
                     "new_tc": 5000000,
                     "tk": 95000000,
                     "cp": 100000000,
-                    "bx": 100000000,
                     "ra": 100000000,
                     "rp": 60000,
                 },
@@ -1360,7 +1344,7 @@ class TestProcessStreamRecordsRefill:
                 new_image[f"b_{name}_tc"] = {"N": str(fields["new_tc"])}
             if "old_tc" in fields:
                 old_image[f"b_{name}_tc"] = {"N": str(fields["old_tc"])}
-            for attr in ("tk", "cp", "bx", "ra", "rp"):
+            for attr in ("tk", "cp", "ra", "rp"):
                 if attr in fields:
                     new_image[f"b_{name}_{attr}"] = {"N": str(fields[attr])}
 
@@ -1381,7 +1365,6 @@ class TestProcessStreamRecordsRefill:
                         "new_tc": 20000000,
                         "tk": 5000000,
                         "cp": 100000000,
-                        "bx": 100000000,
                         "ra": 100000000,
                         "rp": 60000,
                     },
@@ -1412,7 +1395,6 @@ class TestProcessStreamRecordsRefill:
                         "new_tc": 20000000,
                         "tk": 5000000,
                         "cp": 100000000,
-                        "bx": 100000000,
                         "ra": 100000000,
                         "rp": 60000,
                     },
@@ -1576,7 +1558,6 @@ class TestNamespaceExtraction:
                     tc_delta=20000000,
                     tk_milli=5000000,
                     cp_milli=100000000,
-                    bx_milli=100000000,
                     ra_milli=100000000,
                     rp_ms=60000,
                 ),

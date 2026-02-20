@@ -15,7 +15,6 @@ import boto3
 import pytest
 
 from zae_limiter.schema import (
-    BUCKET_FIELD_BX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
@@ -65,7 +64,7 @@ def _seed_bucket(table, entity_id: str, resource: str, limits: dict, rf_ms: int)
         table: boto3 Table resource
         entity_id: Entity ID
         resource: Resource name
-        limits: Dict of limit_name -> {tk, cp, bx, ra, rp, tc} in millitokens/ms
+        limits: Dict of limit_name -> {tk, cp, ra, rp, tc} in millitokens/ms
         rf_ms: Shared refill timestamp
     """
     item = {
@@ -77,7 +76,6 @@ def _seed_bucket(table, entity_id: str, resource: str, limits: dict, rf_ms: int)
     for limit_name, fields in limits.items():
         item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = fields["tk"]
         item[bucket_attr(limit_name, BUCKET_FIELD_CP)] = fields["cp"]
-        item[bucket_attr(limit_name, BUCKET_FIELD_BX)] = fields["bx"]
         item[bucket_attr(limit_name, BUCKET_FIELD_RA)] = fields["ra"]
         item[bucket_attr(limit_name, BUCKET_FIELD_RP)] = fields["rp"]
         item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = fields["tc"]
@@ -108,8 +106,8 @@ def _make_stream_record(
     Args:
         entity_id: Entity ID
         resource: Resource name
-        limits_old: Dict of limit_name -> {tk, cp, bx, ra, rp, tc} for OldImage
-        limits_new: Dict of limit_name -> {tk, cp, bx, ra, rp, tc} for NewImage
+        limits_old: Dict of limit_name -> {tk, cp, ra, rp, tc} for OldImage
+        limits_new: Dict of limit_name -> {tk, cp, ra, rp, tc} for NewImage
         rf_ms: Shared refill timestamp in NewImage
     """
 
@@ -123,7 +121,6 @@ def _make_stream_record(
         for limit_name, fields in limits.items():
             image[bucket_attr(limit_name, BUCKET_FIELD_TK)] = {"N": str(fields["tk"])}
             image[bucket_attr(limit_name, BUCKET_FIELD_CP)] = {"N": str(fields["cp"])}
-            image[bucket_attr(limit_name, BUCKET_FIELD_BX)] = {"N": str(fields["bx"])}
             image[bucket_attr(limit_name, BUCKET_FIELD_RA)] = {"N": str(fields["ra"])}
             image[bucket_attr(limit_name, BUCKET_FIELD_RP)] = {"N": str(fields["rp"])}
             image[bucket_attr(limit_name, BUCKET_FIELD_TC)] = {"N": str(fields["tc"])}
@@ -159,7 +156,6 @@ class TestTryRefillBucketIntegration:
                 "tpm": {
                     "tk": 0,  # depleted
                     "cp": 10_000_000,  # 10k capacity
-                    "bx": 10_000_000,  # 10k burst
                     "ra": 10_000_000,  # 10k refill amount
                     "rp": 60_000,  # 60s period
                     "tc": 10_000_000,  # consumed 10k
@@ -179,7 +175,6 @@ class TestTryRefillBucketIntegration:
                     tc_delta=10_000_000,  # consumed 10k in batch
                     tk_milli=0,
                     cp_milli=10_000_000,
-                    bx_milli=10_000_000,
                     ra_milli=10_000_000,
                     rp_ms=60_000,
                 ),
@@ -211,7 +206,6 @@ class TestTryRefillBucketIntegration:
                 "tpm": {
                     "tk": 9_000_000,  # 9k tokens remaining
                     "cp": 10_000_000,
-                    "bx": 10_000_000,
                     "ra": 10_000_000,
                     "rp": 60_000,
                     "tc": 1_000_000,
@@ -230,7 +224,6 @@ class TestTryRefillBucketIntegration:
                     tc_delta=1_000_000,  # only consumed 1k
                     tk_milli=9_000_000,  # plenty left
                     cp_milli=10_000_000,
-                    bx_milli=10_000_000,
                     ra_milli=10_000_000,
                     rp_ms=60_000,
                 ),
@@ -260,7 +253,6 @@ class TestTryRefillBucketIntegration:
                 "tpm": {
                     "tk": 0,
                     "cp": 10_000_000,
-                    "bx": 10_000_000,
                     "ra": 10_000_000,
                     "rp": 60_000,
                     "tc": 10_000_000,
@@ -279,7 +271,6 @@ class TestTryRefillBucketIntegration:
                     tc_delta=10_000_000,
                     tk_milli=0,
                     cp_milli=10_000_000,
-                    bx_milli=10_000_000,
                     ra_milli=10_000_000,
                     rp_ms=60_000,
                 ),
@@ -314,7 +305,6 @@ class TestTryRefillBucketIntegration:
                 "tpm": {
                     "tk": initial_tk,
                     "cp": 10_000_000,
-                    "bx": 10_000_000,
                     "ra": 10_000_000,
                     "rp": 60_000,
                     "tc": 9_500_000,
@@ -348,7 +338,6 @@ class TestTryRefillBucketIntegration:
                     tc_delta=10_000_000,  # high consumption rate
                     tk_milli=initial_tk,  # from stream snapshot (before concurrent consume)
                     cp_milli=10_000_000,
-                    bx_milli=10_000_000,
                     ra_milli=10_000_000,
                     rp_ms=60_000,
                 ),
@@ -382,7 +371,6 @@ class TestTryRefillBucketIntegration:
                 "tpm": {
                     "tk": 0,
                     "cp": 10_000_000,
-                    "bx": 10_000_000,
                     "ra": 10_000_000,
                     "rp": 60_000,
                     "tc": 10_000_000,
@@ -390,7 +378,6 @@ class TestTryRefillBucketIntegration:
                 "rpm": {
                     "tk": 0,
                     "cp": 1_000_000,
-                    "bx": 1_000_000,
                     "ra": 1_000_000,
                     "rp": 60_000,
                     "tc": 1_000_000,
@@ -409,7 +396,6 @@ class TestTryRefillBucketIntegration:
                     tc_delta=10_000_000,
                     tk_milli=0,
                     cp_milli=10_000_000,
-                    bx_milli=10_000_000,
                     ra_milli=10_000_000,
                     rp_ms=60_000,
                 ),
@@ -417,7 +403,6 @@ class TestTryRefillBucketIntegration:
                     tc_delta=1_000_000,
                     tk_milli=0,
                     cp_milli=1_000_000,
-                    bx_milli=1_000_000,
                     ra_milli=1_000_000,
                     rp_ms=60_000,
                 ),
@@ -452,7 +437,6 @@ class TestAggregateAndRefillIntegration:
                 "tpm": {
                     "tk": 0,
                     "cp": 10_000_000,
-                    "bx": 10_000_000,
                     "ra": 10_000_000,
                     "rp": 60_000,
                     "tc": 20_000_000,  # consumed 20k total
@@ -470,7 +454,6 @@ class TestAggregateAndRefillIntegration:
                     "tpm": {
                         "tk": 5_000_000,
                         "cp": 10_000_000,
-                        "bx": 10_000_000,
                         "ra": 10_000_000,
                         "rp": 60_000,
                         "tc": 15_000_000,
@@ -480,7 +463,6 @@ class TestAggregateAndRefillIntegration:
                     "tpm": {
                         "tk": 2_000_000,
                         "cp": 10_000_000,
-                        "bx": 10_000_000,
                         "ra": 10_000_000,
                         "rp": 60_000,
                         "tc": 18_000_000,  # consumed 3k
@@ -495,7 +477,6 @@ class TestAggregateAndRefillIntegration:
                     "tpm": {
                         "tk": 2_000_000,
                         "cp": 10_000_000,
-                        "bx": 10_000_000,
                         "ra": 10_000_000,
                         "rp": 60_000,
                         "tc": 18_000_000,
@@ -505,7 +486,6 @@ class TestAggregateAndRefillIntegration:
                     "tpm": {
                         "tk": 0,
                         "cp": 10_000_000,
-                        "bx": 10_000_000,
                         "ra": 10_000_000,
                         "rp": 60_000,
                         "tc": 20_000_000,  # consumed 2k more = 5k total

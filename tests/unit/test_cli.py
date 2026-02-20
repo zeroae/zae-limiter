@@ -2989,13 +2989,13 @@ class TestResourceCommands:
         mock_repo_class.open = AsyncMock(return_value=mock_repo)
 
         result = runner.invoke(
-            cli, ["resource", "set-defaults", "gpt-4", "-l", "tpm:10000", "-l", "rpm:500:1000"]
+            cli, ["resource", "set-defaults", "gpt-4", "-l", "tpm:10000", "-l", "rpm:500"]
         )
 
         assert result.exit_code == 0
         assert "Set 2 default(s) for resource 'gpt-4'" in result.output
-        assert "tpm: 10,000/min (burst: 10,000)" in result.output
-        assert "rpm: 500/min (burst: 1,000)" in result.output
+        assert "tpm: 10,000/min" in result.output
+        assert "rpm: 500/min" in result.output
 
         # Verify repository was called correctly
         mock_repo.set_resource_defaults.assert_called_once()
@@ -3007,7 +3007,6 @@ class TestResourceCommands:
         assert limits[0].capacity == 10000
         assert limits[1].name == "rpm"
         assert limits[1].capacity == 500
-        assert limits[1].burst == 1000
 
     def test_resource_set_invalid_limit_format(self, runner: CliRunner) -> None:
         """Test resource set-defaults with invalid limit format."""
@@ -3052,14 +3051,12 @@ class TestResourceCommands:
             Limit(
                 name="tpm",
                 capacity=10000,
-                burst=10000,
                 refill_amount=10000,
                 refill_period_seconds=60,
             ),
             Limit(
                 name="rpm",
                 capacity=500,
-                burst=1000,
                 refill_amount=500,
                 refill_period_seconds=60,
             ),
@@ -3075,8 +3072,8 @@ class TestResourceCommands:
 
         assert result.exit_code == 0
         assert "Defaults for resource 'gpt-4'" in result.output
-        assert "tpm: 10,000/min (burst: 10,000)" in result.output
-        assert "rpm: 500/min (burst: 1,000)" in result.output
+        assert "tpm: 10,000/min" in result.output
+        assert "rpm: 500/min" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_get_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -3238,13 +3235,13 @@ class TestSystemCommands:
 
         result = runner.invoke(
             cli,
-            ["system", "set-defaults", "-l", "tpm:10000", "-l", "rpm:500:1000"],
+            ["system", "set-defaults", "-l", "tpm:10000", "-l", "rpm:500"],
         )
 
         assert result.exit_code == 0
         assert "Set 2 system-wide default(s)" in result.output
-        assert "tpm: 10,000/min (burst: 10,000)" in result.output
-        assert "rpm: 500/min (burst: 1,000)" in result.output
+        assert "tpm: 10,000/min" in result.output
+        assert "rpm: 500/min" in result.output
 
         # Verify repository was called correctly
         mock_repo.set_system_defaults.assert_called_once()
@@ -3322,14 +3319,12 @@ class TestSystemCommands:
             Limit(
                 name="tpm",
                 capacity=10000,
-                burst=10000,
                 refill_amount=10000,
                 refill_period_seconds=60,
             ),
             Limit(
                 name="rpm",
                 capacity=500,
-                burst=1000,
                 refill_amount=500,
                 refill_period_seconds=60,
             ),
@@ -3346,8 +3341,8 @@ class TestSystemCommands:
 
         assert result.exit_code == 0
         assert "System-wide defaults" in result.output
-        assert "tpm: 10,000/min (burst: 10,000)" in result.output
-        assert "rpm: 500/min (burst: 1,000)" in result.output
+        assert "tpm: 10,000/min" in result.output
+        assert "rpm: 500/min" in result.output
         assert "on_unavailable: allow" in result.output
 
     @patch("zae_limiter.repository.Repository")
@@ -3467,20 +3462,7 @@ class TestLimitParsing:
 
         assert limit.name == "tpm"
         assert limit.capacity == 10000
-        assert limit.burst == 10000  # Default to capacity
         assert limit.refill_amount == 10000
-        assert limit.refill_period_seconds == 60
-
-    def test_parse_limit_with_burst(self) -> None:
-        """Test parsing limit with name:capacity:burst format."""
-        from zae_limiter.cli import _parse_limit
-
-        limit = _parse_limit("rpm:500:1000")
-
-        assert limit.name == "rpm"
-        assert limit.capacity == 500
-        assert limit.burst == 1000
-        assert limit.refill_amount == 500
         assert limit.refill_period_seconds == 60
 
     def test_parse_limit_invalid_format(self) -> None:
@@ -3505,17 +3487,6 @@ class TestLimitParsing:
 
         assert "Invalid limit values" in str(exc_info.value)
 
-    def test_parse_limit_invalid_burst(self) -> None:
-        """Test parsing limit with non-numeric burst raises error."""
-        import click
-
-        from zae_limiter.cli import _parse_limit
-
-        with pytest.raises(click.BadParameter) as exc_info:
-            _parse_limit("tpm:100:abc")
-
-        assert "Invalid limit values" in str(exc_info.value)
-
     def test_format_limit(self) -> None:
         """Test formatting a limit for display."""
         from zae_limiter.cli import _format_limit
@@ -3524,31 +3495,13 @@ class TestLimitParsing:
         limit = Limit(
             name="tpm",
             capacity=10000,
-            burst=15000,
             refill_amount=10000,
             refill_period_seconds=60,
         )
 
         formatted = _format_limit(limit)
 
-        assert formatted == "tpm: 10,000/min (burst: 15,000)"
-
-    def test_format_limit_same_burst(self) -> None:
-        """Test formatting a limit where burst equals capacity."""
-        from zae_limiter.cli import _format_limit
-        from zae_limiter.models import Limit
-
-        limit = Limit(
-            name="rpm",
-            capacity=500,
-            burst=500,
-            refill_amount=500,
-            refill_period_seconds=60,
-        )
-
-        formatted = _format_limit(limit)
-
-        assert formatted == "rpm: 500/min (burst: 500)"
+        assert formatted == "tpm: 10,000/min"
 
     def test_format_limit_large_numbers(self) -> None:
         """Test formatting a limit with large numbers includes commas."""
@@ -3558,14 +3511,221 @@ class TestLimitParsing:
         limit = Limit(
             name="tpm",
             capacity=1000000,
-            burst=2000000,
             refill_amount=1000000,
             refill_period_seconds=60,
         )
 
         formatted = _format_limit(limit)
 
-        assert formatted == "tpm: 1,000,000/min (burst: 2,000,000)"
+        assert formatted == "tpm: 1,000,000/min"
+
+    def test_parse_limit_with_burst(self) -> None:
+        """Test parsing limit with name:rate:burst format."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("tpm:10000:15000")
+
+        assert limit.name == "tpm"
+        assert limit.capacity == 15000
+        assert limit.refill_amount == 10000
+        assert limit.refill_period_seconds == 60
+
+    def test_format_limit_with_burst(self) -> None:
+        """Test formatting a limit with burst (capacity != refill_amount)."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(
+            name="tpm",
+            capacity=15000,
+            refill_amount=10000,
+            refill_period_seconds=60,
+        )
+
+        formatted = _format_limit(limit)
+
+        assert formatted == "tpm: 10,000/min (burst: 15,000)"
+
+    # --- Period parsing tests ---
+
+    def test_parse_limit_per_second(self) -> None:
+        """Test parsing limit with /sec period."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("rps:50/sec")
+
+        assert limit.name == "rps"
+        assert limit.capacity == 50
+        assert limit.refill_amount == 50
+        assert limit.refill_period_seconds == 1
+
+    def test_parse_limit_per_hour(self) -> None:
+        """Test parsing limit with /hour period."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("tph:100000/hour")
+
+        assert limit.name == "tph"
+        assert limit.capacity == 100000
+        assert limit.refill_amount == 100000
+        assert limit.refill_period_seconds == 3600
+
+    def test_parse_limit_per_day(self) -> None:
+        """Test parsing limit with /day period."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("rpd:1000000/day")
+
+        assert limit.name == "rpd"
+        assert limit.capacity == 1000000
+        assert limit.refill_amount == 1000000
+        assert limit.refill_period_seconds == 86400
+
+    def test_parse_limit_explicit_per_minute(self) -> None:
+        """Test parsing limit with explicit /min period matches default."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("tpm:10000/min")
+
+        assert limit.name == "tpm"
+        assert limit.capacity == 10000
+        assert limit.refill_amount == 10000
+        assert limit.refill_period_seconds == 60
+
+    def test_parse_limit_per_hour_with_burst(self) -> None:
+        """Test parsing limit with /hour period and burst."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("tph:100000/hour:150000")
+
+        assert limit.name == "tph"
+        assert limit.capacity == 150000
+        assert limit.refill_amount == 100000
+        assert limit.refill_period_seconds == 3600
+
+    def test_parse_limit_multiplied_period(self) -> None:
+        """Test parsing limit with multiplied period like /5min."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("rpm:100/5min")
+
+        assert limit.name == "rpm"
+        assert limit.capacity == 100
+        assert limit.refill_amount == 100
+        assert limit.refill_period_seconds == 300
+
+    def test_parse_limit_invalid_period(self) -> None:
+        """Test parsing limit with invalid period raises error."""
+        import click
+
+        from zae_limiter.cli import _parse_limit
+
+        with pytest.raises(click.BadParameter) as exc_info:
+            _parse_limit("rpm:100/week")
+
+        assert "Invalid period" in str(exc_info.value)
+
+    # --- Period formatting tests ---
+
+    def test_format_limit_per_second(self) -> None:
+        """Test formatting a per-second limit."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(name="rps", capacity=50, refill_amount=50, refill_period_seconds=1)
+        assert _format_limit(limit) == "rps: 50/sec"
+
+    def test_format_limit_per_hour(self) -> None:
+        """Test formatting a per-hour limit."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(name="tph", capacity=100000, refill_amount=100000, refill_period_seconds=3600)
+        assert _format_limit(limit) == "tph: 100,000/hour"
+
+    def test_format_limit_per_day(self) -> None:
+        """Test formatting a per-day limit."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(
+            name="rpd", capacity=1000000, refill_amount=1000000, refill_period_seconds=86400
+        )
+        assert _format_limit(limit) == "rpd: 1,000,000/day"
+
+    def test_format_limit_multiplied_period(self) -> None:
+        """Test formatting a limit with non-standard period like 5min."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(name="rpm", capacity=100, refill_amount=100, refill_period_seconds=300)
+        assert _format_limit(limit) == "rpm: 100/5min"
+
+    # --- CLI invocation with period ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_set_with_mixed_periods(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test resource set-defaults with limits using different periods."""
+        mock_repo = Mock()
+        mock_repo.set_resource_defaults = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(
+            cli,
+            ["resource", "set-defaults", "gpt-4", "-l", "rpm:1000/min", "-l", "tph:50000/hour"],
+        )
+
+        assert result.exit_code == 0
+        assert "Set 2 default(s) for resource 'gpt-4'" in result.output
+        assert "rpm: 1,000/min" in result.output
+        assert "tph: 50,000/hour" in result.output
+        limits = mock_repo.set_resource_defaults.call_args[0][1]
+        assert limits[0].refill_period_seconds == 60
+        assert limits[1].refill_period_seconds == 3600
+
+    @patch("zae_limiter.repository.Repository")
+    def test_system_set_with_per_hour_limits(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test system set-defaults with per-hour limits."""
+        mock_repo = Mock()
+        mock_repo.set_system_defaults = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(
+            cli,
+            ["system", "set-defaults", "-l", "tph:100000/hour"],
+        )
+
+        assert result.exit_code == 0
+        assert "tph: 100,000/hour" in result.output
+        limits = mock_repo.set_system_defaults.call_args[0][0]
+        assert limits[0].refill_period_seconds == 3600
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_with_per_day_limit(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity set-limits with per-day limit."""
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(
+            cli,
+            ["entity", "set-limits", "user-123", "-r", "gpt-4", "-l", "rpd:10000/day"],
+        )
+
+        assert result.exit_code == 0
+        assert "rpd: 10,000/day" in result.output
+        limits = mock_repo.set_limits.call_args[0][1]
+        assert limits[0].refill_period_seconds == 86400
 
 
 class TestResourceCommandsEdgeCases:
@@ -3973,15 +4133,15 @@ class TestEntityCommands:
                 "-l",
                 "tpm:10000",
                 "-l",
-                "rpm:500:1000",
+                "rpm:500",
             ],
         )
 
         assert result.exit_code == 0
         assert "Set 2 limit(s) for entity 'user-123'" in result.output
         assert "gpt-4" in result.output
-        assert "tpm: 10,000/min (burst: 10,000)" in result.output
-        assert "rpm: 500/min (burst: 1,000)" in result.output
+        assert "tpm: 10,000/min" in result.output
+        assert "rpm: 500/min" in result.output
 
         # Verify repository was called correctly
         mock_repo.set_limits.assert_called_once()
@@ -3993,7 +4153,6 @@ class TestEntityCommands:
         assert limits[0].capacity == 10000
         assert limits[1].name == "rpm"
         assert limits[1].capacity == 500
-        assert limits[1].burst == 1000
         assert call_args[1]["resource"] == "gpt-4"
 
     def test_entity_set_limits_invalid_limit_format(self, runner: CliRunner) -> None:
@@ -4065,14 +4224,12 @@ class TestEntityCommands:
             Limit(
                 name="tpm",
                 capacity=10000,
-                burst=10000,
                 refill_amount=10000,
                 refill_period_seconds=60,
             ),
             Limit(
                 name="rpm",
                 capacity=500,
-                burst=1000,
                 refill_amount=500,
                 refill_period_seconds=60,
             ),
@@ -4089,8 +4246,8 @@ class TestEntityCommands:
         assert result.exit_code == 0
         assert "Limits for entity 'user-123'" in result.output
         assert "gpt-4" in result.output
-        assert "tpm: 10,000/min (burst: 10,000)" in result.output
-        assert "rpm: 500/min (burst: 1,000)" in result.output
+        assert "tpm: 10,000/min" in result.output
+        assert "rpm: 500/min" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_entity_get_limits_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
