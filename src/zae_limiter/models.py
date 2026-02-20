@@ -207,13 +207,23 @@ class Limit:
     def per_second(
         cls,
         name: str,
-        capacity: int,
+        rate: int,
+        burst: int | None = None,
     ) -> "Limit":
-        """Create a limit that refills `capacity` tokens per second."""
+        """Create a limit that refills ``rate`` tokens per second.
+
+        Args:
+            name: Limit name (e.g., "rps")
+            rate: Sustained tokens per second (also the refill amount)
+            burst: Optional burst ceiling. When set, ``capacity`` is
+                ``burst`` and ``refill_amount`` is ``rate``, allowing
+                temporary spikes above the sustained rate.
+        """
+        capacity = burst if burst is not None else rate
         return cls(
             name=name,
             capacity=capacity,
-            refill_amount=capacity,
+            refill_amount=rate,
             refill_period_seconds=1,
         )
 
@@ -221,13 +231,23 @@ class Limit:
     def per_minute(
         cls,
         name: str,
-        capacity: int,
+        rate: int,
+        burst: int | None = None,
     ) -> "Limit":
-        """Create a limit that refills `capacity` tokens per minute."""
+        """Create a limit that refills ``rate`` tokens per minute.
+
+        Args:
+            name: Limit name (e.g., "rpm", "tpm")
+            rate: Sustained tokens per minute (also the refill amount)
+            burst: Optional burst ceiling. When set, ``capacity`` is
+                ``burst`` and ``refill_amount`` is ``rate``, allowing
+                temporary spikes above the sustained rate.
+        """
+        capacity = burst if burst is not None else rate
         return cls(
             name=name,
             capacity=capacity,
-            refill_amount=capacity,
+            refill_amount=rate,
             refill_period_seconds=60,
         )
 
@@ -235,13 +255,23 @@ class Limit:
     def per_hour(
         cls,
         name: str,
-        capacity: int,
+        rate: int,
+        burst: int | None = None,
     ) -> "Limit":
-        """Create a limit that refills `capacity` tokens per hour."""
+        """Create a limit that refills ``rate`` tokens per hour.
+
+        Args:
+            name: Limit name (e.g., "rph")
+            rate: Sustained tokens per hour (also the refill amount)
+            burst: Optional burst ceiling. When set, ``capacity`` is
+                ``burst`` and ``refill_amount`` is ``rate``, allowing
+                temporary spikes above the sustained rate.
+        """
+        capacity = burst if burst is not None else rate
         return cls(
             name=name,
             capacity=capacity,
-            refill_amount=capacity,
+            refill_amount=rate,
             refill_period_seconds=3600,
         )
 
@@ -249,13 +279,23 @@ class Limit:
     def per_day(
         cls,
         name: str,
-        capacity: int,
+        rate: int,
+        burst: int | None = None,
     ) -> "Limit":
-        """Create a limit that refills `capacity` tokens per day."""
+        """Create a limit that refills ``rate`` tokens per day.
+
+        Args:
+            name: Limit name (e.g., "rpd")
+            rate: Sustained tokens per day (also the refill amount)
+            burst: Optional burst ceiling. When set, ``capacity`` is
+                ``burst`` and ``refill_amount`` is ``rate``, allowing
+                temporary spikes above the sustained rate.
+        """
+        capacity = burst if burst is not None else rate
         return cls(
             name=name,
             capacity=capacity,
-            refill_amount=capacity,
+            refill_amount=rate,
             refill_period_seconds=86400,
         )
 

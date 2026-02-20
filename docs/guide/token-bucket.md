@@ -44,29 +44,40 @@ These modifications enable:
 
 ## Key Concepts
 
-### Capacity
+### Capacity and Burst
 
-Every limit has a **capacity** -- the maximum number of tokens the bucket can hold (the ceiling). The bucket starts full at capacity and refills at the configured rate.
+Every limit has a **rate** (sustained throughput) and an optional **burst** (the bucket ceiling):
 
 ```python
-# 10,000 tokens/minute -- bucket holds up to 10k tokens
-Limit.per_minute("tpm", capacity=10_000)
+# 10,000 tokens/minute sustained, bucket holds up to 10k
+Limit.per_minute("tpm", 10_000)
+
+# 10,000 tokens/minute sustained, but allow bursts up to 15k
+Limit.per_minute("tpm", 10_000, burst=15_000)
 ```
 
 ```mermaid
 graph TD
-    A["Bucket starts full at capacity (10k)"]
-    A -->|"consume 10k"| B["Bucket empty (0)"]
-    B -->|"wait 1 minute"| C["Refills to capacity (10k)"]
-    C -->|"steady state"| D["10k tokens/minute"]
+    A["Bucket starts full at burst (15k)"]
+    A -->|"consume 15k"| B["Bucket empty (0)"]
+    B -->|"wait 1 minute"| C["Refills 10k tokens"]
+    C -->|"wait 30 more seconds"| D["Refills to burst (15k)"]
+    D -->|"steady state"| E["10k tokens/minute"]
 
     style A fill:#90EE90
     style B fill:#FFB6C1
     style C fill:#87CEEB
-    style D fill:#87CEEB
+    style D fill:#90EE90
+    style E fill:#87CEEB
 ```
 
-**Key insight**: The bucket holds up to `capacity` tokens and refills at `refill_amount / refill_period_seconds`. With `Limit.per_minute("tpm", 10_000)`, both capacity and refill amount are 10,000, so a fully depleted bucket refills in exactly 1 minute.
+**Key insight**: When `burst` is set, the bucket is larger than the refill rate. After fully depleting a 15k burst bucket that refills at 10k/minute, it takes **1.5 minutes** to return to full capacity. Without `burst`, the bucket ceiling equals the rate.
+
+**When to use burst:**
+
+- **Startup surge**: Handle initial traffic before steady state
+- **Bursty workloads**: Allow temporary spikes followed by quiet periods
+- **User experience**: Don't reject the first request just because a minute hasn't passed
 
 ### Lazy Refill
 
@@ -181,12 +192,13 @@ except RateLimitExceeded as e:
 
 ### Choosing the right limits
 
-| Scenario | Capacity | Rationale |
-|----------|----------|-----------|
-| Steady API traffic | 100 rpm | Consistent rate for API endpoints |
-| LLM tokens | 10k tpm | Handle variable response sizes |
-| Database queries | 1k rows/min | Allow periodic large result sets |
-| New user onboarding | 50 rpm | Let users explore, then limit |
+| Scenario | Rate | Burst | Rationale |
+|----------|------|-------|-----------|
+| Steady API traffic | 100 rpm | -- | No bursting needed |
+| Bursty batch jobs | 100 rpm | 500 | Allow 5x burst, then sustain |
+| LLM tokens | 10k tpm | 15k | Handle variable response sizes |
+| Database queries | 1k rows/min | 5k | Allow large result sets occasionally |
+| New user onboarding | 10 rpm | 50 | Let users explore, then limit |
 
 ## Next Steps
 

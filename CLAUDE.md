@@ -538,7 +538,7 @@ Primary mitigation: cascade defaults to `False`.
 ### Token Bucket Algorithm
 - Buckets can go **negative** for post-hoc reconciliation
 - Refill is calculated lazily on each access
-- `capacity` is the bucket ceiling (maximum tokens)
+- `capacity` is the bucket ceiling; factory methods accept `burst` to set `capacity > refill_amount`
 
 ### DynamoDB Single Table Design
 - All entities, buckets, limits, usage in one table

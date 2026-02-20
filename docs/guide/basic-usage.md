@@ -64,6 +64,19 @@ When using stored config, configure multiple limits at setup time:
 !!! tip "Performance Tip"
     Combining multiple limits into a single `acquire()` call is more efficient than separate calls. See [Batch Operation Patterns](../performance.md#3-batch-operation-patterns) for details.
 
+## Burst Capacity
+
+Allow temporary bursts above the sustained rate by setting `burst` higher than the rate:
+
+```python
+# Sustain 10k tokens/minute, but allow bursts up to 15k
+limits = [
+    Limit.per_minute("tpm", 10_000, burst=15_000),
+]
+```
+
+The bucket starts full at `burst` capacity and refills at `rate` tokens per period. See [Token Bucket Algorithm](token-bucket.md#capacity-and-burst) for details on how burst and rate interact.
+
 ## Adjusting Consumption
 
 Use `lease.adjust()` to modify consumption after the fact:

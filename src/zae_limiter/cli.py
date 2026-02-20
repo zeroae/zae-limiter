@@ -2054,31 +2054,31 @@ def usage_summary(
 
 
 def _parse_limit(limit_str: str) -> Limit:
-    """Parse a limit string in format 'name:capacity'."""
+    """Parse a limit string in format 'name:rate[:burst]'."""
     from .models import Limit as LimitModel
 
     parts = limit_str.split(":")
     if len(parts) < 2:
-        raise click.BadParameter(f"Invalid limit format: {limit_str}. Expected 'name:capacity'")
+        raise click.BadParameter(
+            f"Invalid limit format: {limit_str}. Expected 'name:rate' or 'name:rate:burst'"
+        )
 
     name = parts[0]
     try:
-        capacity = int(parts[1])
+        rate = int(parts[1])
+        burst = int(parts[2]) if len(parts) > 2 else None
     except ValueError as e:
         raise click.BadParameter(f"Invalid limit values in '{limit_str}': {e}") from e
 
-    # Default to per-minute refill
-    return LimitModel(
-        name=name,
-        capacity=capacity,
-        refill_amount=capacity,
-        refill_period_seconds=60,
-    )
+    return LimitModel.per_minute(name, rate, burst=burst)
 
 
 def _format_limit(limit: Limit) -> str:
     """Format a limit for display."""
-    return f"{limit.name}: {limit.capacity:,}/min"
+    base = f"{limit.name}: {limit.refill_amount:,}/min"
+    if limit.capacity != limit.refill_amount:
+        return f"{base} (burst: {limit.capacity:,})"
+    return base
 
 
 @cli.group()
@@ -2124,7 +2124,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit: 'name:rate[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500:750",
 )
 @namespace_option
 def resource_set_defaults(
@@ -2457,7 +2457,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit: 'name:rate[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500:750",
 )
 @click.option(
     "--on-unavailable",
@@ -2919,7 +2919,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit: 'name:rate[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500:750",
 )
 @namespace_option
 def entity_set_limits(
