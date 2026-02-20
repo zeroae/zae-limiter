@@ -2175,7 +2175,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:rate[/period][:burst]' (repeatable). "
+    help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
     "Period: /sec, /min (default), /hour, /day.",
 )
 @namespace_option
@@ -2512,7 +2512,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:rate[/period][:burst]' (repeatable). "
+    help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
     "Period: /sec, /min (default), /hour, /day.",
 )
 @click.option(
@@ -2975,7 +2975,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:rate[/period][:burst]' (repeatable). "
+    help="Limit in 'name:rate[/period]' or 'name:rate[/period]:burst' format (repeatable). "
     "Period: /sec, /min (default), /hour, /day.",
 )
 @namespace_option
