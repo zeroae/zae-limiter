@@ -11,12 +11,13 @@ import hashlib
 import json
 import logging
 import os
+import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
 import boto3
 
-from zae_limiter.schema import pk_system, sk_provisioner
+from zae_limiter.schema import RESERVED_NAMESPACE, pk_system, sk_namespace, sk_provisioner
 
 from .applier import apply_changes
 from .differ import compute_diff
@@ -30,8 +31,41 @@ TABLE_NAME = os.environ.get("TABLE_NAME", "rate-limits")
 def on_event(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entry point."""
     if "RequestType" in event:
-        return _handle_cfn(event, context)
+        return _handle_cfn_with_response(event, context)
     return _handle_cli(event, context)
+
+
+def _handle_cfn_with_response(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """Handle CFN custom resource event with response protocol.
+
+    Wraps _handle_cfn to send SUCCESS/FAILED response to CloudFormation's
+    pre-signed ResponseURL. Without this, CloudFormation will hang waiting
+    for a response and eventually time out.
+    """
+    physical_resource_id = event.get("PhysicalResourceId", "")
+    try:
+        result = _handle_cfn(event, context)
+        physical_resource_id = result.pop("physical_resource_id", physical_resource_id)
+        if "ResponseURL" in event:
+            _send_cfn_response(
+                event,
+                context,
+                "SUCCESS",
+                data=result,
+                physical_resource_id=physical_resource_id,
+            )
+        return result
+    except Exception as e:
+        logger.exception("CFN handler failed")
+        if "ResponseURL" in event:
+            _send_cfn_response(
+                event,
+                context,
+                "FAILED",
+                reason=str(e),
+                physical_resource_id=physical_resource_id or "failed",
+            )
+        raise
 
 
 def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -80,6 +114,11 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     table_name = properties.get("TableName", TABLE_NAME)
     namespace_id = properties.get("NamespaceId", "")
+    if not namespace_id:
+        namespace_name = properties.get("Namespace", "default")
+        namespace_id = _resolve_namespace_id(table_name, namespace_name)
+
+    physical_resource_id = f"{table_name}/{namespace_id}/limits-provisioner"
 
     if request_type == "Delete":
         # Empty manifest deletes all managed items
@@ -104,6 +143,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     _write_provisioner_state(table_name, namespace_id, new_state)
 
     return {
+        "physical_resource_id": physical_resource_id,
         "status": "applied",
         "changes": [{"action": c.action, "level": c.level, "target": c.target} for c in changes],
         "created": result.created,
@@ -217,3 +257,69 @@ def _write_provisioner_state(
         "applied_hash": {"S": state.get("applied_hash", "")},
     }
     client.put_item(TableName=table_name, Item=item)
+
+
+def _resolve_namespace_id(table_name: str, namespace_name: str) -> str:
+    """Resolve namespace name to opaque ID via DynamoDB lookup.
+
+    Args:
+        table_name: DynamoDB table name.
+        namespace_name: Human-readable namespace name (e.g., "default").
+
+    Returns:
+        Opaque namespace ID string.
+
+    Raises:
+        ValueError: If the namespace is not registered.
+    """
+    client = boto3.client("dynamodb")
+    result = client.get_item(
+        TableName=table_name,
+        Key={
+            "PK": {"S": pk_system(RESERVED_NAMESPACE)},
+            "SK": {"S": sk_namespace(namespace_name)},
+        },
+    )
+    item = result.get("Item")
+    if not item:
+        raise ValueError(f"Namespace '{namespace_name}' not found in table '{table_name}'")
+    return item["namespace_id"]["S"]
+
+
+def _send_cfn_response(
+    event: dict[str, Any],
+    context: Any,
+    status: str,
+    *,
+    data: dict[str, Any] | None = None,
+    physical_resource_id: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Send response to CloudFormation pre-signed URL.
+
+    CloudFormation custom resources require a PUT to the ResponseURL
+    with status information. Without this, the stack operation hangs
+    until timeout (default 1 hour).
+    """
+    response_url = event["ResponseURL"]
+
+    log_stream = getattr(context, "log_stream_name", "unknown") if context else "unknown"
+
+    response_body = {
+        "Status": status,
+        "Reason": reason or f"See CloudWatch Log Stream: {log_stream}",
+        "PhysicalResourceId": physical_resource_id or log_stream,
+        "StackId": event["StackId"],
+        "RequestId": event["RequestId"],
+        "LogicalResourceId": event["LogicalResourceId"],
+        "Data": data or {},
+    }
+
+    body = json.dumps(response_body).encode()
+    req = urllib.request.Request(
+        response_url,
+        data=body,
+        headers={"Content-Type": "", "Content-Length": str(len(body))},
+        method="PUT",
+    )
+    urllib.request.urlopen(req)

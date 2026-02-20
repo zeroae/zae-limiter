@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from zae_limiter_provisioner.handler import on_event
 
 
+@patch("zae_limiter_provisioner.handler.urllib.request.urlopen")
 @patch("zae_limiter_provisioner.applier.boto3")
 @patch("zae_limiter_provisioner.handler.boto3")
 class TestProvisionerHandler:
@@ -18,7 +19,9 @@ class TestProvisionerHandler:
         mock_applier_boto3.client.return_value = mock_client
         return mock_client
 
-    def test_plan_action_returns_changes(self, mock_handler_boto3, mock_applier_boto3):
+    def test_plan_action_returns_changes(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
         """Plan action computes diff without applying."""
         mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
 
@@ -37,7 +40,9 @@ class TestProvisionerHandler:
         # Plan should NOT write to DynamoDB
         mock_client.put_item.assert_not_called()
 
-    def test_apply_action_applies_and_returns(self, mock_handler_boto3, mock_applier_boto3):
+    def test_apply_action_applies_and_returns(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
         """Apply action applies changes and updates state."""
         mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
 
@@ -57,7 +62,7 @@ class TestProvisionerHandler:
         # Should write config + state
         assert mock_client.put_item.call_count >= 2
 
-    def test_plan_no_changes(self, mock_handler_boto3, mock_applier_boto3):
+    def test_plan_no_changes(self, mock_handler_boto3, mock_applier_boto3, mock_urlopen):
         """Plan with no changes returns empty list."""
         self._setup_client(mock_handler_boto3, mock_applier_boto3)
 
@@ -71,7 +76,7 @@ class TestProvisionerHandler:
         assert result["status"] == "planned"
         assert result["changes"] == []
 
-    def test_cfn_create_event(self, mock_handler_boto3, mock_applier_boto3):
+    def test_cfn_create_event(self, mock_handler_boto3, mock_applier_boto3, mock_urlopen):
         """CloudFormation Create event applies the manifest."""
         self._setup_client(mock_handler_boto3, mock_applier_boto3)
 
@@ -93,7 +98,9 @@ class TestProvisionerHandler:
         assert result["status"] == "applied"
         assert any(c["action"] == "create" and c["level"] == "system" for c in result["changes"])
 
-    def test_cfn_delete_event_clears_all(self, mock_handler_boto3, mock_applier_boto3):
+    def test_cfn_delete_event_clears_all(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
         """CloudFormation Delete event applies empty manifest (deletes all managed)."""
         self._setup_client(
             mock_handler_boto3,
@@ -126,7 +133,7 @@ class TestProvisionerHandler:
         delete_actions = [c for c in result["changes"] if c["action"] == "delete"]
         assert len(delete_actions) == 2
 
-    def test_cfn_update_event(self, mock_handler_boto3, mock_applier_boto3):
+    def test_cfn_update_event(self, mock_handler_boto3, mock_applier_boto3, mock_urlopen):
         """CloudFormation Update event diffs against previous state."""
         self._setup_client(
             mock_handler_boto3,
