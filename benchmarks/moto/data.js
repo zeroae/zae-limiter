@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771627543226,
+  "lastUpdate": 1771630249115,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -23129,6 +23129,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00038267414989709344",
             "extra": "mean: 3.557309953736613 msec\nrounds: 281"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2a06067c8796c3ae8c37b452ccb7b2e68edc4780",
+          "message": "build(deps): bump flask from 3.1.2 to 3.1.3 (#412)\n\nBumps [flask](https://github.com/pallets/flask) from 3.1.2 to 3.1.3.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/pallets/flask/releases\">flask's\nreleases</a>.</em></p>\n<blockquote>\n<h2>3.1.3</h2>\n<p>This is the Flask 3.1.3 security fix release, which fixes a security\nissue but does not otherwise change behavior and should not result in\nbreaking changes compared to the latest feature release.</p>\n<p>PyPI: <a\nhref=\"https://pypi.org/project/Flask/3.1.3/\">https://pypi.org/project/Flask/3.1.3/</a>\nChanges: <a\nhref=\"https://flask.palletsprojects.com/page/changes/#version-3-1-3\">https://flask.palletsprojects.com/page/changes/#version-3-1-3</a></p>\n<ul>\n<li>The session is marked as accessed for operations that only access\nthe keys but not the values, such as <code>in</code> and\n<code>len</code>. <a\nhref=\"https://github.com/pallets/flask/security/advisories/GHSA-68rp-wp8r-4726\">GHSA-68rp-wp8r-4726</a></li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/pallets/flask/blob/main/CHANGES.rst\">flask's\nchangelog</a>.</em></p>\n<blockquote>\n<h2>Version 3.1.3</h2>\n<p>Released 2026-02-18</p>\n<ul>\n<li>The session is marked as accessed for operations that only access\nthe keys\nbut not the values, such as <code>in</code> and <code>len</code>.\n:ghsa:<code>68rp-wp8r-4726</code></li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/22d924701a6ae2e4cd01e9a15bbaf3946094af65\"><code>22d9247</code></a>\nrelease version 3.1.3</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/089cb86dd22bff589a4eafb7ab8e42dc357623b4\"><code>089cb86</code></a>\nMerge commit from fork</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/c17f379390731543eea33a570a47bd4ef76a54fa\"><code>c17f379</code></a>\nrequest context tracks session access</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/27be9338405382445a7cb01151e084559b98d602\"><code>27be933</code></a>\nstart version 3.1.3</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/4e652d3f68b90d50aa2301d3b7e68c3fafd9251d\"><code>4e652d3</code></a>\nAbort if the instance folder cannot be created (<a\nhref=\"https://redirect.github.com/pallets/flask/issues/5903\">#5903</a>)</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/3d03098a97ddc6a908aa4a50c2ef7381f8297d0a\"><code>3d03098</code></a>\nAbort if the instance folder cannot be created</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/407eb76b27884848383a37c7274654f0271e4bc4\"><code>407eb76</code></a>\ndocument using gevent for async (<a\nhref=\"https://redirect.github.com/pallets/flask/issues/5900\">#5900</a>)</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/ac5664d2281533eacafd64f5cc7d5edcdaccab60\"><code>ac5664d</code></a>\ndocument using gevent for async</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/4f79d5b59a56bc4356a97f2e81a35f98cb18d7b3\"><code>4f79d5b</code></a>\nIncrease required flit_core version to 3.11 (<a\nhref=\"https://redirect.github.com/pallets/flask/issues/5865\">#5865</a>)</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/fe3b215d3ade4db68262dae1a3cdc464a1fc524f\"><code>fe3b215</code></a>\nIncrease required flit_core version to 3.11</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/pallets/flask/compare/3.1.2...3.1.3\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=flask&package-manager=uv&previous-version=3.1.2&new-version=3.1.3)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\nYou can disable automated security fix PRs for this repo from the\n[Security Alerts\npage](https://github.com/zeroae/zae-limiter/network/alerts).\n\n</details>",
+          "timestamp": "2026-02-20T18:29:25-05:00",
+          "tree_id": "85bffd5b11952d36cbceaccf5c5251ee5b56becd",
+          "url": "https://github.com/zeroae/zae-limiter/commit/2a06067c8796c3ae8c37b452ccb7b2e68edc4780"
+        },
+        "date": 1771630248071,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 334.64459371617875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005332419759038083",
+            "extra": "mean: 2.988244898550871 msec\nrounds: 207"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 296.5151506251466,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013668050805534045",
+            "extra": "mean: 3.372508952381312 msec\nrounds: 231"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 178.79692022305537,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003517631943185238",
+            "extra": "mean: 5.592937499999806 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 1172.3992557629679,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000017921684447377396",
+            "extra": "mean: 852.9517526426824 usec\nrounds: 946"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 332.6707535632228,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006079659859567735",
+            "extra": "mean: 3.005975094861935 msec\nrounds: 253"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 380.5571852630702,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001575182409197816",
+            "extra": "mean: 2.6277259731903984 msec\nrounds: 373"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 185.89157572286987,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024615001287158747",
+            "extra": "mean: 5.379479925926369 msec\nrounds: 189"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 325.54683241486566,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007028426668729683",
+            "extra": "mean: 3.0717546614787348 msec\nrounds: 257"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 295.0687699744497,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011816141377818305",
+            "extra": "mean: 3.38904046025132 msec\nrounds: 239"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 167.19872355380843,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003753924400369424",
+            "extra": "mean: 5.980906903743059 msec\nrounds: 187"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 381.7640533792092,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009499943262097324",
+            "extra": "mean: 2.619418960869771 msec\nrounds: 230"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 294.56078814258615,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001399196952304087",
+            "extra": "mean: 3.394884995744703 msec\nrounds: 235"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1163.8855950462896,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000018398419917373516",
+            "extra": "mean: 859.1909756905518 usec\nrounds: 905"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 383.22123906055316,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000890365137995503",
+            "extra": "mean: 2.609458709677594 msec\nrounds: 248"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 328.82176912512335,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006633875470859984",
+            "extra": "mean: 3.0411611818178614 msec\nrounds: 253"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 182.55802643378468,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00027235665659105515",
+            "extra": "mean: 5.477710400001001 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 187.22485200389218,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009850631744736102",
+            "extra": "mean: 5.341171267045313 msec\nrounds: 176"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 384.05005941871013,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010971184888486086",
+            "extra": "mean: 2.60382722375718 msec\nrounds: 362"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 280.36291194818534,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005348456253117805",
+            "extra": "mean: 3.56680558441629 msec\nrounds: 154"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 188.74049620827563,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000925723431864933",
+            "extra": "mean: 5.298280019866523 msec\nrounds: 151"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 37.762813462930744,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022942746210061546",
+            "extra": "mean: 26.481077766666772 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 37.899986937269006,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003381973205326713",
+            "extra": "mean: 26.385233368422316 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 160.9568193544491,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001768445907282739",
+            "extra": "mean: 6.21284642682869 msec\nrounds: 82"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 188.44805365514745,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012503408298945745",
+            "extra": "mean: 5.306502140000665 msec\nrounds: 150"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 136.20191228015568,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017209540879132757",
+            "extra": "mean: 7.342040822034022 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 189.61618021550055,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012851485228350826",
+            "extra": "mean: 5.273811543210557 msec\nrounds: 81"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 189.93390767061197,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014013585890615375",
+            "extra": "mean: 5.264989344262976 msec\nrounds: 183"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 187.75866139452174,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016910864824971344",
+            "extra": "mean: 5.325985989529308 msec\nrounds: 191"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 231.1889510636226,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005517438210062675",
+            "extra": "mean: 4.325466227513626 msec\nrounds: 189"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 281.66800119266594,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008647962836376556",
+            "extra": "mean: 3.5502790369005464 msec\nrounds: 271"
           }
         ]
       }
