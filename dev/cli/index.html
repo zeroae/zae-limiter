@@ -7336,10 +7336,10 @@ versions. Checks compatibility between client and infrastructure.</p>
 </tbody>
 </table>
 <h2 id="namespace-flag">Namespace Flag<a class="headerlink" href="#namespace-flag" title="Permanent link">&para;</a></h2>
-<p>Most data-access commands accept <code>--namespace</code> / <code>-N</code> to scope operations to a specific namespace. When omitted, operations default to the <code>"default"</code> namespace. The <code>"default"</code> namespace is automatically registered during <code>zae-limiter deploy</code>.</p>
+<p>Most data-access commands accept <code>--namespace</code> / <code>-N</code> to scope operations to a specific namespace. When omitted, operations default to the <code>"default"</code> namespace.</p>
 <div class="admonition note">
-<p class="admonition-title">Namespace must exist</p>
-<p>Data-access commands internally use <code>Repository.connect()</code>, which requires the namespace to already be registered. If the namespace does not exist, the command exits with an error: <code>Error: Namespace 'name' not found.</code></p>
+<p class="admonition-title">Namespace auto-registration</p>
+<p>Data-access commands internally use <code>Repository.open()</code>, which auto-registers the namespace if it doesn't exist yet. The <code>"default"</code> namespace is always registered automatically.</p>
 </div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-101-1"><a id="__codelineno-101-1" name="__codelineno-101-1" href="#__codelineno-101-1"></a><span class="c1"># Entity operations in a specific namespace</span>
 </span><span id="__span-101-2"><a id="__codelineno-101-2" name="__codelineno-101-2" href="#__codelineno-101-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-limits<span class="w"> </span>user-123<span class="w"> </span>--namespace<span class="w"> </span>tenant-alpha<span class="w"> </span>-l<span class="w"> </span>rpm:1000

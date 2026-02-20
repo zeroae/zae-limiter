@@ -1257,10 +1257,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository.connect" class="md-nav__link">
+  <a href="#zae_limiter.repository.Repository.open" class="md-nav__link">
     <span class="md-ellipsis">
       
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;connect
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;open
       
     </span>
   </a>
@@ -4097,10 +4097,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository.connect" class="md-nav__link">
+  <a href="#zae_limiter.repository.Repository.open" class="md-nav__link">
     <span class="md-ellipsis">
       
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;connect
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;open
       
     </span>
   </a>
@@ -5504,12 +5504,12 @@
 <h2 id="preferred-usage-pattern">Preferred Usage Pattern<a class="headerlink" href="#preferred-usage-pattern" title="Permanent link">&para;</a></h2>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Repository</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># Connect to existing infrastructure (recommended)</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># Open repository (auto-provisions if needed, recommended)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># For infrastructure provisioning, use builder:</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">(</span><span class="s2">&quot;my-app&quot;</span><span class="p">,</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># For explicit infrastructure provisioning, use builder:</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
 <p>See <a href="../../adr/108-repository-protocol/">ADR-108</a> for the design rationale.</p>
@@ -5535,12 +5535,12 @@
         <p>Async DynamoDB repository for rate limiter data.</p>
 <p>Handles all DynamoDB operations including entities, buckets,
 limit configs, and transactions.</p>
-<p>Use :meth:<code>connect</code> to connect to existing infrastructure (recommended),
-or :meth:<code>builder</code> to provision infrastructure declaratively.</p>
+<p>Use :meth:<code>open</code> to open a repository (recommended), or :meth:<code>builder</code>
+for custom infrastructure options (permission boundaries, IAM config).</p>
 <p>.. deprecated::
     Direct construction via <code>Repository(...)</code> is deprecated and will be
-    removed in v1.0.0. Use <code>Repository.connect(...)</code> or
-    <code>Repository.builder(...).build()</code> instead.</p>
+    removed in v1.0.0. Use <code>Repository.open(...)</code> or
+    <code>Repository.builder().build()</code> instead.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5645,11 +5645,11 @@ Controls caching of resolved limit configs in resolve_limits().</p>
       </tbody>
     </table>
         <p>Example::</p>
-<div class="language-text highlight"><pre><span></span><code># Connect to existing infrastructure (recommended)
-repo = await Repository.connect(&quot;my-app&quot;, &quot;us-east-1&quot;)
+<div class="language-text highlight"><pre><span></span><code># Most users (auto-provisions if needed)
+repo = await Repository.open(&quot;my-app&quot;)
 
-# Provision infrastructure
-repo = await Repository.builder(&quot;my-app&quot;, &quot;us-east-1&quot;).build()
+# Custom infrastructure options
+repo = await Repository.builder().namespace(&quot;my-app&quot;).build()
 </code></pre></div>
 
 
@@ -5757,19 +5757,24 @@ repo = await Repository.builder(&quot;my-app&quot;, &quot;us-east-1&quot;).build
   </span>
 
 <a href="#zae_limiter.repository.Repository.builder" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">builder</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">builder</span><span class="p">()</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Create a RepositoryBuilder for fluent configuration.</p>
+<p>For most use cases, prefer :meth:<code>open</code> instead. Use <code>builder()</code>
+when you need custom infrastructure options (permission boundaries,
+Lambda config, IAM role naming).</p>
+<p>Stack defaults mirror :meth:<code>open</code>: <code>ZAEL_STACK</code> env var
+or <code>"zae-limiter"</code>, namespace <code>"default"</code>.</p>
 
 
 <details class="example" open>
   <summary>Example</summary>
   <p>repo = await (
-    Repository.builder("my-app", "us-east-1")
-    .namespace("default")
+    Repository.builder()
+    .namespace("my-app")
     .lambda_memory(512)
     .build()
 )</p>
@@ -5782,8 +5787,8 @@ repo = await Repository.builder(&quot;my-app&quot;, &quot;us-east-1&quot;).build
 <div class="doc doc-object doc-function">
 
 
-<h4 id="zae_limiter.repository.Repository.connect" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">connect</span>
+<h4 id="zae_limiter.repository.Repository.open" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">open</span>
 
 
   <span class="doc doc-labels">
@@ -5791,15 +5796,30 @@ repo = await Repository.builder(&quot;my-app&quot;, &quot;us-east-1&quot;).build
       <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
   </span>
 
-<a href="#zae_limiter.repository.Repository.connect" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">connect</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s1">&#39;default&#39;</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a href="#zae_limiter.repository.Repository.open" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">open</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Connect to existing zae-limiter infrastructure.</p>
+        <p>Open a repository, auto-provisioning infrastructure if needed.</p>
 <p>This is the recommended entry point for most applications.
-For infrastructure provisioning, use <code>Repository.builder()</code> instead.</p>
+Namespace is the primary parameter — stack name defaults to
+<code>"zae-limiter"</code> and is rarely needed.</p>
+<p><strong>Auto-provision behavior:</strong></p>
+<ul>
+<li>If the DynamoDB table doesn't exist, deploys a new stack with
+  default options (aggregator enabled).</li>
+<li>If the table exists but the namespace isn't registered, registers it.</li>
+<li>The <code>"default"</code> namespace is always registered.</li>
+<li>Version check and Lambda auto-update run on every call.</li>
+</ul>
+<p>For custom infrastructure options (permission boundaries, Lambda
+config, IAM role naming), use <code>Repository.builder()</code> instead.</p>
+<p><strong>Stack resolution:</strong> <code>stack</code> arg → <code>ZAEL_STACK</code> env var
+→ <code>"zae-limiter"</code>.</p>
+<p><strong>Namespace resolution:</strong> <code>namespace</code> arg → <code>ZAEL_NAMESPACE</code>
+env var → <code>"default"</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5815,18 +5835,36 @@ For infrastructure provisioning, use <code>Repository.builder()</code> instead.<
       <tbody>
           <tr class="doc-section-item">
             <td>
-                <code>name</code>
+                <code>namespace</code>
             </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><span title="str">str</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Stack name (infrastructure must already exist).</p>
+                <p>Namespace to open. Defaults to <code>ZAEL_NAMESPACE</code>
+env var or <code>"default"</code>.</p>
               </div>
             </td>
             <td>
-                <em>required</em>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>stack</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Stack name. Defaults to <code>ZAEL_STACK</code> env var
+or <code>"zae-limiter"</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -5863,23 +5901,6 @@ For infrastructure provisioning, use <code>Repository.builder()</code> instead.<
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>namespace</code>
-            </td>
-            <td>
-                  <code><span title="str">str</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Namespace to connect to (default: <code>"default"</code>).
-Must already be registered via <code>builder().build()</code> or CLI.</p>
-              </div>
-            </td>
-            <td>
-                  <code>&#39;default&#39;</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
                 <code>config_cache_ttl</code>
             </td>
             <td>
@@ -5887,7 +5908,8 @@ Must already be registered via <code>builder().build()</code> or CLI.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Config cache TTL in seconds (default: 60, 0 to disable).</p>
+                <p>Config cache TTL in seconds (default: 60,
+0 to disable).</p>
               </div>
             </td>
             <td>
@@ -5903,7 +5925,8 @@ Must already be registered via <code>builder().build()</code> or CLI.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Auto-update Lambda on version mismatch (default: True).</p>
+                <p>Auto-update Lambda on version mismatch
+(default: True).</p>
               </div>
             </td>
             <td>
@@ -5948,16 +5971,6 @@ Must already be registered via <code>builder().build()</code> or CLI.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><a class="autorefs autorefs-internal" title="            NamespaceNotFoundError (zae_limiter.exceptions.NamespaceNotFoundError)" href="../exceptions/#zae_limiter.exceptions.NamespaceNotFoundError">NamespaceNotFoundError</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>If the namespace doesn't exist.</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
                   <code><a class="autorefs autorefs-internal" title="            IncompatibleSchemaError (zae_limiter.exceptions.IncompatibleSchemaError)" href="../exceptions/#zae_limiter.exceptions.IncompatibleSchemaError">IncompatibleSchemaError</a></code>
             </td>
             <td>
@@ -5979,8 +5992,17 @@ Must already be registered via <code>builder().build()</code> or CLI.</p>
       </tbody>
     </table>
         <p>Example::</p>
-<div class="language-text highlight"><pre><span></span><code>repo = await Repository.connect(&quot;my-app&quot;, &quot;us-east-1&quot;)
-limiter = RateLimiter(repository=repo)
+<div class="language-text highlight"><pre><span></span><code># Most users
+repo = await Repository.open(&quot;my-app&quot;)
+
+# Multi-tenant
+repo_alpha = await Repository.open(&quot;tenant-alpha&quot;)
+
+# Explicit stack
+repo = await Repository.open(&quot;my-app&quot;, stack=&quot;custom-stack&quot;)
+
+# Simplest (stack=&quot;zae-limiter&quot;, namespace=&quot;default&quot;)
+repo = await Repository.open()
 </code></pre></div>
 
 
