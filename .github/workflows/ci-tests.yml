@@ -20,6 +20,7 @@ on:
       - 'tests/**'
       - 'scripts/**'
       - 'pyproject.toml'
+      - 'uv.lock'
   workflow_dispatch:
     inputs:
       run-benchmark-localstack:
