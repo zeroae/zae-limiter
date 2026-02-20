@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771627752340,
+  "lastUpdate": 1771630460320,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -11978,6 +11978,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.01635102236701919",
             "extra": "mean: 1.0771073613999989 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2a06067c8796c3ae8c37b452ccb7b2e68edc4780",
+          "message": "build(deps): bump flask from 3.1.2 to 3.1.3 (#412)\n\nBumps [flask](https://github.com/pallets/flask) from 3.1.2 to 3.1.3.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/pallets/flask/releases\">flask's\nreleases</a>.</em></p>\n<blockquote>\n<h2>3.1.3</h2>\n<p>This is the Flask 3.1.3 security fix release, which fixes a security\nissue but does not otherwise change behavior and should not result in\nbreaking changes compared to the latest feature release.</p>\n<p>PyPI: <a\nhref=\"https://pypi.org/project/Flask/3.1.3/\">https://pypi.org/project/Flask/3.1.3/</a>\nChanges: <a\nhref=\"https://flask.palletsprojects.com/page/changes/#version-3-1-3\">https://flask.palletsprojects.com/page/changes/#version-3-1-3</a></p>\n<ul>\n<li>The session is marked as accessed for operations that only access\nthe keys but not the values, such as <code>in</code> and\n<code>len</code>. <a\nhref=\"https://github.com/pallets/flask/security/advisories/GHSA-68rp-wp8r-4726\">GHSA-68rp-wp8r-4726</a></li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/pallets/flask/blob/main/CHANGES.rst\">flask's\nchangelog</a>.</em></p>\n<blockquote>\n<h2>Version 3.1.3</h2>\n<p>Released 2026-02-18</p>\n<ul>\n<li>The session is marked as accessed for operations that only access\nthe keys\nbut not the values, such as <code>in</code> and <code>len</code>.\n:ghsa:<code>68rp-wp8r-4726</code></li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/22d924701a6ae2e4cd01e9a15bbaf3946094af65\"><code>22d9247</code></a>\nrelease version 3.1.3</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/089cb86dd22bff589a4eafb7ab8e42dc357623b4\"><code>089cb86</code></a>\nMerge commit from fork</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/c17f379390731543eea33a570a47bd4ef76a54fa\"><code>c17f379</code></a>\nrequest context tracks session access</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/27be9338405382445a7cb01151e084559b98d602\"><code>27be933</code></a>\nstart version 3.1.3</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/4e652d3f68b90d50aa2301d3b7e68c3fafd9251d\"><code>4e652d3</code></a>\nAbort if the instance folder cannot be created (<a\nhref=\"https://redirect.github.com/pallets/flask/issues/5903\">#5903</a>)</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/3d03098a97ddc6a908aa4a50c2ef7381f8297d0a\"><code>3d03098</code></a>\nAbort if the instance folder cannot be created</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/407eb76b27884848383a37c7274654f0271e4bc4\"><code>407eb76</code></a>\ndocument using gevent for async (<a\nhref=\"https://redirect.github.com/pallets/flask/issues/5900\">#5900</a>)</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/ac5664d2281533eacafd64f5cc7d5edcdaccab60\"><code>ac5664d</code></a>\ndocument using gevent for async</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/4f79d5b59a56bc4356a97f2e81a35f98cb18d7b3\"><code>4f79d5b</code></a>\nIncrease required flit_core version to 3.11 (<a\nhref=\"https://redirect.github.com/pallets/flask/issues/5865\">#5865</a>)</li>\n<li><a\nhref=\"https://github.com/pallets/flask/commit/fe3b215d3ade4db68262dae1a3cdc464a1fc524f\"><code>fe3b215</code></a>\nIncrease required flit_core version to 3.11</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/pallets/flask/compare/3.1.2...3.1.3\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=flask&package-manager=uv&previous-version=3.1.2&new-version=3.1.3)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\nYou can disable automated security fix PRs for this repo from the\n[Security Alerts\npage](https://github.com/zeroae/zae-limiter/network/alerts).\n\n</details>",
+          "timestamp": "2026-02-20T18:29:25-05:00",
+          "tree_id": "85bffd5b11952d36cbceaccf5c5251ee5b56becd",
+          "url": "https://github.com/zeroae/zae-limiter/commit/2a06067c8796c3ae8c37b452ccb7b2e68edc4780"
+        },
+        "date": 1771630459227,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.896493218605872,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008035014354232312",
+            "extra": "mean: 38.615266999994006 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 19.18941832225561,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009357617403988987",
+            "extra": "mean: 52.11205379999531 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 33.54749430673888,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011765337326213002",
+            "extra": "mean: 29.808485571428328 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 37.63576303637079,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004592145358386576",
+            "extra": "mean: 26.570472320000817 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.94507318764038,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006793538603424578",
+            "extra": "mean: 38.54296315789067 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 185.97835041552943,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009081425598971196",
+            "extra": "mean: 5.376969941747041 msec\nrounds: 103"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.99048594350135,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006621791715160822",
+            "extra": "mean: 40.01522828570866 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 27.12743819210792,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005642702505559783",
+            "extra": "mean: 36.86304592856565 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 22.624527213044836,
+            "unit": "iter/sec",
+            "range": "stddev: 0.041468081756335026",
+            "extra": "mean: 44.19981865625111 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.444021281341975,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005771177065108546",
+            "extra": "mean: 37.815731176466976 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 27.81142998388813,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004511418676074562",
+            "extra": "mean: 35.956439513513885 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.403262921962618,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005283203850172468",
+            "extra": "mean: 40.97812670370457 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.324271507851698,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005035013320290243",
+            "extra": "mean: 34.10144390909237 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9295928516284802,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002136506981302578",
+            "extra": "mean: 518.2440425999971 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9393440860742146,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007995140276519417",
+            "extra": "mean: 515.6382547999954 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9510920917987603,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002496840897519311",
+            "extra": "mean: 1.0514228943999968 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.928303985970108,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034554403323424697",
+            "extra": "mean: 1.077233336400002 sec\nrounds: 5"
           }
         ]
       }
