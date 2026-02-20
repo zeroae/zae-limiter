@@ -50,7 +50,7 @@ For the full list of options, see the [CLI Reference](../cli.md#deploy).
 
 ### Namespace Registration
 
-Namespaces provide logical isolation within a single DynamoDB table. The `"default"` namespace is automatically registered by `zae-limiter deploy` and `Repository.open()`. Application code then uses `Repository.open()` to connect to a registered namespace.
+Namespaces provide logical isolation within a single DynamoDB table. The `"default"` namespace is automatically registered by `zae-limiter deploy`, `Repository.open()`, and `Repository.builder().build()`. Application code then uses `Repository.open()` to connect to a registered namespace.
 
 === "CLI"
 
