@@ -134,6 +134,13 @@ Parameters:
       (Optional) Custom name for the read-only IAM role.
       If empty, uses default: {stack_name}-read.
 
+  ProvisionerRoleName:
+    Type: String
+    Default: ''
+    Description: >
+      (Optional) Custom name for the limits provisioner Lambda execution role.
+      If empty, uses default: {stack_name}-prov.
+
   RoleNameFormat:
     Type: String
     Default: ''
@@ -266,6 +273,7 @@ Conditions:
   HasCustomAppRoleName: !Not [!Equals [!Ref AppRoleName, '']]
   HasCustomAdminRoleName: !Not [!Equals [!Ref AdminRoleName, '']]
   HasCustomReadOnlyRoleName: !Not [!Equals [!Ref ReadOnlyRoleName, '']]
+  HasCustomProvisionerRoleName: !Not [!Equals [!Ref ProvisionerRoleName, '']]
   HasCustomAcquireOnlyPolicyName: !Not [!Equals [!Ref AcquireOnlyPolicyName, '']]
   HasCustomFullAccessPolicyName: !Not [!Equals [!Ref FullAccessPolicyName, '']]
   HasCustomReadOnlyPolicyName: !Not [!Equals [!Ref ReadOnlyPolicyName, '']]
@@ -969,7 +977,10 @@ Resources:
     Type: AWS::IAM::Role
     Condition: CreateProvisionerRole
     Properties:
-      RoleName: !Sub ${AWS::StackName}-prov
+      RoleName: !If
+        - HasCustomProvisionerRoleName
+        - !Ref ProvisionerRoleName
+        - !Sub ${AWS::StackName}-prov
       PermissionsBoundary: !If
         - HasPermissionBoundary
         - !If

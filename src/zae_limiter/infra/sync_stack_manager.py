@@ -123,6 +123,7 @@ class SyncStackManager:
             "app_role_name": "AppRoleName",
             "admin_role_name": "AdminRoleName",
             "readonly_role_name": "ReadOnlyRoleName",
+            "provisioner_role_name": "ProvisionerRoleName",
             "acquire_only_policy_name": "AcquireOnlyPolicyName",
             "full_access_policy_name": "FullAccessPolicyName",
             "readonly_policy_name": "ReadOnlyPolicyName",

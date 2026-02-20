@@ -917,7 +917,7 @@ class StackOptions:
             params["alarm_sns_topic_arn"] = self.alarm_sns_topic
         if self.permission_boundary:
             params["permission_boundary"] = self.permission_boundary
-        # Generate 4 separate role name parameters (ADR-116)
+        # Generate 5 separate role name parameters (ADR-116)
         # get_role_name returns str when role_name_format is set (which we check above)
         if self.role_name_format and stack_name:
             # Export the format template for dependent stacks (e.g., stress test)
@@ -926,15 +926,18 @@ class StackOptions:
             app_role = self.get_role_name(stack_name, "app")
             admin_role = self.get_role_name(stack_name, "admin")
             readonly_role = self.get_role_name(stack_name, "read")
+            provisioner_role = self.get_role_name(stack_name, "prov")
             # These assertions are guaranteed by the if condition above
             assert aggregator_role is not None
             assert app_role is not None
             assert admin_role is not None
             assert readonly_role is not None
+            assert provisioner_role is not None
             params["aggregator_role_name"] = aggregator_role
             params["app_role_name"] = app_role
             params["admin_role_name"] = admin_role
             params["readonly_role_name"] = readonly_role
+            params["provisioner_role_name"] = provisioner_role
         # Generate 3 table-level + 3 namespace-scoped policy name parameters
         if self.policy_name_format and stack_name:
             acquire_only_policy = self.get_policy_name(stack_name, "acq")
