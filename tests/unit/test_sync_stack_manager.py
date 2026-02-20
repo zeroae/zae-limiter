@@ -517,6 +517,52 @@ class TestDeployLambdaCode:
             assert "Build failed" in str(exc_info.value)
 
 
+class TestDeployProvisionerCode:
+    """Tests for deploy_provisioner_code method."""
+
+    def test_successful_deployment(self) -> None:
+        """deploy_provisioner_code successfully deploys Lambda."""
+        with (
+            patch(
+                "zae_limiter.infra.sync_stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.sync_stack_manager.boto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = MagicMock(
+                return_value={
+                    "FunctionArn": "arn:aws:lambda:us-east-1:123:function:test-limits-provisioner",
+                    "CodeSha256": "abc123",
+                }
+            )
+            mock_waiter = MagicMock()
+            mock_waiter.wait = MagicMock()
+            mock_lambda.get_waiter.return_value = mock_waiter
+            mock_lambda.tag_resource = MagicMock()
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_lambda
+            mock_session_class.return_value = mock_session
+            manager = SyncStackManager(stack_name="test", region="us-east-1")
+            result = manager.deploy_provisioner_code()
+            assert result["status"] == "deployed"
+            assert "limits-provisioner" in result["function_arn"]
+            mock_lambda.update_function_code.assert_called_once_with(
+                FunctionName="test-limits-provisioner", ZipFile=b"fake-zip"
+            )
+
+    def test_raises_on_build_failure(self) -> None:
+        """deploy_provisioner_code raises on package build failure."""
+        with patch(
+            "zae_limiter.infra.sync_stack_manager.build_provisioner_package",
+            side_effect=Exception("Build failed"),
+        ):
+            manager = SyncStackManager(stack_name="test", region="us-east-1")
+            with pytest.raises(StackCreationError) as exc_info:
+                manager.deploy_provisioner_code()
+            assert "Build failed" in str(exc_info.value)
+
+
 class TestContextManager:
     """Tests for context manager functionality."""
 
