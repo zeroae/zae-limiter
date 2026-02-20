@@ -98,7 +98,7 @@ aws dynamodb get-item --table-name <name> \
 | **Entity not created** | Create entity before rate limiting: `await limiter.create_entity(...)` |
 | **No stored limits configured** | Set limits via `set_system_defaults()`, `set_resource_defaults()`, or `set_limits()` |
 | **Stale bucket state** | Bucket refills over time; tokens may have refilled |
-| **Limit configuration mismatch** | Verify limit `capacity`, `burst`, and `refill_rate` match expectations |
+| **Limit configuration mismatch** | Verify limit `capacity` and `refill_rate` match expectations |
 
 **Verify entity exists:**
 
@@ -209,7 +209,6 @@ aws dynamodb put-item --table-name <name> \
     "PK": {"S": "ENTITY#<entity_id>"},
     "SK": {"S": "#LIMIT#<resource>#<limit_name>"},
     "capacity": {"N": "1000000"},
-    "burst": {"N": "1000000"},
     "refill_amount": {"N": "1000000"},
     "refill_period": {"N": "60"}
   }'

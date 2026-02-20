@@ -84,7 +84,6 @@ class TestBucketTTLCalculation:
         slow_refill_limit = Limit(
             name="tokens",
             capacity=1000,
-            burst=1000,
             refill_amount=10,
             refill_period_seconds=60,
         )
@@ -124,7 +123,6 @@ class TestBucketTTLCalculation:
             Limit(  # time_to_fill = 6000s
                 name="slow",
                 capacity=1000,
-                burst=1000,
                 refill_amount=10,
                 refill_period_seconds=60,
             ),
@@ -165,7 +163,7 @@ class TestSchemaCompositeKeys:
         """parse_bucket_attr returns (limit_name, field) for valid attributes."""
         assert parse_bucket_attr("b_rpm_tk") == ("rpm", "tk")
         assert parse_bucket_attr("b_tpm_cp") == ("tpm", "cp")
-        assert parse_bucket_attr("b_my_limit_bx") == ("my_limit", "bx")
+        assert parse_bucket_attr("b_my_limit_ra") == ("my_limit", "ra")
 
     def test_parse_bucket_attr_not_bucket(self):
         """parse_bucket_attr returns None for non-bucket attributes."""
@@ -200,13 +198,13 @@ class TestSchemaCompositeLimitKeys:
     def test_limit_attr_builds_correct_format(self):
         """limit_attr builds l_{name}_{field} format."""
         assert limit_attr("rpm", "cp") == "l_rpm_cp"
-        assert limit_attr("tpm", "bx") == "l_tpm_bx"
+        assert limit_attr("tpm", "ra") == "l_tpm_ra"
         assert limit_attr("my_limit", "ra") == "l_my_limit_ra"
 
     def test_parse_limit_attr_valid(self):
         """parse_limit_attr returns (limit_name, field) for valid attributes."""
         assert parse_limit_attr("l_rpm_cp") == ("rpm", "cp")
-        assert parse_limit_attr("l_tpm_bx") == ("tpm", "bx")
+        assert parse_limit_attr("l_tpm_ra") == ("tpm", "ra")
         assert parse_limit_attr("l_my_limit_ra") == ("my_limit", "ra")
 
     def test_parse_limit_attr_not_limit(self):
@@ -592,9 +590,8 @@ class TestRepositoryTransactions:
         assert "data" not in put_spec["Item"]
         item = put_spec["Item"]
 
-        assert item["b_rpm_tk"]["N"] == str(100_000)  # burst capacity
+        assert item["b_rpm_tk"]["N"] == str(100_000)  # capacity
         assert item["b_rpm_cp"]["N"] == str(100_000)
-        assert item["b_rpm_bx"]["N"] == str(100_000)
         assert item["b_rpm_ra"]["N"] == str(100_000)
         assert item["b_rpm_rp"]["N"] == str(60_000)
         assert item["resource"]["S"] == "gpt-4"
@@ -738,7 +735,6 @@ class TestCompositeBucketTTL:
             tokens_milli=100000,
             last_refill_ms=now_ms,
             capacity_milli=100000,
-            burst_milli=100000,
             refill_amount_milli=100000,
             refill_period_ms=60000,
             total_consumed_milli=0,
@@ -769,7 +765,6 @@ class TestCompositeBucketTTL:
             tokens_milli=100000,
             last_refill_ms=now_ms,
             capacity_milli=100000,
-            burst_milli=100000,
             refill_amount_milli=100000,
             refill_period_ms=60000,
             total_consumed_milli=0,
@@ -875,13 +870,11 @@ class TestCompositeLimitConfig:
 
         # Check rpm attributes
         assert item["l_rpm_cp"]["N"] == "100"
-        assert item["l_rpm_bx"]["N"] == "100"
         assert item["l_rpm_ra"]["N"] == "100"
         assert item["l_rpm_rp"]["N"] == "60"
 
         # Check tpm attributes
         assert item["l_tpm_cp"]["N"] == "10000"
-        assert item["l_tpm_bx"]["N"] == "10000"
         assert item["l_tpm_ra"]["N"] == "10000"
         assert item["l_tpm_rp"]["N"] == "60"
 
@@ -890,11 +883,9 @@ class TestCompositeLimitConfig:
         """_deserialize_composite_limits reconstructs Limit objects from l_* attrs."""
         item = {
             "l_rpm_cp": {"N": "100"},
-            "l_rpm_bx": {"N": "150"},
             "l_rpm_ra": {"N": "100"},
             "l_rpm_rp": {"N": "60"},
             "l_tpm_cp": {"N": "10000"},
-            "l_tpm_bx": {"N": "10000"},
             "l_tpm_ra": {"N": "10000"},
             "l_tpm_rp": {"N": "60"},
             "entity_id": {"S": "test"},  # non-limit attr should be ignored
@@ -905,12 +896,10 @@ class TestCompositeLimitConfig:
         limit_map = {limit.name: limit for limit in limits}
 
         assert limit_map["rpm"].capacity == 100
-        assert limit_map["rpm"].burst == 150
         assert limit_map["rpm"].refill_amount == 100
         assert limit_map["rpm"].refill_period_seconds == 60
 
         assert limit_map["tpm"].capacity == 10000
-        assert limit_map["tpm"].burst == 10000
 
     @pytest.mark.asyncio
     async def test_deserialize_composite_limits_empty_item(self, repo):

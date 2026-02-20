@@ -262,8 +262,8 @@ A `Limit` defines a rate limit using the [token bucket algorithm](guide/token-bu
 # 100 requests per minute
 Limit.per_minute("rpm", 100)
 
-# 10,000 tokens per minute with 15,000 burst capacity
-Limit.per_minute("tpm", 10_000, burst=15_000)
+# 10,000 tokens per minute
+Limit.per_minute("tpm", 10_000)
 
 # 1,000 requests per hour
 Limit.per_hour("rph", 1_000)
@@ -275,10 +275,9 @@ Limit.custom("requests", capacity=50, refill_amount=50, refill_period_seconds=30
 | Parameter | Description |
 |-----------|-------------|
 | `name` | Unique identifier (e.g., "rpm", "tpm") |
-| `capacity` | Tokens that refill per period (sustained rate) |
-| `burst` | Maximum bucket size (defaults to capacity) |
+| `capacity` | Maximum tokens in the bucket (the ceiling) |
 
-See [Token Bucket Algorithm](guide/token-bucket.md) for details on how capacity, burst, and refill work together.
+See [Token Bucket Algorithm](guide/token-bucket.md) for details on how capacity and refill work together.
 
 ## Handling Rate Limit Errors
 

@@ -50,7 +50,7 @@ def refill_bucket(
     tokens_milli: int,
     last_refill_ms: int,
     now_ms: int,
-    burst_milli: int,
+    capacity_milli: int,
     refill_amount_milli: int,
     refill_period_ms: int,
 ) -> RefillResult:
@@ -67,7 +67,7 @@ def refill_bucket(
         tokens_milli: Current tokens in millitokens
         last_refill_ms: Last refill timestamp in epoch milliseconds
         now_ms: Current timestamp in epoch milliseconds
-        burst_milli: Maximum bucket capacity in millitokens
+        capacity_milli: Maximum bucket capacity (ceiling) in millitokens
         refill_amount_milli: Refill amount numerator in millitokens
         refill_period_ms: Refill period denominator in milliseconds
 
@@ -90,8 +90,8 @@ def refill_bucket(
     # This is the inverse: time_used = tokens_added * period / amount
     time_used_ms = (tokens_to_add * refill_period_ms) // refill_amount_milli
 
-    # Cap at burst and update timestamp
-    new_tokens = min(burst_milli, tokens_milli + tokens_to_add)
+    # Cap at capacity and update timestamp
+    new_tokens = min(capacity_milli, tokens_milli + tokens_to_add)
     new_last_refill = last_refill_ms + time_used_ms
 
     return RefillResult(new_tokens, new_last_refill)
@@ -121,7 +121,7 @@ def try_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        burst_milli=state.burst_milli,
+        capacity_milli=state.capacity_milli,
         refill_amount_milli=state.refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
@@ -199,7 +199,7 @@ def calculate_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        burst_milli=state.burst_milli,
+        capacity_milli=state.capacity_milli,
         refill_amount_milli=state.refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
@@ -226,7 +226,7 @@ def calculate_time_until_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        burst_milli=state.burst_milli,
+        capacity_milli=state.capacity_milli,
         refill_amount_milli=state.refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
@@ -266,7 +266,7 @@ def force_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        burst_milli=state.burst_milli,
+        capacity_milli=state.capacity_milli,
         refill_amount_milli=state.refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )

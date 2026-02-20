@@ -157,7 +157,7 @@ async def main() -> None:
         entity_id="user-premium",
         limits=[
             Limit.per_minute("rpm", 1000),
-            Limit.per_minute("tpm", 100_000, burst=150_000),  # Higher burst!
+            Limit.per_minute("tpm", 150_000),  # Higher capacity!
         ],
     )
     await limiter.set_limits(

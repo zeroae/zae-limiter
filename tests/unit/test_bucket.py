@@ -22,7 +22,7 @@ class TestRefillBucket:
             tokens_milli=50_000_000,  # 50k tokens
             last_refill_ms=1000,
             now_ms=1000,
-            burst_milli=100_000_000,
+            capacity_milli=100_000_000,
             refill_amount_milli=100_000_000,
             refill_period_ms=60_000,
         )
@@ -36,24 +36,24 @@ class TestRefillBucket:
             tokens_milli=0,
             last_refill_ms=0,
             now_ms=30_000,  # 30 seconds
-            burst_milli=100_000_000,
+            capacity_milli=100_000_000,
             refill_amount_milli=100_000_000,
             refill_period_ms=60_000,
         )
         assert result.new_tokens_milli == 50_000_000  # 50k tokens
 
-    def test_full_refill_capped_at_burst(self):
-        """Refill capped at burst capacity."""
-        # 2 minutes elapsed, but capped at burst
+    def test_full_refill_capped_at_capacity(self):
+        """Refill capped at capacity."""
+        # 2 minutes elapsed, but capped at capacity
         result = refill_bucket(
             tokens_milli=0,
             last_refill_ms=0,
             now_ms=120_000,  # 2 minutes
-            burst_milli=100_000_000,
+            capacity_milli=100_000_000,
             refill_amount_milli=100_000_000,
             refill_period_ms=60_000,
         )
-        assert result.new_tokens_milli == 100_000_000  # capped at burst
+        assert result.new_tokens_milli == 100_000_000  # capped at capacity
 
     def test_negative_bucket_refills(self):
         """Negative bucket refills towards zero."""
@@ -61,7 +61,7 @@ class TestRefillBucket:
             tokens_milli=-50_000_000,  # -50k tokens (debt)
             last_refill_ms=0,
             now_ms=30_000,  # 30 seconds
-            burst_milli=100_000_000,
+            capacity_milli=100_000_000,
             refill_amount_milli=100_000_000,
             refill_period_ms=60_000,
         )
@@ -82,7 +82,6 @@ class TestTryConsume:
             tokens_milli=100_000_000,  # 100k tokens
             last_refill_ms=0,
             capacity_milli=100_000_000,
-            burst_milli=100_000_000,
             refill_amount_milli=100_000_000,
             refill_period_ms=60_000,
         )
@@ -168,7 +167,6 @@ class TestForceConsume:
             tokens_milli=100_000_000,
             last_refill_ms=0,
             capacity_milli=100_000_000,
-            burst_milli=100_000_000,
             refill_amount_milli=100_000_000,
             refill_period_ms=60_000,
         )
@@ -201,7 +199,6 @@ class TestCalculateAvailable:
             tokens_milli=0,
             last_refill_ms=0,
             capacity_milli=100_000_000,
-            burst_milli=100_000_000,
             refill_amount_milli=100_000_000,
             refill_period_ms=60_000,
         )
@@ -218,7 +215,6 @@ class TestCalculateAvailable:
             tokens_milli=-100_000_000,  # 100k debt
             last_refill_ms=0,
             capacity_milli=100_000_000,
-            burst_milli=100_000_000,
             refill_amount_milli=100_000_000,
             refill_period_ms=60_000,
         )
@@ -236,7 +232,6 @@ class TestWouldRefillSatisfy:
         tokens_milli: int = 0,
         last_refill_ms: int = 0,
         capacity_milli: int = 100_000,
-        burst_milli: int = 100_000,
         refill_amount_milli: int = 100_000,
         refill_period_ms: int = 60_000,
     ) -> BucketState:
@@ -247,7 +242,6 @@ class TestWouldRefillSatisfy:
             tokens_milli=tokens_milli,
             last_refill_ms=last_refill_ms,
             capacity_milli=capacity_milli,
-            burst_milli=burst_milli,
             refill_amount_milli=refill_amount_milli,
             refill_period_ms=refill_period_ms,
         )
@@ -279,7 +273,6 @@ class TestWouldRefillSatisfy:
             tokens_milli=0,
             last_refill_ms=0,
             capacity_milli=200_000_000,
-            burst_milli=200_000_000,
             refill_amount_milli=200_000_000,
             refill_period_ms=60_000,
         )
@@ -297,7 +290,6 @@ class TestWouldRefillSatisfy:
             tokens_milli=0,
             last_refill_ms=0,
             capacity_milli=1_000,
-            burst_milli=1_000,
             refill_amount_milli=1_000,
             refill_period_ms=60_000,
         )

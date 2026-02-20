@@ -32,7 +32,6 @@ async def get_limits(
                 name=limit.name,
                 capacity=limit.capacity,
                 refill_rate=limit.refill_amount / limit.refill_period_seconds,
-                burst=limit.burst if limit.burst != limit.capacity else None,
             )
             for limit in limits
         ],
@@ -64,7 +63,6 @@ async def set_limits(
             capacity=lc.capacity,
             refill_amount=refill_amount,
             refill_period_seconds=refill_period,
-            burst=lc.burst or lc.capacity,
         )
         limits.append(limit)
 

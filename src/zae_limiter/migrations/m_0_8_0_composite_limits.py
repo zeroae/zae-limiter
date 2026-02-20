@@ -82,8 +82,8 @@ async def _migrate_system_limits(
             limits.append(
                 Limit(
                     name=limit_name,
-                    capacity=int(item.get("capacity", {}).get("N", "0")),
-                    burst=int(item.get("burst", {}).get("N", "0")),
+                    # old burst → new capacity (ceiling preservation)
+                    capacity=int(item.get("burst", {}).get("N", "0")),
                     refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
                     refill_period_seconds=int(item.get("refill_period_seconds", {}).get("N", "0")),
                 )
@@ -176,8 +176,8 @@ async def _migrate_resource_limits(
                 limits.append(
                     Limit(
                         name=limit_name,
-                        capacity=int(item.get("capacity", {}).get("N", "0")),
-                        burst=int(item.get("burst", {}).get("N", "0")),
+                        # old burst → new capacity (ceiling preservation)
+                        capacity=int(item.get("burst", {}).get("N", "0")),
                         refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
                         refill_period_seconds=int(
                             item.get("refill_period_seconds", {}).get("N", "0")
@@ -271,8 +271,8 @@ async def _migrate_entity_limits(
                 limits.append(
                     Limit(
                         name=limit_name,
-                        capacity=int(item.get("capacity", {}).get("N", "0")),
-                        burst=int(item.get("burst", {}).get("N", "0")),
+                        # old burst → new capacity (ceiling preservation)
+                        capacity=int(item.get("burst", {}).get("N", "0")),
                         refill_amount=int(item.get("refill_amount", {}).get("N", "0")),
                         refill_period_seconds=int(
                             item.get("refill_period_seconds", {}).get("N", "0")

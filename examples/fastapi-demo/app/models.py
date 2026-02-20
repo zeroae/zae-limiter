@@ -74,7 +74,6 @@ class LimitConfig(BaseModel):
     name: str = Field(..., description="Limit name (e.g., rpm, tpm)")
     capacity: int = Field(..., description="Maximum tokens/requests")
     refill_rate: float = Field(..., description="Tokens per second")
-    burst: int | None = Field(default=None, description="Burst allowance")
 
 
 class SetLimitsRequest(BaseModel):

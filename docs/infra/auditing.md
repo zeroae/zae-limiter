@@ -36,7 +36,7 @@ event = AuditEvent(
     resource="gpt-4",
     details={
         "limits": [
-            {"name": "rpm", "capacity": 100, "burst": 150}
+            {"name": "rpm", "capacity": 100}
         ]
     }
 )

@@ -2054,19 +2054,16 @@ def usage_summary(
 
 
 def _parse_limit(limit_str: str) -> Limit:
-    """Parse a limit string in format 'name:capacity:burst' or 'name:capacity'."""
+    """Parse a limit string in format 'name:capacity'."""
     from .models import Limit as LimitModel
 
     parts = limit_str.split(":")
     if len(parts) < 2:
-        raise click.BadParameter(
-            f"Invalid limit format: {limit_str}. Expected 'name:capacity[:burst]'"
-        )
+        raise click.BadParameter(f"Invalid limit format: {limit_str}. Expected 'name:capacity'")
 
     name = parts[0]
     try:
         capacity = int(parts[1])
-        burst = int(parts[2]) if len(parts) > 2 else capacity
     except ValueError as e:
         raise click.BadParameter(f"Invalid limit values in '{limit_str}': {e}") from e
 
@@ -2074,7 +2071,6 @@ def _parse_limit(limit_str: str) -> Limit:
     return LimitModel(
         name=name,
         capacity=capacity,
-        burst=burst,
         refill_amount=capacity,
         refill_period_seconds=60,
     )
@@ -2082,7 +2078,7 @@ def _parse_limit(limit_str: str) -> Limit:
 
 def _format_limit(limit: Limit) -> str:
     """Format a limit for display."""
-    return f"{limit.name}: {limit.capacity:,}/min (burst: {limit.burst:,})"
+    return f"{limit.name}: {limit.capacity:,}/min"
 
 
 @cli.group()
@@ -2103,8 +2099,8 @@ Examples:
     # Set TPM and RPM defaults for gpt-4
     zae-limiter resource set-defaults gpt-4 -l tpm:100000 -l rpm:1000
     \b
-    # Set limits with burst capacity
-    zae-limiter resource set-defaults claude-3 -l tpm:50000:75000
+    # Set limits for claude-3
+    zae-limiter resource set-defaults claude-3 -l tpm:50000
 """,
 )
 @click.argument("resource_name")
@@ -2128,7 +2124,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit: 'name:capacity' (repeatable). Example: -l tpm:10000 -l rpm:500",
 )
 @namespace_option
 def resource_set_defaults(
@@ -2151,8 +2147,8 @@ def resource_set_defaults(
         # Set TPM and RPM defaults for gpt-4
         zae-limiter resource set-defaults gpt-4 -l tpm:100000 -l rpm:1000
 
-        # Set limits with burst capacity
-        zae-limiter resource set-defaults claude-3 -l tpm:50000:75000
+        # Set limits for claude-3
+        zae-limiter resource set-defaults claude-3 -l tpm:50000
         ```
     """
     from .exceptions import ValidationError
@@ -2234,8 +2230,8 @@ def resource_get_defaults(
     **Sample Output:**
         ```
         Defaults for resource 'gpt-4':
-          rpm: 500/min (burst: 500)
-          tpm: 50000/min (burst: 50000)
+          rpm: 500/min
+          tpm: 50000/min
         ```
     """
     from .exceptions import ValidationError
@@ -2461,7 +2457,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit: 'name:capacity' (repeatable). Example: -l tpm:10000 -l rpm:500",
 )
 @click.option(
     "--on-unavailable",
@@ -2576,8 +2572,8 @@ def system_get_defaults(
         ```
         System-wide defaults:
           Limits:
-            rpm: 1000/min (burst: 1000)
-            tpm: 100000/min (burst: 100000)
+            rpm: 1000/min
+            tpm: 100000/min
           on_unavailable: allow
         ```
     """
@@ -2891,8 +2887,8 @@ Examples:
     # Set premium user limits for gpt-4
     zae-limiter entity set-limits user-premium -r gpt-4 -l tpm:100000 -l rpm:1000
     \b
-    # Set limits with burst
-    zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000:75000
+    # Set limits for claude-3
+    zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000
 """,
 )
 @click.argument("entity_id")
@@ -2923,7 +2919,7 @@ Examples:
     "limits",
     multiple=True,
     required=True,
-    help="Limit: 'name:capacity[:burst]' (repeatable). Example: -l tpm:10000 -l rpm:500",
+    help="Limit: 'name:capacity' (repeatable). Example: -l tpm:10000 -l rpm:500",
 )
 @namespace_option
 def entity_set_limits(
@@ -2947,8 +2943,8 @@ def entity_set_limits(
         # Set premium user limits for gpt-4
         zae-limiter entity set-limits user-premium -r gpt-4 -l tpm:100000 -l rpm:1000
 
-        # Set limits with burst
-        zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000:75000
+        # Set limits for claude-3
+        zae-limiter entity set-limits api-key-123 -r claude-3 -l tpm:50000
         ```
     """
     from .exceptions import ValidationError
@@ -3041,8 +3037,8 @@ def entity_get_limits(
     **Sample Output:**
         ```
         Limits for entity 'user-premium' on resource 'gpt-4':
-          rpm: 1000/min (burst: 1000)
-          tpm: 100000/min (burst: 100000)
+          rpm: 1000/min
+          tpm: 100000/min
         ```
     """
     from .exceptions import ValidationError

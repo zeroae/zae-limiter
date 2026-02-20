@@ -1355,7 +1355,6 @@ class SyncRepository:
             tokens_milli=limit.capacity * 1000,
             last_refill_ms=now_ms,
             capacity_milli=limit.capacity * 1000,
-            burst_milli=limit.burst * 1000,
             refill_amount_milli=limit.refill_amount * 1000,
             refill_period_ms=limit.refill_period_seconds * 1000,
             total_consumed_milli=0,
@@ -1461,7 +1460,6 @@ class SyncRepository:
             item[schema.bucket_attr(name, schema.BUCKET_FIELD_CP)] = {
                 "N": str(state.capacity_milli)
             }
-            item[schema.bucket_attr(name, schema.BUCKET_FIELD_BX)] = {"N": str(state.burst_milli)}
             item[schema.bucket_attr(name, schema.BUCKET_FIELD_RA)] = {
                 "N": str(state.refill_amount_milli)
             }
@@ -1887,7 +1885,7 @@ class SyncRepository:
     ) -> None:
         """Sync bucket static params when limits change (issue #294, #327).
 
-        Updates capacity, burst, refill_amount, refill_period, and TTL for
+        Updates capacity, refill_amount, refill_period, and TTL for
         existing buckets. Optionally removes stale limit attributes.
         Uses conditional update with attribute_exists(PK) to skip if
         bucket doesn't exist yet.
@@ -1917,10 +1915,6 @@ class SyncRepository:
             set_parts.append(f"#cp{i} = :cp{i}")
             expr_names[f"#cp{i}"] = cp_attr
             expr_values[f":cp{i}"] = {"N": str(limit.capacity * 1000)}
-            bx_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_BX)
-            set_parts.append(f"#bx{i} = :bx{i}")
-            expr_names[f"#bx{i}"] = bx_attr
-            expr_values[f":bx{i}"] = {"N": str(limit.burst * 1000)}
             ra_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_RA)
             set_parts.append(f"#ra{i} = :ra{i}")
             expr_names[f"#ra{i}"] = ra_attr
@@ -1946,7 +1940,6 @@ class SyncRepository:
                 for field in (
                     schema.BUCKET_FIELD_TK,
                     schema.BUCKET_FIELD_CP,
-                    schema.BUCKET_FIELD_BX,
                     schema.BUCKET_FIELD_RA,
                     schema.BUCKET_FIELD_RP,
                     schema.BUCKET_FIELD_TC,
@@ -1983,7 +1976,7 @@ class SyncRepository:
     ) -> None:
         """Reconcile bucket to effective defaults after config deletion (issue #327).
 
-        Updates limit fields (cp, bx, ra, rp) to match the new effective
+        Updates limit fields (cp, ra, rp) to match the new effective
         limits, sets TTL (since entity is now on defaults), and removes
         stale limit attributes that no longer exist in the effective config.
 
@@ -3003,7 +2996,6 @@ class SyncRepository:
             tokens_milli=int(item["tokens_milli"]["N"]),
             last_refill_ms=int(item.get("last_refill_ms", {}).get("N", "0")),
             capacity_milli=int(item.get("capacity_milli", {}).get("N", "0")),
-            burst_milli=int(item.get("burst_milli", {}).get("N", "0")),
             refill_amount_milli=int(item.get("refill_amount_milli", {}).get("N", "0")),
             refill_period_ms=int(item.get("refill_period_ms", {}).get("N", "0")),
             total_consumed_milli=total_consumed_milli,
@@ -3043,7 +3035,6 @@ class SyncRepository:
                     tokens_milli=_get(schema.BUCKET_FIELD_TK),
                     last_refill_ms=rf,
                     capacity_milli=_get(schema.BUCKET_FIELD_CP),
-                    burst_milli=_get(schema.BUCKET_FIELD_BX),
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
@@ -3066,7 +3057,6 @@ class SyncRepository:
         for limit in limits:
             name = limit.name
             base_item[schema.limit_attr(name, schema.LIMIT_FIELD_CP)] = {"N": str(limit.capacity)}
-            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_BX)] = {"N": str(limit.burst)}
             base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RA)] = {
                 "N": str(limit.refill_amount)
             }
@@ -3104,7 +3094,6 @@ class SyncRepository:
                 Limit(
                     name=name,
                     capacity=_get(schema.LIMIT_FIELD_CP),
-                    burst=_get(schema.LIMIT_FIELD_BX),
                     refill_amount=_get(schema.LIMIT_FIELD_RA),
                     refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
                 )

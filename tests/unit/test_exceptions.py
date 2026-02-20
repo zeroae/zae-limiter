@@ -149,7 +149,8 @@ class TestRateLimitExceeded:
         assert limit_info["exceeded"] is True
         assert limit_info["retry_after_seconds"] == 7.5
         assert limit_info["capacity"] == 100
-        assert limit_info["burst"] == 100
+        assert limit_info["refill_amount"] == 100
+        assert limit_info["refill_period_seconds"] == 60
 
     def test_retry_after_header_rounds_up(self) -> None:
         """retry_after_header rounds up fractional seconds."""

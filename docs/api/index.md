@@ -45,9 +45,6 @@ Limit.per_minute("rpm", 100)
 Limit.per_hour("rph", 1000)
 Limit.per_day("rpd", 10000)
 
-# With burst capacity
-Limit.per_minute("tpm", 10_000, burst=15_000)
-
 # Custom period
 Limit.custom("requests", capacity=50, refill_amount=50, refill_period_seconds=30)
 ```

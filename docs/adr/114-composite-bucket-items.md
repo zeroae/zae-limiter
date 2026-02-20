@@ -26,7 +26,7 @@ already skips META reads on cache hits.
 All limits for an entity+resource must be stored in a single composite DynamoDB
 item with SK `#BUCKET#{resource}`. Per-limit attributes must use the prefix
 `b_{limit_name}_{field}` with short field names: `tk` (tokens), `cp` (capacity),
-`bx` (burst), `ra` (refill amount), `rp` (refill period), `tc` (total consumed).
+`ra` (refill amount), `rp` (refill period), `tc` (total consumed).
 GSI2SK must be per-entity (`BUCKET#{entity_id}`), not per-limit.
 
 ## Consequences

@@ -28,7 +28,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 
 ## Features
 
-- **Token Bucket Algorithm** - Precise rate limiting with configurable burst capacity
+- **Token Bucket Algorithm** - Precise rate limiting with configurable capacity and refill rates
 - **Multiple Limits** - Track requests per minute, tokens per minute, etc. in a single call
 - **Hierarchical Entities** - Two-level hierarchy (project → API keys) with cascade mode
 - **Atomic Transactions** - Multi-key updates via DynamoDB TransactWriteItems
@@ -51,7 +51,7 @@ limiter = RateLimiter(repository=repo)
 # Define default limits (can be overridden per-entity)
 default_limits = [
     Limit.per_minute("rpm", 100),
-    Limit.per_minute("tpm", 10_000, burst=50_000),  # Token bucket with burst
+    Limit.per_minute("tpm", 10_000),
 ]
 
 async with limiter.acquire(
