@@ -781,6 +781,28 @@ class TestOpen:
                 await repo.close()
 
     @pytest.mark.asyncio
+    async def test_open_reraises_non_resource_not_found_errors(self, mock_dynamodb):
+        """open() re-raises ClientError when it's not ResourceNotFoundException."""
+        with (
+            patch.object(
+                Repository,
+                "_resolve_namespace",
+                new_callable=AsyncMock,
+                side_effect=ClientError(
+                    {
+                        "Error": {
+                            "Code": "AccessDeniedException",
+                            "Message": "Access denied",
+                        }
+                    },
+                    "GetItem",
+                ),
+            ),
+        ):
+            with pytest.raises(ClientError, match="AccessDeniedException"):
+                await Repository.open(stack="test-open-access-denied")
+
+    @pytest.mark.asyncio
     async def test_open_resolves_stack_from_env(self, mock_dynamodb):
         """open() resolves stack name from ZAEL_STACK env var."""
         await _create_table("test-env-stack")
