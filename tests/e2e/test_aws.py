@@ -1220,3 +1220,232 @@ class TestE2EAWSSpeculativeConsume:
         assert result.success is False
         assert result.old_buckets is not None
         assert result.old_buckets[0].tokens_milli == 1_000
+
+
+class TestE2EAWSProvisioner:
+    """E2E tests for declarative limits provisioner against real AWS DynamoDB.
+
+    Tests the handler functions directly against a real DynamoDB table.
+    The provisioner handler uses boto3 sync clients internally, so we call
+    the handler functions directly rather than invoking through Lambda.
+    """
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def aws_provisioner_repo(self, unique_name_class):
+        """Create a minimal stack for provisioner testing. Class-scoped to share stack."""
+        stack_options = StackOptions(
+            enable_aggregator=False,
+            enable_alarms=False,
+            usage_retention_days=1,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
+        )
+
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
+        )
+
+        yield repo
+
+        try:
+            await repo.delete_stack()
+        except Exception as e:
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.close()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_provisioner_full_lifecycle(self, aws_provisioner_repo):
+        """Full provisioner lifecycle: apply → verify → modify → verify → delete.
+
+        Exercises the handler against real AWS DynamoDB to validate:
+        - Provisioner state persistence (#PROVISIONER record)
+        - Create/update/delete operations on config records
+        - Compatibility with Repository API for readback
+        """
+        from zae_limiter_provisioner.handler import _handle_cli
+
+        repo = aws_provisioner_repo
+        table_name = repo.table_name
+        namespace_id = repo._namespace_id
+
+        # Step 1: Apply initial manifest
+        manifest_v1 = {
+            "namespace": "default",
+            "system": {
+                "on_unavailable": "block",
+                "limits": {"rpm": {"capacity": 1000}},
+            },
+            "resources": {
+                "gpt-4": {"limits": {"tpm": {"capacity": 50000}}},
+                "claude-3": {"limits": {"rpm": {"capacity": 500}}},
+            },
+            "entities": {
+                "user-premium": {
+                    "resources": {
+                        "gpt-4": {"limits": {"rpm": {"capacity": 2000}}},
+                    },
+                },
+            },
+        }
+        event_v1 = {
+            "action": "apply",
+            "table_name": table_name,
+            "namespace_id": namespace_id,
+            "manifest": manifest_v1,
+        }
+        r1 = _handle_cli(event_v1, None)
+        assert r1["status"] == "applied"
+        assert r1["created"] == 4  # system + 2 resources + 1 entity
+        assert r1["errors"] == []
+
+        # Verify via Repository API
+        system_limits, on_unavailable = await repo.get_system_defaults()
+        assert on_unavailable == "block"
+        assert any(lim.name == "rpm" and lim.capacity == 1000 for lim in system_limits)
+
+        gpt4_limits = await repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "tpm" and lim.capacity == 50000 for lim in gpt4_limits)
+
+        entity_limits = await repo.get_limits("user-premium", "gpt-4")
+        assert any(lim.name == "rpm" and lim.capacity == 2000 for lim in entity_limits)
+
+        # Step 2: Plan (should show updates, not creates)
+        plan_event = {**event_v1, "action": "plan"}
+        plan_result = _handle_cli(plan_event, None)
+        assert plan_result["status"] == "planned"
+        actions = {c["action"] for c in plan_result["changes"]}
+        assert actions == {"update"}
+
+        # Step 3: Modify manifest (update gpt-4, remove claude-3, add entity)
+        manifest_v2 = {
+            "namespace": "default",
+            "system": {
+                "on_unavailable": "allow",
+                "limits": {"rpm": {"capacity": 2000}},
+            },
+            "resources": {
+                "gpt-4": {"limits": {"tpm": {"capacity": 100000}}},
+            },
+            "entities": {
+                "user-premium": {
+                    "resources": {
+                        "gpt-4": {"limits": {"rpm": {"capacity": 3000}}},
+                    },
+                },
+            },
+        }
+        event_v2 = {
+            "action": "apply",
+            "table_name": table_name,
+            "namespace_id": namespace_id,
+            "manifest": manifest_v2,
+        }
+        r2 = _handle_cli(event_v2, None)
+        assert r2["status"] == "applied"
+        assert r2["deleted"] == 1  # claude-3 removed
+        assert r2["updated"] == 3  # system + gpt-4 + entity
+        assert r2["errors"] == []
+
+        # Verify updated values
+        system_limits2, on_unavailable2 = await repo.get_system_defaults()
+        assert on_unavailable2 == "allow"
+        assert any(lim.name == "rpm" and lim.capacity == 2000 for lim in system_limits2)
+
+        gpt4_limits2 = await repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "tpm" and lim.capacity == 100000 for lim in gpt4_limits2)
+
+        # Verify claude-3 was deleted
+        claude_limits = await repo.get_resource_defaults("claude-3")
+        assert claude_limits == []
+
+        # Step 4: Empty manifest deletes everything
+        manifest_empty = {"namespace": "default"}
+        event_empty = {
+            "action": "apply",
+            "table_name": table_name,
+            "namespace_id": namespace_id,
+            "manifest": manifest_empty,
+        }
+        r3 = _handle_cli(event_empty, None)
+        assert r3["status"] == "applied"
+        assert r3["deleted"] == 3  # system + gpt-4 + entity
+
+        # Verify everything is gone
+        system_limits3, _ = await repo.get_system_defaults()
+        assert system_limits3 == []
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_provisioner_cfn_event_lifecycle(self, aws_provisioner_repo):
+        """CFN Create → Update → Delete lifecycle against real AWS."""
+        from zae_limiter_provisioner.handler import _handle_cfn
+
+        repo = aws_provisioner_repo
+        table_name = repo.table_name
+        namespace_id = repo._namespace_id
+
+        # CFN Create
+        cfn_create = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "TableName": table_name,
+                "NamespaceId": namespace_id,
+                "Namespace": "default",
+                "Resources": {
+                    "gpt-4": {
+                        "Limits": {"rpm": {"Capacity": 750}},
+                    },
+                },
+            },
+        }
+        r1 = _handle_cfn(cfn_create, None)
+        assert r1["created"] == 1
+        assert r1["errors"] == []
+
+        # Verify via Repository API
+        limits = await repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "rpm" and lim.capacity == 750 for lim in limits)
+
+        # CFN Update (add system, update gpt-4)
+        cfn_update = {
+            "RequestType": "Update",
+            "ResourceProperties": {
+                "TableName": table_name,
+                "NamespaceId": namespace_id,
+                "Namespace": "default",
+                "System": {
+                    "Limits": {"rpm": {"Capacity": 5000}},
+                },
+                "Resources": {
+                    "gpt-4": {
+                        "Limits": {"rpm": {"Capacity": 1500}},
+                    },
+                },
+            },
+        }
+        r2 = _handle_cfn(cfn_update, None)
+        assert r2["created"] == 1  # system is new
+        assert r2["updated"] == 1  # gpt-4 updated
+        assert r2["errors"] == []
+
+        # CFN Delete — removes all managed items
+        cfn_delete = {
+            "RequestType": "Delete",
+            "ResourceProperties": {
+                "TableName": table_name,
+                "NamespaceId": namespace_id,
+                "Namespace": "default",
+            },
+        }
+        r3 = _handle_cfn(cfn_delete, None)
+        assert r3["deleted"] == 2  # system + gpt-4
+
+        # Verify everything is gone
+        system_limits, _ = await repo.get_system_defaults()
+        assert system_limits == []
+        gpt4_limits = await repo.get_resource_defaults("gpt-4")
+        assert gpt4_limits == []
