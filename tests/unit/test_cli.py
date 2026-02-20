@@ -3546,6 +3546,187 @@ class TestLimitParsing:
 
         assert formatted == "tpm: 10,000/min (burst: 15,000)"
 
+    # --- Period parsing tests ---
+
+    def test_parse_limit_per_second(self) -> None:
+        """Test parsing limit with /sec period."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("rps:50/sec")
+
+        assert limit.name == "rps"
+        assert limit.capacity == 50
+        assert limit.refill_amount == 50
+        assert limit.refill_period_seconds == 1
+
+    def test_parse_limit_per_hour(self) -> None:
+        """Test parsing limit with /hour period."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("tph:100000/hour")
+
+        assert limit.name == "tph"
+        assert limit.capacity == 100000
+        assert limit.refill_amount == 100000
+        assert limit.refill_period_seconds == 3600
+
+    def test_parse_limit_per_day(self) -> None:
+        """Test parsing limit with /day period."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("rpd:1000000/day")
+
+        assert limit.name == "rpd"
+        assert limit.capacity == 1000000
+        assert limit.refill_amount == 1000000
+        assert limit.refill_period_seconds == 86400
+
+    def test_parse_limit_explicit_per_minute(self) -> None:
+        """Test parsing limit with explicit /min period matches default."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("tpm:10000/min")
+
+        assert limit.name == "tpm"
+        assert limit.capacity == 10000
+        assert limit.refill_amount == 10000
+        assert limit.refill_period_seconds == 60
+
+    def test_parse_limit_per_hour_with_burst(self) -> None:
+        """Test parsing limit with /hour period and burst."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("tph:100000/hour:150000")
+
+        assert limit.name == "tph"
+        assert limit.capacity == 150000
+        assert limit.refill_amount == 100000
+        assert limit.refill_period_seconds == 3600
+
+    def test_parse_limit_multiplied_period(self) -> None:
+        """Test parsing limit with multiplied period like /5min."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("rpm:100/5min")
+
+        assert limit.name == "rpm"
+        assert limit.capacity == 100
+        assert limit.refill_amount == 100
+        assert limit.refill_period_seconds == 300
+
+    def test_parse_limit_invalid_period(self) -> None:
+        """Test parsing limit with invalid period raises error."""
+        import click
+
+        from zae_limiter.cli import _parse_limit
+
+        with pytest.raises(click.BadParameter) as exc_info:
+            _parse_limit("rpm:100/week")
+
+        assert "Invalid period" in str(exc_info.value)
+
+    # --- Period formatting tests ---
+
+    def test_format_limit_per_second(self) -> None:
+        """Test formatting a per-second limit."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(name="rps", capacity=50, refill_amount=50, refill_period_seconds=1)
+        assert _format_limit(limit) == "rps: 50/sec"
+
+    def test_format_limit_per_hour(self) -> None:
+        """Test formatting a per-hour limit."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(name="tph", capacity=100000, refill_amount=100000, refill_period_seconds=3600)
+        assert _format_limit(limit) == "tph: 100,000/hour"
+
+    def test_format_limit_per_day(self) -> None:
+        """Test formatting a per-day limit."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(
+            name="rpd", capacity=1000000, refill_amount=1000000, refill_period_seconds=86400
+        )
+        assert _format_limit(limit) == "rpd: 1,000,000/day"
+
+    def test_format_limit_multiplied_period(self) -> None:
+        """Test formatting a limit with non-standard period like 5min."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(name="rpm", capacity=100, refill_amount=100, refill_period_seconds=300)
+        assert _format_limit(limit) == "rpm: 100/5min"
+
+    # --- CLI invocation with period ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_set_with_mixed_periods(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test resource set-defaults with limits using different periods."""
+        mock_repo = Mock()
+        mock_repo.set_resource_defaults = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(
+            cli,
+            ["resource", "set-defaults", "gpt-4", "-l", "rpm:1000/min", "-l", "tph:50000/hour"],
+        )
+
+        assert result.exit_code == 0
+        assert "Set 2 default(s) for resource 'gpt-4'" in result.output
+        assert "rpm: 1,000/min" in result.output
+        assert "tph: 50,000/hour" in result.output
+        limits = mock_repo.set_resource_defaults.call_args[0][1]
+        assert limits[0].refill_period_seconds == 60
+        assert limits[1].refill_period_seconds == 3600
+
+    @patch("zae_limiter.repository.Repository")
+    def test_system_set_with_per_hour_limits(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test system set-defaults with per-hour limits."""
+        mock_repo = Mock()
+        mock_repo.set_system_defaults = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(
+            cli,
+            ["system", "set-defaults", "-l", "tph:100000/hour"],
+        )
+
+        assert result.exit_code == 0
+        assert "tph: 100,000/hour" in result.output
+        limits = mock_repo.set_system_defaults.call_args[0][0]
+        assert limits[0].refill_period_seconds == 3600
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_with_per_day_limit(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test entity set-limits with per-day limit."""
+        mock_repo = Mock()
+        mock_repo.set_limits = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.connect = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(
+            cli,
+            ["entity", "set-limits", "user-123", "-r", "gpt-4", "-l", "rpd:10000/day"],
+        )
+
+        assert result.exit_code == 0
+        assert "rpd: 10,000/day" in result.output
+        limits = mock_repo.set_limits.call_args[0][1]
+        assert limits[0].refill_period_seconds == 86400
+
 
 class TestResourceCommandsEdgeCases:
     """Test edge cases for resource CLI commands."""
