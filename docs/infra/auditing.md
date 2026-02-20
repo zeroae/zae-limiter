@@ -313,7 +313,7 @@ Audit events are stored in the same DynamoDB table with the following schema:
 
 | Key | Format | Description |
 |-----|--------|-------------|
-| PK | `AUDIT#{entity_id}` | Groups events by entity |
+| PK | `{ns}/AUDIT#{entity_id}` | Groups events by entity (namespace-prefixed) |
 | SK | `#AUDIT#{event_id}` | Sorts by event ID (chronological) |
 
 ### Direct DynamoDB Queries
@@ -327,10 +327,11 @@ dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table("limiter")
 
 # Query all audit events for an entity
+# Replace {ns} with your namespace ID (e.g., "default" or an opaque ID)
 response = table.query(
     KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
     ExpressionAttributeValues={
-        ":pk": "AUDIT#api-key-123",
+        ":pk": "{ns}/AUDIT#api-key-123",
         ":sk": "#AUDIT#",
     },
     ScanIndexForward=False,  # Most recent first

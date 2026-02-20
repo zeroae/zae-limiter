@@ -263,7 +263,7 @@ This policy is operator-managed (not owned by the zae-limiter CloudFormation sta
 
 - All entity and limit changes are automatically logged
 - Track who made changes with optional `principal` parameter
-- Events auto-expire after 90 days (configurable via `--audit-ttl-days`)
+- Events auto-expire after 90 days (configurable via `--audit-retention-days`)
 - **Expired events are archived to S3** for long-term retention
 - Archives transition to Glacier IR after 90 days (configurable via `--audit-archive-glacier-days`)
 - For compliance requirements, see [Audit Logging Guide](auditing.md)

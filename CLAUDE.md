@@ -523,9 +523,9 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
 
 **IAM Role Naming (ADR-116):**
 - Pattern: `{role_name_format}.replace("{}", f"{stack_name}-{component}")`
-- Components: `aggr` (Lambda), `app`, `admin`, `read`
+- Components: `aggr` (Lambda aggregator), `prov` (Lambda provisioner), `app`, `admin`, `read`
 - All components ≤ 8 characters (invariant for upgrade safety)
-- Default names: `{stack}-aggr`, `{stack}-app`, `{stack}-admin`, `{stack}-read`
+- Default names: `{stack}-aggr`, `{stack}-prov`, `{stack}-app`, `{stack}-admin`, `{stack}-read`
 - Roles are **opt-in** (set `create_iam_roles=True`)
 
 **IAM Managed Policy Naming (ADR-117):**
@@ -842,6 +842,22 @@ zae-limiter resource set-defaults gpt-4 -l tpm:50000 -l rpm:500
 
 # Entity-level limits (highest precedence)
 zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
+```
+
+**`-l` flag format:** `name:rate[/period][:burst]` where `period` defaults to `/min`. Supported periods: `/sec`, `/min`, `/hour`, `/day`.
+
+```bash
+# Equivalent: 1000 per minute
+-l rpm:1000
+-l rpm:1000/min
+
+# Other periods
+-l rps:10/sec
+-l rph:5000/hour
+-l rpd:100000/day
+
+# With burst
+-l rpm:1000:1500
 ```
 
 Each level also has `get-*` and `delete-*` subcommands. Use `zae-limiter resource list` to list resources with defaults. Use `zae-limiter entity list-resources` to list all resources with entity-level configs. Use `zae-limiter entity list --with-custom-limits <resource>` to list entities with custom limits for a specific resource.
