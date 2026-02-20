@@ -173,3 +173,41 @@ class TestProvisionerBuilder:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
             # Top-level __init__.py should NOT be in the zip
             assert "__init__.py" not in zf.namelist()
+
+    def test_existing_dest_dirs_are_cleaned(self):
+        """Pre-existing dest dirs from pip install are removed before copy."""
+        from zae_limiter.infra.provisioner_builder import build_provisioner_package
+
+        def _build_with_collisions(
+            source_dir: str,
+            artifacts_dir: str,
+            scratch_dir: str,
+            manifest_path: str,
+            runtime: str,
+            architecture: object,
+            **kwargs: object,
+        ) -> None:
+            _mock_builder_build(
+                source_dir, artifacts_dir, scratch_dir, manifest_path, runtime, architecture
+            )
+            # Simulate pip installing packages that collide with our copy targets
+            provisioner_dir = Path(artifacts_dir) / "zae_limiter_provisioner"
+            provisioner_dir.mkdir(parents=True, exist_ok=True)
+            (provisioner_dir / "stale.py").write_text("# stale")
+
+            zae_limiter_dir = Path(artifacts_dir) / "zae_limiter"
+            zae_limiter_dir.mkdir(parents=True, exist_ok=True)
+            (zae_limiter_dir / "stale.py").write_text("# stale")
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _build_with_collisions
+            zip_bytes = build_provisioner_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = zf.namelist()
+            # Stale files should NOT be in the zip
+            assert "zae_limiter_provisioner/stale.py" not in names
+            assert "zae_limiter/stale.py" not in names
+            # Real files should be present
+            assert "zae_limiter_provisioner/__init__.py" in names
+            assert "zae_limiter/__init__.py" in names

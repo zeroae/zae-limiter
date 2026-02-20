@@ -3,7 +3,7 @@
 import io
 import json
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import yaml
 from click.testing import CliRunner
@@ -372,6 +372,44 @@ class TestInvokeProvisioner:
                 payload = json.loads(call_args[1]["Payload"])
                 assert payload["action"] == "plan"
                 assert payload["table_name"] == "test-app"
+
+    def test_invoke_provisioner_resolves_namespace(self):
+        """_invoke_provisioner resolves namespace_id via Repository.connect()."""
+        yaml_content = {"namespace": "test-ns"}
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(yaml_content, f)
+            f.flush()
+
+            runner = CliRunner()
+            mock_repo = MagicMock()
+            mock_repo._namespace_id = "abc123"
+            mock_repo.close = AsyncMock()
+
+            async def _mock_connect(*args, **kwargs):
+                return mock_repo
+
+            with (
+                patch(
+                    "zae_limiter.repository.Repository.connect",
+                    side_effect=_mock_connect,
+                ),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                response_payload = {"status": "planned", "changes": []}
+                mock_lambda.invoke.return_value = {
+                    "Payload": io.BytesIO(json.dumps(response_payload).encode()),
+                }
+                mock_boto3_client.return_value = mock_lambda
+
+                result = runner.invoke(
+                    cli,
+                    ["limits", "plan", "--name", "test-app", "-f", f.name],
+                )
+                assert result.exit_code == 0
+                call_args = mock_lambda.invoke.call_args
+                payload = json.loads(call_args[1]["Payload"])
+                assert payload["namespace_id"] == "abc123"
 
     def test_invoke_provisioner_lambda_error_exits(self):
         """_invoke_provisioner exits on Lambda error response."""
