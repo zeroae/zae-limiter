@@ -1106,6 +1106,89 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#declarative-limits-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declarative Limits Management
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Declarative Limits Management">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#yaml-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        YAML Manifest
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cli-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Workflow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi-namespace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-Namespace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloudformation-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CloudFormation Integration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provisioner-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioner Architecture
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#imperative-vs-declarative" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Imperative vs Declarative
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#next-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3417,6 +3500,89 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#declarative-limits-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declarative Limits Management
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Declarative Limits Management">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#yaml-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        YAML Manifest
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cli-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Workflow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi-namespace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-Namespace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloudformation-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CloudFormation Integration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provisioner-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioner Architecture
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#imperative-vs-declarative" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Imperative vs Declarative
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#next-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4057,6 +4223,152 @@ use CLI deployment or CloudFormation template export. See the
 </ul>
 <p>Policies respect <code>--permission-boundary</code> if configured.</p>
 <p>For detailed IAM configuration and usage examples, see <a href="../cloudformation/#application-iam-policies">CloudFormation - Application IAM Policies</a>.</p>
+<h2 id="declarative-limits-management">Declarative Limits Management<a class="headerlink" href="#declarative-limits-management" title="Permanent link">&para;</a></h2>
+<p>Instead of configuring limits one at a time with <code>system set-defaults</code>, <code>resource set-defaults</code>, and <code>entity set-limits</code>, you can define all limits in a YAML manifest and apply them declaratively. A Lambda provisioner computes diffs and applies only the necessary changes.</p>
+<h3 id="yaml-manifest">YAML Manifest<a class="headerlink" href="#yaml-manifest" title="Permanent link">&para;</a></h3>
+<p>Create a <code>limits.yaml</code> file defining your desired limit configuration:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="nt">system</span><span class="p">:</span>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">  </span><span class="nt">on_unavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">block</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="w">  </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="w">    </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a><span class="w">      </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+</span><span id="__span-23-8"><a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a><span class="w">    </span><span class="nt">tpm</span><span class="p">:</span>
+</span><span id="__span-23-9"><a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a><span class="w">      </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100000</span>
+</span><span id="__span-23-10"><a id="__codelineno-23-10" name="__codelineno-23-10" href="#__codelineno-23-10"></a>
+</span><span id="__span-23-11"><a id="__codelineno-23-11" name="__codelineno-23-11" href="#__codelineno-23-11"></a><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-23-12"><a id="__codelineno-23-12" name="__codelineno-23-12" href="#__codelineno-23-12"></a><span class="w">  </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-23-13"><a id="__codelineno-23-13" name="__codelineno-23-13" href="#__codelineno-23-13"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-23-14"><a id="__codelineno-23-14" name="__codelineno-23-14" href="#__codelineno-23-14"></a><span class="w">      </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-23-15"><a id="__codelineno-23-15" name="__codelineno-23-15" href="#__codelineno-23-15"></a><span class="w">        </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">500</span>
+</span><span id="__span-23-16"><a id="__codelineno-23-16" name="__codelineno-23-16" href="#__codelineno-23-16"></a><span class="w">      </span><span class="nt">tpm</span><span class="p">:</span>
+</span><span id="__span-23-17"><a id="__codelineno-23-17" name="__codelineno-23-17" href="#__codelineno-23-17"></a><span class="w">        </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50000</span>
+</span><span id="__span-23-18"><a id="__codelineno-23-18" name="__codelineno-23-18" href="#__codelineno-23-18"></a><span class="w">  </span><span class="nt">gpt-3.5-turbo</span><span class="p">:</span>
+</span><span id="__span-23-19"><a id="__codelineno-23-19" name="__codelineno-23-19" href="#__codelineno-23-19"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-23-20"><a id="__codelineno-23-20" name="__codelineno-23-20" href="#__codelineno-23-20"></a><span class="w">      </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-23-21"><a id="__codelineno-23-21" name="__codelineno-23-21" href="#__codelineno-23-21"></a><span class="w">        </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
+</span><span id="__span-23-22"><a id="__codelineno-23-22" name="__codelineno-23-22" href="#__codelineno-23-22"></a><span class="w">      </span><span class="nt">tpm</span><span class="p">:</span>
+</span><span id="__span-23-23"><a id="__codelineno-23-23" name="__codelineno-23-23" href="#__codelineno-23-23"></a><span class="w">        </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">500000</span>
+</span><span id="__span-23-24"><a id="__codelineno-23-24" name="__codelineno-23-24" href="#__codelineno-23-24"></a>
+</span><span id="__span-23-25"><a id="__codelineno-23-25" name="__codelineno-23-25" href="#__codelineno-23-25"></a><span class="nt">entities</span><span class="p">:</span>
+</span><span id="__span-23-26"><a id="__codelineno-23-26" name="__codelineno-23-26" href="#__codelineno-23-26"></a><span class="w">  </span><span class="nt">user-premium</span><span class="p">:</span>
+</span><span id="__span-23-27"><a id="__codelineno-23-27" name="__codelineno-23-27" href="#__codelineno-23-27"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-23-28"><a id="__codelineno-23-28" name="__codelineno-23-28" href="#__codelineno-23-28"></a><span class="w">      </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-23-29"><a id="__codelineno-23-29" name="__codelineno-23-29" href="#__codelineno-23-29"></a><span class="w">        </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-23-30"><a id="__codelineno-23-30" name="__codelineno-23-30" href="#__codelineno-23-30"></a><span class="w">          </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-23-31"><a id="__codelineno-23-31" name="__codelineno-23-31" href="#__codelineno-23-31"></a><span class="w">            </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+</span><span id="__span-23-32"><a id="__codelineno-23-32" name="__codelineno-23-32" href="#__codelineno-23-32"></a><span class="w">          </span><span class="nt">tpm</span><span class="p">:</span>
+</span><span id="__span-23-33"><a id="__codelineno-23-33" name="__codelineno-23-33" href="#__codelineno-23-33"></a><span class="w">            </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100000</span>
+</span></code></pre></div>
+<p><strong>Limit fields:</strong> Only <code>capacity</code> is required. When omitted, <code>refill_amount</code> defaults to <code>capacity</code> and <code>refill_period</code> defaults to <code>60</code> seconds. <code>capacity</code> is the bucket ceiling (max tokens). To customize:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="w">  </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="w">    </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span><span class="w">       </span><span class="c1"># Max tokens (bucket ceiling)</span>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="w">    </span><span class="nt">refill_amount</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span><span class="w">   </span><span class="c1"># Refill 100 tokens per period</span>
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a><span class="w">    </span><span class="nt">refill_period</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6</span><span class="w">     </span><span class="c1"># Every 6 seconds (= 1000/min)</span>
+</span></code></pre></div>
+<h3 id="cli-workflow">CLI Workflow<a class="headerlink" href="#cli-workflow" title="Permanent link">&para;</a></h3>
+<p>The typical workflow mirrors <code>terraform plan</code> / <code>terraform apply</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="c1"># 1. Preview what would change</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>plan<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a>
+</span><span id="__span-25-4"><a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="c1"># 2. Apply the changes</span>
+</span><span id="__span-25-5"><a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+</span><span id="__span-25-6"><a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a>
+</span><span id="__span-25-7"><a id="__codelineno-25-7" name="__codelineno-25-7" href="#__codelineno-25-7"></a><span class="c1"># 3. Later, check for drift</span>
+</span><span id="__span-25-8"><a id="__codelineno-25-8" name="__codelineno-25-8" href="#__codelineno-25-8"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>diff<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+</span></code></pre></div>
+<p>The provisioner tracks which items it manages in a <code>#PROVISIONER</code> state record. When you remove an item from the manifest and re-apply, the provisioner deletes it from DynamoDB. Items created outside the manifest (via <code>set-defaults</code> or <code>set-limits</code> CLI commands) are not affected.</p>
+<h3 id="multi-namespace">Multi-Namespace<a class="headerlink" href="#multi-namespace" title="Permanent link">&para;</a></h3>
+<p>Each manifest targets a single namespace. To manage limits for multiple namespaces, use separate YAML files:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="c1"># Different limits per tenant</span>
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-N<span class="w"> </span>tenant-alpha<span class="w"> </span>-f<span class="w"> </span>alpha-limits.yaml
+</span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-N<span class="w"> </span>tenant-beta<span class="w"> </span>-f<span class="w"> </span>beta-limits.yaml
+</span></code></pre></div>
+<h3 id="cloudformation-integration">CloudFormation Integration<a class="headerlink" href="#cloudformation-integration" title="Permanent link">&para;</a></h3>
+<p>Generate a CloudFormation template to manage limits as infrastructure-as-code:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="c1"># Generate the template</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>cfn-template<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml<span class="w"> </span>&gt;<span class="w"> </span>limits-stack.yaml
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="c1"># Deploy with AWS CLI</span>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>aws<span class="w"> </span>cloudformation<span class="w"> </span>deploy<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="w">    </span>--template-file<span class="w"> </span>limits-stack.yaml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="w">    </span>--stack-name<span class="w"> </span>my-app-limits
+</span></code></pre></div>
+<p>The generated template creates a <code>Custom::ZaeLimiterLimits</code> resource backed by the provisioner Lambda. The Lambda ARN is imported from the main zae-limiter stack via <code>Fn::ImportValue</code>:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nt">Resources</span><span class="p">:</span>
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="w">  </span><span class="nt">TenantLimits</span><span class="p">:</span>
+</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="w">    </span><span class="nt">Type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Custom::ZaeLimiterLimits</span>
+</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="w">    </span><span class="nt">Properties</span><span class="p">:</span>
+</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="w">      </span><span class="nt">ServiceToken</span><span class="p">:</span><span class="w"> </span><span class="kt">!ImportValue</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-app-ProvisionerArn</span>
+</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="w">      </span><span class="nt">TableName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-app</span>
+</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="w">      </span><span class="nt">Namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+</span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a><span class="w">      </span><span class="nt">System</span><span class="p">:</span>
+</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a><span class="w">        </span><span class="nt">OnUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">block</span>
+</span><span id="__span-28-10"><a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a><span class="w">        </span><span class="nt">Limits</span><span class="p">:</span>
+</span><span id="__span-28-11"><a id="__codelineno-28-11" name="__codelineno-28-11" href="#__codelineno-28-11"></a><span class="w">          </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-28-12"><a id="__codelineno-28-12" name="__codelineno-28-12" href="#__codelineno-28-12"></a><span class="w">            </span><span class="nt">Capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+</span><span id="__span-28-13"><a id="__codelineno-28-13" name="__codelineno-28-13" href="#__codelineno-28-13"></a><span class="w">      </span><span class="nt">Resources</span><span class="p">:</span>
+</span><span id="__span-28-14"><a id="__codelineno-28-14" name="__codelineno-28-14" href="#__codelineno-28-14"></a><span class="w">        </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-28-15"><a id="__codelineno-28-15" name="__codelineno-28-15" href="#__codelineno-28-15"></a><span class="w">          </span><span class="nt">Limits</span><span class="p">:</span>
+</span><span id="__span-28-16"><a id="__codelineno-28-16" name="__codelineno-28-16" href="#__codelineno-28-16"></a><span class="w">            </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-28-17"><a id="__codelineno-28-17" name="__codelineno-28-17" href="#__codelineno-28-17"></a><span class="w">              </span><span class="nt">Capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">500</span>
+</span></code></pre></div>
+<p>This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).</p>
+<h3 id="provisioner-architecture">Provisioner Architecture<a class="headerlink" href="#provisioner-architecture" title="Permanent link">&para;</a></h3>
+<p>The provisioner is a Lambda function (<code>{stack}-limits-provisioner</code>) that:</p>
+<ol>
+<li><strong>Receives</strong> either a CLI event (action + manifest) or a CloudFormation custom resource event</li>
+<li><strong>Reads</strong> the previous managed state from the <code>#PROVISIONER</code> DynamoDB record</li>
+<li><strong>Computes</strong> a diff between the manifest and previous state (create/update/delete changes)</li>
+<li><strong>Applies</strong> changes via DynamoDB PutItem (create/update) and DeleteItem (delete)</li>
+<li><strong>Updates</strong> the <code>#PROVISIONER</code> record with the new managed set and a SHA-256 hash of the applied manifest</li>
+</ol>
+<p>The provisioner uses the same DynamoDB config records (system <code>#CONFIG</code>, resource <code>#CONFIG</code>, entity <code>#CONFIG#{resource}</code>) as the imperative API, so limits set declaratively are immediately visible to <code>acquire()</code> calls.</p>
+<h3 id="imperative-vs-declarative">Imperative vs Declarative<a class="headerlink" href="#imperative-vs-declarative" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Imperative</th>
+<th>Declarative</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Commands</td>
+<td><code>system set-defaults</code>, <code>resource set-defaults</code>, <code>entity set-limits</code></td>
+<td><code>limits plan</code>, <code>limits apply</code></td>
+</tr>
+<tr>
+<td>State tracking</td>
+<td>None (each command is independent)</td>
+<td><code>#PROVISIONER</code> record tracks managed items</td>
+</tr>
+<tr>
+<td>Drift detection</td>
+<td>Manual comparison</td>
+<td><code>limits diff</code></td>
+</tr>
+<tr>
+<td>Bulk changes</td>
+<td>Multiple commands</td>
+<td>Single YAML file</td>
+</tr>
+<tr>
+<td>CFN integration</td>
+<td>Not available</td>
+<td><code>limits cfn-template</code></td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>Ad-hoc changes, interactive use</td>
+<td>Reproducible config, CI/CD pipelines</td>
+</tr>
+</tbody>
+</table>
+<p>Both approaches write to the same DynamoDB config records and can coexist. However, mixing imperative and declarative management for the same items may cause the provisioner to overwrite manual changes on the next apply.</p>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../production/">Production</a> - Production checklist, security, cost estimation</li>

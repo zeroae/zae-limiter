@@ -3153,13 +3153,13 @@
 <p>Combining multiple limits into a single <code>acquire()</code> call is more efficient than separate calls. See <a href="../../performance/#3-batch-operation-patterns">Batch Operation Patterns</a> for details.</p>
 </div>
 <h2 id="burst-capacity">Burst Capacity<a class="headerlink" href="#burst-capacity" title="Permanent link">&para;</a></h2>
-<p>Allow temporary bursts above the sustained rate:</p>
+<p>Allow temporary bursts above the sustained rate by setting <code>burst</code> higher than the rate:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Sustain 10k tokens/minute, but allow bursts up to 15k</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">limits</span> <span class="o">=</span> <span class="p">[</span>
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="mi">15_000</span><span class="p">),</span>
 </span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="p">]</span>
 </span></code></pre></div>
-<p>The bucket starts full at <code>burst</code> capacity and refills at <code>capacity</code> tokens per period. See <a href="../token-bucket/#capacity-and-burst">Token Bucket Algorithm</a> for details on how burst and capacity interact.</p>
+<p>The bucket starts full at <code>burst</code> capacity and refills at <code>rate</code> tokens per period. See <a href="../token-bucket/#capacity-and-burst">Token Bucket Algorithm</a> for details on how burst and rate interact.</p>
 <h2 id="adjusting-consumption">Adjusting Consumption<a class="headerlink" href="#adjusting-consumption" title="Permanent link">&para;</a></h2>
 <p>Use <code>lease.adjust()</code> to modify consumption after the fact:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>

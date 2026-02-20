@@ -1623,17 +1623,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#burst-capacity" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Burst Capacity
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#design-decisions" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3027,17 +3016,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#burst-capacity" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Burst Capacity
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#design-decisions" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3455,11 +3433,10 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="s2">&quot;SK&quot;</span><span class="p">:</span> <span class="s2">&quot;#CONFIG&quot;</span><span class="p">,</span>                   <span class="c1"># or #CONFIG#{resource} for entity level</span>
 </span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="s2">&quot;resource&quot;</span><span class="p">:</span> <span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
 </span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="s2">&quot;l_tpm_cp&quot;</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>               <span class="c1"># capacity for tpm limit</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="s2">&quot;l_tpm_bx&quot;</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>               <span class="c1"># burst for tpm limit</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="s2">&quot;l_tpm_ra&quot;</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>               <span class="c1"># refill_amount for tpm limit</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="s2">&quot;l_tpm_rp&quot;</span><span class="p">:</span> <span class="mi">60</span><span class="p">,</span>                   <span class="c1"># refill_period_seconds for tpm limit</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="s2">&quot;config_version&quot;</span><span class="p">:</span> <span class="mi">1</span>               <span class="c1"># Atomic counter for cache invalidation</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="p">}</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="s2">&quot;l_tpm_ra&quot;</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>               <span class="c1"># refill_amount for tpm limit</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="s2">&quot;l_tpm_rp&quot;</span><span class="p">:</span> <span class="mi">60</span><span class="p">,</span>                   <span class="c1"># refill_period_seconds for tpm limit</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="s2">&quot;config_version&quot;</span><span class="p">:</span> <span class="mi">1</span>               <span class="c1"># Atomic counter for cache invalidation</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>Config records use four-level precedence: <strong>Entity (resource-specific) &gt; Entity (<em>default</em>) &gt; Resource &gt; System &gt; Constructor defaults</strong>.</p>
 <p><strong>Key builders:</strong></p>
@@ -3582,13 +3559,6 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="n">new_tokens_milli</span> <span class="o">=</span> <span class="n">refill</span><span class="o">.</span><span class="n">new_tokens_milli</span> <span class="o">-</span> <span class="p">(</span><span class="n">amount</span> <span class="o">*</span> <span class="mi">1000</span><span class="p">)</span>
 </span></code></pre></div>
 <p>The debt is repaid as tokens refill over time. A bucket at -1500 millitokens needs 1.5 minutes to reach 0 (at 1000 tokens/minute).</p>
-<h3 id="burst-capacity">Burst Capacity<a class="headerlink" href="#burst-capacity" title="Permanent link">&para;</a></h3>
-<p>Burst allows temporary exceeding of sustained rate:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Sustained: 10k tokens/minute</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1"># Burst: 15k tokens (one-time)</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="mi">15_000</span><span class="p">)</span>
-</span></code></pre></div>
-<p>When <code>burst &gt; capacity</code>, users can consume up to <code>burst</code> tokens immediately, then sustain at <code>capacity</code> rate.</p>
 <h3 id="design-decisions">Design Decisions<a class="headerlink" href="#design-decisions" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -3668,10 +3638,10 @@ selects the DynamoDB API based on item count:</p>
 <li><strong>Single item</strong>: Uses PutItem/UpdateItem (1 WCU) -- non-cascade case</li>
 <li><strong>Multiple items</strong>: Uses TransactWriteItems (2 WCU per item) -- cascade case</li>
 </ul>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># Cascade: atomic multi-entity write</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="c1"># 1. Consume from child entity bucket</span>
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="c1"># 2. Consume from parent entity bucket</span>
-</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="c1"># Both succeed or both fail</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Cascade: atomic multi-entity write</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1"># 1. Consume from child entity bucket</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="c1"># 2. Consume from parent entity bucket</span>
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># Both succeed or both fail</span>
 </span></code></pre></div>
 <p>Transaction limits: max 100 items per transaction.</p>
 <h3 id="independent-writes-adjustments-and-rollbacks">Independent Writes (Adjustments and Rollbacks)<a class="headerlink" href="#independent-writes-adjustments-and-rollbacks" title="Permanent link">&para;</a></h3>
@@ -3683,10 +3653,10 @@ call (1 WCU each). This is safe because:</p>
 <li>Partial success is acceptable -- each item's delta is self-contained</li>
 <li>No cross-item invariant needs to hold between adjustment writes</li>
 </ul>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># write_each: each item written independently</span>
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="c1"># Item 1: ADD child bucket delta    (1 WCU)</span>
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="c1"># Item 2: ADD parent bucket delta   (1 WCU)</span>
-</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="c1"># No transaction overhead</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># write_each: each item written independently</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="c1"># Item 1: ADD child bucket delta    (1 WCU)</span>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="c1"># Item 2: ADD parent bucket delta   (1 WCU)</span>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="c1"># No transaction overhead</span>
 </span></code></pre></div>
 <p>This halves the WCU cost compared to using TransactWriteItems for these paths.</p>
 <h3 id="speculative-write-path-issue-315">Speculative Write Path (Issue #315)<a class="headerlink" href="#speculative-write-path-issue-315" title="Permanent link">&para;</a></h3>
@@ -3735,32 +3705,32 @@ call (1 WCU each). This is safe because:</p>
 <p>The speculative path uses <code>ReturnValuesOnConditionCheckFailure=ALL_OLD</code> to inspect bucket state
 on failure without a separate read. On success, <code>ReturnValues=ALL_NEW</code> provides the post-write
 state including denormalized <code>cascade</code> and <code>parent_id</code> fields.</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>Speculative flow (first acquire — sequential, populates entity cache):
-</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>1. UpdateItem with condition: attribute_exists(PK) AND tk &gt;= consumed
-</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>   +- SUCCESS -&gt; Populate entity cache, Lease is pre-committed
-</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>   |  +- cascade=False -&gt; DONE
-</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>   |  +- cascade=True -&gt; Speculative UpdateItem on parent (sequential)
-</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>   |     +- SUCCESS -&gt; DONE (child + parent both speculative)
-</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>   |     +- FAIL -&gt; [parent failure handling]
-</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>   +- FAIL -&gt; Check ALL_OLD
-</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a>      +- No item (bucket missing) -&gt; Fall back to normal path
-</span><span id="__span-18-10"><a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a>      +- Refill would help -&gt; Fall back to normal path
-</span><span id="__span-18-11"><a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a>      +- Refill won&#39;t help -&gt; RateLimitExceeded (fast rejection)
-</span><span id="__span-18-12"><a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a>
-</span><span id="__span-18-13"><a id="__codelineno-18-13" name="__codelineno-18-13" href="#__codelineno-18-13"></a>Speculative flow (subsequent acquire — parallel, issue #318):
-</span><span id="__span-18-14"><a id="__codelineno-18-14" name="__codelineno-18-14" href="#__codelineno-18-14"></a>1. Entity cache hit: cascade=True, parent_id known
-</span><span id="__span-18-15"><a id="__codelineno-18-15" name="__codelineno-18-15" href="#__codelineno-18-15"></a>2. asyncio.gather(child_speculative, parent_speculative)
-</span><span id="__span-18-16"><a id="__codelineno-18-16" name="__codelineno-18-16" href="#__codelineno-18-16"></a>   +- BOTH SUCCEED -&gt; DONE (1 round trip, 0 RCU, 2 WCU)
-</span><span id="__span-18-17"><a id="__codelineno-18-17" name="__codelineno-18-17" href="#__codelineno-18-17"></a>   +- CHILD FAILS, PARENT SUCCEEDS -&gt; Compensate parent, check child
-</span><span id="__span-18-18"><a id="__codelineno-18-18" name="__codelineno-18-18" href="#__codelineno-18-18"></a>   +- CHILD SUCCEEDS, PARENT FAILS -&gt; [parent failure handling]
-</span><span id="__span-18-19"><a id="__codelineno-18-19" name="__codelineno-18-19" href="#__codelineno-18-19"></a>   +- BOTH FAIL -&gt; Check child ALL_OLD, fall back or fast-reject
-</span><span id="__span-18-20"><a id="__codelineno-18-20" name="__codelineno-18-20" href="#__codelineno-18-20"></a>
-</span><span id="__span-18-21"><a id="__codelineno-18-21" name="__codelineno-18-21" href="#__codelineno-18-21"></a>Parent failure handling (shared by sequential and parallel paths):
-</span><span id="__span-18-22"><a id="__codelineno-18-22" name="__codelineno-18-22" href="#__codelineno-18-22"></a>   +- No ALL_OLD / missing limit -&gt; Compensate child, fall back
-</span><span id="__span-18-23"><a id="__codelineno-18-23" name="__codelineno-18-23" href="#__codelineno-18-23"></a>   +- Refill won&#39;t help -&gt; Compensate child, RateLimitExceeded
-</span><span id="__span-18-24"><a id="__codelineno-18-24" name="__codelineno-18-24" href="#__codelineno-18-24"></a>   +- Refill would help -&gt; Parent-only slow path (read + write parent)
-</span><span id="__span-18-25"><a id="__codelineno-18-25" name="__codelineno-18-25" href="#__codelineno-18-25"></a>      +- SUCCESS -&gt; DONE (child speculative + parent slow path)
-</span><span id="__span-18-26"><a id="__codelineno-18-26" name="__codelineno-18-26" href="#__codelineno-18-26"></a>      +- FAIL -&gt; Compensate child, fall back to full slow path
+<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>Speculative flow (first acquire — sequential, populates entity cache):
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>1. UpdateItem with condition: attribute_exists(PK) AND tk &gt;= consumed
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>   +- SUCCESS -&gt; Populate entity cache, Lease is pre-committed
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>   |  +- cascade=False -&gt; DONE
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>   |  +- cascade=True -&gt; Speculative UpdateItem on parent (sequential)
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>   |     +- SUCCESS -&gt; DONE (child + parent both speculative)
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>   |     +- FAIL -&gt; [parent failure handling]
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>   +- FAIL -&gt; Check ALL_OLD
+</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>      +- No item (bucket missing) -&gt; Fall back to normal path
+</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>      +- Refill would help -&gt; Fall back to normal path
+</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>      +- Refill won&#39;t help -&gt; RateLimitExceeded (fast rejection)
+</span><span id="__span-17-12"><a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a>
+</span><span id="__span-17-13"><a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a>Speculative flow (subsequent acquire — parallel, issue #318):
+</span><span id="__span-17-14"><a id="__codelineno-17-14" name="__codelineno-17-14" href="#__codelineno-17-14"></a>1. Entity cache hit: cascade=True, parent_id known
+</span><span id="__span-17-15"><a id="__codelineno-17-15" name="__codelineno-17-15" href="#__codelineno-17-15"></a>2. asyncio.gather(child_speculative, parent_speculative)
+</span><span id="__span-17-16"><a id="__codelineno-17-16" name="__codelineno-17-16" href="#__codelineno-17-16"></a>   +- BOTH SUCCEED -&gt; DONE (1 round trip, 0 RCU, 2 WCU)
+</span><span id="__span-17-17"><a id="__codelineno-17-17" name="__codelineno-17-17" href="#__codelineno-17-17"></a>   +- CHILD FAILS, PARENT SUCCEEDS -&gt; Compensate parent, check child
+</span><span id="__span-17-18"><a id="__codelineno-17-18" name="__codelineno-17-18" href="#__codelineno-17-18"></a>   +- CHILD SUCCEEDS, PARENT FAILS -&gt; [parent failure handling]
+</span><span id="__span-17-19"><a id="__codelineno-17-19" name="__codelineno-17-19" href="#__codelineno-17-19"></a>   +- BOTH FAIL -&gt; Check child ALL_OLD, fall back or fast-reject
+</span><span id="__span-17-20"><a id="__codelineno-17-20" name="__codelineno-17-20" href="#__codelineno-17-20"></a>
+</span><span id="__span-17-21"><a id="__codelineno-17-21" name="__codelineno-17-21" href="#__codelineno-17-21"></a>Parent failure handling (shared by sequential and parallel paths):
+</span><span id="__span-17-22"><a id="__codelineno-17-22" name="__codelineno-17-22" href="#__codelineno-17-22"></a>   +- No ALL_OLD / missing limit -&gt; Compensate child, fall back
+</span><span id="__span-17-23"><a id="__codelineno-17-23" name="__codelineno-17-23" href="#__codelineno-17-23"></a>   +- Refill won&#39;t help -&gt; Compensate child, RateLimitExceeded
+</span><span id="__span-17-24"><a id="__codelineno-17-24" name="__codelineno-17-24" href="#__codelineno-17-24"></a>   +- Refill would help -&gt; Parent-only slow path (read + write parent)
+</span><span id="__span-17-25"><a id="__codelineno-17-25" name="__codelineno-17-25" href="#__codelineno-17-25"></a>      +- SUCCESS -&gt; DONE (child speculative + parent slow path)
+</span><span id="__span-17-26"><a id="__codelineno-17-26" name="__codelineno-17-26" href="#__codelineno-17-26"></a>      +- FAIL -&gt; Compensate child, fall back to full slow path
 </span></code></pre></div>
 <p>Cascade and <code>parent_id</code> are denormalized into composite bucket items (via <code>build_composite_create</code>)
 so the speculative path avoids a separate entity metadata lookup.</p>
@@ -3812,18 +3782,18 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 <li><strong>Write refill</strong> -- Issues a single <code>UpdateItem</code> with <code>ADD b_{limit}_tk +refill_delta</code>
    and <code>SET rf = :now</code>, conditioned on <code>rf = :expected_rf</code> (optimistic lock)</li>
 </ol>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>Aggregator refill flow (per composite bucket):
-</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>1. Aggregate tc deltas + last NewImage across stream batch
-</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>2. For each limit: refill_bucket(tk, rf, now, bx, ra, rp)
-</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>   +- refill_delta = new_tk - current_tk
-</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>   +- projected = new_tk after refill
-</span><span id="__span-19-6"><a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a>   +- consumption_estimate = max(0, accumulated tc_delta)
-</span><span id="__span-19-7"><a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a>   +- projected &gt;= consumption_estimate -&gt; SKIP (sufficient tokens)
-</span><span id="__span-19-8"><a id="__codelineno-19-8" name="__codelineno-19-8" href="#__codelineno-19-8"></a>3. Any limit needs refill?
-</span><span id="__span-19-9"><a id="__codelineno-19-9" name="__codelineno-19-9" href="#__codelineno-19-9"></a>   +- NO -&gt; SKIP
-</span><span id="__span-19-10"><a id="__codelineno-19-10" name="__codelineno-19-10" href="#__codelineno-19-10"></a>   +- YES -&gt; UpdateItem (ADD tk +delta, SET rf = :now, condition rf = :expected_rf)
-</span><span id="__span-19-11"><a id="__codelineno-19-11" name="__codelineno-19-11" href="#__codelineno-19-11"></a>      +- SUCCESS -&gt; refill written (1 WCU)
-</span><span id="__span-19-12"><a id="__codelineno-19-12" name="__codelineno-19-12" href="#__codelineno-19-12"></a>      +- ConditionalCheckFailedException -&gt; silently skip (another writer updated rf)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>Aggregator refill flow (per composite bucket):
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>1. Aggregate tc deltas + last NewImage across stream batch
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>2. For each limit: refill_bucket(tk, rf, now, cp, ra, rp)
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>   +- refill_delta = new_tk - current_tk
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>   +- projected = new_tk after refill
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>   +- consumption_estimate = max(0, accumulated tc_delta)
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a>   +- projected &gt;= consumption_estimate -&gt; SKIP (sufficient tokens)
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>3. Any limit needs refill?
+</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a>   +- NO -&gt; SKIP
+</span><span id="__span-18-10"><a id="__codelineno-18-10" name="__codelineno-18-10" href="#__codelineno-18-10"></a>   +- YES -&gt; UpdateItem (ADD tk +delta, SET rf = :now, condition rf = :expected_rf)
+</span><span id="__span-18-11"><a id="__codelineno-18-11" name="__codelineno-18-11" href="#__codelineno-18-11"></a>      +- SUCCESS -&gt; refill written (1 WCU)
+</span><span id="__span-18-12"><a id="__codelineno-18-12" name="__codelineno-18-12" href="#__codelineno-18-12"></a>      +- ConditionalCheckFailedException -&gt; silently skip (another writer updated rf)
 </span></code></pre></div>
 <p><strong>Key design properties:</strong></p>
 <ul>
@@ -3835,39 +3805,39 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 </ul>
 <h3 id="optimistic-locking">Optimistic Locking<a class="headerlink" href="#optimistic-locking" title="Permanent link">&para;</a></h3>
 <p>Entity metadata uses version numbers for optimistic locking:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="c1"># Read entity with version 5</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="c1"># Update fails if version changed</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="n">condition_expression</span><span class="o">=</span><span class="s2">&quot;version = :expected_version&quot;</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># Read entity with version 5</span>
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="c1"># Update fails if version changed</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="n">condition_expression</span><span class="o">=</span><span class="s2">&quot;version = :expected_version&quot;</span>
 </span></code></pre></div>
 <h2 id="project-structure">Project Structure<a class="headerlink" href="#project-structure" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>src/zae_limiter/
-</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>├── __init__.py            # Public API exports
-</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>├── models.py              # Limit, Entity, LimitStatus, BucketState, StackOptions, ...
-</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
-</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>├── naming.py              # Resource name validation
-</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>├── bucket.py              # Token bucket math (integer arithmetic)
-</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>├── schema.py              # DynamoDB key builders (namespace-prefixed)
-</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>├── repository_protocol.py # RepositoryProtocol for backend abstraction
-</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a>├── repository.py          # DynamoDB operations
-</span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a>├── config_cache.py        # Client-side config caching with TTL
-</span><span id="__span-21-11"><a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a>├── lease.py               # Lease context manager
-</span><span id="__span-21-12"><a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a>├── limiter.py             # RateLimiter, SyncRateLimiter
-</span><span id="__span-21-13"><a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a>├── local.py               # LocalStack management commands
-</span><span id="__span-21-14"><a id="__codelineno-21-14" name="__codelineno-21-14" href="#__codelineno-21-14"></a>├── cli.py                 # CLI commands (deploy, delete, status, list, local, ...)
-</span><span id="__span-21-15"><a id="__codelineno-21-15" name="__codelineno-21-15" href="#__codelineno-21-15"></a>├── version.py             # Version tracking and compatibility
-</span><span id="__span-21-16"><a id="__codelineno-21-16" name="__codelineno-21-16" href="#__codelineno-21-16"></a>├── migrations/            # Schema migration framework
-</span><span id="__span-21-17"><a id="__codelineno-21-17" name="__codelineno-21-17" href="#__codelineno-21-17"></a>├── visualization/         # Usage snapshot formatting and display
-</span><span id="__span-21-18"><a id="__codelineno-21-18" name="__codelineno-21-18" href="#__codelineno-21-18"></a>└── infra/
-</span><span id="__span-21-19"><a id="__codelineno-21-19" name="__codelineno-21-19" href="#__codelineno-21-19"></a>    ├── stack_manager.py    # CloudFormation stack operations
-</span><span id="__span-21-20"><a id="__codelineno-21-20" name="__codelineno-21-20" href="#__codelineno-21-20"></a>    ├── lambda_builder.py   # Lambda deployment package builder
-</span><span id="__span-21-21"><a id="__codelineno-21-21" name="__codelineno-21-21" href="#__codelineno-21-21"></a>    ├── discovery.py        # Multi-stack discovery and listing
-</span><span id="__span-21-22"><a id="__codelineno-21-22" name="__codelineno-21-22" href="#__codelineno-21-22"></a>    └── cfn_template.yaml   # CloudFormation template
-</span><span id="__span-21-23"><a id="__codelineno-21-23" name="__codelineno-21-23" href="#__codelineno-21-23"></a>
-</span><span id="__span-21-24"><a id="__codelineno-21-24" name="__codelineno-21-24" href="#__codelineno-21-24"></a>src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
-</span><span id="__span-21-25"><a id="__codelineno-21-25" name="__codelineno-21-25" href="#__codelineno-21-25"></a>├── __init__.py               # Re-exports handler, processor types
-</span><span id="__span-21-26"><a id="__codelineno-21-26" name="__codelineno-21-26" href="#__codelineno-21-26"></a>├── handler.py                # Lambda entry point (returns refills_written count)
-</span><span id="__span-21-27"><a id="__codelineno-21-27" name="__codelineno-21-27" href="#__codelineno-21-27"></a>├── processor.py              # Stream processing: usage snapshots + bucket refill
-</span><span id="__span-21-28"><a id="__codelineno-21-28" name="__codelineno-21-28" href="#__codelineno-21-28"></a>└── archiver.py               # S3 audit archival (gzip JSONL)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>src/zae_limiter/
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>├── __init__.py            # Public API exports
+</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>├── models.py              # Limit, Entity, LimitStatus, BucketState, StackOptions, ...
+</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>├── exceptions.py          # RateLimitExceeded, RateLimiterUnavailable, etc.
+</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>├── naming.py              # Resource name validation
+</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>├── bucket.py              # Token bucket math (integer arithmetic)
+</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>├── schema.py              # DynamoDB key builders (namespace-prefixed)
+</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>├── repository_protocol.py # RepositoryProtocol for backend abstraction
+</span><span id="__span-20-9"><a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>├── repository.py          # DynamoDB operations
+</span><span id="__span-20-10"><a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a>├── config_cache.py        # Client-side config caching with TTL
+</span><span id="__span-20-11"><a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a>├── lease.py               # Lease context manager
+</span><span id="__span-20-12"><a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a>├── limiter.py             # RateLimiter, SyncRateLimiter
+</span><span id="__span-20-13"><a id="__codelineno-20-13" name="__codelineno-20-13" href="#__codelineno-20-13"></a>├── local.py               # LocalStack management commands
+</span><span id="__span-20-14"><a id="__codelineno-20-14" name="__codelineno-20-14" href="#__codelineno-20-14"></a>├── cli.py                 # CLI commands (deploy, delete, status, list, local, ...)
+</span><span id="__span-20-15"><a id="__codelineno-20-15" name="__codelineno-20-15" href="#__codelineno-20-15"></a>├── version.py             # Version tracking and compatibility
+</span><span id="__span-20-16"><a id="__codelineno-20-16" name="__codelineno-20-16" href="#__codelineno-20-16"></a>├── migrations/            # Schema migration framework
+</span><span id="__span-20-17"><a id="__codelineno-20-17" name="__codelineno-20-17" href="#__codelineno-20-17"></a>├── visualization/         # Usage snapshot formatting and display
+</span><span id="__span-20-18"><a id="__codelineno-20-18" name="__codelineno-20-18" href="#__codelineno-20-18"></a>└── infra/
+</span><span id="__span-20-19"><a id="__codelineno-20-19" name="__codelineno-20-19" href="#__codelineno-20-19"></a>    ├── stack_manager.py    # CloudFormation stack operations
+</span><span id="__span-20-20"><a id="__codelineno-20-20" name="__codelineno-20-20" href="#__codelineno-20-20"></a>    ├── lambda_builder.py   # Lambda deployment package builder
+</span><span id="__span-20-21"><a id="__codelineno-20-21" name="__codelineno-20-21" href="#__codelineno-20-21"></a>    ├── discovery.py        # Multi-stack discovery and listing
+</span><span id="__span-20-22"><a id="__codelineno-20-22" name="__codelineno-20-22" href="#__codelineno-20-22"></a>    └── cfn_template.yaml   # CloudFormation template
+</span><span id="__span-20-23"><a id="__codelineno-20-23" name="__codelineno-20-23" href="#__codelineno-20-23"></a>
+</span><span id="__span-20-24"><a id="__codelineno-20-24" name="__codelineno-20-24" href="#__codelineno-20-24"></a>src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
+</span><span id="__span-20-25"><a id="__codelineno-20-25" name="__codelineno-20-25" href="#__codelineno-20-25"></a>├── __init__.py               # Re-exports handler, processor types
+</span><span id="__span-20-26"><a id="__codelineno-20-26" name="__codelineno-20-26" href="#__codelineno-20-26"></a>├── handler.py                # Lambda entry point (returns refills_written count)
+</span><span id="__span-20-27"><a id="__codelineno-20-27" name="__codelineno-20-27" href="#__codelineno-20-27"></a>├── processor.py              # Stream processing: usage snapshots + bucket refill
+</span><span id="__span-20-28"><a id="__codelineno-20-28" name="__codelineno-20-28" href="#__codelineno-20-28"></a>└── archiver.py               # S3 audit archival (gzip JSONL)
 </span></code></pre></div>
 <h2 id="key-design-decisions">Key Design Decisions<a class="headerlink" href="#key-design-decisions" title="Permanent link">&para;</a></h2>
 <ol>

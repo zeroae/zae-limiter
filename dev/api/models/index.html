@@ -1486,17 +1486,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.models.BucketState.burst" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;burst
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.from_limit" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3698,17 +3687,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.models.BucketState.burst" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;burst
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.from_limit" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4316,7 +4294,7 @@
   </span>
 
 <a href="#zae_limiter.models.Limit" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">burst</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -4356,18 +4334,7 @@ to avoid floating point precision issues.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Max tokens that refill over the period (sustained rate)</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td><code><span title="zae_limiter.models.Limit.burst">burst</span></code></td>
-            <td>
-                  <code><span title="int">int</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Max tokens in bucket (&gt;= capacity, allows bursting)</p>
+                <p>Max tokens in the bucket (ceiling)</p>
               </div>
             </td>
           </tr>
@@ -4453,12 +4420,77 @@ to avoid floating point precision issues.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.per_second" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_second</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_second</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Create a limit that refills <code>capacity</code> tokens per second.</p>
+        <p>Create a limit that refills <code>rate</code> tokens per second.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>name</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name (e.g., "rps")</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rate</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Sustained tokens per second (also the refill amount)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>burst</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional burst ceiling. When set, <code>capacity</code> is
+<code>burst</code> and <code>refill_amount</code> is <code>rate</code>, allowing
+temporary spikes above the sustained rate.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -4477,12 +4509,77 @@ to avoid floating point precision issues.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.per_minute" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_minute</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_minute</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Create a limit that refills <code>capacity</code> tokens per minute.</p>
+        <p>Create a limit that refills <code>rate</code> tokens per minute.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>name</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name (e.g., "rpm", "tpm")</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rate</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Sustained tokens per minute (also the refill amount)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>burst</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional burst ceiling. When set, <code>capacity</code> is
+<code>burst</code> and <code>refill_amount</code> is <code>rate</code>, allowing
+temporary spikes above the sustained rate.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -4501,12 +4598,77 @@ to avoid floating point precision issues.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.per_hour" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_hour</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_hour</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Create a limit that refills <code>capacity</code> tokens per hour.</p>
+        <p>Create a limit that refills <code>rate</code> tokens per hour.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>name</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name (e.g., "rph")</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rate</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Sustained tokens per hour (also the refill amount)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>burst</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional burst ceiling. When set, <code>capacity</code> is
+<code>burst</code> and <code>refill_amount</code> is <code>rate</code>, allowing
+temporary spikes above the sustained rate.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -4525,12 +4687,77 @@ to avoid floating point precision issues.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.per_day" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_day</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_day</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">rate</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Create a limit that refills <code>capacity</code> tokens per day.</p>
+        <p>Create a limit that refills <code>rate</code> tokens per day.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>name</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name (e.g., "rpd")</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rate</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Sustained tokens per day (also the refill amount)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>burst</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional burst ceiling. When set, <code>capacity</code> is
+<code>burst</code> and <code>refill_amount</code> is <code>rate</code>, allowing
+temporary spikes above the sustained rate.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -4549,7 +4776,7 @@ to avoid floating point precision issues.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.custom" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">custom</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">custom</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4558,9 +4785,9 @@ to avoid floating point precision issues.</p>
 
 
 <details class="example" open>
-  <summary>Sustain 100/sec with burst of 1000</summary>
-  <p>Limit.custom("requests", capacity=100, refill_amount=100,
-            refill_period_seconds=1, burst=1000)</p>
+  <summary>Allow ceiling of 1000 tokens, sustained at 100/sec</summary>
+  <p>Limit.custom("requests", capacity=1000, refill_amount=100,
+            refill_period_seconds=1)</p>
 </details>
 
     </div>
@@ -4842,7 +5069,7 @@ inputs. No validation is performed here to avoid performance overhead.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">burst_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -4915,31 +5142,7 @@ deserialization and avoid performance overhead on frequent operations.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Capacity (not millitokens).</p>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-attribute">
-
-
-
-<h4 id="zae_limiter.models.BucketState.burst" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">burst</span>
-
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-property"><code>property</code></small>
-  </span>
-
-<a href="#zae_limiter.models.BucketState.burst" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">burst</span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Burst (not millitokens).</p>
+        <p>Capacity / ceiling (not millitokens).</p>
 
     </div>
 

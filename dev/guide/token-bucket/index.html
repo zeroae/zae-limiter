@@ -2873,7 +2873,7 @@
     Request --&gt; Check{Enough tokens?}
     Check --&gt;|Yes| Allow[Allow request]
     Check --&gt;|No| Reject[Reject + retry_after]</div>
-<p>This creates a natural rate limit: requests can burst up to the bucket's capacity, but sustained traffic is limited by the refill rate.</p>
+<p>This creates a natural rate limit: requests can consume up to the bucket's capacity, but sustained traffic is limited by the refill rate.</p>
 <h2 id="how-zae-limiter-implements-it">How zae-limiter Implements It<a class="headerlink" href="#how-zae-limiter-implements-it" title="Permanent link">&para;</a></h2>
 <p>zae-limiter uses a modified token bucket optimized for distributed systems. Here's how it differs from the classic algorithm:</p>
 <table>
@@ -2915,13 +2915,12 @@
 </ul>
 <h2 id="key-concepts">Key Concepts<a class="headerlink" href="#key-concepts" title="Permanent link">&para;</a></h2>
 <h3 id="capacity-and-burst">Capacity and Burst<a class="headerlink" href="#capacity-and-burst" title="Permanent link">&para;</a></h3>
-<p>Every limit has two key parameters:</p>
-<ul>
-<li><strong>Capacity</strong>: The sustained rate (tokens that refill per period)</li>
-<li><strong>Burst</strong>: The maximum bucket size (can be larger than capacity)</li>
-</ul>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># 10,000 tokens/minute sustained, 15,000 burst</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="n">capacity</span><span class="o">=</span><span class="mi">10_000</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="mi">15_000</span><span class="p">)</span>
+<p>Every limit has a <strong>rate</strong> (sustained throughput) and an optional <strong>burst</strong> (the bucket ceiling):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># 10,000 tokens/minute sustained, bucket holds up to 10k</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># 10,000 tokens/minute sustained, but allow bursts up to 15k</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">,</span> <span class="n">burst</span><span class="o">=</span><span class="mi">15_000</span><span class="p">)</span>
 </span></code></pre></div>
 <div class="mermaid">graph TD
     A["Bucket starts full at burst (15k)"]
@@ -2935,8 +2934,8 @@
     style C fill:#87CEEB
     style D fill:#90EE90
     style E fill:#87CEEB</div>
-<p><strong>Key insight</strong>: The bucket is larger (15k) but refills at the same rate (10k/minute). After fully depleting the burst, it takes <strong>1.5 minutes</strong> to return to full capacity—not 1 minute.</p>
-<p><strong>When to use burst &gt; capacity:</strong></p>
+<p><strong>Key insight</strong>: When <code>burst</code> is set, the bucket is larger than the refill rate. After fully depleting a 15k burst bucket that refills at 10k/minute, it takes <strong>1.5 minutes</strong> to return to full capacity. Without <code>burst</code>, the bucket ceiling equals the rate.</p>
+<p><strong>When to use burst:</strong></p>
 <ul>
 <li><strong>Startup surge</strong>: Handle initial traffic before steady state</li>
 <li><strong>Bursty workloads</strong>: Allow temporary spikes followed by quiet periods</li>
@@ -3053,7 +3052,7 @@
 <thead>
 <tr>
 <th>Scenario</th>
-<th>Capacity</th>
+<th>Rate</th>
 <th>Burst</th>
 <th>Rationale</th>
 </tr>
@@ -3062,7 +3061,7 @@
 <tr>
 <td>Steady API traffic</td>
 <td>100 rpm</td>
-<td>100</td>
+<td>--</td>
 <td>No bursting needed</td>
 </tr>
 <tr>

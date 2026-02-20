@@ -2860,7 +2860,7 @@
 </tr>
 <tr>
 <td><strong>Limit configuration mismatch</strong></td>
-<td>Verify limit <code>capacity</code>, <code>burst</code>, and <code>refill_rate</code> match expectations</td>
+<td>Verify limit <code>capacity</code> and <code>refill_rate</code> match expectations</td>
 </tr>
 </tbody>
 </table>
@@ -2945,10 +2945,9 @@
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="s1">    &quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;},</span>
 </span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="s1">    &quot;SK&quot;: {&quot;S&quot;: &quot;#LIMIT#&lt;resource&gt;#&lt;limit_name&gt;&quot;},</span>
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="s1">    &quot;capacity&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="s1">    &quot;burst&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="s1">    &quot;refill_amount&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="s1">    &quot;refill_period&quot;: {&quot;N&quot;: &quot;60&quot;}</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="s1">  }&#39;</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="s1">    &quot;refill_amount&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="s1">    &quot;refill_period&quot;: {&quot;N&quot;: &quot;60&quot;}</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="s1">  }&#39;</span>
 </span></code></pre></div>
 <h3 id="reset-bucket-state">Reset Bucket State<a class="headerlink" href="#reset-bucket-state" title="Permanent link">&para;</a></h3>
 <p>Reset a bucket to restore full capacity:</p>
