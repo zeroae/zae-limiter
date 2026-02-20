@@ -53,6 +53,7 @@ dev = [
     "types-aiobotocore[dynamodb,s3]>=2.0.0",
     "types-docker>=7.0.0",
     "types-gevent>=24.0.0",
+    "types-PyYAML>=6.0",
 ]
 lambda = [
     "aws-lambda-powertools>=2.0.0",

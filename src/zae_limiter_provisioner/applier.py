@@ -124,6 +124,7 @@ def _apply_set(
         item = _build_limit_item(pk, sk, namespace_id, limits, extra)
 
     elif change.level == "resource":
+        assert change.target is not None
         resource = change.target
         pk = pk_resource(namespace_id, resource)
         sk = sk_config()
@@ -131,6 +132,7 @@ def _apply_set(
         item = _build_limit_item(pk, sk, namespace_id, limits, extra)
 
     elif change.level == "entity":
+        assert change.target is not None
         entity_id, resource = change.target.split("/", 1)
         pk = pk_entity(namespace_id, entity_id)
         sk = sk_config(resource)
@@ -155,11 +157,13 @@ def _apply_delete(
         sk = sk_config()
 
     elif change.level == "resource":
+        assert change.target is not None
         resource = change.target
         pk = pk_resource(namespace_id, resource)
         sk = sk_config()
 
     elif change.level == "entity":
+        assert change.target is not None
         entity_id, resource = change.target.split("/", 1)
         pk = pk_entity(namespace_id, entity_id)
         sk = sk_config(resource)
