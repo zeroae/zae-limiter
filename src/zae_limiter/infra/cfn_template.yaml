@@ -234,6 +234,14 @@ Parameters:
       Use this to deploy with a pre-created role when you lack iam:CreateRole
       permissions.
 
+  EnableProvisioner:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Whether to deploy the limits provisioner Lambda
+
   EnableDeletionProtection:
     Type: String
     Default: 'false'
@@ -298,6 +306,19 @@ Conditions:
   TracingEnabled: !And
     - !Condition DeployAggregatorLambda
     - !Equals [!Ref EnableTracing, 'true']
+  # Provisioner Lambda conditions
+  DeployProvisioner: !Equals [!Ref EnableProvisioner, 'true']
+
+  # Create provisioner role only if: IAM enabled AND provisioner enabled
+  CreateProvisionerRole: !And
+    - !Condition DeployProvisioner
+    - !Condition DeployIAM
+
+  # Deploy provisioner Lambda if: provisioner enabled AND IAM enabled
+  DeployProvisionerLambda: !And
+    - !Condition DeployProvisioner
+    - !Condition DeployIAM
+
   EnableTableDeletionProtection: !Equals [!Ref EnableDeletionProtection, 'true']
 
 Resources:
@@ -935,6 +956,81 @@ Resources:
               }
 
   # -------------------------------------------------------------------------
+  # Limits Provisioner Lambda
+  # -------------------------------------------------------------------------
+  ProvisionerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployProvisioner
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-limits-provisioner
+      RetentionInDays: !Ref LogRetentionDays
+
+  ProvisionerRole:
+    Type: AWS::IAM::Role
+    Condition: CreateProvisionerRole
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-prov
+      PermissionsBoundary: !If
+        - HasPermissionBoundary
+        - !If
+          - PermissionBoundaryIsArn
+          - !Ref PermissionBoundary
+          - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundary}'
+        - !Ref AWS::NoValue
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt RateLimitsTable.Arn
+                  - !Sub ${RateLimitsTable.Arn}/index/*
+
+  ProvisionerFunction:
+    Type: AWS::Lambda::Function
+    Condition: DeployProvisionerLambda
+    DependsOn: ProvisionerLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-limits-provisioner
+      Description: Declarative limits provisioner for zae-limiter
+      Runtime: python3.12
+      Handler: zae_limiter_provisioner.handler.on_event
+      MemorySize: 256
+      Timeout: 300
+      Role: !GetAtt ProvisionerRole.Arn
+
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref AWS::StackName
+
+      Code:
+        ZipFile: |
+          def on_event(event, context):
+              # Placeholder Lambda - will be replaced by actual provisioner code.
+              raise RuntimeError("Placeholder Lambda - waiting for code deployment")
+
+      Tags:
+        - Key: Application
+          Value: zae-limiter
+
+  # -------------------------------------------------------------------------
   # CloudWatch Alarms
   # -------------------------------------------------------------------------
   LambdaErrorRateAlarm:
@@ -1274,3 +1370,21 @@ Outputs:
     Value: !Ref AuditArchiveBucket
     Export:
       Name: !Sub ${AWS::StackName}-CodeBucketName
+
+  # -------------------------------------------------------------------------
+  # Limits Provisioner Outputs
+  # -------------------------------------------------------------------------
+
+  ProvisionerFunctionArn:
+    Condition: DeployProvisionerLambda
+    Description: Limits provisioner Lambda function ARN
+    Value: !GetAtt ProvisionerFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-ProvisionerArn
+
+  ProvisionerFunctionName:
+    Condition: DeployProvisionerLambda
+    Description: Limits provisioner Lambda function name
+    Value: !Ref ProvisionerFunction
+    Export:
+      Name: !Sub ${AWS::StackName}-ProvisionerName
