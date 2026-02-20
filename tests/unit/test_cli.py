@@ -3519,6 +3519,33 @@ class TestLimitParsing:
 
         assert formatted == "tpm: 1,000,000/min"
 
+    def test_parse_limit_with_burst(self) -> None:
+        """Test parsing limit with name:rate:burst format."""
+        from zae_limiter.cli import _parse_limit
+
+        limit = _parse_limit("tpm:10000:15000")
+
+        assert limit.name == "tpm"
+        assert limit.capacity == 15000
+        assert limit.refill_amount == 10000
+        assert limit.refill_period_seconds == 60
+
+    def test_format_limit_with_burst(self) -> None:
+        """Test formatting a limit with burst (capacity != refill_amount)."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit(
+            name="tpm",
+            capacity=15000,
+            refill_amount=10000,
+            refill_period_seconds=60,
+        )
+
+        formatted = _format_limit(limit)
+
+        assert formatted == "tpm: 10,000/min (burst: 15,000)"
+
 
 class TestResourceCommandsEdgeCases:
     """Test edge cases for resource CLI commands."""
