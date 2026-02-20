@@ -46,9 +46,9 @@ class TestE2ENamespaceMultiTenantLifecycle:
     async def multi_tenant_repos(self, shared_minimal_stack, unique_name_class):
         """Create scoped repos for unique ns-a and ns-b on shared stack."""
         suffix = unique_name_class
-        repo = await Repository.connect(
-            shared_minimal_stack.name,
-            shared_minimal_stack.region,
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
         )
 

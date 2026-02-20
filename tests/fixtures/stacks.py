@@ -84,7 +84,9 @@ async def create_shared_stack(
     """
     from zae_limiter.repository import Repository
 
-    builder = Repository.builder(name, region, endpoint_url=endpoint_url)
+    builder = Repository.builder().stack(name).region(region)
+    if endpoint_url:
+        builder = builder.endpoint_url(endpoint_url)
     builder = builder.enable_aggregator(enable_aggregator).enable_alarms(enable_alarms)
 
     if snapshot_windows is not None:

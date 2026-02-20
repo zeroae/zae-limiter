@@ -163,7 +163,10 @@ class TestNamespaceIsolationViaBuilder:
         # First build with default namespace to create infrastructure
         # and register the additional namespaces
         repo_default = await (
-            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            Repository.builder()
+            .stack(unique_name)
+            .region("us-east-1")
+            .endpoint_url(localstack_endpoint)
             .enable_aggregator(False)
             .enable_alarms(False)
             .build()
@@ -173,14 +176,20 @@ class TestNamespaceIsolationViaBuilder:
 
         # Build repo for tenant-alpha
         repo_a = await (
-            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            Repository.builder()
+            .stack(unique_name)
+            .region("us-east-1")
+            .endpoint_url(localstack_endpoint)
             .namespace("tenant-alpha")
             .build()
         )
 
         # Build repo for tenant-beta (reuses existing stack)
         repo_b = await (
-            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            Repository.builder()
+            .stack(unique_name)
+            .region("us-east-1")
+            .endpoint_url(localstack_endpoint)
             .namespace("tenant-beta")
             .build()
         )

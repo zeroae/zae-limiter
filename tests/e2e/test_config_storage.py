@@ -36,9 +36,9 @@ class TestE2EResourceConfigStorage:
     async def e2e_limiter(self, shared_minimal_stack, unique_name_class):
         """Namespace-scoped limiter on shared minimal stack for config tests."""
         ns = f"res-{unique_name_class}"
-        repo = await Repository.connect(
-            shared_minimal_stack.name,
-            shared_minimal_stack.region,
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
         )
         await repo.register_namespace(ns)
@@ -195,9 +195,9 @@ class TestE2ESystemConfigStorage:
     async def e2e_limiter(self, shared_minimal_stack, unique_name_class):
         """Namespace-scoped limiter on shared minimal stack for system config tests."""
         ns = f"sys-{unique_name_class}"
-        repo = await Repository.connect(
-            shared_minimal_stack.name,
-            shared_minimal_stack.region,
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
         )
         await repo.register_namespace(ns)
@@ -332,7 +332,10 @@ class TestE2EConfigCLIWorkflow:
 
         name = f"{unique_name_class}-cli"
         repo = (
-            SyncRepository.builder(name, "us-east-1", endpoint_url=localstack_endpoint)
+            SyncRepository.builder()
+            .stack(name)
+            .region("us-east-1")
+            .endpoint_url(localstack_endpoint)
             .stack_options(minimal_stack_options)
             .build()
         )
@@ -598,9 +601,9 @@ class TestE2ESyncConfigStorage:
         from zae_limiter.sync_repository import SyncRepository
 
         ns = f"sync-{unique_name_class}"
-        repo = SyncRepository.connect(
-            shared_minimal_stack.name,
-            shared_minimal_stack.region,
+        repo = SyncRepository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
         )
         repo.register_namespace(ns)

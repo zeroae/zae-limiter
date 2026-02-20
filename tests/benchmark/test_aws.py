@@ -81,7 +81,13 @@ class TestAWSLatencyBenchmarks:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = SyncRepository.builder(table_name, "us-east-1").stack_options(stack_options).build()
+        repo = (
+            SyncRepository.builder()
+            .stack(table_name)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
+        )
         limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
 
         with limiter:
@@ -214,7 +220,13 @@ class TestAWSThroughputBenchmarks:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = SyncRepository.builder(table_name, "us-east-1").stack_options(stack_options).build()
+        repo = (
+            SyncRepository.builder()
+            .stack(table_name)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
+        )
         limiter = SyncRateLimiter(repository=repo)
 
         with limiter:
@@ -406,7 +418,13 @@ class TestAWSCascadeSpeculativeComparison:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = SyncRepository.builder(table_name, "us-east-1").stack_options(stack_options).build()
+        repo = (
+            SyncRepository.builder()
+            .stack(table_name)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
+        )
         limiter = SyncRateLimiter(repository=repo)
 
         with limiter:
@@ -446,7 +464,7 @@ class TestAWSCascadeSpeculativeComparison:
         and speculative (speculative_writes=True) for side-by-side comparison.
         """
         speculative = request.param
-        repo = SyncRepository.connect(aws_speculative_stack, "us-east-1")
+        repo = SyncRepository.open(stack=aws_speculative_stack, region="us-east-1")
         limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
 
         # Warm entity cache
@@ -478,7 +496,9 @@ class TestAWSCascadeSpeculativeComparison:
     def parallel_mode_limiter(self, request, aws_speculative_stack):
         """Create SyncRateLimiter with specific parallel_mode, cache warmed."""
         mode = request.param
-        repo = SyncRepository.connect(aws_speculative_stack, "us-east-1", parallel_mode=mode)
+        repo = SyncRepository.open(
+            stack=aws_speculative_stack, region="us-east-1", parallel_mode=mode
+        )
         limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
 
         # Warm entity cache + speculative path
@@ -582,7 +602,13 @@ class TestAWSCascadeBenchmarks:
             policy_name_format="PowerUserPB-{}",
         )
 
-        repo = SyncRepository.builder(table_name, "us-east-1").stack_options(stack_options).build()
+        repo = (
+            SyncRepository.builder()
+            .stack(table_name)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
+        )
         limiter = SyncRateLimiter(repository=repo)
 
         with limiter:
@@ -617,7 +643,7 @@ class TestAWSCascadeBenchmarks:
     @pytest.fixture(scope="class")
     def aws_cascade_limiter(self, aws_cascade_stack):
         """Create default SyncRateLimiter for sequential cascade tests."""
-        repo = SyncRepository.connect(aws_cascade_stack, "us-east-1")
+        repo = SyncRepository.open(stack=aws_cascade_stack, region="us-east-1")
         limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
 
         # Warm entity cache
@@ -649,7 +675,7 @@ class TestAWSCascadeBenchmarks:
     def parallel_mode_cascade_limiter(self, request, aws_cascade_stack):
         """Create SyncRateLimiter with specific parallel_mode for concurrent tests."""
         mode = request.param
-        repo = SyncRepository.connect(aws_cascade_stack, "us-east-1", parallel_mode=mode)
+        repo = SyncRepository.open(stack=aws_cascade_stack, region="us-east-1", parallel_mode=mode)
         limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
 
         # Warm entity cache for all children

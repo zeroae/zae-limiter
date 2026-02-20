@@ -148,9 +148,13 @@ class TestE2ELocalStackCLIWorkflow:
 
             # Step 3: Use SyncRateLimiter with deployed infrastructure
             # Use builder (not connect) because CLI deploy doesn't register namespaces
-            repo = SyncRepository.builder(
-                unique_name, "us-east-1", endpoint_url=localstack_endpoint
-            ).build()
+            repo = (
+                SyncRepository.builder()
+                .stack(unique_name)
+                .region("us-east-1")
+                .endpoint_url(localstack_endpoint)
+                .build()
+            )
             limiter = SyncRateLimiter(repository=repo)
 
             # Create entity and use rate limiting
@@ -220,9 +224,9 @@ class TestE2ELocalStackCLIWorkflow:
             assert result.exit_code == 0, f"Deploy failed: {result.output}"
 
             # Step 2: Create entity using SyncRateLimiter (generates audit event)
-            repo = SyncRepository.connect(
-                unique_name,
-                "us-east-1",
+            repo = SyncRepository.open(
+                stack=unique_name,
+                region="us-east-1",
                 endpoint_url=localstack_endpoint,
             )
             limiter = SyncRateLimiter(repository=repo)
@@ -515,9 +519,9 @@ class TestE2ELocalStackFullWorkflow:
     async def e2e_limiter(self, shared_full_stack, unique_name_class):
         """Namespace-scoped RateLimiter on the shared full stack."""
         ns = f"full-{unique_name_class}"
-        repo = await Repository.connect(
-            shared_full_stack.name,
-            shared_full_stack.region,
+        repo = await Repository.open(
+            stack=shared_full_stack.name,
+            region=shared_full_stack.region,
             endpoint_url=shared_full_stack.endpoint_url,
         )
         await repo.register_namespace(ns)
@@ -745,9 +749,9 @@ class TestE2ELocalStackAggregatorWorkflow:
     async def e2e_limiter_with_aggregator(self, shared_aggregator_stack, unique_name_class):
         """Namespace-scoped RateLimiter on the shared aggregator stack."""
         ns = f"aggr-{unique_name_class}"
-        repo = await Repository.connect(
-            shared_aggregator_stack.name,
-            shared_aggregator_stack.region,
+        repo = await Repository.open(
+            stack=shared_aggregator_stack.name,
+            region=shared_aggregator_stack.region,
             endpoint_url=shared_aggregator_stack.endpoint_url,
         )
         await repo.register_namespace(ns)
@@ -810,9 +814,9 @@ class TestE2ELocalStackErrorHandling:
     async def e2e_limiter_minimal(self, shared_minimal_stack, unique_name_class):
         """Namespace-scoped RateLimiter on the shared minimal stack."""
         ns = f"err-{unique_name_class}"
-        repo = await Repository.connect(
-            shared_minimal_stack.name,
-            shared_minimal_stack.region,
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
             endpoint_url=shared_minimal_stack.endpoint_url,
         )
         await repo.register_namespace(ns)
@@ -932,7 +936,10 @@ class TestE2ECloudFormationStackVariations:
     ):
         """Test full CloudFormation stack creation (with aggregator and alarms)."""
         repo = await (
-            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            Repository.builder()
+            .stack(unique_name)
+            .region("us-east-1")
+            .endpoint_url(localstack_endpoint)
             .stack_options(full_stack_options)
             .build()
         )
@@ -957,7 +964,10 @@ class TestE2ECloudFormationStackVariations:
         The AggregatorDLQAlarmName output should not be created in this scenario.
         """
         repo = await (
-            Repository.builder(unique_name, "us-east-1", endpoint_url=localstack_endpoint)
+            Repository.builder()
+            .stack(unique_name)
+            .region("us-east-1")
+            .endpoint_url(localstack_endpoint)
             .stack_options(aggregator_stack_options)
             .build()
         )
