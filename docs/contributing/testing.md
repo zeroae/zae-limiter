@@ -121,7 +121,9 @@ async def shared_limiter(localstack_endpoint):
     Trade-off: Tests share state, less isolation.
     """
     repo = await (
-        Repository.builder("integration-test-shared", "us-east-1", endpoint_url=localstack_endpoint)
+        Repository.builder()
+        .stack("integration-test-shared").region("us-east-1")
+        .endpoint_url(localstack_endpoint)
         .enable_aggregator(False)
         .build()
     )

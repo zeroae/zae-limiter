@@ -45,7 +45,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 from zae_limiter import Repository, RateLimiter, Limit
 
 # Async rate limiter with declarative infrastructure
-repo = await Repository.builder("my-app", "us-east-1").build()
+repo = await Repository.open(stack="my-app", region="us-east-1")
 limiter = RateLimiter(repository=repo)
 
 # Define default limits (can be overridden per-entity)

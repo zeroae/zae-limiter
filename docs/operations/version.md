@@ -83,7 +83,7 @@ Or programmatically:
 from zae_limiter import Repository, RateLimiter
 
 # Auto-update Lambda on initialization (default behavior)
-repo = await Repository.builder("limiter", "us-east-1").build()
+repo = await Repository.builder().stack("limiter").region("us-east-1").build()
 limiter = RateLimiter(repository=repo)
 ```
 
@@ -179,7 +179,7 @@ After upgrading, verify the system is healthy:
    ```python
    from zae_limiter import Repository, RateLimiter, Limit
 
-   repo = await Repository.connect("limiter", "us-east-1")
+   repo = await Repository.open(stack="limiter", region="us-east-1")
    limiter = RateLimiter(repository=repo)
 
    # Test basic operation

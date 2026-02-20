@@ -352,9 +352,13 @@ class TestE2ENamespaceCLIWorkflow:
 
             # Step 5: Create entity in ns-a and set limits via CLI
             # Use builder (not connect) because CLI deploy doesn't register "default" namespace
-            repo = SyncRepository.builder(
-                stack_name, "us-east-1", endpoint_url=localstack_endpoint
-            ).build()
+            repo = (
+                SyncRepository.builder()
+                .stack(stack_name)
+                .region("us-east-1")
+                .endpoint_url(localstack_endpoint)
+                .build()
+            )
             try:
                 repo_a = repo.namespace("ns-a")
                 repo_a.create_entity("cli-user", name="CLI User")
