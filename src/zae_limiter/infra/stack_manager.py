@@ -13,6 +13,7 @@ from ..exceptions import StackAlreadyExistsError, StackCreationError
 from ..models import StackOptions
 from ..naming import normalize_stack_name
 from .lambda_builder import build_lambda_package
+from .provisioner_builder import build_provisioner_package
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,7 @@ class StackManager:
             "app_role_name": "AppRoleName",
             "admin_role_name": "AdminRoleName",
             "readonly_role_name": "ReadOnlyRoleName",
+            "provisioner_role_name": "ProvisionerRoleName",
             "acquire_only_policy_name": "AcquireOnlyPolicyName",
             "full_access_policy_name": "FullAccessPolicyName",
             "readonly_policy_name": "ReadOnlyPolicyName",
@@ -621,6 +623,100 @@ class StackManager:
             result["esm_ready"] = esm_ready
 
         return result
+
+    async def deploy_provisioner_code(
+        self,
+        function_name: str | None = None,
+        wait: bool = True,
+    ) -> dict[str, Any]:
+        """Deploy provisioner Lambda function code after stack creation.
+
+        Builds the provisioner deployment package and updates the Lambda
+        function code via the AWS API.
+
+        Args:
+            function_name: Lambda function name
+                (default: {table_name}-limits-provisioner)
+            wait: Wait for function update to complete
+
+        Returns:
+            Dict with function_arn, code_sha256, and status
+
+        Raises:
+            StackCreationError: If Lambda deployment fails
+        """
+        function_name = function_name or f"{self.table_name}-limits-provisioner"
+
+        try:
+            zip_bytes = build_provisioner_package()
+        except Exception as e:
+            raise StackCreationError(
+                stack_name=self.stack_name,
+                reason=f"Failed to build provisioner package: {e}",
+            ) from e
+
+        if self._session is None:
+            self._session = aioboto3.Session()
+
+        kwargs: dict[str, Any] = {}
+        if self.region:
+            kwargs["region_name"] = self.region
+        if self.endpoint_url:
+            kwargs["endpoint_url"] = self.endpoint_url
+
+        session = self._session
+        async with session.client("lambda", **kwargs) as lambda_client:
+            try:
+                response = await lambda_client.update_function_code(
+                    FunctionName=function_name,
+                    ZipFile=zip_bytes,
+                )
+
+                if wait:
+                    waiter = lambda_client.get_waiter("function_updated")
+                    try:
+                        await waiter.wait(FunctionName=function_name)
+                    except Exception as e:
+                        raise StackCreationError(
+                            stack_name=self.stack_name,
+                            reason=f"Waiting for provisioner update failed: {e}",
+                        ) from e
+
+                if wait:
+                    active_waiter = lambda_client.get_waiter("function_active")
+                    try:
+                        await active_waiter.wait(FunctionName=function_name)
+                    except Exception as e:
+                        raise StackCreationError(
+                            stack_name=self.stack_name,
+                            reason=(f"Waiting for provisioner to be active failed: {e}"),
+                        ) from e
+
+                from .. import __version__
+
+                await lambda_client.tag_resource(
+                    Resource=response["FunctionArn"],
+                    Tags={
+                        "zae-limiter:lambda-version": __version__,
+                    },
+                )
+
+                return {
+                    "function_arn": response["FunctionArn"],
+                    "code_sha256": response["CodeSha256"],
+                    "status": "deployed",
+                    "size_bytes": len(zip_bytes),
+                    "version": __version__,
+                }
+
+            except ClientError as e:
+                error_code = e.response["Error"]["Code"]
+                error_msg = e.response["Error"]["Message"]
+
+                raise StackCreationError(
+                    stack_name=self.stack_name,
+                    reason=(f"Provisioner deployment failed ({error_code}): {error_msg}"),
+                ) from e
 
     async def wait_for_esm_ready(
         self,

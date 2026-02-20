@@ -29,6 +29,7 @@ dependencies = [
     "click>=8.0.0",
     "pip",
     "python-ulid>=3.0.0",
+    "pyyaml>=6.0",
     "questionary>=2.0",
 ]
 
@@ -52,6 +53,7 @@ dev = [
     "types-aiobotocore[dynamodb,s3]>=2.0.0",
     "types-docker>=7.0.0",
     "types-gevent>=24.0.0",
+    "types-PyYAML>=6.0",
 ]
 lambda = [
     "aws-lambda-powertools>=2.0.0",
@@ -94,7 +96,7 @@ source = "vcs"
 version-file = "src/zae_limiter/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zae_limiter", "src/zae_limiter_aggregator"]
+packages = ["src/zae_limiter", "src/zae_limiter_aggregator", "src/zae_limiter_provisioner"]
 
 [[tool.hatch.build.hooks.build-scripts.scripts]]
 commands = ["python scripts/generate_sync.py"]

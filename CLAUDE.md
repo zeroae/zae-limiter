@@ -10,7 +10,7 @@ zae-limiter is a rate limiting library backed by DynamoDB using the token bucket
 - Hierarchical limits exist (API key → project, tenant → user)
 - Cost matters (~$0.75/1M requests)
 
-**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`, `local`, `loadtest`. See `release-planning.md` for area labels.
+**Project scopes:** `limiter`, `bucket`, `cli`, `infra`, `ci`, `aggregator`, `provisioner`, `models`, `schema`, `repository`, `lease`, `exceptions`, `cache`, `test`, `benchmark`, `local`, `loadtest`. See `release-planning.md` for area labels.
 
 ## Build & Development
 
@@ -178,6 +178,62 @@ Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()
 - **`builder().build()`**: Enterprise deployments needing permission boundaries, custom Lambda config, IAM role naming
 - **CLI**: Strict infra/app separation, audit requirements, Terraform/CDK integration
 
+### Declarative Limits Management (Issue #405)
+
+Define rate limits as YAML manifests and apply them via a Lambda provisioner. The provisioner tracks managed state in a `#PROVISIONER` record and computes diffs to create, update, or delete limit configs.
+
+```bash
+# Preview changes (like terraform plan)
+zae-limiter limits plan -n my-app -f limits.yaml
+
+# Apply limits from YAML file
+zae-limiter limits apply -n my-app -f limits.yaml
+
+# Show drift between YAML and live DynamoDB state
+zae-limiter limits diff -n my-app -f limits.yaml
+
+# Generate CloudFormation template for a Custom::ZaeLimiterLimits resource
+zae-limiter limits cfn-template -n my-app -f limits.yaml
+```
+
+**YAML manifest format:**
+
+```yaml
+namespace: default
+system:
+  on_unavailable: block
+  limits:
+    rpm:
+      capacity: 1000
+    tpm:
+      capacity: 100000
+resources:
+  gpt-4:
+    limits:
+      rpm:
+        capacity: 500
+      tpm:
+        capacity: 50000
+entities:
+  user-premium:
+    resources:
+      gpt-4:
+        limits:
+          rpm:
+            capacity: 1000
+```
+
+**Limit shorthand defaults:** Only `capacity` is required. When omitted: `burst` defaults to `capacity`, `refill_amount` defaults to `capacity`, `refill_period` defaults to `60` (seconds).
+
+**Provisioner Lambda:**
+- Function name: `{stack}-limits-provisioner`
+- Handles CLI invocations (action + manifest payload) and CloudFormation custom resource events (`Custom::ZaeLimiterLimits`)
+- Tracks managed items in `PK={ns}/SYSTEM#, SK=#PROVISIONER` with `managed_system`, `managed_resources`, `managed_entities` fields
+- Computes diff between manifest and previous state, then applies create/update/delete via PutItem/DeleteItem
+- On delete (CFN Delete), uses an empty manifest to remove all managed items
+
+**CloudFormation integration:** The `cfn-template` subcommand generates a CFN template with a `Custom::ZaeLimiterLimits` resource that uses `Fn::ImportValue` to reference the provisioner Lambda ARN from the main stack.
+
 ### Local Development with LocalStack
 
 LocalStack provides full AWS service emulation (CloudFormation, DynamoDB, Streams, Lambda). Use the `zae-limiter local` CLI commands (preferred) or `docker-compose.yml`:
@@ -267,7 +323,8 @@ src/zae_limiter/
 ├── sync_lease.py                # Generated: SyncLease
 ├── sync_config_cache.py         # Generated: SyncConfigCache
 ├── locust.py          # Locust load testing integration (RateLimiterUser, RateLimiterSession)
-├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, namespace, local, loadtest)
+├── cli.py             # CLI commands (deploy, delete, status, list, cfn-template, lambda-export, version, upgrade, check, audit, usage, entity, resource, system, namespace, limits, local, loadtest)
+├── limits_cli.py      # CLI commands for declarative limits (plan, apply, diff, cfn-template)
 ├── version.py         # Version tracking and compatibility
 ├── loadtest/          # Load testing infrastructure (deploy, push, ui, run, tune, delete, list)
 │   ├── __init__.py
@@ -299,6 +356,13 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 ├── handler.py                # Lambda entry point (returns refills_written count)
 ├── processor.py              # Stream processing: usage snapshots + bucket refill (Issue #317)
 └── archiver.py               # S3 audit archival (gzip JSONL)
+
+src/zae_limiter_provisioner/   # Lambda provisioner for declarative limits (#405)
+├── __init__.py               # Re-exports (ApplyResult, Change, LimitsManifest, compute_diff, on_event)
+├── handler.py                # Lambda entry point (CLI + CFN custom resource events)
+├── manifest.py               # LimitsManifest YAML parsing (LimitDecl, SystemDecl, ResourceDecl, EntityDecl)
+├── differ.py                 # Diff engine (manifest vs #PROVISIONER state → list of Change)
+└── applier.py                # Applies changes via boto3 DynamoDB (PutItem/DeleteItem)
 ```
 
 ### Repository Pattern (v0.5.0+)
@@ -446,7 +510,8 @@ Users provide a short identifier (e.g., `my-app`), and the system uses it direct
 **Key points:**
 - Stack name = user-provided name directly
 - Table name = stack name
-- Lambda function name: `{name}-aggregator`
+- Lambda function name (aggregator): `{name}-aggregator`
+- Lambda function name (provisioner): `{name}-limits-provisioner`
 - DLQ name: `{name}-aggregator-dlq`
 - IAM roles: `{name}-aggr`, `{name}-app`, `{name}-admin`, `{name}-read` (ADR-116)
 - Log group: `/aws/lambda/{name}-aggregator`
@@ -698,6 +763,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Namespace forward lookup | `PK=_/SYSTEM#, SK=#NAMESPACE#{name}` |
 | Namespace reverse lookup | `PK=_/SYSTEM#, SK=#NSID#{id}` |
 | List all items in namespace | GSI4: `GSI4PK={ns}` |
+| Get provisioner state | `PK={ns}/SYSTEM#, SK=#PROVISIONER` |
 
 **Optimized read patterns (issue #133):**
 - `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
@@ -744,6 +810,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 - `sk_entity_config_resources()` - Returns `#ENTITY_CONFIG_RESOURCES` (registry with ref counts)
 - `sk_namespace(name)` - Returns `#NAMESPACE#{name}` (forward lookup)
 - `sk_nsid(id)` - Returns `#NSID#{id}` (reverse lookup)
+- `sk_provisioner()` - Returns `#PROVISIONER` (declarative limits managed state)
 
 **Audit entity IDs for config levels** (ADR-106):
 - System config: Audit events use `$SYSTEM` as entity_id

@@ -40,6 +40,9 @@ SK_ENTITY_CONFIG_RESOURCES = "#ENTITY_CONFIG_RESOURCES"
 SK_NAMESPACE_PREFIX = "#NAMESPACE#"
 SK_NSID_PREFIX = "#NSID#"
 
+# Provisioner state sort key (declarative limits management)
+SK_PROVISIONER = "#PROVISIONER"
+
 # Partition key prefix for audit logs
 AUDIT_PREFIX = "AUDIT#"
 
@@ -284,6 +287,11 @@ def sk_namespace_prefix() -> str:
 def sk_nsid_prefix() -> str:
     """Return the sort key prefix for namespace ID queries."""
     return SK_NSID_PREFIX
+
+
+def sk_provisioner() -> str:
+    """Build sort key for provisioner state record (tracks managed limits)."""
+    return SK_PROVISIONER
 
 
 def parse_bucket_sk(sk: str) -> str:

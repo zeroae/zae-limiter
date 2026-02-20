@@ -2469,3 +2469,56 @@ class TestResolveOnUnavailable:
             result = repo.resolve_on_unavailable()
         assert result == "block"
         repo.close()
+
+
+class TestProvisionerState:
+    """Tests for provisioner state CRUD (declarative limits management)."""
+
+    def test_get_provisioner_state_empty(self, repo):
+        """get_provisioner_state returns empty state when no record exists."""
+        state = repo.get_provisioner_state()
+        assert state["managed_system"] is False
+        assert state["managed_resources"] == []
+        assert state["managed_entities"] == {}
+        assert state["last_applied"] is None
+        assert state["applied_hash"] is None
+
+    def test_put_get_provisioner_state_roundtrip(self, repo):
+        """put_provisioner_state and get_provisioner_state round-trip correctly."""
+        state = {
+            "managed_system": True,
+            "managed_resources": ["gpt-4", "claude-3"],
+            "managed_entities": {"user-123": ["gpt-4"], "org-456": ["_default_"]},
+            "last_applied": "2026-02-19T12:00:00Z",
+            "applied_hash": "sha256:abc123",
+        }
+        repo.put_provisioner_state(state)
+        retrieved = repo.get_provisioner_state()
+        assert retrieved["managed_system"] is True
+        assert sorted(retrieved["managed_resources"]) == ["claude-3", "gpt-4"]
+        assert retrieved["managed_entities"] == {"user-123": ["gpt-4"], "org-456": ["_default_"]}
+        assert retrieved["last_applied"] == "2026-02-19T12:00:00Z"
+        assert retrieved["applied_hash"] == "sha256:abc123"
+
+    def test_put_provisioner_state_overwrites(self, repo):
+        """put_provisioner_state replaces previous state entirely."""
+        state1 = {
+            "managed_system": True,
+            "managed_resources": ["gpt-4"],
+            "managed_entities": {},
+            "last_applied": "2026-02-19T12:00:00Z",
+            "applied_hash": "sha256:aaa",
+        }
+        repo.put_provisioner_state(state1)
+        state2 = {
+            "managed_system": False,
+            "managed_resources": ["claude-3"],
+            "managed_entities": {"user-1": ["claude-3"]},
+            "last_applied": "2026-02-19T13:00:00Z",
+            "applied_hash": "sha256:bbb",
+        }
+        repo.put_provisioner_state(state2)
+        retrieved = repo.get_provisioner_state()
+        assert retrieved["managed_system"] is False
+        assert retrieved["managed_resources"] == ["claude-3"]
+        assert retrieved["managed_entities"] == {"user-1": ["claude-3"]}

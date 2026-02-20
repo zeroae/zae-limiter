@@ -1220,3 +1220,458 @@ class TestE2EAWSSpeculativeConsume:
         assert result.success is False
         assert result.old_buckets is not None
         assert result.old_buckets[0].tokens_milli == 1_000
+
+
+class TestE2EAWSProvisioner:
+    """E2E tests for declarative limits provisioner against real AWS DynamoDB.
+
+    Tests the handler functions directly against a real DynamoDB table.
+    The provisioner handler uses boto3 sync clients internally, so we call
+    the handler functions directly rather than invoking through Lambda.
+    """
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def aws_provisioner_repo(self, unique_name_class):
+        """Create a minimal stack for provisioner testing. Class-scoped to share stack."""
+        stack_options = StackOptions(
+            enable_aggregator=False,
+            enable_alarms=False,
+            usage_retention_days=1,
+            permission_boundary="arn:aws:iam::aws:policy/PowerUserAccess",
+            role_name_format="PowerUserPB-{}",
+            policy_name_format="PowerUserPB-{}",
+        )
+
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .stack_options(stack_options)
+            .build()
+        )
+
+        yield repo
+
+        try:
+            await repo.delete_stack()
+        except Exception as e:
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.close()
+
+    # NOTE: test_provisioner_cfn_event_lifecycle passes NamespaceId directly.
+    # The handler resolves namespace name -> ID when NamespaceId is absent,
+    # but these tests exercise the direct-handler path (no CFN stack).
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_provisioner_full_lifecycle(self, aws_provisioner_repo):
+        """Full provisioner lifecycle: apply → verify → modify → verify → delete.
+
+        Exercises the handler against real AWS DynamoDB to validate:
+        - Provisioner state persistence (#PROVISIONER record)
+        - Create/update/delete operations on config records
+        - Compatibility with Repository API for readback
+        """
+        from zae_limiter_provisioner.handler import _handle_cli
+
+        repo = aws_provisioner_repo
+        table_name = repo.table_name
+        namespace_id = repo._namespace_id
+
+        # Step 1: Apply initial manifest
+        manifest_v1 = {
+            "namespace": "default",
+            "system": {
+                "on_unavailable": "block",
+                "limits": {"rpm": {"capacity": 1000}},
+            },
+            "resources": {
+                "gpt-4": {"limits": {"tpm": {"capacity": 50000}}},
+                "claude-3": {"limits": {"rpm": {"capacity": 500}}},
+            },
+            "entities": {
+                "user-premium": {
+                    "resources": {
+                        "gpt-4": {"limits": {"rpm": {"capacity": 2000}}},
+                    },
+                },
+            },
+        }
+        event_v1 = {
+            "action": "apply",
+            "table_name": table_name,
+            "namespace_id": namespace_id,
+            "manifest": manifest_v1,
+        }
+        r1 = _handle_cli(event_v1, None)
+        assert r1["status"] == "applied"
+        assert r1["created"] == 4  # system + 2 resources + 1 entity
+        assert r1["errors"] == []
+
+        # Verify via Repository API
+        system_limits, on_unavailable = await repo.get_system_defaults()
+        assert on_unavailable == "block"
+        assert any(lim.name == "rpm" and lim.capacity == 1000 for lim in system_limits)
+
+        gpt4_limits = await repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "tpm" and lim.capacity == 50000 for lim in gpt4_limits)
+
+        entity_limits = await repo.get_limits("user-premium", "gpt-4")
+        assert any(lim.name == "rpm" and lim.capacity == 2000 for lim in entity_limits)
+
+        # Step 2: Plan (should show updates, not creates)
+        plan_event = {**event_v1, "action": "plan"}
+        plan_result = _handle_cli(plan_event, None)
+        assert plan_result["status"] == "planned"
+        actions = {c["action"] for c in plan_result["changes"]}
+        assert actions == {"update"}
+
+        # Step 3: Modify manifest (update gpt-4, remove claude-3, add entity)
+        manifest_v2 = {
+            "namespace": "default",
+            "system": {
+                "on_unavailable": "allow",
+                "limits": {"rpm": {"capacity": 2000}},
+            },
+            "resources": {
+                "gpt-4": {"limits": {"tpm": {"capacity": 100000}}},
+            },
+            "entities": {
+                "user-premium": {
+                    "resources": {
+                        "gpt-4": {"limits": {"rpm": {"capacity": 3000}}},
+                    },
+                },
+            },
+        }
+        event_v2 = {
+            "action": "apply",
+            "table_name": table_name,
+            "namespace_id": namespace_id,
+            "manifest": manifest_v2,
+        }
+        r2 = _handle_cli(event_v2, None)
+        assert r2["status"] == "applied"
+        assert r2["deleted"] == 1  # claude-3 removed
+        assert r2["updated"] == 3  # system + gpt-4 + entity
+        assert r2["errors"] == []
+
+        # Verify updated values
+        system_limits2, on_unavailable2 = await repo.get_system_defaults()
+        assert on_unavailable2 == "allow"
+        assert any(lim.name == "rpm" and lim.capacity == 2000 for lim in system_limits2)
+
+        gpt4_limits2 = await repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "tpm" and lim.capacity == 100000 for lim in gpt4_limits2)
+
+        # Verify claude-3 was deleted
+        claude_limits = await repo.get_resource_defaults("claude-3")
+        assert claude_limits == []
+
+        # Step 4: Empty manifest deletes everything
+        manifest_empty = {"namespace": "default"}
+        event_empty = {
+            "action": "apply",
+            "table_name": table_name,
+            "namespace_id": namespace_id,
+            "manifest": manifest_empty,
+        }
+        r3 = _handle_cli(event_empty, None)
+        assert r3["status"] == "applied"
+        assert r3["deleted"] == 3  # system + gpt-4 + entity
+
+        # Verify everything is gone
+        system_limits3, _ = await repo.get_system_defaults()
+        assert system_limits3 == []
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_provisioner_cfn_event_lifecycle(self, aws_provisioner_repo):
+        """CFN Create → Update → Delete lifecycle against real AWS."""
+        from zae_limiter_provisioner.handler import _handle_cfn
+
+        repo = aws_provisioner_repo
+        table_name = repo.table_name
+        namespace_id = repo._namespace_id
+
+        # CFN Create
+        cfn_create = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "TableName": table_name,
+                "NamespaceId": namespace_id,
+                "Namespace": "default",
+                "Resources": {
+                    "gpt-4": {
+                        "Limits": {"rpm": {"Capacity": 750}},
+                    },
+                },
+            },
+        }
+        r1 = _handle_cfn(cfn_create, None)
+        assert r1["created"] == 1
+        assert r1["errors"] == []
+
+        # Verify via Repository API
+        limits = await repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "rpm" and lim.capacity == 750 for lim in limits)
+
+        # CFN Update (add system, update gpt-4)
+        cfn_update = {
+            "RequestType": "Update",
+            "ResourceProperties": {
+                "TableName": table_name,
+                "NamespaceId": namespace_id,
+                "Namespace": "default",
+                "System": {
+                    "Limits": {"rpm": {"Capacity": 5000}},
+                },
+                "Resources": {
+                    "gpt-4": {
+                        "Limits": {"rpm": {"Capacity": 1500}},
+                    },
+                },
+            },
+        }
+        r2 = _handle_cfn(cfn_update, None)
+        assert r2["created"] == 1  # system is new
+        assert r2["updated"] == 1  # gpt-4 updated
+        assert r2["errors"] == []
+
+        # CFN Delete — removes all managed items
+        cfn_delete = {
+            "RequestType": "Delete",
+            "ResourceProperties": {
+                "TableName": table_name,
+                "NamespaceId": namespace_id,
+                "Namespace": "default",
+            },
+        }
+        r3 = _handle_cfn(cfn_delete, None)
+        assert r3["deleted"] == 2  # system + gpt-4
+
+        # Verify everything is gone
+        system_limits, _ = await repo.get_system_defaults()
+        assert system_limits == []
+        gpt4_limits = await repo.get_resource_defaults("gpt-4")
+        assert gpt4_limits == []
+
+
+class TestE2EAWSProvisionerCFNStack:
+    """True E2E test exercising Custom::ZaeLimiterLimits via CloudFormation.
+
+    Deploys a main stack with the provisioner Lambda, uploads real provisioner
+    code, then creates/updates/deletes a second CloudFormation stack that uses
+    Custom::ZaeLimiterLimits. This validates the full CFN custom resource
+    lifecycle: CFN -> Lambda -> DynamoDB.
+    """
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def cfn_provisioner_stack(self, unique_name_class):
+        """Deploy main stack with provisioner Lambda and upload code.
+
+        The provisioner Lambda is enabled by default in the CFN template.
+        After stack creation, we upload the real provisioner code so CFN
+        custom resource invocations execute real logic instead of the
+        placeholder Lambda.
+        """
+        import boto3 as boto3_sync
+
+        from zae_limiter.infra.stack_manager import StackManager
+
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .enable_aggregator(False)
+            .enable_alarms(False)
+            .usage_retention_days(1)
+            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+            .role_name_format("PowerUserPB-{}")
+            .policy_name_format("PowerUserPB-{}")
+            .build()
+        )
+
+        # Upload real provisioner code to the Lambda function
+        async with StackManager(repo.stack_name, repo.region, repo.endpoint_url) as manager:
+            deploy_result = await manager.deploy_provisioner_code()
+            assert deploy_result["status"] == "deployed"
+
+        # Get provisioner Lambda ARN from stack outputs
+        cfn = boto3_sync.client("cloudformation", region_name="us-east-1")
+        outputs = cfn.describe_stacks(StackName=unique_name_class)["Stacks"][0].get("Outputs", [])
+        provisioner_arn = None
+        for output in outputs:
+            if output["OutputKey"] == "ProvisionerFunctionArn":
+                provisioner_arn = output["OutputValue"]
+                break
+
+        assert provisioner_arn is not None, (
+            f"ProvisionerFunctionArn not found in stack {unique_name_class} outputs"
+        )
+
+        yield {
+            "repo": repo,
+            "stack_name": unique_name_class,
+            "provisioner_arn": provisioner_arn,
+        }
+
+        # Cleanup: delete the tenant stack first (if it still exists), then main
+        tenant_stack = f"{unique_name_class}-limits"
+        try:
+            cfn.delete_stack(StackName=tenant_stack)
+            waiter = cfn.get_waiter("stack_delete_complete")
+            waiter.wait(StackName=tenant_stack, WaiterConfig={"Delay": 5, "MaxAttempts": 60})
+        except Exception:
+            pass  # May already be deleted by the test
+
+        try:
+            await repo.delete_stack()
+        except Exception as e:
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.close()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_cfn_custom_resource_lifecycle(self, cfn_provisioner_stack):
+        """Full CFN custom resource lifecycle: Create → Update → Delete.
+
+        Deploys a second CloudFormation stack containing a
+        Custom::ZaeLimiterLimits resource. CloudFormation invokes the
+        provisioner Lambda which writes limits to DynamoDB. Verifies data
+        through the Repository API at each step.
+        """
+        import json
+
+        import boto3 as boto3_sync
+
+        repo = cfn_provisioner_stack["repo"]
+        main_stack = cfn_provisioner_stack["stack_name"]
+        provisioner_arn = cfn_provisioner_stack["provisioner_arn"]
+        tenant_stack = f"{main_stack}-limits"
+
+        cfn = boto3_sync.client("cloudformation", region_name="us-east-1")
+
+        # --- Step 1: Create stack with Custom::ZaeLimiterLimits ---
+        template_v1 = {
+            "AWSTemplateFormatVersion": "2010-09-09",
+            "Description": "E2E test: declarative limits via CFN custom resource",
+            "Resources": {
+                "TenantLimits": {
+                    "Type": "Custom::ZaeLimiterLimits",
+                    "Properties": {
+                        "ServiceToken": provisioner_arn,
+                        "TableName": main_stack,
+                        "Namespace": "default",
+                        "System": {
+                            "OnUnavailable": "block",
+                            "Limits": {
+                                "rpm": {"Capacity": 1000},
+                            },
+                        },
+                        "Resources": {
+                            "gpt-4": {
+                                "Limits": {
+                                    "tpm": {"Capacity": 50000},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+        cfn.create_stack(
+            StackName=tenant_stack,
+            TemplateBody=json.dumps(template_v1),
+        )
+        waiter = cfn.get_waiter("stack_create_complete")
+        waiter.wait(
+            StackName=tenant_stack,
+            WaiterConfig={"Delay": 5, "MaxAttempts": 120},
+        )
+
+        # Verify stack created successfully
+        stack_info = cfn.describe_stacks(StackName=tenant_stack)["Stacks"][0]
+        assert stack_info["StackStatus"] == "CREATE_COMPLETE"
+
+        # Verify limits via Repository API
+        await repo.invalidate_config_cache()
+        system_limits, on_unavailable = await repo.get_system_defaults()
+        assert on_unavailable == "block"
+        assert any(lim.name == "rpm" and lim.capacity == 1000 for lim in system_limits)
+
+        gpt4_limits = await repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "tpm" and lim.capacity == 50000 for lim in gpt4_limits)
+
+        # --- Step 2: Update stack (modify limits) ---
+        template_v2 = {
+            "AWSTemplateFormatVersion": "2010-09-09",
+            "Description": "E2E test: declarative limits via CFN custom resource (v2)",
+            "Resources": {
+                "TenantLimits": {
+                    "Type": "Custom::ZaeLimiterLimits",
+                    "Properties": {
+                        "ServiceToken": provisioner_arn,
+                        "TableName": main_stack,
+                        "Namespace": "default",
+                        "System": {
+                            "OnUnavailable": "allow",
+                            "Limits": {
+                                "rpm": {"Capacity": 2000},
+                            },
+                        },
+                        "Resources": {
+                            "gpt-4": {
+                                "Limits": {
+                                    "tpm": {"Capacity": 100000},
+                                },
+                            },
+                            "claude-3": {
+                                "Limits": {
+                                    "rpm": {"Capacity": 500},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+        cfn.update_stack(
+            StackName=tenant_stack,
+            TemplateBody=json.dumps(template_v2),
+        )
+        update_waiter = cfn.get_waiter("stack_update_complete")
+        update_waiter.wait(
+            StackName=tenant_stack,
+            WaiterConfig={"Delay": 5, "MaxAttempts": 120},
+        )
+
+        # Verify updated limits
+        await repo.invalidate_config_cache()
+        system_limits2, on_unavailable2 = await repo.get_system_defaults()
+        assert on_unavailable2 == "allow"
+        assert any(lim.name == "rpm" and lim.capacity == 2000 for lim in system_limits2)
+
+        gpt4_limits2 = await repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "tpm" and lim.capacity == 100000 for lim in gpt4_limits2)
+
+        claude3_limits = await repo.get_resource_defaults("claude-3")
+        assert any(lim.name == "rpm" and lim.capacity == 500 for lim in claude3_limits)
+
+        # --- Step 3: Delete stack (removes all managed limits) ---
+        cfn.delete_stack(StackName=tenant_stack)
+        delete_waiter = cfn.get_waiter("stack_delete_complete")
+        delete_waiter.wait(
+            StackName=tenant_stack,
+            WaiterConfig={"Delay": 5, "MaxAttempts": 120},
+        )
+
+        # Verify all managed limits removed
+        await repo.invalidate_config_cache()
+        system_limits3, _ = await repo.get_system_defaults()
+        assert system_limits3 == [], "System limits should be deleted after stack deletion"
+
+        gpt4_limits3 = await repo.get_resource_defaults("gpt-4")
+        assert gpt4_limits3 == [], "gpt-4 limits should be deleted after stack deletion"
+
+        claude3_limits2 = await repo.get_resource_defaults("claude-3")
+        assert claude3_limits2 == [], "claude-3 limits should be deleted after stack deletion"
