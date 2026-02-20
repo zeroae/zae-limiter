@@ -2075,7 +2075,7 @@ def _format_period(seconds: int) -> str:
         if seconds % base == 0:
             n = seconds // base
             return f"/{n}{unit}" if n != 1 else f"/{unit}"
-    return f"/{seconds}s"
+    raise AssertionError(f"unreachable: {seconds} is not divisible by 1")  # pragma: no cover
 
 
 def _parse_limit(limit_str: str) -> Limit:
