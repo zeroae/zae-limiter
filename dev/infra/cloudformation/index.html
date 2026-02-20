@@ -3552,6 +3552,72 @@
 <td>Create App/Admin/ReadOnly IAM roles</td>
 </tr>
 <tr>
+<td><code>EnableIAM</code></td>
+<td>String</td>
+<td><code>true</code></td>
+<td>Create all IAM resources (policies + roles)</td>
+</tr>
+<tr>
+<td><code>AggregatorRoleArn</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>External IAM role ARN for aggregator Lambda</td>
+</tr>
+<tr>
+<td><code>AggregatorRoleName</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>Custom name for aggregator Lambda role</td>
+</tr>
+<tr>
+<td><code>AppRoleName</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>Custom name for application IAM role</td>
+</tr>
+<tr>
+<td><code>AdminRoleName</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>Custom name for admin IAM role</td>
+</tr>
+<tr>
+<td><code>ReadOnlyRoleName</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>Custom name for read-only IAM role</td>
+</tr>
+<tr>
+<td><code>ProvisionerRoleName</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>Custom name for provisioner Lambda role</td>
+</tr>
+<tr>
+<td><code>AcquireOnlyPolicyName</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>Custom name for acquire-only policy</td>
+</tr>
+<tr>
+<td><code>FullAccessPolicyName</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>Custom name for full-access policy</td>
+</tr>
+<tr>
+<td><code>ReadOnlyPolicyName</code></td>
+<td>String</td>
+<td><em>(empty)</em></td>
+<td>Custom name for read-only policy</td>
+</tr>
+<tr>
+<td><code>EnableProvisioner</code></td>
+<td>String</td>
+<td><code>true</code></td>
+<td>Deploy limits provisioner Lambda</td>
+</tr>
+<tr>
 <td><code>EnableDeletionProtection</code></td>
 <td>String</td>
 <td><code>false</code></td>
@@ -3622,7 +3688,7 @@
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="nt">KeySchema</span><span class="p">:</span>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">AttributeName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI2PK</span><span class="w">  </span><span class="c1"># RESOURCE#{resource}</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">        </span><span class="nt">KeyType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HASH</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">AttributeName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI2SK</span><span class="w">  </span><span class="c1"># BUCKET#{entity_id}#{limit_name}</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">AttributeName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI2SK</span><span class="w">  </span><span class="c1"># BUCKET#{entity_id}</span>
 </span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">        </span><span class="nt">KeyType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RANGE</span>
 </span></code></pre></div>
 <p><strong>GSI3</strong> - Entity config queries (sparse index):</p>
@@ -3633,7 +3699,7 @@
 </span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">AttributeName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI3SK</span><span class="w">  </span><span class="c1"># entity_id</span>
 </span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">        </span><span class="nt">KeyType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RANGE</span>
 </span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">Projection</span><span class="p">:</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">      </span><span class="nt">ProjectionType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ALL</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">      </span><span class="nt">ProjectionType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">KEYS_ONLY</span>
 </span></code></pre></div>
 <p><strong>GSI4</strong> - Namespace item discovery (for <code>purge_namespace()</code>):</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">IndexName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GSI4</span>
@@ -4027,77 +4093,170 @@
 <thead>
 <tr>
 <th>Output</th>
+<th>Condition</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
+<td><code>TableName</code></td>
+<td>Always</td>
+<td>DynamoDB table name</td>
+</tr>
+<tr>
 <td><code>TableArn</code></td>
+<td>Always</td>
 <td>DynamoDB table ARN</td>
 </tr>
 <tr>
 <td><code>StreamArn</code></td>
+<td>Always</td>
 <td>DynamoDB stream ARN</td>
 </tr>
 <tr>
-<td><code>FunctionArn</code></td>
-<td>Lambda function ARN</td>
+<td><code>AggregatorFunctionArn</code></td>
+<td>Aggregator deployed</td>
+<td>Aggregator Lambda function ARN</td>
+</tr>
+<tr>
+<td><code>AggregatorFunctionName</code></td>
+<td>Aggregator deployed</td>
+<td>Aggregator Lambda function name</td>
+</tr>
+<tr>
+<td><code>AggregatorDLQUrl</code></td>
+<td>Aggregator enabled</td>
+<td>Dead Letter Queue URL</td>
+</tr>
+<tr>
+<td><code>AggregatorDLQArn</code></td>
+<td>Aggregator enabled</td>
+<td>Dead Letter Queue ARN</td>
+</tr>
+<tr>
+<td><code>AggregatorDLQAlarmName</code></td>
+<td>Aggregator alarms</td>
+<td>CloudWatch alarm for DLQ monitoring</td>
+</tr>
+<tr>
+<td><code>LambdaErrorRateAlarmName</code></td>
+<td>Aggregator alarms</td>
+<td>CloudWatch alarm for Lambda error rate</td>
+</tr>
+<tr>
+<td><code>LambdaDurationAlarmName</code></td>
+<td>Aggregator alarms</td>
+<td>CloudWatch alarm for Lambda duration</td>
+</tr>
+<tr>
+<td><code>DynamoDBReadThrottleAlarmName</code></td>
+<td>Alarms enabled</td>
+<td>CloudWatch alarm for read throttles</td>
+</tr>
+<tr>
+<td><code>DynamoDBWriteThrottleAlarmName</code></td>
+<td>Alarms enabled</td>
+<td>CloudWatch alarm for write throttles</td>
+</tr>
+<tr>
+<td><code>StreamIteratorAgeAlarmName</code></td>
+<td>Aggregator alarms</td>
+<td>CloudWatch alarm for stream iterator age</td>
 </tr>
 <tr>
 <td><code>AuditArchiveBucketName</code></td>
-<td>S3 bucket for audit archives (when enabled)</td>
+<td>Audit archival</td>
+<td>S3 bucket for audit archives</td>
 </tr>
 <tr>
 <td><code>AuditArchiveBucketArn</code></td>
-<td>S3 bucket ARN (when enabled)</td>
+<td>Audit archival</td>
+<td>S3 bucket ARN</td>
 </tr>
 <tr>
 <td><code>AcquireOnlyPolicyArn</code></td>
+<td>IAM enabled</td>
 <td>IAM policy ARN for acquire-only access</td>
 </tr>
 <tr>
 <td><code>FullAccessPolicyArn</code></td>
+<td>IAM enabled</td>
 <td>IAM policy ARN for full access</td>
 </tr>
 <tr>
 <td><code>ReadOnlyPolicyArn</code></td>
+<td>IAM enabled</td>
 <td>IAM policy ARN for read-only access</td>
 </tr>
 <tr>
-<td><code>AppRoleArn</code></td>
-<td>IAM role ARN for application access (when IAM roles enabled)</td>
-</tr>
-<tr>
-<td><code>AppRoleName</code></td>
-<td>IAM role name for application access</td>
-</tr>
-<tr>
-<td><code>AdminRoleArn</code></td>
-<td>IAM role ARN for admin access</td>
-</tr>
-<tr>
-<td><code>AdminRoleName</code></td>
-<td>IAM role name for admin access</td>
-</tr>
-<tr>
-<td><code>ReadOnlyRoleArn</code></td>
-<td>IAM role ARN for read-only access</td>
-</tr>
-<tr>
-<td><code>ReadOnlyRoleName</code></td>
-<td>IAM role name for read-only access</td>
-</tr>
-<tr>
 <td><code>NamespaceAcquirePolicyArn</code></td>
+<td>IAM enabled</td>
 <td>Namespace-scoped acquire-only policy ARN</td>
 </tr>
 <tr>
 <td><code>NamespaceFullAccessPolicyArn</code></td>
+<td>IAM enabled</td>
 <td>Namespace-scoped full-access policy ARN</td>
 </tr>
 <tr>
 <td><code>NamespaceReadOnlyPolicyArn</code></td>
+<td>IAM enabled</td>
 <td>Namespace-scoped read-only policy ARN</td>
+</tr>
+<tr>
+<td><code>AppRoleArn</code></td>
+<td>IAM roles enabled</td>
+<td>IAM role ARN for application access</td>
+</tr>
+<tr>
+<td><code>AppRoleName</code></td>
+<td>IAM roles enabled</td>
+<td>IAM role name for application access</td>
+</tr>
+<tr>
+<td><code>AdminRoleArn</code></td>
+<td>IAM roles enabled</td>
+<td>IAM role ARN for admin access</td>
+</tr>
+<tr>
+<td><code>AdminRoleName</code></td>
+<td>IAM roles enabled</td>
+<td>IAM role name for admin access</td>
+</tr>
+<tr>
+<td><code>ReadOnlyRoleArn</code></td>
+<td>IAM roles enabled</td>
+<td>IAM role ARN for read-only access</td>
+</tr>
+<tr>
+<td><code>ReadOnlyRoleName</code></td>
+<td>IAM roles enabled</td>
+<td>IAM role name for read-only access</td>
+</tr>
+<tr>
+<td><code>PermissionBoundaryArn</code></td>
+<td>Always</td>
+<td>Permission boundary ARN (empty if none)</td>
+</tr>
+<tr>
+<td><code>RoleNameFormat</code></td>
+<td>Always</td>
+<td>Role name format template (empty if default)</td>
+</tr>
+<tr>
+<td><code>CodeBucketName</code></td>
+<td>Audit archival</td>
+<td>S3 bucket for deployment artifacts</td>
+</tr>
+<tr>
+<td><code>ProvisionerFunctionArn</code></td>
+<td>Provisioner deployed</td>
+<td>Limits provisioner Lambda function ARN</td>
+</tr>
+<tr>
+<td><code>ProvisionerFunctionName</code></td>
+<td>Provisioner deployed</td>
+<td>Limits provisioner Lambda function name</td>
 </tr>
 </tbody>
 </table>
