@@ -35,7 +35,7 @@ Query snapshots for an entity:
 from datetime import datetime
 from zae_limiter import Repository, RateLimiter
 
-repo = await Repository.open(stack="my-app", region="us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Get hourly snapshots for a user

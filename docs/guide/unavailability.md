@@ -38,8 +38,7 @@ When DynamoDB is unavailable, reject all rate-limited requests by raising `RateL
 ```python
 from zae_limiter import Repository, RateLimiter, Limit, OnUnavailable, RateLimiterUnavailable
 
-# Connect to existing infrastructure (must be deployed first)
-repo = await Repository.open(stack="limiter", region="us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Set BLOCK mode via system defaults (persisted in DynamoDB)
@@ -76,7 +75,7 @@ except RateLimiterUnavailable as e:
 When DynamoDB is unavailable, allow requests to proceed:
 
 ```python
-repo = await Repository.open(stack="limiter", region="us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Set ALLOW mode via system defaults (persisted in DynamoDB)
@@ -134,7 +133,6 @@ Override the default mode for specific requests:
 # Default to BLOCK via builder
 repo = await (
     Repository.builder()
-    .stack("limiter").region("us-east-1")
     .on_unavailable("block")
     .build()
 )
@@ -184,7 +182,7 @@ except RateLimiterUnavailable as e:
 
 ```python
 # High-risk: billing, security (BLOCK set via system defaults)
-billing_repo = await Repository.open(stack="billing", region="us-east-1")
+billing_repo = await Repository.open("billing")
 billing_limiter = RateLimiter(repository=billing_repo)
 await billing_limiter.set_system_defaults(
     limits=[Limit.per_minute("rpm", 1000)],
@@ -192,7 +190,7 @@ await billing_limiter.set_system_defaults(
 )
 
 # Lower-risk: general API (ALLOW set via system defaults)
-api_repo = await Repository.open(stack="api", region="us-east-1")
+api_repo = await Repository.open("api")
 api_limiter = RateLimiter(repository=api_repo)
 await api_limiter.set_system_defaults(
     limits=[Limit.per_minute("rpm", 1000)],

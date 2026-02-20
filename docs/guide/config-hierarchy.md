@@ -46,7 +46,7 @@ System defaults apply to **all resources** unless overridden:
 ```python
 from zae_limiter import Repository, RateLimiter, Limit, OnUnavailable
 
-repo = await Repository.open(stack="my-app", region="us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Set system-wide defaults (no resource parameter)

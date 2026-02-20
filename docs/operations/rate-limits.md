@@ -152,7 +152,7 @@ Test that rate limiting is working correctly:
 ```python
 from zae_limiter import Repository, RateLimiter, Limit, RateLimitExceeded
 
-repo = await Repository.open(stack="limiter", region="us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Consume all capacity
@@ -181,7 +181,7 @@ Update stored limits for an entity without redeployment:
 ```python
 from zae_limiter import Repository, RateLimiter, Limit
 
-repo = await Repository.open(stack="limiter", region="us-east-1")
+repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 # Update limits for an entity

@@ -260,7 +260,6 @@ from zae_limiter import RateLimiter, Repository
 
 repo = await (
     Repository.builder()
-    .stack("my-app").region("us-east-1")
     .enable_tracing(True)
     .build()
 )
@@ -488,7 +487,6 @@ from zae_limiter import RateLimiter, Repository
 
 repo = await (
     Repository.builder()
-    .stack("limiter").region("us-east-1")
     .enable_alarms(True)
     .alarm_sns_topic("arn:aws:sns:us-east-1:123456789012:alerts")
     .lambda_duration_threshold_pct(75)  # Alert at 75% of timeout
