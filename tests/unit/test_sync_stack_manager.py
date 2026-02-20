@@ -562,6 +562,119 @@ class TestDeployProvisionerCode:
                 manager.deploy_provisioner_code()
             assert "Build failed" in str(exc_info.value)
 
+    def test_endpoint_url_passed_to_client(self) -> None:
+        """deploy_provisioner_code passes endpoint_url to Lambda client."""
+        with (
+            patch(
+                "zae_limiter.infra.sync_stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.sync_stack_manager.boto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = MagicMock(
+                return_value={
+                    "FunctionArn": "arn:aws:lambda:us-east-1:123:function:test-limits-provisioner",
+                    "CodeSha256": "abc123",
+                }
+            )
+            mock_waiter = MagicMock()
+            mock_waiter.wait = MagicMock()
+            mock_lambda.get_waiter.return_value = mock_waiter
+            mock_lambda.tag_resource = MagicMock()
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_lambda
+            mock_session_class.return_value = mock_session
+            manager = SyncStackManager(
+                stack_name="test", region="us-east-1", endpoint_url="http://localhost:4566"
+            )
+            manager.deploy_provisioner_code()
+            mock_session.client.assert_called_once_with(
+                "lambda", region_name="us-east-1", endpoint_url="http://localhost:4566"
+            )
+
+    def test_raises_on_waiter_failure(self) -> None:
+        """deploy_provisioner_code raises when function_updated waiter fails."""
+        with (
+            patch(
+                "zae_limiter.infra.sync_stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.sync_stack_manager.boto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = MagicMock(
+                return_value={
+                    "FunctionArn": "arn:aws:lambda:us-east-1:123:function:test",
+                    "CodeSha256": "abc123",
+                }
+            )
+            mock_waiter = MagicMock()
+            mock_waiter.wait = MagicMock(side_effect=Exception("Waiter timeout"))
+            mock_lambda.get_waiter.return_value = mock_waiter
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_lambda
+            mock_session_class.return_value = mock_session
+            manager = SyncStackManager(stack_name="test", region="us-east-1")
+            with pytest.raises(StackCreationError, match="provisioner update failed"):
+                manager.deploy_provisioner_code()
+
+    def test_raises_on_active_waiter_failure(self) -> None:
+        """deploy_provisioner_code raises when function_active waiter fails."""
+        with (
+            patch(
+                "zae_limiter.infra.sync_stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.sync_stack_manager.boto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = MagicMock(
+                return_value={
+                    "FunctionArn": "arn:aws:lambda:us-east-1:123:function:test",
+                    "CodeSha256": "abc123",
+                }
+            )
+            updated_waiter = MagicMock()
+            updated_waiter.wait = MagicMock()
+            active_waiter = MagicMock()
+            active_waiter.wait = MagicMock(side_effect=Exception("Not active"))
+            mock_lambda.get_waiter.side_effect = [updated_waiter, active_waiter]
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_lambda
+            mock_session_class.return_value = mock_session
+            manager = SyncStackManager(stack_name="test", region="us-east-1")
+            with pytest.raises(StackCreationError, match="provisioner to be active failed"):
+                manager.deploy_provisioner_code()
+
+    def test_raises_on_client_error(self) -> None:
+        """deploy_provisioner_code raises on ClientError."""
+        with (
+            patch(
+                "zae_limiter.infra.sync_stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.sync_stack_manager.boto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = MagicMock(
+                side_effect=ClientError(
+                    {
+                        "Error": {
+                            "Code": "ResourceNotFoundException",
+                            "Message": "Function not found",
+                        }
+                    },
+                    "UpdateFunctionCode",
+                )
+            )
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_lambda
+            mock_session_class.return_value = mock_session
+            manager = SyncStackManager(stack_name="test", region="us-east-1")
+            with pytest.raises(StackCreationError, match="ResourceNotFoundException"):
+                manager.deploy_provisioner_code()
+
 
 class TestContextManager:
     """Tests for context manager functionality."""

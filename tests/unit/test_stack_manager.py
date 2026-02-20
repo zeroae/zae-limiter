@@ -655,6 +655,155 @@ class TestDeployProvisionerCode:
 
             assert "Build failed" in str(exc_info.value)
 
+    @pytest.mark.asyncio
+    async def test_endpoint_url_passed_to_client(self) -> None:
+        """deploy_provisioner_code passes endpoint_url to Lambda client."""
+        with (
+            patch(
+                "zae_limiter.infra.stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = AsyncMock(
+                return_value={
+                    "FunctionArn": "arn:aws:lambda:us-east-1:123:function:test-limits-provisioner",
+                    "CodeSha256": "abc123",
+                }
+            )
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock()
+            mock_lambda.get_waiter.return_value = mock_waiter
+            mock_lambda.tag_resource = AsyncMock()
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock()
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(
+                stack_name="test",
+                region="us-east-1",
+                endpoint_url="http://localhost:4566",
+            )
+            await manager.deploy_provisioner_code()
+
+            mock_session.client.assert_called_once_with(
+                "lambda",
+                region_name="us-east-1",
+                endpoint_url="http://localhost:4566",
+            )
+
+    @pytest.mark.asyncio
+    async def test_raises_on_waiter_failure(self) -> None:
+        """deploy_provisioner_code raises when function_updated waiter fails."""
+        with (
+            patch(
+                "zae_limiter.infra.stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = AsyncMock(
+                return_value={
+                    "FunctionArn": "arn:aws:lambda:us-east-1:123:function:test",
+                    "CodeSha256": "abc123",
+                }
+            )
+            mock_waiter = MagicMock()
+            mock_waiter.wait = AsyncMock(side_effect=Exception("Waiter timeout"))
+            mock_lambda.get_waiter.return_value = mock_waiter
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+
+            with pytest.raises(StackCreationError, match="provisioner update failed"):
+                await manager.deploy_provisioner_code()
+
+    @pytest.mark.asyncio
+    async def test_raises_on_active_waiter_failure(self) -> None:
+        """deploy_provisioner_code raises when function_active waiter fails."""
+        with (
+            patch(
+                "zae_limiter.infra.stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = AsyncMock(
+                return_value={
+                    "FunctionArn": "arn:aws:lambda:us-east-1:123:function:test",
+                    "CodeSha256": "abc123",
+                }
+            )
+            updated_waiter = MagicMock()
+            updated_waiter.wait = AsyncMock()  # succeeds
+            active_waiter = MagicMock()
+            active_waiter.wait = AsyncMock(side_effect=Exception("Not active"))
+            mock_lambda.get_waiter.side_effect = [updated_waiter, active_waiter]
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+
+            with pytest.raises(StackCreationError, match="provisioner to be active failed"):
+                await manager.deploy_provisioner_code()
+
+    @pytest.mark.asyncio
+    async def test_raises_on_client_error(self) -> None:
+        """deploy_provisioner_code raises on ClientError."""
+        with (
+            patch(
+                "zae_limiter.infra.stack_manager.build_provisioner_package",
+                return_value=b"fake-zip",
+            ),
+            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+        ):
+            mock_lambda = MagicMock()
+            mock_lambda.update_function_code = AsyncMock(
+                side_effect=ClientError(
+                    {
+                        "Error": {
+                            "Code": "ResourceNotFoundException",
+                            "Message": "Function not found",
+                        }
+                    },
+                    "UpdateFunctionCode",
+                )
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+
+            with pytest.raises(StackCreationError, match="ResourceNotFoundException"):
+                await manager.deploy_provisioner_code()
+
 
 class TestContextManager:
     """Tests for async context manager functionality."""

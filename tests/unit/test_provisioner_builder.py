@@ -134,3 +134,42 @@ class TestProvisionerBuilder:
         assert "runtime_dependencies" in info
         assert isinstance(info["python_files"], int)
         assert info["python_files"] > 0
+
+    def test_get_runtime_requirements_returns_pyyaml_when_no_metadata(self):
+        """Returns pyyaml fallback when package metadata has no requires."""
+        from zae_limiter.infra.provisioner_builder import _get_runtime_requirements
+
+        with patch(
+            "zae_limiter.infra.provisioner_builder.importlib.metadata.requires",
+            return_value=None,
+        ):
+            result = _get_runtime_requirements()
+
+        assert result == ["pyyaml>=6.0"]
+
+    def test_placeholder_removed_from_artifacts(self):
+        """Placeholder __init__.py is removed from artifacts after build."""
+        from zae_limiter.infra.provisioner_builder import build_provisioner_package
+
+        def _build_with_placeholder(
+            source_dir: str,
+            artifacts_dir: str,
+            scratch_dir: str,
+            manifest_path: str,
+            runtime: str,
+            architecture: object,
+            **kwargs: object,
+        ) -> None:
+            _mock_builder_build(
+                source_dir, artifacts_dir, scratch_dir, manifest_path, runtime, architecture
+            )
+            # Simulate aws-lambda-builders copying __init__.py to artifacts
+            (Path(artifacts_dir) / "__init__.py").write_text("placeholder")
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _build_with_placeholder
+            zip_bytes = build_provisioner_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            # Top-level __init__.py should NOT be in the zip
+            assert "__init__.py" not in zf.namelist()
