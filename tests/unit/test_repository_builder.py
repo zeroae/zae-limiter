@@ -849,6 +849,30 @@ class TestOpen:
                 os.environ["ZAEL_NAMESPACE"] = old_ns
 
     @pytest.mark.asyncio
+    async def test_open_version_check_runs_with_endpoint_url(self, mock_dynamodb):
+        """open() runs version check even when endpoint_url is set (no local skip)."""
+        with (
+            patch.object(
+                Repository,
+                "_resolve_namespace",
+                new_callable=AsyncMock,
+                return_value="abc12345678",
+            ),
+            patch.object(Repository, "_reinitialize_config_cache"),
+            patch.object(
+                Repository, "_check_and_update_version_auto", new_callable=AsyncMock
+            ) as mock_version,
+        ):
+            repo = await Repository.open(
+                stack="test-open-local",
+                endpoint_url="http://localhost:4566",
+            )
+            try:
+                mock_version.assert_called_once()
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
     async def test_open_default_stack_name(self, mock_dynamodb):
         """open() defaults to stack name 'zae-limiter' when no args given."""
         await _create_table("zae-limiter")
