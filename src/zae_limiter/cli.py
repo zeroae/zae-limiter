@@ -12,6 +12,7 @@ import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
 from .infra.stack_manager import StackManager
+from .limits_cli import limits
 from .loadtest.cli import loadtest
 from .local import local
 from .models import StackOptions
@@ -3869,6 +3870,7 @@ def namespace_purge(
 # Local development commands
 # ---------------------------------------------------------------------------
 
+cli.add_command(limits)
 cli.add_command(local)
 cli.add_command(loadtest)
 
