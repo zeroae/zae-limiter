@@ -3026,6 +3026,73 @@ class Repository:
         return limits
 
     # -------------------------------------------------------------------------
+    # Provisioner state (declarative limits management, Issue #405)
+    # -------------------------------------------------------------------------
+
+    async def get_provisioner_state(self) -> dict[str, Any]:
+        """Get the provisioner state record for this namespace.
+
+        Returns:
+            Dict with keys: managed_system, managed_resources, managed_entities,
+            last_applied, applied_hash. Returns empty state if no record exists.
+        """
+        client = await self._get_client()
+        result = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system(self._namespace_id)},
+                "SK": {"S": schema.sk_provisioner()},
+            },
+        )
+        item = result.get("Item")
+        if not item:
+            return {
+                "managed_system": False,
+                "managed_resources": [],
+                "managed_entities": {},
+                "last_applied": None,
+                "applied_hash": None,
+            }
+
+        managed_entities: dict[str, list[str]] = {}
+        raw_entities = item.get("managed_entities", {}).get("M", {})
+        for entity_id, resources_attr in raw_entities.items():
+            managed_entities[entity_id] = [r["S"] for r in resources_attr.get("L", [])]
+
+        return {
+            "managed_system": item.get("managed_system", {}).get("BOOL", False),
+            "managed_resources": [r["S"] for r in item.get("managed_resources", {}).get("L", [])],
+            "managed_entities": managed_entities,
+            "last_applied": item.get("last_applied", {}).get("S"),
+            "applied_hash": item.get("applied_hash", {}).get("S"),
+        }
+
+    async def put_provisioner_state(self, state: dict[str, Any]) -> None:
+        """Write the provisioner state record for this namespace.
+
+        Args:
+            state: Dict with keys: managed_system, managed_resources,
+                   managed_entities, last_applied, applied_hash.
+        """
+        client = await self._get_client()
+        item: dict[str, Any] = {
+            "PK": {"S": schema.pk_system(self._namespace_id)},
+            "SK": {"S": schema.sk_provisioner()},
+            "GSI4PK": {"S": self._namespace_id},
+            "managed_system": {"BOOL": state["managed_system"]},
+            "managed_resources": {"L": [{"S": r} for r in state["managed_resources"]]},
+            "managed_entities": {
+                "M": {
+                    entity_id: {"L": [{"S": r} for r in resources]}
+                    for entity_id, resources in state["managed_entities"].items()
+                }
+            },
+            "last_applied": {"S": state["last_applied"]},
+            "applied_hash": {"S": state["applied_hash"]},
+        }
+        await client.put_item(TableName=self.table_name, Item=item)
+
+    # -------------------------------------------------------------------------
     # Audit retention configuration
     # -------------------------------------------------------------------------
 
