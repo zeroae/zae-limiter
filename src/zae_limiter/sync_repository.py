@@ -153,6 +153,7 @@ class SyncRepository:
     def open(
         cls,
         namespace: str | None = None,
+        parallel_mode: str = "auto",
         *,
         stack: str | None = None,
         region: str | None = None,
@@ -226,6 +227,7 @@ class SyncRepository:
             endpoint_url=endpoint_url,
             config_cache_ttl=config_cache_ttl,
             _skip_deprecation_warning=True,
+            parallel_mode=parallel_mode,
         )
         repo._auto_update = auto_update
         try:

@@ -496,9 +496,11 @@ class TestAWSCascadeSpeculativeComparison:
     def parallel_mode_limiter(self, request, aws_speculative_stack):
         """Create SyncRateLimiter with specific parallel_mode, cache warmed."""
         mode = request.param
-        repo = SyncRepository.open(stack=aws_speculative_stack, region="us-east-1")
-        repo._parallel_mode = mode
-        repo._executor_fn = repo._resolve_parallel_mode(mode)
+        repo = SyncRepository.open(
+            stack=aws_speculative_stack,
+            region="us-east-1",
+            parallel_mode=mode,
+        )
         limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
 
         # Warm entity cache + speculative path
@@ -675,9 +677,11 @@ class TestAWSCascadeBenchmarks:
     def parallel_mode_cascade_limiter(self, request, aws_cascade_stack):
         """Create SyncRateLimiter with specific parallel_mode for concurrent tests."""
         mode = request.param
-        repo = SyncRepository.open(stack=aws_cascade_stack, region="us-east-1")
-        repo._parallel_mode = mode
-        repo._executor_fn = repo._resolve_parallel_mode(mode)
+        repo = SyncRepository.open(
+            stack=aws_cascade_stack,
+            region="us-east-1",
+            parallel_mode=mode,
+        )
         limiter = SyncRateLimiter(repository=repo, speculative_writes=True)
 
         # Warm entity cache for all children
