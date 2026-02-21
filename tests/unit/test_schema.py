@@ -414,3 +414,13 @@ class TestBucketPKBuilders:
     def test_gsi2_sk_bucket_with_shard(self):
         assert gsi2_sk_bucket("user-1", 0) == "BUCKET#user-1#0"
         assert gsi2_sk_bucket("user-1", 3) == "BUCKET#user-1#3"
+
+
+class TestWCULimitConstants:
+    """Tests for WCU infrastructure limit constants."""
+
+    def test_wcu_limit_constants(self):
+        assert schema.WCU_LIMIT_NAME == "wcu"
+        assert schema.WCU_LIMIT_CAPACITY == 1000
+        assert schema.WCU_LIMIT_REFILL_AMOUNT == 1000
+        assert schema.WCU_LIMIT_REFILL_PERIOD_SECONDS == 1

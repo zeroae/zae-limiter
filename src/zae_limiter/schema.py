@@ -62,6 +62,12 @@ BUCKET_FIELD_RP = "rp"  # refill period (ms)
 BUCKET_FIELD_TC = "tc"  # total consumed counter (millitokens)
 BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 
+# Infrastructure limit: DynamoDB partition write capacity ceiling
+WCU_LIMIT_NAME = "wcu"
+WCU_LIMIT_CAPACITY = 1000  # DynamoDB per-partition WCU/sec limit
+WCU_LIMIT_REFILL_AMOUNT = 1000
+WCU_LIMIT_REFILL_PERIOD_SECONDS = 1
+
 # Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
 LIMIT_ATTR_PREFIX = "l_"
 LIMIT_FIELD_CP = "cp"  # capacity (ceiling)
