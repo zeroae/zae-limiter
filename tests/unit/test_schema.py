@@ -2,6 +2,7 @@
 
 import pytest
 
+from zae_limiter import schema
 from zae_limiter.schema import (
     # New constants
     DEFAULT_NAMESPACE,
@@ -305,7 +306,7 @@ class TestExistingGSISKBuildersUnchanged:
         assert gsi1_sk_child("child-1") == "CHILD#child-1"
 
     def test_gsi2_sk_bucket(self):
-        assert gsi2_sk_bucket("user-1") == "BUCKET#user-1"
+        assert gsi2_sk_bucket("user-1") == "BUCKET#user-1#0"
 
     def test_gsi2_sk_access(self):
         assert gsi2_sk_access("user-1") == "ACCESS#user-1"
@@ -367,3 +368,49 @@ class TestProvisionerKey:
         from zae_limiter.schema import sk_provisioner
 
         assert sk_provisioner() == "#PROVISIONER"
+
+
+# =============================================================================
+# Bucket PK builders (Pre-Shard Buckets, GHSA-76rv)
+# =============================================================================
+
+
+class TestBucketPKBuilders:
+    """Tests for new bucket partition key builders."""
+
+    def test_pk_bucket(self):
+        assert schema.pk_bucket("ns1", "user-1", "gpt-4", 0) == "ns1/BUCKET#user-1#gpt-4#0"
+        assert schema.pk_bucket("ns1", "user-1", "gpt-4", 3) == "ns1/BUCKET#user-1#gpt-4#3"
+
+    def test_sk_state(self):
+        assert schema.sk_state() == "#STATE"
+
+    def test_parse_bucket_pk(self):
+        ns, entity, resource, shard = schema.parse_bucket_pk("ns1/BUCKET#user-1#gpt-4#0")
+        assert ns == "ns1"
+        assert entity == "user-1"
+        assert resource == "gpt-4"
+        assert shard == 0
+
+    def test_parse_bucket_pk_multi_shard(self):
+        ns, entity, resource, shard = schema.parse_bucket_pk("ns1/BUCKET#user-1#gpt-4#3")
+        assert shard == 3
+
+    def test_parse_bucket_pk_invalid(self):
+        with pytest.raises(ValueError):
+            schema.parse_bucket_pk("ns1/ENTITY#user-1")
+
+    def test_parse_bucket_pk_missing_parts(self):
+        with pytest.raises(ValueError):
+            schema.parse_bucket_pk("ns1/BUCKET#onlyonepart")
+
+    def test_gsi3_pk_entity(self):
+        assert schema.gsi3_pk_entity("ns1", "user-1") == "ns1/ENTITY#user-1"
+
+    def test_gsi3_sk_bucket(self):
+        assert schema.gsi3_sk_bucket("gpt-4", 0) == "BUCKET#gpt-4#0"
+        assert schema.gsi3_sk_bucket("gpt-4", 3) == "BUCKET#gpt-4#3"
+
+    def test_gsi2_sk_bucket_with_shard(self):
+        assert gsi2_sk_bucket("user-1", 0) == "BUCKET#user-1#0"
+        assert gsi2_sk_bucket("user-1", 3) == "BUCKET#user-1#3"

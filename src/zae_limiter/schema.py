@@ -24,6 +24,10 @@ RESOURCE_PREFIX = "RESOURCE#"
 SYSTEM_PREFIX = "SYSTEM#"
 ENTITY_CONFIG_PREFIX = "ENTITY_CONFIG#"  # For GSI3 sparse index
 
+# Bucket PK prefix (pre-shard buckets, GHSA-76rv)
+BUCKET_PREFIX = "BUCKET#"
+SK_STATE = "#STATE"
+
 # Sort key prefixes
 SK_META = "#META"
 SK_BUCKET = "#BUCKET#"
@@ -214,9 +218,9 @@ def gsi2_pk_resource(namespace_id: str, resource: str) -> str:
     return f"{namespace_id}/{RESOURCE_PREFIX}{resource}"
 
 
-def gsi2_sk_bucket(entity_id: str) -> str:
+def gsi2_sk_bucket(entity_id: str, shard_id: int = 0) -> str:
     """Build GSI2 sort key for composite bucket entry."""
-    return f"BUCKET#{entity_id}"
+    return f"BUCKET#{entity_id}#{shard_id}"
 
 
 def gsi2_sk_access(entity_id: str) -> str:
@@ -303,6 +307,56 @@ def parse_bucket_sk(sk: str) -> str:
     if not resource:
         raise ValueError(f"Invalid bucket SK format: {sk}")
     return resource
+
+
+def pk_bucket(namespace_id: str, entity_id: str, resource: str, shard_id: int) -> str:
+    """Build partition key for a bucket shard."""
+    return f"{namespace_id}/{BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}"
+
+
+def sk_state() -> str:
+    """Build sort key for bucket state (fixed)."""
+    return SK_STATE
+
+
+def parse_bucket_pk(pk: str) -> tuple[str, str, str, int]:
+    """Parse namespace, entity_id, resource, shard_id from a bucket PK.
+
+    Args:
+        pk: A bucket PK like 'ns1/BUCKET#user-1#gpt-4#0'
+
+    Returns:
+        Tuple of (namespace_id, entity_id, resource, shard_id)
+
+    Raises:
+        ValueError: If PK is not a valid bucket PK
+    """
+    namespace_id, remainder = parse_namespace(pk)
+    if not remainder.startswith(BUCKET_PREFIX):
+        raise ValueError(f"Not a bucket PK: {pk}")
+    rest = remainder[len(BUCKET_PREFIX) :]
+    # Split from the right: last # is shard_id
+    parts = rest.rsplit("#", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid bucket PK format: {pk}")
+    entity_resource, shard_str = parts
+    shard_id = int(shard_str)
+    # Split entity_id and resource: first # separates them
+    er_parts = entity_resource.split("#", 1)
+    if len(er_parts) != 2:
+        raise ValueError(f"Invalid bucket PK format: {pk}")
+    entity_id, resource = er_parts
+    return namespace_id, entity_id, resource, shard_id
+
+
+def gsi3_pk_entity(namespace_id: str, entity_id: str) -> str:
+    """Build GSI3 partition key for entity bucket discovery."""
+    return f"{namespace_id}/{ENTITY_PREFIX}{entity_id}"
+
+
+def gsi3_sk_bucket(resource: str, shard_id: int) -> str:
+    """Build GSI3 sort key for bucket entry."""
+    return f"{BUCKET_PREFIX}{resource}#{shard_id}"
 
 
 def get_table_definition(table_name: str) -> dict[str, Any]:
