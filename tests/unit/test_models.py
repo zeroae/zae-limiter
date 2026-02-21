@@ -741,6 +741,18 @@ class TestInputValidation:
         assert exc_info.value.field == "name"
         assert "slash" not in exc_info.value.reason  # slash not in allowed chars
 
+    def test_validate_name_rejects_reserved_wcu(self):
+        """Test that 'wcu' is rejected as a reserved limit name."""
+        with pytest.raises(InvalidNameError, match="reserved"):
+            Limit.per_minute("wcu", 100)
+
+    def test_validate_name_allows_normal_names(self):
+        """Test that normal limit names still work."""
+        from zae_limiter.models import validate_name
+
+        validate_name("rpm", "limit_name")  # should not raise
+        validate_name("tpm", "limit_name")  # should not raise
+
     # -------------------------------------------------------------------------
     # Resource Name Validation Tests
     # -------------------------------------------------------------------------

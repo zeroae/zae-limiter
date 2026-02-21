@@ -30,6 +30,9 @@ RESOURCE_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.\-/]*$")
 # The '#' character is used as a key delimiter in DynamoDB and must be forbidden
 FORBIDDEN_CHAR = "#"
 
+# Reserved limit names (internal infrastructure limits, not user-configurable)
+RESERVED_LIMIT_NAMES = frozenset({"wcu"})
+
 
 # ---------------------------------------------------------------------------
 # Validation Functions
@@ -90,6 +93,9 @@ def validate_name(value: str, field_name: str) -> None:
         raise InvalidNameError(
             field_name, value, f"cannot contain '{FORBIDDEN_CHAR}' (reserved delimiter)"
         )
+
+    if value in RESERVED_LIMIT_NAMES:
+        raise InvalidNameError(field_name, value, f"'{value}' is a reserved limit name")
 
     if not NAME_PATTERN.match(value):
         raise InvalidNameError(
