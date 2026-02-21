@@ -117,13 +117,29 @@ On `wcu` exhaustion:
 2. Retry acquire on a new shard (lazy creation on first access)
 3. Cost: +1 RT, +1 WCU (one-time per doubling event)
 
-### Aggregator (Proactive)
+### Aggregator (Proactive Sharding)
 
-The aggregator observes `wcu` consumption via DynamoDB streams:
-1. At threshold (e.g., 80% of capacity), bump `shard_count` on shard 0
-2. Propagate `shard_count` to all existing shard items (+N WCU)
-3. Optionally pre-create new shard bucket items to avoid lazy-creation slow path
-4. Can merge shards when traffic drops (future work)
+The aggregator observes `wcu` consumption via DynamoDB streams and proactively shards before exhaustion:
+
+1. In `process_stream_records()`, after `aggregate_bucket_states()`, compute the `wcu` consumption rate for each bucket from accumulated `tc_delta`
+2. If `wcu` `tc_delta >= threshold * capacity` (e.g., 80% of 1000 = 800), the bucket is approaching the partition write ceiling
+3. Bump `shard_count` on shard 0 (conditional write: `shard_count = :old_count`, same as client-side)
+4. Pre-create new shard bucket items with correct attributes (original limits + new `shard_count`) to avoid lazy-creation slow path on client
+5. Cost: +1 WCU (bump) + N WCU (pre-create new shards)
+
+### Aggregator (Shard Count Propagation)
+
+When `shard_count` changes on any shard item (detected via OldImage vs NewImage in the stream):
+
+1. Read `shard_count` from NewImage; compare with OldImage
+2. If `shard_count` changed (increased by client or proactive sharding), propagate the new value to all other existing shard items
+3. Uses conditional write (`shard_count < :new_count`) to avoid overwriting a higher value set by another writer
+4. Cost: +N WCU per propagation event (one per existing shard)
+5. Propagation ensures all shards have consistent `shard_count` for effective limit derivation in the refill logic
+
+### Aggregator (Future: Shard Merging)
+
+Can merge shards when traffic drops (future work).
 
 ### Shard 0 as Source of Truth
 
@@ -172,12 +188,12 @@ Populated from `ALL_NEW` response on speculative write success. `shard_count` pe
 
 ### New Responsibilities
 
-| Responsibility | Description |
-|----------------|-------------|
-| Proactive sharding | Detect high `wcu` consumption, bump `shard_count` before exhaustion |
-| Shard count propagation | On `shard_count` change, update all shard items |
-| Effective limit refill | `effective_capacity = capacity / shard_count` for application limits |
-| `wcu` filtering | Filter `wcu` from `extract_deltas()` (no usage snapshots for internal limits) |
+| Responsibility | Trigger | Action | Cost |
+|----------------|---------|--------|------|
+| Proactive sharding | `wcu` `tc_delta` >= 80% of capacity in a batch | Bump `shard_count` on shard 0, pre-create new shard buckets | +1 WCU (bump) + N WCU (pre-create) |
+| Shard count propagation | `shard_count` changed in stream record (OldImage != NewImage) | Update all other shard items with new `shard_count` (conditional: `shard_count < :new`) | +N WCU |
+| Effective limit refill | Every refill cycle | `effective_capacity = capacity / shard_count` for application limits | 0 (math only) |
+| `wcu` filtering | Every `extract_deltas()` call | Skip `wcu` limit — no usage snapshots for internal limits | 0 |
 
 ### New Dataclass Fields
 
