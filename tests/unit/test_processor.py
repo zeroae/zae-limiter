@@ -1843,6 +1843,27 @@ class TestTryProactiveShard:
         assert result is False
         mock_table.update_item.assert_not_called()
 
+    def test_unreachable_at_batch_size_100(self) -> None:
+        """At BatchSize=100, max wcu tc_delta is 100_000 milli (10% of capacity).
+
+        Documents that proactive sharding requires BatchSize >= 800 to trigger
+        at the 80% threshold (WCU_PROACTIVE_THRESHOLD). With the default
+        BatchSize=100, the maximum achievable ratio is 100/1000 = 10%.
+        See Task #28 for the BatchSize fix.
+        """
+        mock_table = MagicMock()
+        state = self._make_state()
+        # Max possible: 100 records * 1 WCU * 1000 milli = 100_000
+        max_tc_delta_at_batch_100 = 100 * 1000
+        wcu_capacity_milli = 1000_000
+
+        result = try_proactive_shard(
+            mock_table, state, max_tc_delta_at_batch_100, wcu_capacity_milli
+        )
+
+        assert result is False  # 10% < 80% threshold
+        mock_table.update_item.assert_not_called()
+
 
 class TestPropagateShardsCount:
     """Tests for propagate_shard_count function."""

@@ -415,6 +415,25 @@ class TestBucketPKBuilders:
         assert schema.gsi3_sk_bucket("gpt-4", 0) == "BUCKET#gpt-4#0"
         assert schema.gsi3_sk_bucket("gpt-4", 3) == "BUCKET#gpt-4#3"
 
+    @pytest.mark.parametrize(
+        "resource",
+        [
+            "gpt-4",  # hyphen
+            "gpt_4",  # underscore
+            "gpt-3.5-turbo",  # dot
+            "openai/gpt-4",  # slash (provider/model)
+            "anthropic/claude-3/opus",  # nested slash
+        ],
+    )
+    def test_parse_bucket_pk_round_trip(self, resource):
+        """pk_bucket -> parse_bucket_pk round-trips for all valid resource chars."""
+        pk = schema.pk_bucket("ns1", "user-1", resource, 0)
+        ns, entity, res, shard = schema.parse_bucket_pk(pk)
+        assert ns == "ns1"
+        assert entity == "user-1"
+        assert res == resource
+        assert shard == 0
+
     def test_gsi2_sk_bucket_with_shard(self):
         assert gsi2_sk_bucket("user-1", 0) == "BUCKET#user-1#0"
         assert gsi2_sk_bucket("user-1", 3) == "BUCKET#user-1#3"
