@@ -2132,3 +2132,248 @@ git add src/zae_limiter/repository.py src/zae_limiter/limiter.py \
     tests/unit/test_repository.py tests/unit/test_limiter.py tests/unit/test_sync_*.py
 git commit -m "🐛 fix(repository): handle both ProvisionedThroughput and ThrottlingException for partition throttle"
 ```
+
+---
+
+### Task 36: Fix propagate_shard_count to pre-create new shard items
+
+**Problem:** `propagate_shard_count()` (`processor.py:700-768`) uses `attribute_not_exists(shard_count) OR shard_count < :new` as the condition expression. When the target shard doesn't exist, this creates an incomplete item with only `PK`, `SK`, and `shard_count` — missing all GSI attributes (`GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK`, `GSI4PK`, `GSI4SK`), limit attributes, `cascade`, `parent_id`, and `wcu` infrastructure limit. These incomplete items are invisible to GSI3 bucket discovery and GSI2 resource capacity queries.
+
+Without pre-creation, every new shard's first client access hits the slow path (+2 RT), which goes against the architecture's core principle: keep clients on the speculative fast path. The aggregator also can't refill new shards until a client creates them.
+
+**Fix:** Split propagation into two code paths based on `old_count`/`new_count` from the stream record's OldImage/NewImage:
+1. **Existing shards** `range(1, old_count)`: UpdateItem with `shard_count < :new` (drop `attribute_not_exists`)
+2. **New shards** `range(old_count, new_count)`: PutItem cloned from shard 0's NewImage with adjusted PK/GSI keys, tokens set to effective capacity, condition `attribute_not_exists(PK)` to avoid overwriting client-created items
+
+**Cost:** +N WCU per doubling event in the aggregator Lambda (async, rare). Keeps clients on the fast path.
+
+**Files:**
+- Modify: `src/zae_limiter_aggregator/processor.py:700-768` (`propagate_shard_count`)
+- Test: `tests/unit/test_processor.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_processor.py`:
+
+```python
+def test_propagate_creates_full_items_for_new_shards():
+    """New shards get full items cloned from shard 0's NewImage."""
+    record = make_modify_record(
+        pk="ns1/BUCKET#user-1#gpt-4#0",
+        sk="#STATE",
+        new_image={
+            "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+            "SK": {"S": "#STATE"},
+            "shard_count": {"N": "4"},
+            "GSI2PK": {"S": "ns1/RESOURCE#gpt-4"},
+            "GSI2SK": {"S": "BUCKET#user-1#0"},
+            "GSI3PK": {"S": "ns1/ENTITY#user-1"},
+            "GSI3SK": {"S": "BUCKET#gpt-4#0"},
+            "GSI4PK": {"S": "ns1"},
+            "GSI4SK": {"S": "BUCKET#user-1#gpt-4#0"},
+            "b_rpm_tk": {"N": "50000000"},
+            "b_rpm_cp": {"N": "100000000"},
+            "b_rpm_ra": {"N": "100000000"},
+            "b_rpm_rp": {"N": "60000"},
+            "b_rpm_tc": {"N": "0"},
+            "b_wcu_tk": {"N": "1000000"},
+            "b_wcu_cp": {"N": "1000000"},
+            "b_wcu_ra": {"N": "1000000"},
+            "b_wcu_rp": {"N": "1000"},
+            "b_wcu_tc": {"N": "500"},
+            "cascade": {"BOOL": False},
+            "rf": {"N": "1000"},
+        },
+        old_image={
+            "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+            "SK": {"S": "#STATE"},
+            "shard_count": {"N": "2"},
+        },
+    )
+    mock_table = MagicMock()
+    propagated = propagate_shard_count(mock_table, record)
+
+    # Shards 2 and 3 are NEW (old_count=2, new_count=4)
+    # Shard 1 is EXISTING (update only)
+    calls = mock_table.update_item.call_args_list
+    put_calls = mock_table.put_item.call_args_list
+
+    # 1 existing shard updated
+    assert len(calls) == 1
+    assert "shard_count < :new" in calls[0].kwargs["ConditionExpression"]
+
+    # 2 new shards pre-created with full attributes
+    assert len(put_calls) == 2
+    for put_call in put_calls:
+        item = put_call.kwargs["Item"]
+        assert "GSI3PK" in item  # Has GSI attributes
+        assert "GSI2PK" in item
+        assert "b_rpm_tk" in item  # Has limit attributes
+        assert "b_wcu_tk" in item  # Has wcu
+
+    # Verify PKs are correct for new shards
+    new_pks = {c.kwargs["Item"]["PK"]["S"] for c in put_calls}
+    assert "ns1/BUCKET#user-1#gpt-4#2" in new_pks
+    assert "ns1/BUCKET#user-1#gpt-4#3" in new_pks
+
+
+def test_propagate_existing_shards_not_created():
+    """Existing shards get UpdateItem, not PutItem."""
+    record = make_modify_record(
+        pk="ns1/BUCKET#user-1#gpt-4#0",
+        sk="#STATE",
+        new_image={"shard_count": {"N": "4"}, "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"}, "SK": {"S": "#STATE"}, ...},
+        old_image={"shard_count": {"N": "2"}, ...},
+    )
+    mock_table = MagicMock()
+    propagate_shard_count(mock_table, record)
+
+    # Shard 1 is existing — UpdateItem, not PutItem
+    update_pks = {c.kwargs["Key"]["PK"] for c in mock_table.update_item.call_args_list}
+    assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
+
+    put_pks = {c.kwargs["Item"]["PK"]["S"] for c in mock_table.put_item.call_args_list}
+    assert "ns1/BUCKET#user-1#gpt-4#1" not in put_pks
+
+
+def test_propagate_new_shard_skips_if_client_created():
+    """PutItem with attribute_not_exists(PK) skips client-created shards."""
+    mock_table = MagicMock()
+    mock_table.put_item.side_effect = ClientError(
+        {"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem"
+    )
+    record = make_modify_record(
+        pk="ns1/BUCKET#user-1#gpt-4#0",
+        sk="#STATE",
+        new_image={"shard_count": {"N": "2"}, "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"}, "SK": {"S": "#STATE"}, ...},
+        old_image={"shard_count": {"N": "1"}, ...},
+    )
+    propagated = propagate_shard_count(mock_table, record)
+    assert propagated == 0  # Client already created it
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_processor.py -k "test_propagate" -v`
+Expected: FAIL (current code uses UpdateItem for all shards, no PutItem)
+
+**Step 3: Rewrite propagate_shard_count with two code paths**
+
+```python
+def propagate_shard_count(
+    table: Any,
+    record: dict[str, Any],
+) -> int:
+    """Propagate shard_count changes to all other shard items.
+
+    Detects shard_count change in stream record (OldImage vs NewImage).
+    Only propagates from shard 0. Two code paths:
+    - Existing shards (1..old_count-1): UpdateItem with shard_count < :new
+    - New shards (old_count..new_count-1): PutItem cloned from shard 0's
+      NewImage with adjusted PK/GSI keys and effective token capacity.
+      Uses attribute_not_exists(PK) to avoid overwriting client-created items.
+
+    Args:
+        table: boto3 Table resource
+        record: DynamoDB stream record
+
+    Returns:
+        Number of shard items created or updated
+    """
+    dynamodb_data = record.get("dynamodb", {})
+    new_image = dynamodb_data.get("NewImage", {})
+    old_image = dynamodb_data.get("OldImage", {})
+
+    new_count_raw = new_image.get("shard_count", {}).get("N")
+    old_count_raw = old_image.get("shard_count", {}).get("N")
+    if not new_count_raw or not old_count_raw:
+        return 0
+
+    new_count = int(new_count_raw)
+    old_count = int(old_count_raw)
+    if new_count <= old_count:
+        return 0
+
+    pk = new_image.get("PK", {}).get("S", "")
+    try:
+        namespace_id, entity_id, resource, shard_id = parse_bucket_pk(pk)
+    except ValueError:
+        return 0
+
+    if shard_id != 0:
+        return 0  # Only propagate from source of truth
+
+    updated = 0
+
+    # Path 1: Update existing shards (lightweight shard_count update)
+    for target_shard in range(1, old_count):
+        try:
+            table.update_item(
+                Key={
+                    "PK": pk_bucket(namespace_id, entity_id, resource, target_shard),
+                    "SK": sk_state(),
+                },
+                UpdateExpression="SET shard_count = :new",
+                ConditionExpression="shard_count < :new",
+                ExpressionAttributeValues={
+                    ":new": new_count,
+                },
+            )
+            updated += 1
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # Higher value already present
+            raise
+
+    # Path 2: Pre-create new shards (full item cloned from shard 0)
+    for target_shard in range(old_count, new_count):
+        try:
+            item = dict(new_image)  # Clone shard 0's NewImage
+            item["PK"] = {"S": pk_bucket(namespace_id, entity_id, resource, target_shard)}
+            item["GSI2SK"] = {"S": gsi2_sk_bucket(entity_id, target_shard)}
+            item["GSI3SK"] = {"S": gsi3_sk_bucket(resource, target_shard)}
+            item["GSI4SK"] = {"S": gsi4_sk_bucket(entity_id, resource, target_shard)}
+            item["shard_count"] = {"N": str(new_count)}
+            # Reset tokens to effective per-shard capacity (full bucket)
+            for limit_name, info in _extract_limit_attrs(new_image).items():
+                cp_milli = info["cp_milli"]
+                if limit_name == WCU_LIMIT_NAME:
+                    effective_cp = cp_milli  # wcu is per-partition, not divided
+                else:
+                    effective_cp = cp_milli // new_count
+                item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = {"N": str(effective_cp)}
+                item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = {"N": "0"}
+            table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+            updated += 1
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # Client already created this shard
+            raise
+
+    if updated > 0:
+        logger.info(
+            "Shard count propagated",
+            entity_id=entity_id,
+            resource=resource,
+            new_count=new_count,
+            shards_updated=updated,
+        )
+    return updated
+```
+
+**Note:** `_extract_limit_attrs` is a helper that parses `b_{name}_cp` attributes from the NewImage to get limit names and their capacity values. This may already exist in the parser or can be extracted from `_parse_bucket_record`.
+
+**Step 4: Run tests**
+
+Run: `uv run pytest tests/unit/test_processor.py -v`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add src/zae_limiter_aggregator/processor.py tests/unit/test_processor.py
+git commit -m "🐛 fix(aggregator): pre-create full shard items during propagation to keep clients on fast path"
+```
