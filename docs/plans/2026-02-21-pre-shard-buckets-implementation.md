@@ -2006,3 +2006,129 @@ git add src/zae_limiter/limiter.py src/zae_limiter/sync_limiter.py \
     tests/unit/test_limiter.py tests/unit/test_sync_limiter.py
 git commit -m "🐛 fix(limiter): deduplicate sharded entities in get_resource_capacity"
 ```
+
+---
+
+### Task 35: Handle DynamoDB per-partition throttling with shard probe
+
+**Problem:** The design plan's Failure Handling table (row 4) specifies catching `ProvisionedThroughputExceededException` for DynamoDB throttle retry with shard probe. This is only correct for provisioned tables. On-demand tables (`PAY_PER_REQUEST`) return `ThrottlingException` with `ThrottlingReason: TableWriteKeyRangeThroughputExceeded` for per-partition throttling. The code must handle both capacity modes as a defensive fallback behind the `wcu` infrastructure limit.
+
+**References:**
+- [DynamoDB Error Handling](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Programming.Errors.html): On-demand → `ThrottlingException`, provisioned → `ProvisionedThroughputExceededException`
+- [Key Range Throughput Exceeded](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/throttling-key-range-limit-exceeded-mitigation.html): Per-partition throttling uses `TableWriteKeyRangeThroughputExceeded` reason
+
+**Fix:** In `speculative_consume()` or the limiter's `_try_speculative_acquire()`, catch both:
+1. `ProvisionedThroughputExceededException` (provisioned tables)
+2. `ThrottlingException` where `ThrottlingReason` contains `KeyRangeThroughputExceeded` (on-demand tables)
+
+On either, probe shard 1 with a GetItem. If it exists, read `shard_count` and update entity cache, then fall through to slow path on a different shard. If shard 1 doesn't exist, raise `RateLimiterUnavailable`.
+
+Ignore `ThrottlingException` with other reasons (table-level caps, control plane throttling) — retry on a different shard won't help for those.
+
+**Files:**
+- Modify: `src/zae_limiter/repository.py` (catch both exceptions in `_speculative_consume_single`)
+- Modify: `src/zae_limiter/limiter.py` (shard probe logic on throttle)
+- Modify: `docs/plans/2026-02-21-pre-shard-buckets-design.md` (update Failure Handling row 4)
+- Generate: sync code (`hatch run generate-sync`)
+- Test: `tests/unit/test_repository.py`, `tests/unit/test_limiter.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_repository.py`:
+
+```python
+def test_speculative_consume_handles_provisioned_throttle():
+    """ProvisionedThroughputExceededException returns throttled SpeculativeResult."""
+    # Mock client to raise ProvisionedThroughputExceededException
+    result = await repo.speculative_consume("user-1", "api", {"rpm": 1})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.PARTITION_THROTTLED
+
+def test_speculative_consume_handles_on_demand_throttle():
+    """ThrottlingException with KeyRangeThroughputExceeded returns throttled result."""
+    # Mock client to raise ThrottlingException with ThrottlingReason
+    result = await repo.speculative_consume("user-1", "api", {"rpm": 1})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.PARTITION_THROTTLED
+
+def test_speculative_consume_reraises_non_partition_throttle():
+    """ThrottlingException without KeyRange reason is re-raised."""
+    # Mock client to raise ThrottlingException with MaxOnDemandThroughputExceeded
+    with pytest.raises(ClientError):
+        await repo.speculative_consume("user-1", "api", {"rpm": 1})
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_repository.py -k "test_speculative_consume_handles" -v`
+Expected: FAIL
+
+**Step 3: Add throttle handling in `_speculative_consume_single`**
+
+```python
+def _is_partition_throttle(e: ClientError) -> bool:
+    """Check if a ClientError is a per-partition throttle (hot key)."""
+    code = e.response.get("Error", {}).get("Code", "")
+    if code == "ProvisionedThroughputExceededException":
+        return True
+    if code == "ThrottlingException":
+        reason = e.response.get("Error", {}).get("ThrottlingReason", "")
+        return "KeyRangeThroughputExceeded" in reason
+    return False
+```
+
+In `_speculative_consume_single`, extend the `except ClientError` block:
+
+```python
+except ClientError as e:
+    if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+        # ... existing logic ...
+    elif _is_partition_throttle(e):
+        return SpeculativeResult(
+            success=False,
+            shard_id=shard_id,
+            failure_reason=SpeculativeFailureReason.PARTITION_THROTTLED,
+        )
+    raise
+```
+
+**Step 4: Add shard probe in limiter**
+
+In `_try_speculative_acquire()`, after the existing wcu/shard-retry logic:
+
+```python
+if result.failure_reason == SpeculativeFailureReason.PARTITION_THROTTLED:
+    # Probe shard 1 to discover shard_count
+    probe = await self._repository.get_buckets(entity_id, resource, shard_id=1)
+    if probe:
+        shard_count = probe[0].shard_count  # or from item attributes
+        # Update entity cache, fall through to slow path on different shard
+        return None
+    raise RateLimiterUnavailable("DynamoDB partition throttled, no shards available")
+```
+
+**Step 5: Update design plan Failure Handling table**
+
+Replace row 4 in `docs/plans/2026-02-21-pre-shard-buckets-design.md`:
+
+```markdown
+| `ProvisionedThroughputExceededException` or `ThrottlingException` (KeyRange) | DynamoDB per-partition throttle | Probe shard 1; if exists, discover `shard_count` and retry; if not, `RateLimiterUnavailable` |
+```
+
+**Step 6: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 7: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 8: Commit**
+
+```bash
+git add src/zae_limiter/repository.py src/zae_limiter/limiter.py \
+    src/zae_limiter/sync_*.py docs/plans/2026-02-21-pre-shard-buckets-design.md \
+    tests/unit/test_repository.py tests/unit/test_limiter.py tests/unit/test_sync_*.py
+git commit -m "🐛 fix(repository): handle both ProvisionedThroughput and ThrottlingException for partition throttle"
+```
