@@ -7,6 +7,7 @@ Changes should be made to the source file, then regenerated.
 """
 
 import logging
+import random
 import time
 import warnings
 from typing import TYPE_CHECKING, Any, cast
@@ -1768,7 +1769,12 @@ class SyncRepository:
                 client.delete_item(**item["Delete"])
 
     def speculative_consume(
-        self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None = None,
+        shard_id: int | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -1776,11 +1782,16 @@ class SyncRepository:
         issues child+parent UpdateItems concurrently via _run_in_executor
         and returns nested parent_result.
 
+        When ``shard_id`` is explicitly provided, targets that shard directly
+        without cascade logic (used for shard retry).
+
         Args:
             entity_id: Entity owning the bucket
             resource: Resource name
             consume: Amount per limit (tokens, not milli)
             ttl_seconds: TTL in seconds from now, or None for no TTL change
+            shard_id: Explicit shard to target (skips random selection and
+                cascade logic). None means auto-select from entity cache.
 
         Returns:
             SpeculativeResult with:
@@ -1788,8 +1799,16 @@ class SyncRepository:
             - On cache miss or non-cascade: parent_result is None
             - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
+        if shard_id is not None:
+            return self._speculative_consume_single(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id
+            )
         cache_key = (self._namespace_id, entity_id)
         cache_entry = self._entity_cache.get(cache_key)
+        shard_count = 1
+        if cache_entry is not None:
+            shard_count = cache_entry[2].get(resource, 1)
+        effective_shard_id = random.randrange(shard_count) if shard_count > 1 else 0
         if cache_entry is not None:
             cascade_cached, parent_id_cached, shards_cached = cache_entry
             if cascade_cached and parent_id_cached:
@@ -1797,7 +1816,7 @@ class SyncRepository:
                 parent_result: SpeculativeResult
                 child_result, parent_result = self._run_in_executor(
                     lambda: self._speculative_consume_single(
-                        entity_id, resource, consume, ttl_seconds
+                        entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
                     ),
                     lambda: self._speculative_consume_single(
                         parent_id_cached, resource, consume, ttl_seconds
@@ -1815,7 +1834,9 @@ class SyncRepository:
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 return child_result
-        result = self._speculative_consume_single(entity_id, resource, consume, ttl_seconds)
+        result = self._speculative_consume_single(
+            entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
+        )
         if result.success:
             existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
             existing_shards = {**existing_shards, resource: result.shard_count}
@@ -1910,10 +1931,51 @@ class SyncRepository:
                 old_item = cast(dict[str, Any] | None, e.response.get("Item"))
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
-                    return SpeculativeResult(success=False, old_buckets=old_buckets)
+                    old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    return SpeculativeResult(
+                        success=False,
+                        old_buckets=old_buckets,
+                        shard_id=shard_id,
+                        shard_count=old_shard_count,
+                    )
                 else:
-                    return SpeculativeResult(success=False)
+                    return SpeculativeResult(success=False, shard_id=shard_id)
             raise
+
+    def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
+        """Double shard_count on shard 0 (conditional write).
+
+        Also updates the entity cache with the new shard_count.
+
+        Returns the new shard_count, or the current if another client already doubled.
+        """
+        new_count = current_count * 2
+        client = self._get_client()
+        try:
+            client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET shard_count = :new",
+                ConditionExpression="shard_count = :old",
+                ExpressionAttributeValues={
+                    ":old": {"N": str(current_count)},
+                    ":new": {"N": str(new_count)},
+                },
+            )
+            effective_count = new_count
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                effective_count = current_count
+            else:
+                raise
+        cache_key = (self._namespace_id, entity_id)
+        entry = self._entity_cache.get(cache_key, (False, None, {}))
+        shards = {**entry[2], resource: effective_count}
+        self._entity_cache[cache_key] = (entry[0], entry[1], shards)
+        return effective_count
 
     def set_limits(
         self,

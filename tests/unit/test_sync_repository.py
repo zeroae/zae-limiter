@@ -2643,3 +2643,21 @@ class TestPreShardBuckets:
             assert result.success is True
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is False
+
+    def test_speculative_consume_routes_to_random_shard(self, repo):
+        """With cached shard_count > 1, speculative_consume routes to random shard."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        for shard_id in range(2):
+            states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+            put_item = repo.build_composite_create(
+                "e1", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+            )
+            repo.transact_write([put_item])
+        repo._entity_cache[repo._namespace_id, "e1"] = (False, None, {"gpt-4": 2})
+        shard_ids_hit = set()
+        for _ in range(30):
+            result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+            assert result.success is True
+            shard_ids_hit.add(result.shard_id)
+        assert len(shard_ids_hit) == 2

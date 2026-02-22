@@ -491,7 +491,12 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def speculative_consume(
-        self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None = None,
+        shard_id: int | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -505,12 +510,29 @@ class SyncRepositoryProtocol(Protocol):
             resource: Resource name
             consume: Amount per limit (tokens, not milli)
             ttl_seconds: TTL in seconds from now, or None for no TTL change
+            shard_id: Explicit shard to target (skips random selection and
+                cascade logic). None means auto-select from entity cache.
 
         Returns:
             SpeculativeResult with success flag and either:
             - On success: buckets, cascade, parent_id from ALL_NEW
             - On failure with ALL_OLD: old_buckets from ALL_OLD
             - On failure without ALL_OLD: old_buckets is None (bucket missing)
+        """
+        ...
+
+    def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
+        """Double shard_count on shard 0 via conditional write.
+
+        Also updates the entity cache with the new shard_count.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            current_count: Expected current shard_count
+
+        Returns:
+            The new shard_count, or current_count if another client already doubled.
         """
         ...
 

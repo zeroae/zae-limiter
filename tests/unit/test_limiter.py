@@ -1,6 +1,7 @@
 """Tests for RateLimiter."""
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -5585,7 +5586,7 @@ class TestCascadeEntityCache:
         single_call_count = 0
         original_single = limiter._repository._speculative_consume_single
 
-        async def counting_single(entity_id, resource, consume, ttl_seconds=None):
+        async def counting_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             nonlocal single_call_count
             single_call_count += 1
             return await original_single(entity_id, resource, consume, ttl_seconds)
@@ -5618,9 +5619,11 @@ class TestCascadeEntityCache:
         single_calls: list[str] = []
         original_single = limiter._repository._speculative_consume_single
 
-        async def tracking_single(entity_id, resource, consume, ttl_seconds=None):
+        async def tracking_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             single_calls.append(entity_id)
-            return await original_single(entity_id, resource, consume, ttl_seconds)
+            return await original_single(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id
+            )
 
         limiter._repository._speculative_consume_single = tracking_single
         try:
@@ -5683,7 +5686,7 @@ class TestCascadeEntityCache:
             compensated_entity_ids.append(entity_id)
             return await original_compensate(entity_id, resource, consume)
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=False,
@@ -5742,7 +5745,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -5809,7 +5812,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -5867,7 +5870,7 @@ class TestCascadeEntityCache:
 
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -5942,7 +5945,7 @@ class TestCascadeEntityCache:
 
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6023,7 +6026,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6101,7 +6104,7 @@ class TestCascadeEntityCache:
         )
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6163,7 +6166,7 @@ class TestCascadeEntityCache:
         )
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6218,7 +6221,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         original_parent_acquire = limiter._try_parent_only_acquire
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6279,7 +6282,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         original_parent_acquire = limiter._try_parent_only_acquire
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6302,3 +6305,82 @@ class TestCascadeEntityCache:
         finally:
             limiter._repository._speculative_consume_single = original_single
             limiter._try_parent_only_acquire = original_parent_acquire
+
+
+class TestShardRetry:
+    """Tests for shard retry and doubling in acquire flow."""
+
+    async def test_acquire_retries_on_another_shard(self, limiter):
+        """When one shard's app limit is exhausted, retry on another shard."""
+        repo = limiter._repository
+        ns = repo._namespace_id
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Create buckets at shard 0 and shard 1
+        now_ms = int(time.time() * 1000)
+        for shard_id in range(2):
+            states = [
+                BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 100), now_ms),
+            ]
+            put_item = repo.build_composite_create(
+                "user-1", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+            )
+            await repo.transact_write([put_item])
+
+        # Pre-populate entity cache with shard_count=2
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 2})
+
+        # Exhaust shard 0's rpm tokens via direct speculative_consume_single
+        for _ in range(100):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+
+        # Force shard_id=0 first, then let retry find shard 1
+        limiter._speculative_writes = True
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                rpm_entry = next(e for e in lease.entries if e.limit.name == "rpm")
+                assert rpm_entry is not None
+
+    async def test_acquire_doubles_shards_on_wcu_exhaustion(self, limiter):
+        """When wcu is exhausted, shard_count doubles and acquire falls to slow path."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100_000)])
+
+        # Create bucket at shard 0 with shard_count=1
+        now_ms = int(time.time() * 1000)
+        states = [
+            BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 100_000), now_ms),
+        ]
+        put_item = repo.build_composite_create(
+            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        await repo.transact_write([put_item])
+
+        # Pre-populate entity cache
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 1})
+
+        # Exhaust wcu tokens on shard 0
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+
+        # Now shard 0's wcu is exhausted. Acquire should:
+        # 1. Detect wcu exhaustion
+        # 2. Call bump_shard_count to double to 2
+        # 3. Fall through to slow path (new shard doesn't exist yet)
+        limiter._speculative_writes = True
+
+        # Acquire should still succeed (falls to slow path which creates bucket)
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            rpm_entry = next(e for e in lease.entries if e.limit.name == "rpm")
+            assert rpm_entry is not None
+
+        # Verify shard_count was bumped in entity cache
+        cache_entry = repo._entity_cache[(ns, "user-1")]
+        assert cache_entry[2]["gpt-4"] == 2
