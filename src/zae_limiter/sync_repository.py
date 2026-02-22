@@ -36,7 +36,7 @@ from .models import (
 )
 from .naming import normalize_stack_name
 from .sync_config_cache import ConfigSource, SyncConfigCache
-from .sync_repository_protocol import SpeculativeResult
+from .sync_repository_protocol import SpeculativeFailureReason, SpeculativeResult
 
 if TYPE_CHECKING:
     from .sync_repository_builder import SyncRepositoryBuilder
@@ -1974,14 +1974,34 @@ class SyncRepository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    wcu_exhausted = any(
+                        b.limit_name == schema.WCU_LIMIT_NAME and b.tokens_milli < 1000
+                        for b in old_buckets
+                    )
+                    app_exhausted = any(
+                        b.limit_name != schema.WCU_LIMIT_NAME
+                        and b.tokens_milli < consume.get(b.limit_name, 0) * 1000
+                        for b in old_buckets
+                    )
+                    if wcu_exhausted and app_exhausted:
+                        reason = SpeculativeFailureReason.BOTH_EXHAUSTED
+                    elif wcu_exhausted:
+                        reason = SpeculativeFailureReason.WCU_EXHAUSTED
+                    else:
+                        reason = SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
                     return SpeculativeResult(
                         success=False,
                         old_buckets=old_buckets,
                         shard_id=shard_id,
                         shard_count=old_shard_count,
+                        failure_reason=reason,
                     )
                 else:
-                    return SpeculativeResult(success=False, shard_id=shard_id)
+                    return SpeculativeResult(
+                        success=False,
+                        shard_id=shard_id,
+                        failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
+                    )
             raise
 
     def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:

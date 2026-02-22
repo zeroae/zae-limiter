@@ -10,6 +10,7 @@ from zae_limiter import AuditAction, Limit
 from zae_limiter.exceptions import EntityExistsError, InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
+from zae_limiter.repository_protocol import SpeculativeFailureReason
 from zae_limiter.schema import (
     calculate_bucket_ttl,
     limit_attr,
@@ -2830,6 +2831,26 @@ class TestSpeculativeConsume:
         result = await repo.speculative_consume("nonexistent", "gpt-4", {"rpm": 1})
         assert result.success is False
         assert result.old_buckets is None
+        assert result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+
+    @pytest.mark.asyncio
+    async def test_speculative_failure_reason_app_limit_exhausted(self, repo):
+        """Failure reason is APP_LIMIT_EXHAUSTED when user limit exhausted but wcu ok."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 10)]
+        state = BucketState.from_limit("e1", "gpt-4", limits[0], now_ms)
+
+        put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
+        await repo.transact_write([put_item])
+
+        # Exhaust rpm tokens
+        result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 10})
+        assert result.success is True
+
+        # Next attempt should fail with APP_LIMIT_EXHAUSTED (wcu still has tokens)
+        result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 5})
+        assert result.success is False
+        assert result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
 
     async def test_speculative_with_ttl(self, repo):
         """Speculative consume handles TTL correctly."""

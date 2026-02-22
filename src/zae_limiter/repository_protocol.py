@@ -8,6 +8,7 @@ See ADR-108 for design rationale and ADR-109 for capability matrix.
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -22,6 +23,19 @@ if TYPE_CHECKING:
         UsageSnapshot,
         UsageSummary,
     )
+
+
+class SpeculativeFailureReason(Enum):
+    """Classifies why a speculative write failed (GHSA-76rv).
+
+    Used by the limiter to decide the recovery path without
+    inspecting individual BucketState token values.
+    """
+
+    APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
+    WCU_EXHAUSTED = "wcu_exhausted"
+    BOTH_EXHAUSTED = "both_exhausted"
+    BUCKET_MISSING = "bucket_missing"
 
 
 @dataclass
@@ -52,6 +66,7 @@ class SpeculativeResult:
     parent_result: "SpeculativeResult | None" = None
     shard_id: int = 0
     shard_count: int = 1
+    failure_reason: SpeculativeFailureReason | None = None
 
 
 @runtime_checkable
