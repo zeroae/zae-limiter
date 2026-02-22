@@ -404,6 +404,10 @@ class TestBucketPKBuilders:
         with pytest.raises(ValueError):
             schema.parse_bucket_pk("ns1/BUCKET#onlyonepart")
 
+    def test_parse_bucket_pk_missing_resource_separator(self):
+        with pytest.raises(ValueError):
+            schema.parse_bucket_pk("ns1/BUCKET#entityonly#0")
+
     def test_gsi3_pk_entity(self):
         assert schema.gsi3_pk_entity("ns1", "user-1") == "ns1/ENTITY#user-1"
 

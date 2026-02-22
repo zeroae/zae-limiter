@@ -6385,6 +6385,39 @@ class TestShardRetry:
         cache_entry = repo._entity_cache[(ns, "user-1")]
         assert cache_entry[2]["gpt-4"] == 2
 
+    async def test_retry_on_other_shard_returns_none_when_all_exhausted(self, limiter):
+        """_retry_on_other_shard returns None when all shards are exhausted."""
+        repo = limiter._repository
+        ns = repo._namespace_id
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1)])
+
+        now_ms = int(time.time() * 1000)
+        # Create 2 shards, each with only 1 rpm token
+        for shard_id in range(2):
+            states = [
+                BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 1), now_ms),
+            ]
+            put_item = repo.build_composite_create(
+                "user-1", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+            )
+            await repo.transact_write([put_item])
+
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 2})
+
+        # Exhaust rpm on both shards
+        for shard_id in range(2):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=shard_id)
+
+        # Both shards exhausted, retry should return None and fall to slow path
+        limiter._speculative_writes = True
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
 
 class TestWcuHiddenFromUser:
     """Tests that wcu infrastructure limit is hidden from user-facing output."""

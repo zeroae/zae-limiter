@@ -529,6 +529,12 @@ class TestCompositeWritePaths:
         result = repo.get_buckets("entity-1", resource="nonexistent")
         assert result == []
 
+    def test_get_buckets_gsi3_returns_empty_for_entity_without_buckets(self, repo):
+        """get_buckets with resource=None returns empty list via GSI3 when no buckets exist."""
+        repo.create_entity("entity-no-buckets")
+        result = repo.get_buckets("entity-no-buckets")
+        assert result == []
+
 
 class TestCompositeBucketTTL:
     """Tests for TTL in composite bucket build methods (Issue #271)."""
@@ -2661,3 +2667,47 @@ class TestPreShardBuckets:
             assert result.success is True
             shard_ids_hit.add(result.shard_id)
         assert len(shard_ids_hit) == 2
+
+
+class TestBumpShardCount:
+    """Tests for bump_shard_count conditional write behavior."""
+
+    def test_bump_shard_count_doubles_on_success(self, repo):
+        """bump_shard_count doubles shard_count and updates entity cache."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+        put_item = repo.build_composite_create(
+            "e1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        repo.transact_write([put_item])
+        result = repo.bump_shard_count("e1", "gpt-4", current_count=1)
+        assert result == 2
+        cache_key = (repo._namespace_id, "e1")
+        assert repo._entity_cache[cache_key][2]["gpt-4"] == 2
+
+    def test_bump_shard_count_returns_current_on_race(self, repo):
+        """bump_shard_count returns current_count when another client already doubled."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+        put_item = repo.build_composite_create(
+            "e1", "gpt-4", states, now_ms, shard_id=0, shard_count=2
+        )
+        repo.transact_write([put_item])
+        result = repo.bump_shard_count("e1", "gpt-4", current_count=1)
+        assert result == 1
+
+    def test_bump_shard_count_reraises_other_errors(self, repo):
+        """bump_shard_count re-raises non-ConditionalCheckFailedException errors."""
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.update_item.side_effect = ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+            )
+            mock_get_client.return_value = mock_client
+            with pytest.raises(ClientError) as exc_info:
+                repo.bump_shard_count("e1", "gpt-4", current_count=1)
+            assert (
+                exc_info.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
+            )
