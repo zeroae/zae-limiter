@@ -1412,6 +1412,7 @@ class Repository:
         entity_id: str,
         resource: str,
         limit_name: str,
+        shard_id: int = 0,
     ) -> BucketState | None:
         """Get a single limit's bucket from the composite item."""
         client = await self._get_client()
@@ -1419,8 +1420,8 @@ class Repository:
         response = await client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                "SK": {"S": schema.sk_bucket(resource)},
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
             },
         )
 
@@ -1438,20 +1439,25 @@ class Repository:
         self,
         entity_id: str,
         resource: str | None = None,
+        shard_id: int = 0,
     ) -> list[BucketState]:
         """Get all buckets for an entity, optionally filtered by resource.
 
         With composite items, each item contains all limits for one resource.
+        When resource is specified, fetches the bucket at the given shard_id.
+        When resource is None, uses GSI3 to discover all buckets (Task 16).
         """
         client = await self._get_client()
 
         if resource:
-            # Single composite item for this entity+resource
+            # Single composite item for this entity+resource+shard
             response = await client.get_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
             )
             item = response.get("Item")
@@ -1459,22 +1465,34 @@ class Repository:
                 return []
             return self._deserialize_composite_bucket(item)
 
-        # Query all composite bucket items for this entity
-        key_condition = "PK = :pk AND begins_with(SK, :sk_prefix)"
+        # Step 1: GSI3 query to discover bucket PKs (KEYS_ONLY projection)
+        key_condition = "GSI3PK = :gsi3pk"
         expression_values: dict[str, Any] = {
-            ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-            ":sk_prefix": {"S": schema.SK_BUCKET},
+            ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)},
         }
 
         response = await client.query(
             TableName=self.table_name,
+            IndexName="GSI3",
             KeyConditionExpression=key_condition,
             ExpressionAttributeValues=expression_values,
         )
 
+        gsi3_items = response.get("Items", [])
+        if not gsi3_items:
+            return []
+
+        # Step 2: BatchGetItem to fetch full items from main table
+        request_keys = [{"PK": item["PK"], "SK": item["SK"]} for item in gsi3_items]
+
         buckets: list[BucketState] = []
-        for item in response.get("Items", []):
-            buckets.extend(self._deserialize_composite_bucket(item))
+        for i in range(0, len(request_keys), 100):
+            chunk = request_keys[i : i + 100]
+            batch_response = await client.batch_get_item(
+                RequestItems={self.table_name: {"Keys": chunk}}
+            )
+            for full_item in batch_response.get("Responses", {}).get(self.table_name, []):
+                buckets.extend(self._deserialize_composite_bucket(full_item))
         return buckets
 
     async def batch_get_buckets(
@@ -1484,12 +1502,12 @@ class Repository:
         """
         Batch get composite buckets in a single DynamoDB call.
 
-        With composite items, each (entity_id, resource) pair is a single
+        With composite items, each (entity_id, resource, shard) is a single
         DynamoDB item containing all limits. Returns individual BucketStates
         keyed by (entity_id, resource, limit_name) for backward compatibility.
 
         Args:
-            keys: List of (entity_id, resource) tuples
+            keys: List of (entity_id, resource) tuples. Uses shard_id=0.
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -1514,8 +1532,8 @@ class Repository:
 
             request_keys = [
                 {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": schema.sk_state()},
                 }
                 for entity_id, resource in chunk
             ]
@@ -1575,8 +1593,8 @@ class Repository:
         for eid, resource in unique_bucket_keys:
             request_keys.append(
                 {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, eid)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, 0)},
+                    "SK": {"S": schema.sk_state()},
                 }
             )
 
@@ -1752,6 +1770,7 @@ class Repository:
         new_tokens_milli: int,
         new_last_refill_ms: int,
         expected_tokens_milli: int | None = None,
+        shard_id: int = 0,
     ) -> dict[str, Any]:
         """Build an UpdateItem for a single limit in a composite bucket.
 
@@ -1763,8 +1782,10 @@ class Repository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": "SET #tokens = :tokens, #refill = :refill",
                 "ExpressionAttributeNames": {
@@ -1800,6 +1821,8 @@ class Repository:
         ttl_seconds: int | None = 86400,
         cascade: bool = False,
         parent_id: str | None = None,
+        shard_id: int = 0,
+        shard_count: int = 1,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -1814,25 +1837,53 @@ class Repository:
             ttl_seconds: TTL in seconds from now, or None to omit TTL
             cascade: Whether the entity has cascade enabled
             parent_id: The entity's parent_id (if any)
+            shard_id: Shard index for this bucket (default 0)
+            shard_count: Total number of shards (default 1)
         """
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-            "SK": {"S": schema.sk_bucket(resource)},
+            "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": schema.sk_state()},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
             schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
             "GSI2PK": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
-            "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
+            "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id, shard_id)},
             "cascade": {"BOOL": cascade},
+            # GSI3: bucket discovery by entity
+            "GSI3PK": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)},
+            "GSI3SK": {"S": schema.gsi3_sk_bucket(resource, shard_id)},
             # GSI4: namespace-scoped item discovery
             "GSI4PK": {"S": self._namespace_id},
-            "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            "GSI4SK": {
+                "S": f"{schema.BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}",
+            },
+            "shard_count": {"N": str(shard_count)},
         }
         if parent_id is not None:
             item["parent_id"] = {"S": parent_id}
         # Only add TTL if specified (None means no TTL for entity-level config)
         if ttl_seconds is not None:
             item["ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
+
+        # Auto-inject wcu infrastructure limit
+        wcu_cp_milli = schema.WCU_LIMIT_CAPACITY * 1000
+        wcu_ra_milli = schema.WCU_LIMIT_REFILL_AMOUNT * 1000
+        wcu_rp_ms = schema.WCU_LIMIT_REFILL_PERIOD_SECONDS * 1000
+        wcu_name = schema.WCU_LIMIT_NAME
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TK)] = {
+            "N": str(wcu_cp_milli),
+        }
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_CP)] = {
+            "N": str(wcu_cp_milli),
+        }
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_RA)] = {
+            "N": str(wcu_ra_milli),
+        }
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_RP)] = {
+            "N": str(wcu_rp_ms),
+        }
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TC)] = {"N": "0"}
+
         for state in states:
             name = state.limit_name
             item[schema.bucket_attr(name, schema.BUCKET_FIELD_TK)] = {
@@ -1869,6 +1920,7 @@ class Repository:
         now_ms: int,
         expected_rf: int,
         ttl_seconds: int | None = None,
+        shard_id: int = 0,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -1886,6 +1938,7 @@ class Repository:
                 - None: Don't change TTL
                 - 0: REMOVE ttl (entity has custom limits)
                 - >0: SET ttl to (now + ttl_seconds)
+            shard_id: Shard index for this bucket (default 0)
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -1945,8 +1998,10 @@ class Repository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": update_expr,
                 "ConditionExpression": " AND ".join(condition_parts),
@@ -1960,6 +2015,7 @@ class Repository:
         entity_id: str,
         resource: str,
         consumed: dict[str, int],
+        shard_id: int = 0,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -1997,8 +2053,10 @@ class Repository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": update_expr,
                 "ConditionExpression": condition_expr,
@@ -2012,6 +2070,7 @@ class Repository:
         entity_id: str,
         resource: str,
         deltas: dict[str, int],
+        shard_id: int = 0,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -2050,8 +2109,10 @@ class Repository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": update_expr,
                 "ExpressionAttributeNames": attr_names,
@@ -2164,6 +2225,7 @@ class Repository:
         resource: str,
         consume: dict[str, int],
         ttl_seconds: int | None = None,
+        shard_id: int = 0,
     ) -> SpeculativeResult:
         """Single speculative UpdateItem (extracted for parallel reuse)."""
         client = await self._get_client()
@@ -2216,8 +2278,10 @@ class Repository:
             response = await client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 UpdateExpression=update_expr,
                 ConditionExpression=condition_expr,
@@ -2457,8 +2521,8 @@ class Repository:
             await client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": schema.sk_state()},
                 },
                 UpdateExpression=update_expr,
                 ConditionExpression="attribute_exists(PK)",

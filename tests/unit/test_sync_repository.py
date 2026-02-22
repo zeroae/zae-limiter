@@ -208,19 +208,19 @@ class TestRepositoryBucketOperations:
     def test_get_buckets_filters_by_resource(self, repo_with_buckets):
         """get_buckets should filter by resource when specified."""
         buckets = repo_with_buckets.get_buckets("entity-1", resource="gpt-4")
-        assert len(buckets) == 2
+        assert len(buckets) == 3
         assert all(b.resource == "gpt-4" for b in buckets)
         limit_names = {b.limit_name for b in buckets}
-        assert limit_names == {"rpm", "tpm"}
+        assert limit_names == {"rpm", "tpm", "wcu"}
 
     def test_get_buckets_returns_all_when_no_filter(self, repo_with_buckets):
         """get_buckets should return all buckets when no resource filter."""
         buckets = repo_with_buckets.get_buckets("entity-1")
-        assert len(buckets) == 4
+        assert len(buckets) == 6
         resources = {b.resource for b in buckets}
         assert resources == {"gpt-4", "gpt-3.5"}
         limit_names = {b.limit_name for b in buckets}
-        assert limit_names == {"rpm", "tpm"}
+        assert limit_names == {"rpm", "tpm", "wcu"}
 
     def test_build_bucket_update_with_optimistic_locking(self, repo):
         """Optimistic locking should add conditional expression."""
@@ -416,7 +416,7 @@ class TestRepositoryTransactions:
         put_item = repo.build_bucket_put_item(state)
         repo.write_each([put_item])
         buckets = repo.get_buckets("we-test", "api")
-        assert len(buckets) == 1
+        assert len(buckets) == 2
         adjust_item = repo.build_composite_adjust(
             entity_id="we-test", resource="api", deltas={"rpm": -5000}
         )
@@ -442,8 +442,8 @@ class TestRepositoryTransactions:
         assert put_spec["TableName"] == "test-repo"
         assert "PK" in put_spec["Item"]
         assert "SK" in put_spec["Item"]
-        assert put_spec["Item"]["PK"]["S"] == "default/ENTITY#entity-1"
-        assert put_spec["Item"]["SK"]["S"] == "#BUCKET#gpt-4"
+        assert put_spec["Item"]["PK"]["S"] == "default/BUCKET#entity-1#gpt-4#0"
+        assert put_spec["Item"]["SK"]["S"] == "#STATE"
         assert "data" not in put_spec["Item"]
         item = put_spec["Item"]
         assert item["b_rpm_tk"]["N"] == str(100000)
@@ -478,8 +478,8 @@ class TestCompositeWritePaths:
         )
         assert "Update" in result
         update = result["Update"]
-        assert update["Key"]["PK"]["S"] == "default/ENTITY#entity-1"
-        assert update["Key"]["SK"]["S"] == "#BUCKET#gpt-4"
+        assert update["Key"]["PK"]["S"] == "default/BUCKET#entity-1#gpt-4#0"
+        assert update["Key"]["SK"]["S"] == "#STATE"
         expr = update["UpdateExpression"]
         assert "ADD" in expr
         assert "#b_rpm_tk" in expr
@@ -2029,8 +2029,9 @@ class TestSpeculativeConsume:
         repo.transact_write([put_item])
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 10})
         assert result.success is True
-        assert len(result.buckets) == 1
-        assert result.buckets[0].limit_name == "rpm"
+        assert len(result.buckets) == 2
+        bucket_names = {b.limit_name for b in result.buckets}
+        assert "rpm" in bucket_names
 
     def test_speculative_failure_insufficient_tokens(self, repo):
         """Speculative consume fails when tokens insufficient."""
@@ -2059,7 +2060,7 @@ class TestSpeculativeConsume:
         repo.transact_write([put_item])
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 10}, ttl_seconds=3600)
         assert result.success is True
-        assert len(result.buckets) == 1
+        assert len(result.buckets) == 2
 
     def test_speculative_cascade_parent_id(self, repo):
         """Speculative consume returns cascade/parent_id from item."""
@@ -2119,8 +2120,9 @@ class TestCompositeNormalGuard:
         put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
         repo.transact_write([put_item])
         buckets = repo.get_buckets("e1", resource="gpt-4")
-        assert len(buckets) == 1
-        original_rf = buckets[0].last_refill_ms
+        assert len(buckets) == 2
+        rpm_bucket = next(b for b in buckets if b.limit_name == "rpm")
+        original_rf = rpm_bucket.last_refill_ms
         spec_result = repo.speculative_consume("e1", "gpt-4", {"rpm": 80})
         assert spec_result.success is True
         normal_item = repo.build_composite_normal(
@@ -2146,7 +2148,8 @@ class TestCompositeNormalGuard:
         put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
         repo.transact_write([put_item])
         buckets = repo.get_buckets("e1", resource="gpt-4")
-        original_rf = buckets[0].last_refill_ms
+        rpm_bucket = next(b for b in buckets if b.limit_name == "rpm")
+        original_rf = rpm_bucket.last_refill_ms
         spec_result = repo.speculative_consume("e1", "gpt-4", {"rpm": 80})
         assert spec_result.success is True
         normal_item = repo.build_composite_normal(
@@ -2200,13 +2203,13 @@ class TestGSI4Attributes:
         response = client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_entity("default", "gsi4-bucket")},
-                "SK": {"S": schema.sk_bucket("api")},
+                "PK": {"S": schema.pk_bucket("default", "gsi4-bucket", "api", 0)},
+                "SK": {"S": schema.sk_state()},
             },
         )
         item = response["Item"]
         assert item["GSI4PK"]["S"] == "default"
-        assert item["GSI4SK"]["S"] == schema.pk_entity("default", "gsi4-bucket")
+        assert item["GSI4SK"]["S"] == "BUCKET#gsi4-bucket#api#0"
 
     def test_set_limits_sets_gsi4_on_config(self, repo):
         """set_limits() sets GSI4PK/GSI4SK on entity config item."""
@@ -2343,13 +2346,13 @@ class TestGSI4Attributes:
         response = client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_entity("default", "spec-gsi4")},
-                "SK": {"S": schema.sk_bucket("api")},
+                "PK": {"S": schema.pk_bucket("default", "spec-gsi4", "api", 0)},
+                "SK": {"S": schema.sk_state()},
             },
         )
         item = response["Item"]
         assert item["GSI4PK"]["S"] == "default"
-        assert item["GSI4SK"]["S"] == schema.pk_entity("default", "spec-gsi4")
+        assert item["GSI4SK"]["S"] == "BUCKET#spec-gsi4#api#0"
 
     def test_adjust_does_not_set_gsi4(self, repo):
         """build_composite_adjust() does NOT set GSI4 (update path, not creation)."""
@@ -2372,13 +2375,13 @@ class TestGSI4Attributes:
         response = client.get_item(
             TableName=repo.table_name,
             Key={
-                "PK": {"S": schema.pk_entity("default", "adj-gsi4")},
-                "SK": {"S": schema.sk_bucket("api")},
+                "PK": {"S": schema.pk_bucket("default", "adj-gsi4", "api", 0)},
+                "SK": {"S": schema.sk_state()},
             },
         )
         item = response["Item"]
         assert item["GSI4PK"]["S"] == "default"
-        assert item["GSI4SK"]["S"] == schema.pk_entity("default", "adj-gsi4")
+        assert item["GSI4SK"]["S"] == "BUCKET#adj-gsi4#api#0"
 
 
 class TestDeleteStack:
@@ -2522,3 +2525,51 @@ class TestProvisionerState:
         assert retrieved["managed_system"] is False
         assert retrieved["managed_resources"] == ["claude-3"]
         assert retrieved["managed_entities"] == {"user-1": ["claude-3"]}
+
+
+class TestPreShardBuckets:
+    """Tests for pre-shard bucket PK scheme."""
+
+    def test_build_composite_create_new_pk(self, repo):
+        """Bucket items use new PK scheme with wcu limit auto-injected."""
+        from zae_limiter import schema
+
+        now_ms = 1700000000000
+        limits = [Limit.per_minute("rpm", 100)]
+        states = [BucketState.from_limit("user-1", "gpt-4", lim, now_ms) for lim in limits]
+        item = repo.build_composite_create(
+            entity_id="user-1",
+            resource="gpt-4",
+            states=states,
+            now_ms=now_ms,
+            shard_id=0,
+            shard_count=1,
+        )
+        put_item = item["Put"]["Item"]
+        assert put_item["PK"]["S"] == schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", 0)
+        assert put_item["SK"]["S"] == schema.sk_state()
+        assert put_item["GSI3PK"]["S"] == schema.gsi3_pk_entity(repo._namespace_id, "user-1")
+        assert put_item["GSI3SK"]["S"] == schema.gsi3_sk_bucket("gpt-4", 0)
+        assert schema.bucket_attr("wcu", "tk") in put_item
+        assert schema.bucket_attr("wcu", "cp") in put_item
+        assert put_item["shard_count"]["N"] == "1"
+
+    def test_build_composite_create_multi_shard(self, repo):
+        """Bucket with shard_id > 0 uses correct PK."""
+        from zae_limiter import schema
+
+        now_ms = 1700000000000
+        limits = [Limit.per_minute("rpm", 100)]
+        states = [BucketState.from_limit("user-1", "gpt-4", lim, now_ms) for lim in limits]
+        item = repo.build_composite_create(
+            entity_id="user-1",
+            resource="gpt-4",
+            states=states,
+            now_ms=now_ms,
+            shard_id=3,
+            shard_count=4,
+        )
+        put_item = item["Put"]["Item"]
+        assert put_item["PK"]["S"] == schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", 3)
+        assert put_item["shard_count"]["N"] == "4"
+        assert put_item["GSI3SK"]["S"] == schema.gsi3_sk_bucket("gpt-4", 3)
