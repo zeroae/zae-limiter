@@ -2377,3 +2377,205 @@ Expected: PASS
 git add src/zae_limiter_aggregator/processor.py tests/unit/test_processor.py
 git commit -m "🐛 fix(aggregator): pre-create full shard items during propagation to keep clients on fast path"
 ```
+
+---
+
+### Task 37: Fix proactive sharding signal to use wcu token level
+
+**Problem:** `try_proactive_shard()` (`processor.py:635-697`) compares `wcu_tc_delta / wcu_capacity_milli >= 0.8`. This is dimensionally incorrect — `tc_delta` is a count (total consumed in this batch), while `capacity_milli` is a rate (tokens per second). The comparison produces a dimensionless ratio that varies with batch size rather than measuring actual partition pressure. With `BatchSize=100`, the maximum achievable ratio is `100 × 1000 / 1_000_000 = 0.1` (10%), so proactive sharding can never trigger.
+
+**Three options considered:**
+- **Option A (increase BatchSize):** Requires `BatchSize >= 800` — increases Lambda latency and cost, tight coupling to a constant.
+- **Option B (normalize by time span):** `tc_delta / (time_span_sec × capacity_rate)` — requires per-bucket first/last timestamps, division-by-zero edge cases for sub-second batches.
+- **Option C (use remaining wcu token level):** Check `wcu_tk_milli / wcu_cp_milli < 0.2` (less than 20% tokens remaining). Token level directly measures partition headroom, naturally accounts for refill, requires no time span computation, and the data is already available in `BucketRefillState.tk_milli`.
+
+**Decision: Option C.** The token level from the last NewImage in the batch directly measures how much headroom the partition has. It naturally accounts for both consumption and refill. The only weakness is that aggregator refill can temporarily mask sustained pressure for one batch cycle, but this self-corrects: if pressure continues, tokens drain again and the next batch triggers sharding.
+
+**Fix:** Change `try_proactive_shard` signature and body:
+- Remove `wcu_tc_delta` parameter
+- Add `wcu_tk_milli` parameter (remaining wcu tokens from last NewImage)
+- Change threshold check to `wcu_tk_milli / wcu_capacity_milli < WCU_PROACTIVE_THRESHOLD_LOW` where `WCU_PROACTIVE_THRESHOLD_LOW = 0.2` (less than 20% remaining)
+- Rename `WCU_PROACTIVE_THRESHOLD` to `WCU_PROACTIVE_THRESHOLD_LOW` to clarify it's a low-water mark
+
+**BatchSize stays at 100** — no CloudFormation change needed.
+
+**Files:**
+- Modify: `src/zae_limiter_aggregator/processor.py` (`try_proactive_shard`, callers)
+- Modify: `src/zae_limiter_aggregator/__init__.py` (if re-exports change)
+- Test: `tests/unit/test_processor.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_processor.py`, update `TestTryProactiveShard`:
+
+```python
+def test_proactive_shard_triggers_at_low_token_level(self) -> None:
+    """Proactive sharding triggers when wcu tokens < 20% of capacity."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    # 15% remaining → below 20% threshold → should trigger
+    wcu_tk_milli = 150_000  # 15% of 1_000_000
+    wcu_capacity_milli = 1_000_000
+
+    result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
+
+    assert result is True
+    mock_table.update_item.assert_called_once()
+
+def test_proactive_shard_skips_above_threshold(self) -> None:
+    """No sharding when wcu tokens >= 20% of capacity."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    # 25% remaining → above 20% threshold → no sharding
+    wcu_tk_milli = 250_000
+    wcu_capacity_milli = 1_000_000
+
+    result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
+
+    assert result is False
+    mock_table.update_item.assert_not_called()
+
+def test_proactive_shard_triggers_at_zero_tokens(self) -> None:
+    """Proactive sharding triggers when wcu tokens are completely exhausted."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    result = try_proactive_shard(mock_table, state, 0, 1_000_000)
+
+    assert result is True
+
+def test_proactive_shard_boundary_at_exactly_20_percent(self) -> None:
+    """At exactly 20% remaining, no sharding (threshold is strictly less than)."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    wcu_tk_milli = 200_000  # Exactly 20%
+    wcu_capacity_milli = 1_000_000
+
+    result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
+
+    assert result is False  # Not strictly less than 20%
+
+def test_proactive_shard_negative_tokens(self) -> None:
+    """Negative tokens (overdrawn wcu) trigger sharding."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    result = try_proactive_shard(mock_table, state, -50_000, 1_000_000)
+
+    assert result is True
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_processor.py::TestTryProactiveShard -v`
+Expected: FAIL (old signature takes `wcu_tc_delta`, not `wcu_tk_milli`; old logic checks `>=0.8` not `<0.2`)
+
+**Step 3: Update try_proactive_shard**
+
+In `processor.py`, replace the function:
+
+```python
+WCU_PROACTIVE_THRESHOLD_LOW = 0.2  # Shard when wcu tokens < 20% of capacity
+
+
+def try_proactive_shard(
+    table: Any,
+    state: BucketRefillState,
+    wcu_tk_milli: int,
+    wcu_capacity_milli: int,
+) -> bool:
+    """Proactively double shard_count when wcu token level is low.
+
+    Checks remaining wcu tokens against capacity. When tokens drop
+    below 20% of capacity, the partition is under sustained write
+    pressure and should be split.
+
+    Only acts on shard 0 (source of truth for shard_count).
+    Uses conditional write to prevent double-bumping.
+
+    Args:
+        table: boto3 Table resource
+        state: Aggregated bucket state
+        wcu_tk_milli: Remaining wcu tokens in millitokens (from last NewImage)
+        wcu_capacity_milli: wcu capacity in millitokens
+
+    Returns:
+        True if shard_count was bumped, False otherwise
+    """
+    if state.shard_id != 0:
+        return False
+
+    if wcu_capacity_milli <= 0:
+        return False
+
+    token_ratio = wcu_tk_milli / wcu_capacity_milli
+    if token_ratio >= WCU_PROACTIVE_THRESHOLD_LOW:
+        return False
+
+    new_count = state.shard_count * 2
+
+    try:
+        table.update_item(
+            Key={
+                "PK": pk_bucket(state.namespace_id, state.entity_id, state.resource, 0),
+                "SK": sk_state(),
+            },
+            UpdateExpression="SET shard_count = :new",
+            ConditionExpression="shard_count = :old",
+            ExpressionAttributeValues={
+                ":old": state.shard_count,
+                ":new": new_count,
+            },
+        )
+        logger.info(
+            "Proactive shard doubling",
+            entity_id=state.entity_id,
+            resource=state.resource,
+            old_count=state.shard_count,
+            new_count=new_count,
+            token_ratio=round(token_ratio, 2),
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            logger.debug(
+                "Proactive shard skipped - concurrent bump",
+                entity_id=state.entity_id,
+                resource=state.resource,
+            )
+            return False
+        raise
+```
+
+**Step 4: Update callers**
+
+In the `process_records()` function, change the call site from:
+
+```python
+# Before:
+wcu_tc_delta = ...  # accumulated from extract_deltas
+try_proactive_shard(table, state, wcu_tc_delta, wcu_capacity_milli)
+
+# After:
+wcu_tk_milli = state.limits[WCU_LIMIT_NAME].tk_milli  # from last NewImage
+try_proactive_shard(table, state, wcu_tk_milli, wcu_capacity_milli)
+```
+
+**Step 5: Remove Task 34's `test_unreachable_at_batch_size_100` test**
+
+This test documents that proactive sharding can't trigger at BatchSize=100 using the old tc_delta metric. With the new token-level signal, proactive sharding can trigger at any batch size, so this test becomes incorrect. Remove it.
+
+**Step 6: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 7: Commit**
+
+```bash
+git add src/zae_limiter_aggregator/processor.py tests/unit/test_processor.py
+git commit -m "🐛 fix(aggregator): use wcu token level for proactive sharding signal instead of tc_delta"
+```
