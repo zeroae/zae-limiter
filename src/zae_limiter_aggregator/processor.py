@@ -20,6 +20,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_TK,
     BUCKET_PREFIX,
     SK_BUCKET,
+    WCU_LIMIT_NAME,
     bucket_attr,
     gsi2_pk_resource,
     gsi2_sk_usage,
@@ -224,6 +225,41 @@ def process_stream_records(
             )
             errors.append(error_msg)
 
+    # Proactive sharding (check wcu consumption per bucket)
+    for state in bucket_states.values():
+        wcu_info = state.limits.get(WCU_LIMIT_NAME)
+        if wcu_info:
+            try:
+                try_proactive_shard(
+                    table,
+                    state,
+                    wcu_tc_delta=wcu_info.tc_delta,
+                    wcu_capacity_milli=wcu_info.cp_milli,
+                )
+            except Exception as e:
+                error_msg = f"Error in proactive sharding: {e}"
+                logger.warning(
+                    error_msg,
+                    exc_info=True,
+                    entity_id=state.entity_id,
+                    resource=state.resource,
+                )
+                errors.append(error_msg)
+
+    # Propagate shard_count changes to other shards
+    for record in records:
+        if record.get("eventName") != "MODIFY":
+            continue
+        try:
+            propagate_shard_count(table, record)
+        except Exception as e:
+            error_msg = f"Error propagating shard_count: {e}"
+            logger.warning(
+                error_msg,
+                exc_info=True,
+            )
+            errors.append(error_msg)
+
     processing_time_ms = (time_module.perf_counter() - start_time) * 1000
     logger.info(
         "Batch processing completed",
@@ -400,6 +436,8 @@ def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:
 
     deltas: list[ConsumptionDelta] = []
     for limit_name, info in parsed.limits.items():
+        if limit_name == WCU_LIMIT_NAME:
+            continue  # Internal infrastructure limit, not for usage snapshots
         if info.tc_delta == 0:
             continue
         deltas.append(
@@ -589,6 +627,145 @@ def try_refill_bucket(
             )
             return False
         raise
+
+
+WCU_PROACTIVE_THRESHOLD = 0.8  # Shard when wcu consumption >= 80% of capacity
+
+
+def try_proactive_shard(
+    table: Any,
+    state: BucketRefillState,
+    wcu_tc_delta: int,
+    wcu_capacity_milli: int,
+) -> bool:
+    """Proactively double shard_count when wcu consumption approaches capacity.
+
+    Only acts on shard 0 (source of truth for shard_count).
+    Uses conditional write to prevent double-bumping.
+
+    Args:
+        table: boto3 Table resource
+        state: Aggregated bucket state
+        wcu_tc_delta: Accumulated wcu tc_delta in this batch (millitokens)
+        wcu_capacity_milli: wcu capacity in millitokens
+
+    Returns:
+        True if shard_count was bumped, False otherwise
+    """
+    if state.shard_id != 0:
+        return False
+
+    if wcu_capacity_milli <= 0:
+        return False
+
+    consumption_ratio = wcu_tc_delta / wcu_capacity_milli
+    if consumption_ratio < WCU_PROACTIVE_THRESHOLD:
+        return False
+
+    new_count = state.shard_count * 2
+
+    try:
+        table.update_item(
+            Key={
+                "PK": pk_bucket(state.namespace_id, state.entity_id, state.resource, 0),
+                "SK": sk_state(),
+            },
+            UpdateExpression="SET shard_count = :new",
+            ConditionExpression="shard_count = :old",
+            ExpressionAttributeValues={
+                ":old": {"N": str(state.shard_count)},
+                ":new": {"N": str(new_count)},
+            },
+        )
+        logger.info(
+            "Proactive shard doubling",
+            entity_id=state.entity_id,
+            resource=state.resource,
+            old_count=state.shard_count,
+            new_count=new_count,
+            consumption_ratio=round(consumption_ratio, 2),
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            logger.debug(
+                "Proactive shard skipped - concurrent bump",
+                entity_id=state.entity_id,
+                resource=state.resource,
+            )
+            return False
+        raise
+
+
+def propagate_shard_count(
+    table: Any,
+    record: dict[str, Any],
+) -> int:
+    """Propagate shard_count changes to all other shard items.
+
+    Detects shard_count change in stream record (OldImage vs NewImage).
+    Only propagates from shard 0. Uses conditional write to prevent
+    overwriting a higher shard_count set by another writer.
+
+    Args:
+        table: boto3 Table resource
+        record: DynamoDB stream record
+
+    Returns:
+        Number of shard items updated
+    """
+    dynamodb_data = record.get("dynamodb", {})
+    new_image = dynamodb_data.get("NewImage", {})
+    old_image = dynamodb_data.get("OldImage", {})
+
+    new_count_raw = new_image.get("shard_count", {}).get("N")
+    old_count_raw = old_image.get("shard_count", {}).get("N")
+    if not new_count_raw or not old_count_raw:
+        return 0
+
+    new_count = int(new_count_raw)
+    old_count = int(old_count_raw)
+    if new_count <= old_count:
+        return 0
+
+    pk = new_image.get("PK", {}).get("S", "")
+    try:
+        namespace_id, entity_id, resource, shard_id = parse_bucket_pk(pk)
+    except ValueError:
+        return 0
+
+    if shard_id != 0:
+        return 0  # Only propagate from source of truth
+
+    updated = 0
+    for target_shard in range(1, new_count):
+        try:
+            table.update_item(
+                Key={
+                    "PK": pk_bucket(namespace_id, entity_id, resource, target_shard),
+                    "SK": sk_state(),
+                },
+                UpdateExpression="SET shard_count = :new",
+                ConditionExpression=("attribute_not_exists(shard_count) OR shard_count < :new"),
+                ExpressionAttributeValues={
+                    ":new": {"N": str(new_count)},
+                },
+            )
+            updated += 1
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # Higher value already present
+            raise
+
+    if updated > 0:
+        logger.info(
+            "Shard count propagated",
+            entity_id=entity_id,
+            resource=resource,
+            new_count=new_count,
+            shards_updated=updated,
+        )
+    return updated
 
 
 def get_window_key(timestamp_ms: int, window: str) -> str:

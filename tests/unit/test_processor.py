@@ -21,6 +21,8 @@ from zae_limiter_aggregator.processor import (
     get_window_end,
     get_window_key,
     process_stream_records,
+    propagate_shard_count,
+    try_proactive_shard,
     try_refill_bucket,
     update_snapshot,
 )
@@ -1721,6 +1723,16 @@ class TestNewBucketPKParsing:
         assert call_kwargs["Key"]["PK"] == "ns1/BUCKET#user-1#gpt-4#0"
         assert call_kwargs["Key"]["SK"] == "#STATE"
 
+    def test_extract_deltas_filters_wcu(self) -> None:
+        """wcu limit deltas are excluded from usage snapshots."""
+        record = self._make_new_pk_record(
+            limits={"rpm": (0, 1000), "wcu": (0, 500)},
+        )
+        deltas = extract_deltas(record)
+        limit_names = [d.limit_name for d in deltas]
+        assert "rpm" in limit_names
+        assert "wcu" not in limit_names
+
     def test_try_refill_bucket_old_pk_shard_0(self) -> None:
         """Refill for shard_count=1 (old format) uses new PK format."""
         mock_table = MagicMock()
@@ -1749,3 +1761,185 @@ class TestNewBucketPKParsing:
         call_kwargs = mock_table.update_item.call_args[1]
         assert call_kwargs["Key"]["PK"] == "ns1/BUCKET#user-1#gpt-4#0"
         assert call_kwargs["Key"]["SK"] == "#STATE"
+
+
+class TestTryProactiveShard:
+    """Tests for try_proactive_shard function."""
+
+    def _make_state(
+        self,
+        shard_id: int = 0,
+        shard_count: int = 1,
+    ) -> BucketRefillState:
+        return BucketRefillState(
+            namespace_id="ns1",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_id=shard_id,
+            shard_count=shard_count,
+            rf_ms=1704067200000,
+        )
+
+    def test_triggers_at_threshold(self) -> None:
+        """When wcu tc_delta >= 80% of capacity, aggregator bumps shard_count."""
+        mock_table = MagicMock()
+        state = self._make_state()
+        wcu_tc_delta = 900_000  # 90% > 80% threshold
+        wcu_capacity_milli = 1000_000
+
+        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+
+        assert result is True
+        mock_table.update_item.assert_called_once()
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["Key"]["PK"] == "ns1/BUCKET#user-1#gpt-4#0"
+        assert call_kwargs["ExpressionAttributeValues"][":new"]["N"] == "2"
+        assert call_kwargs["ConditionExpression"] == "shard_count = :old"
+
+    def test_skips_below_threshold(self) -> None:
+        """Below threshold, no sharding."""
+        mock_table = MagicMock()
+        state = self._make_state()
+        wcu_tc_delta = 500_000  # 50% < 80%
+        wcu_capacity_milli = 1000_000
+
+        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_skips_non_shard_0(self) -> None:
+        """Only shard 0 can be bumped."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_id=1, shard_count=2)
+        wcu_tc_delta = 900_000
+        wcu_capacity_milli = 1000_000
+
+        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_conditional_check_failure_returns_false(self) -> None:
+        """If another writer already bumped, silently skip."""
+        mock_table = MagicMock()
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 900_000, 1000_000)
+
+        assert result is False
+
+    def test_zero_capacity_skips(self) -> None:
+        """Zero wcu capacity does not divide by zero."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 900_000, 0)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+
+class TestPropagateShardsCount:
+    """Tests for propagate_shard_count function."""
+
+    def _make_shard_change_record(
+        self,
+        pk: str = "ns1/BUCKET#user-1#gpt-4#0",
+        sk: str = "#STATE",
+        old_shard_count: int = 2,
+        new_shard_count: int = 4,
+    ) -> dict:
+        """Helper to create a stream record with shard_count change."""
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": pk},
+                    "SK": {"S": sk},
+                    "shard_count": {"N": str(new_shard_count)},
+                },
+                "OldImage": {
+                    "PK": {"S": pk},
+                    "SK": {"S": sk},
+                    "shard_count": {"N": str(old_shard_count)},
+                },
+            },
+        }
+
+    def test_propagate_on_change(self) -> None:
+        """When shard_count changes, propagate to other shards."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            old_shard_count=2,
+            new_shard_count=4,
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 3  # Updated shards 1, 2, 3 (not 0)
+        calls = mock_table.update_item.call_args_list
+        updated_pks = {c[1]["Key"]["PK"] for c in calls}
+        assert "ns1/BUCKET#user-1#gpt-4#1" in updated_pks
+        assert "ns1/BUCKET#user-1#gpt-4#2" in updated_pks
+        assert "ns1/BUCKET#user-1#gpt-4#3" in updated_pks
+        assert "ns1/BUCKET#user-1#gpt-4#0" not in updated_pks
+
+    def test_no_change_no_propagation(self) -> None:
+        """No propagation when shard_count unchanged."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            old_shard_count=2,
+            new_shard_count=2,
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 0
+        mock_table.update_item.assert_not_called()
+
+    def test_conditional_prevents_downgrade(self) -> None:
+        """Conditional write prevents overwriting a higher shard_count."""
+        mock_table = MagicMock()
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        record = self._make_shard_change_record(
+            old_shard_count=2,
+            new_shard_count=4,
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 0  # All skipped
+
+    def test_skips_non_shard_0(self) -> None:
+        """Only propagates from shard 0."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            pk="ns1/BUCKET#user-1#gpt-4#1",
+            old_shard_count=2,
+            new_shard_count=4,
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 0
+        mock_table.update_item.assert_not_called()
+
+    def test_skips_non_bucket_pk(self) -> None:
+        """Non-bucket PK returns 0."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            pk="ns1/ENTITY#user-1",
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 0
+        mock_table.update_item.assert_not_called()
