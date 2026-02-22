@@ -3484,3 +3484,100 @@ class TestPreShardBuckets:
         assert put_item["PK"]["S"] == schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", 3)
         assert put_item["shard_count"]["N"] == "4"
         assert put_item["GSI3SK"]["S"] == schema.gsi3_sk_bucket("gpt-4", 3)
+
+    @pytest.mark.asyncio
+    async def test_speculative_consume_includes_wcu_consumption(self, repo):
+        """Speculative consume adds wcu consumption (1 WCU = 1000 milli per write)."""
+        from zae_limiter import schema
+
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+
+        put_item = repo.build_composite_create("e1", "gpt-4", states, now_ms)
+        await repo.transact_write([put_item])
+
+        result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 10})
+        assert result.success is True
+
+        # Verify wcu tokens were consumed: initial = 1_000_000, consumed 1 WCU = 1000 milli
+        wcu_bucket = next(b for b in result.buckets if b.limit_name == "wcu")
+        assert wcu_bucket.tokens_milli == schema.WCU_LIMIT_CAPACITY * 1000 - 1000
+
+    @pytest.mark.asyncio
+    async def test_speculative_consume_returns_shard_count(self, repo):
+        """Speculative consume returns shard_count from SpeculativeResult."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+
+        put_item = repo.build_composite_create("e1", "gpt-4", states, now_ms)
+        await repo.transact_write([put_item])
+
+        result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is True
+        assert result.shard_id == 0
+        assert result.shard_count == 1
+
+    @pytest.mark.asyncio
+    async def test_entity_cache_stores_shard_count(self, repo):
+        """Entity cache includes shard_count per resource after speculative consume."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 1000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+
+        put_item = repo.build_composite_create("e1", "gpt-4", states, now_ms)
+        await repo.transact_write([put_item])
+
+        result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is True
+
+        cache_entry = repo._entity_cache[(repo._namespace_id, "e1")]
+        # cache_entry: (cascade, parent_id, {resource: shard_count})
+        assert len(cache_entry) == 3
+        assert cache_entry[2]["gpt-4"] == 1
+
+    @pytest.mark.asyncio
+    async def test_entity_cache_merges_shard_counts_across_resources(self, repo):
+        """Entity cache merges shard_count from different resources."""
+        now_ms = int(time.time() * 1000)
+
+        # Create buckets for two resources
+        for resource in ["gpt-4", "claude-3"]:
+            limits = [Limit.per_minute("rpm", 1000)]
+            states = [BucketState.from_limit("e1", resource, lim, now_ms) for lim in limits]
+            put_item = repo.build_composite_create("e1", resource, states, now_ms)
+            await repo.transact_write([put_item])
+
+        # Consume from first resource
+        result1 = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result1.success is True
+
+        # Consume from second resource
+        result2 = await repo.speculative_consume("e1", "claude-3", {"rpm": 1})
+        assert result2.success is True
+
+        cache_entry = repo._entity_cache[(repo._namespace_id, "e1")]
+        assert cache_entry[2]["gpt-4"] == 1
+        assert cache_entry[2]["claude-3"] == 1
+
+    @pytest.mark.asyncio
+    async def test_speculative_consume_fails_when_wcu_exhausted(self, repo):
+        """Speculative consume fails when wcu tokens are exhausted."""
+        from zae_limiter import schema
+
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100_000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+
+        put_item = repo.build_composite_create("e1", "gpt-4", states, now_ms)
+        await repo.transact_write([put_item])
+
+        # Exhaust wcu tokens (1000 capacity, 1 per write = 1000 writes)
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+            assert result.success is True
+
+        # Next write should fail due to wcu exhaustion
+        result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is False

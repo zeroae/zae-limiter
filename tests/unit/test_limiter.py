@@ -5527,7 +5527,7 @@ class TestCascadeEntityCache:
         cache = limiter._repository._entity_cache
         ns_id = limiter._repository.namespace_id
         assert (ns_id, "entity-1") in cache
-        cascade, parent_id = cache[(ns_id, "entity-1")]
+        cascade, parent_id, _shards = cache[(ns_id, "entity-1")]
         assert cascade is False
         assert parent_id is None
 
@@ -5545,7 +5545,7 @@ class TestCascadeEntityCache:
         cache = limiter._repository._entity_cache
         ns_id = limiter._repository.namespace_id
         assert (ns_id, "entity-1") in cache
-        cascade, parent_id = cache[(ns_id, "entity-1")]
+        cascade, parent_id, _shards = cache[(ns_id, "entity-1")]
         assert cascade is False
         assert parent_id is None
 
@@ -5562,7 +5562,7 @@ class TestCascadeEntityCache:
         cache = limiter._repository._entity_cache
         ns_id = limiter._repository.namespace_id
         assert (ns_id, "child-1") in cache
-        cascade, parent_id = cache[(ns_id, "child-1")]
+        cascade, parent_id, _shards = cache[(ns_id, "child-1")]
         assert cascade is True
         assert parent_id == "parent-1"
 

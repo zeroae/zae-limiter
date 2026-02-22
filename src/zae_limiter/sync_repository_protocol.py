@@ -47,6 +47,8 @@ class SpeculativeResult:
     parent_id: str | None = None
     old_buckets: "list[BucketState] | None" = None
     parent_result: "SpeculativeResult | None" = None
+    shard_id: int = 0
+    shard_count: int = 1
 
 
 @runtime_checkable

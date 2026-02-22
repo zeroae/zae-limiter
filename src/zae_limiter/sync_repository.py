@@ -119,7 +119,7 @@ class SyncRepository:
             ttl_seconds=config_cache_ttl, namespace_id=self._namespace_id
         )
         self._config_cache_ttl = config_cache_ttl
-        self._entity_cache: dict[tuple[str, str], tuple[bool, str | None]] = {}
+        self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         self._on_unavailable_cache: OnUnavailableAction | None = None
         self._namespace_cache: dict[str, str] = {}
         self._parallel_mode = parallel_mode
@@ -1118,11 +1118,13 @@ class SyncRepository:
             },
         )
         item = response.get("Item")
+        cache_key = (self._namespace_id, entity_id)
+        existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
-            self._entity_cache[self._namespace_id, entity_id] = (False, None)
+            self._entity_cache[cache_key] = (False, None, existing_shards)
             return None
         entity = self._deserialize_entity(item)
-        self._entity_cache[self._namespace_id, entity_id] = (entity.cascade, entity.parent_id)
+        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         return entity
 
     def delete_entity(self, entity_id: str, principal: str | None = None) -> None:
@@ -1336,10 +1338,12 @@ class SyncRepository:
                     for bucket in self._deserialize_composite_bucket(item):
                         key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                         buckets[key] = bucket
+        cache_key = (self._namespace_id, entity_id)
+        existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if entity is not None:
-            self._entity_cache[self._namespace_id, entity_id] = (entity.cascade, entity.parent_id)
+            self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
-            self._entity_cache[self._namespace_id, entity_id] = (False, None)
+            self._entity_cache[cache_key] = (False, None, existing_shards)
         return (entity, buckets)
 
     def batch_get_configs(
@@ -1784,9 +1788,10 @@ class SyncRepository:
             - On cache miss or non-cascade: parent_result is None
             - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
-        cache_entry = self._entity_cache.get((self._namespace_id, entity_id))
+        cache_key = (self._namespace_id, entity_id)
+        cache_entry = self._entity_cache.get(cache_key)
         if cache_entry is not None:
-            cascade_cached, parent_id_cached = cache_entry
+            cascade_cached, parent_id_cached, shards_cached = cache_entry
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
@@ -1799,9 +1804,11 @@ class SyncRepository:
                     ),
                 )
                 if child_result.success:
-                    self._entity_cache[self._namespace_id, entity_id] = (
+                    shards_cached = {**shards_cached, resource: child_result.shard_count}
+                    self._entity_cache[cache_key] = (
                         child_result.cascade,
                         child_result.parent_id,
+                        shards_cached,
                     )
                 else:
                     child_result.cascade = cascade_cached
@@ -1810,7 +1817,9 @@ class SyncRepository:
                 return child_result
         result = self._speculative_consume_single(entity_id, resource, consume, ttl_seconds)
         if result.success:
-            self._entity_cache[self._namespace_id, entity_id] = (result.cascade, result.parent_id)
+            existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
+            existing_shards = {**existing_shards, resource: result.shard_count}
+            self._entity_cache[cache_key] = (result.cascade, result.parent_id, existing_shards)
         return result
 
     def _speculative_consume_single(
@@ -1844,6 +1853,17 @@ class SyncRepository:
             add_parts.append(f"{tk_alias} {neg_val}")
             add_parts.append(f"{tc_alias} {pos_val}")
             condition_parts.append(f"{tk_alias} >= {thresh_val}")
+        wcu_tk_attr = schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+        wcu_tc_attr = schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TC)
+        attr_names["#wcu_tk"] = wcu_tk_attr
+        attr_names["#wcu_tc"] = wcu_tc_attr
+        wcu_milli = 1000
+        attr_values[":neg_wcu"] = {"N": str(-wcu_milli)}
+        attr_values[":pos_wcu"] = {"N": str(wcu_milli)}
+        attr_values[":thresh_wcu"] = {"N": str(wcu_milli)}
+        add_parts.append("#wcu_tk :neg_wcu")
+        add_parts.append("#wcu_tc :pos_wcu")
+        condition_parts.append("#wcu_tk >= :thresh_wcu")
         update_expr = "ADD " + ", ".join(add_parts)
         if ttl_seconds is not None:
             now_ms = self._now_ms()
@@ -1876,8 +1896,14 @@ class SyncRepository:
             buckets = self._deserialize_composite_bucket(item)
             cascade = item.get("cascade", {}).get("BOOL", False)
             parent_id = item.get("parent_id", {}).get("S")
+            shard_count = int(item.get("shard_count", {}).get("N", "1"))
             return SpeculativeResult(
-                success=True, buckets=buckets, cascade=cascade, parent_id=parent_id
+                success=True,
+                buckets=buckets,
+                cascade=cascade,
+                parent_id=parent_id,
+                shard_id=shard_id,
+                shard_count=shard_count,
             )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":

@@ -127,8 +127,9 @@ class Repository:
         self._config_cache_ttl = config_cache_ttl
 
         # Entity metadata cache for parallel cascade writes (issue #318)
-        # Stores {(namespace_id, entity_id) -> (cascade, parent_id)} — immutable, no TTL needed
-        self._entity_cache: dict[tuple[str, str], tuple[bool, str | None]] = {}
+        # Value: (cascade, parent_id, {resource: shard_count})
+        # cascade/parent_id are immutable; shard_count updated on doubling
+        self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
 
         # Cached on_unavailable from system config (issue #366)
         # Once loaded, used as fallback when DynamoDB is unreachable
@@ -1328,12 +1329,14 @@ class Repository:
         )
 
         item = response.get("Item")
+        cache_key = (self._namespace_id, entity_id)
+        existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
-            self._entity_cache[(self._namespace_id, entity_id)] = (False, None)
+            self._entity_cache[cache_key] = (False, None, existing_shards)
             return None
 
         entity = self._deserialize_entity(item)
-        self._entity_cache[(self._namespace_id, entity_id)] = (entity.cascade, entity.parent_id)
+        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         return entity
 
     async def delete_entity(
@@ -1624,10 +1627,12 @@ class Repository:
                         buckets[key] = bucket
 
         # Populate entity cache transparently (issue #318)
+        cache_key = (self._namespace_id, entity_id)
+        existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if entity is not None:
-            self._entity_cache[(self._namespace_id, entity_id)] = (entity.cascade, entity.parent_id)
+            self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
-            self._entity_cache[(self._namespace_id, entity_id)] = (False, None)
+            self._entity_cache[cache_key] = (False, None, existing_shards)
 
         return entity, buckets
 
@@ -2186,10 +2191,11 @@ class Repository:
             - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
         # Check entity cache for parallel cascade opportunity (issue #318)
-        cache_entry = self._entity_cache.get((self._namespace_id, entity_id))
+        cache_key = (self._namespace_id, entity_id)
+        cache_entry = self._entity_cache.get(cache_key)
 
         if cache_entry is not None:
-            cascade_cached, parent_id_cached = cache_entry
+            cascade_cached, parent_id_cached, shards_cached = cache_entry
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
@@ -2200,9 +2206,11 @@ class Repository:
                     ),
                 )
                 if child_result.success:
-                    self._entity_cache[(self._namespace_id, entity_id)] = (
+                    shards_cached = {**shards_cached, resource: child_result.shard_count}
+                    self._entity_cache[cache_key] = (
                         child_result.cascade,
                         child_result.parent_id,
+                        shards_cached,
                     )
                 else:
                     # On failure, _speculative_consume_single doesn't return
@@ -2216,7 +2224,9 @@ class Repository:
         # Cache miss or non-cascade: single UpdateItem
         result = await self._speculative_consume_single(entity_id, resource, consume, ttl_seconds)
         if result.success:
-            self._entity_cache[(self._namespace_id, entity_id)] = (result.cascade, result.parent_id)
+            existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
+            existing_shards = {**existing_shards, resource: result.shard_count}
+            self._entity_cache[cache_key] = (result.cascade, result.parent_id, existing_shards)
         return result
 
     async def _speculative_consume_single(
@@ -2255,6 +2265,19 @@ class Repository:
             add_parts.append(f"{tk_alias} {neg_val}")
             add_parts.append(f"{tc_alias} {pos_val}")
             condition_parts.append(f"{tk_alias} >= {thresh_val}")
+
+        # Add wcu infrastructure limit consumption (1 WCU = 1000 millitokens per write)
+        wcu_tk_attr = schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+        wcu_tc_attr = schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TC)
+        attr_names["#wcu_tk"] = wcu_tk_attr
+        attr_names["#wcu_tc"] = wcu_tc_attr
+        wcu_milli = 1000  # 1 WCU = 1000 millitokens
+        attr_values[":neg_wcu"] = {"N": str(-wcu_milli)}
+        attr_values[":pos_wcu"] = {"N": str(wcu_milli)}
+        attr_values[":thresh_wcu"] = {"N": str(wcu_milli)}
+        add_parts.append("#wcu_tk :neg_wcu")
+        add_parts.append("#wcu_tc :pos_wcu")
+        condition_parts.append("#wcu_tk >= :thresh_wcu")
 
         update_expr = "ADD " + ", ".join(add_parts)
 
@@ -2296,11 +2319,14 @@ class Repository:
             buckets = self._deserialize_composite_bucket(item)
             cascade = item.get("cascade", {}).get("BOOL", False)
             parent_id = item.get("parent_id", {}).get("S")
+            shard_count = int(item.get("shard_count", {}).get("N", "1"))
             return SpeculativeResult(
                 success=True,
                 buckets=buckets,
                 cascade=cascade,
                 parent_id=parent_id,
+                shard_id=shard_id,
+                shard_count=shard_count,
             )
 
         except ClientError as e:
