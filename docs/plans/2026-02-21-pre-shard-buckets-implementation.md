@@ -1880,3 +1880,129 @@ git add src/zae_limiter/schema.py src/zae_limiter/repository.py \
     src/zae_limiter/sync_repository.py tests/unit/test_schema.py
 git commit -m "♻️ refactor(schema): add gsi4_sk_bucket builder and use in repository"
 ```
+
+---
+
+### Task 30: Fix inflated capacity in get_resource_capacity
+
+**Problem:**
+
+`get_resource_capacity()` (`limiter.py:1844`) iterates all buckets from
+`get_resource_buckets()` and sums `capacity` and `available`. With pre-shard buckets,
+GSI2 returns one item per `(entity, shard)`. Each shard stores the **full, undivided**
+capacity, so a 2-shard entity with `capacity=1000` produces `total_capacity=2000` and
+two duplicate `EntityCapacity` entries.
+
+**Fix:** Deduplicate in `get_resource_capacity()` — group buckets by `entity_id`, use
+capacity from shard 0, sum available tokens across shards.
+
+Note: `get_resource_buckets()` still returns per-shard items to other callers. This is
+acceptable — callers consuming raw buckets can decide how to aggregate.
+
+**Files:**
+- Modify: `src/zae_limiter/limiter.py` (`get_resource_capacity` — deduplicate by entity)
+- Test: `tests/unit/test_limiter.py` (new test with sharded entity)
+
+**Step 1: Write failing test**
+
+Add to `TestGetResourceCapacity` in `tests/unit/test_limiter.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_get_resource_capacity_sharded_entity_deduplication(self, limiter):
+    """Sharded entities should report capacity once, not per-shard."""
+    await limiter.create_entity("sharded-user")
+    limits = [Limit.per_minute("rpm", 100)]
+
+    async with limiter.acquire("sharded-user", "gpt-4", {"rpm": 10}, limits=limits):
+        pass
+
+    # Manually create shard 1 to simulate sharding
+    repo = limiter._repository
+    client = await repo._get_client()
+    shard0_key = {
+        "PK": {"S": schema.pk_bucket(repo._namespace_id, "sharded-user", "gpt-4", 0)},
+        "SK": {"S": schema.sk_state()},
+    }
+    shard0_resp = await client.get_item(TableName=repo.table_name, Key=shard0_key)
+    shard0_item = shard0_resp["Item"]
+
+    shard1_item = dict(shard0_item)
+    shard1_item["PK"] = {"S": schema.pk_bucket(repo._namespace_id, "sharded-user", "gpt-4", 1)}
+    shard1_item["GSI2SK"] = {"S": schema.gsi2_sk_bucket("sharded-user", 1)}
+    shard1_item["GSI3SK"] = {"S": schema.gsi3_sk_bucket("gpt-4", 1)}
+    shard1_item["shard_count"] = {"N": "2"}
+    await client.update_item(
+        TableName=repo.table_name, Key=shard0_key,
+        UpdateExpression="SET shard_count = :sc",
+        ExpressionAttributeValues={":sc": {"N": "2"}},
+    )
+    await client.put_item(TableName=repo.table_name, Item=shard1_item)
+
+    capacity = await limiter.get_resource_capacity("gpt-4", "rpm")
+
+    assert capacity.total_capacity == 100  # Not 200
+    assert len(capacity.entities) == 1  # Not 2
+    assert capacity.entities[0].entity_id == "sharded-user"
+    assert capacity.entities[0].capacity == 100
+```
+
+**Step 2: Run test — expect FAIL**
+
+Run: `uv run pytest tests/unit/test_limiter.py::TestGetResourceCapacity::test_get_resource_capacity_sharded_entity_deduplication -v`
+Expected: FAIL (`total_capacity == 200`, `len(entities) == 2`)
+
+**Step 3: Deduplicate by entity in `get_resource_capacity()`**
+
+In `limiter.py`, replace the per-bucket loop (lines 1879-1895) with entity-grouped
+aggregation:
+
+```python
+from collections import defaultdict
+
+entity_buckets: dict[str, list[BucketState]] = defaultdict(list)
+for bucket in buckets:
+    entity_buckets[bucket.entity_id].append(bucket)
+
+entities: list[EntityCapacity] = []
+total_capacity = 0
+total_available = 0
+
+for entity_id, entity_bucket_list in entity_buckets.items():
+    # Capacity is the same on all shards (undivided); take from first
+    capacity = entity_bucket_list[0].capacity
+    # Available tokens are distributed across shards; sum them
+    available = sum(calculate_available(b, now_ms) for b in entity_bucket_list)
+    available = min(available, capacity)
+
+    total_capacity += capacity
+    total_available += available
+
+    entities.append(
+        EntityCapacity(
+            entity_id=entity_id,
+            capacity=capacity,
+            available=available,
+            utilization_pct=(
+                ((capacity - available) / capacity * 100) if capacity > 0 else 0
+            ),
+        )
+    )
+```
+
+**Step 4: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 5: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 6: Commit**
+
+```bash
+git add src/zae_limiter/limiter.py src/zae_limiter/sync_limiter.py \
+    tests/unit/test_limiter.py tests/unit/test_sync_limiter.py
+git commit -m "🐛 fix(limiter): deduplicate sharded entities in get_resource_capacity"
+```
