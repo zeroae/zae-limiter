@@ -33,6 +33,7 @@ import pytest_asyncio
 
 from zae_limiter import Limit, RateLimiter, Repository, StackOptions
 from zae_limiter.models import BucketState
+from zae_limiter.schema import WCU_LIMIT_NAME
 
 pytestmark = [pytest.mark.aws, pytest.mark.e2e]
 
@@ -985,10 +986,11 @@ class TestE2EAWSSpeculativeConsume:
         )
 
         assert result.success is True
-        assert len(result.buckets) == 1
-        assert result.buckets[0].entity_id == "spec-entity-1"
-        assert result.buckets[0].limit_name == "rpm"
-        assert result.buckets[0].tokens_milli == 99_000
+        user_buckets = [b for b in result.buckets if b.limit_name != WCU_LIMIT_NAME]
+        assert len(user_buckets) == 1
+        assert user_buckets[0].entity_id == "spec-entity-1"
+        assert user_buckets[0].limit_name == "rpm"
+        assert user_buckets[0].tokens_milli == 99_000
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_speculative_success_multi_limit(self, aws_repo):
@@ -1013,8 +1015,9 @@ class TestE2EAWSSpeculativeConsume:
         )
 
         assert result.success is True
-        assert len(result.buckets) == 2
-        bucket_map = {b.limit_name: b for b in result.buckets}
+        user_buckets = [b for b in result.buckets if b.limit_name != WCU_LIMIT_NAME]
+        assert len(user_buckets) == 2
+        bucket_map = {b.limit_name: b for b in user_buckets}
         assert bucket_map["rpm"].tokens_milli == 99_000
         assert bucket_map["tpm"].tokens_milli == 9_500_000
 
@@ -1034,13 +1037,15 @@ class TestE2EAWSSpeculativeConsume:
             entity_id="spec-entity-tc", resource="api", consume={"rpm": 3}
         )
         assert result1.success is True
-        assert result1.buckets[0].total_consumed_milli == 3_000
+        rpm1 = next(b for b in result1.buckets if b.limit_name == "rpm")
+        assert rpm1.total_consumed_milli == 3_000
 
         result2 = await repo.speculative_consume(
             entity_id="spec-entity-tc", resource="api", consume={"rpm": 7}
         )
         assert result2.success is True
-        assert result2.buckets[0].total_consumed_milli == 10_000
+        rpm2 = next(b for b in result2.buckets if b.limit_name == "rpm")
+        assert rpm2.total_consumed_milli == 10_000
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_speculative_failure_insufficient_tokens(self, aws_repo):
@@ -1062,9 +1067,10 @@ class TestE2EAWSSpeculativeConsume:
 
         assert result.success is False
         assert result.old_buckets is not None
-        assert len(result.old_buckets) == 1
-        assert result.old_buckets[0].limit_name == "rpm"
-        assert result.old_buckets[0].tokens_milli == 10_000
+        user_old = [b for b in result.old_buckets if b.limit_name != WCU_LIMIT_NAME]
+        assert len(user_old) == 1
+        assert user_old[0].limit_name == "rpm"
+        assert user_old[0].tokens_milli == 10_000
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_speculative_failure_multi_limit_one_exhausted(self, aws_repo):
@@ -1090,8 +1096,9 @@ class TestE2EAWSSpeculativeConsume:
 
         assert result.success is False
         assert result.old_buckets is not None
-        assert len(result.old_buckets) == 2
-        bucket_map = {b.limit_name: b for b in result.old_buckets}
+        user_old = [b for b in result.old_buckets if b.limit_name != WCU_LIMIT_NAME]
+        assert len(user_old) == 2
+        bucket_map = {b.limit_name: b for b in user_old}
         assert bucket_map["rpm"].tokens_milli == 100_000
         assert bucket_map["tpm"].tokens_milli == 5_000
 
