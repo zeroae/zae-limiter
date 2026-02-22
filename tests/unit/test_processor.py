@@ -1964,7 +1964,7 @@ class TestPropagateShardsCount:
         assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
         assert "ns1/BUCKET#user-1#gpt-4#0" not in update_pks
         # New shards 2, 3 created via PutItem
-        put_pks = {c.kwargs["Item"]["PK"]["S"] for c in mock_table.put_item.call_args_list}
+        put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
         assert "ns1/BUCKET#user-1#gpt-4#2" in put_pks
         assert "ns1/BUCKET#user-1#gpt-4#3" in put_pks
 
@@ -2079,7 +2079,7 @@ class TestPropagateShardsCount:
             assert "b_rpm_tk" in item
             assert "b_wcu_tk" in item
 
-        new_pks = {c.kwargs["Item"]["PK"]["S"] for c in put_calls}
+        new_pks = {c.kwargs["Item"]["PK"] for c in put_calls}
         assert "ns1/BUCKET#user-1#gpt-4#2" in new_pks
         assert "ns1/BUCKET#user-1#gpt-4#3" in new_pks
 
@@ -2117,7 +2117,7 @@ class TestPropagateShardsCount:
         update_pks = {c.kwargs["Key"]["PK"] for c in mock_table.update_item.call_args_list}
         assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
 
-        put_pks = {c.kwargs["Item"]["PK"]["S"] for c in mock_table.put_item.call_args_list}
+        put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
         assert "ns1/BUCKET#user-1#gpt-4#1" not in put_pks
 
     def test_new_shard_skips_if_client_created(self) -> None:
@@ -2192,10 +2192,10 @@ class TestPropagateShardsCount:
         item = put_calls[0].kwargs["Item"]
 
         # rpm tokens = effective capacity = 100000000 // 2 = 50000000
-        assert item["b_rpm_tk"]["N"] == "50000000"
+        assert item["b_rpm_tk"] == 50000000
         # rpm tc reset to 0
-        assert item["b_rpm_tc"]["N"] == "0"
+        assert item["b_rpm_tc"] == 0
         # wcu tokens = full capacity (not divided) = 1000000
-        assert item["b_wcu_tk"]["N"] == "1000000"
+        assert item["b_wcu_tk"] == 1000000
         # wcu tc reset to 0
-        assert item["b_wcu_tc"]["N"] == "0"
+        assert item["b_wcu_tc"] == 0

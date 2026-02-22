@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import boto3
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from zae_limiter.bucket import refill_bucket
@@ -812,15 +813,19 @@ def propagate_shard_count(
             raise
 
     # Path 2: Pre-create new shards (full item cloned from shard 0)
+    # Deserialize wire format ({"S": "val"}, {"N": "1"}) to Python types
+    # because table.put_item() (boto3 Table resource) auto-serializes.
+    deserializer = TypeDeserializer()
+    base_item = {k: deserializer.deserialize(v) for k, v in new_image.items()}
     limit_attrs = _extract_limit_attrs(new_image)
     for target_shard in range(old_count, new_count):
         try:
-            item = dict(new_image)  # Clone shard 0's NewImage
-            item["PK"] = {"S": pk_bucket(namespace_id, entity_id, resource, target_shard)}
-            item["GSI2SK"] = {"S": gsi2_sk_bucket(entity_id, target_shard)}
-            item["GSI3SK"] = {"S": gsi3_sk_bucket(resource, target_shard)}
-            item["GSI4SK"] = {"S": gsi4_sk_bucket(entity_id, resource, target_shard)}
-            item["shard_count"] = {"N": str(new_count)}
+            item = dict(base_item)
+            item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)
+            item["GSI2SK"] = gsi2_sk_bucket(entity_id, target_shard)
+            item["GSI3SK"] = gsi3_sk_bucket(resource, target_shard)
+            item["GSI4SK"] = gsi4_sk_bucket(entity_id, resource, target_shard)
+            item["shard_count"] = new_count
             # Reset tokens to effective per-shard capacity (full bucket)
             for limit_name, info in limit_attrs.items():
                 cp_milli = info["cp_milli"]
@@ -828,8 +833,8 @@ def propagate_shard_count(
                     effective_cp = cp_milli  # wcu is per-partition, not divided
                 else:
                     effective_cp = cp_milli // new_count
-                item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = {"N": str(effective_cp)}
-                item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = {"N": "0"}
+                item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = effective_cp
+                item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = 0
             table.put_item(
                 Item=item,
                 ConditionExpression="attribute_not_exists(PK)",
