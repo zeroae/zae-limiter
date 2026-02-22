@@ -1467,7 +1467,11 @@ class Repository:
             item = response.get("Item")
             if not item:
                 return []
-            return self._deserialize_composite_bucket(item)
+            return [
+                b
+                for b in self._deserialize_composite_bucket(item)
+                if b.limit_name != schema.WCU_LIMIT_NAME
+            ]
 
         # Step 1: GSI3 query to discover bucket PKs (KEYS_ONLY projection)
         key_condition = "GSI3PK = :gsi3pk"
@@ -1497,7 +1501,7 @@ class Repository:
             )
             for full_item in batch_response.get("Responses", {}).get(self.table_name, []):
                 buckets.extend(self._deserialize_composite_bucket(full_item))
-        return buckets
+        return [b for b in buckets if b.limit_name != schema.WCU_LIMIT_NAME]
 
     async def batch_get_buckets(
         self,

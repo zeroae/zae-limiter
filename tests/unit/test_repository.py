@@ -243,28 +243,28 @@ class TestRepositoryBucketOperations:
         """get_buckets should filter by resource when specified."""
         buckets = await repo_with_buckets.get_buckets("entity-1", resource="gpt-4")
 
-        # Should only get gpt-4 buckets (2 limits: rpm, tpm + wcu infra limit)
-        assert len(buckets) == 3
+        # Should only get gpt-4 buckets (2 user limits: rpm, tpm; wcu filtered)
+        assert len(buckets) == 2
         assert all(b.resource == "gpt-4" for b in buckets)
 
-        # Verify both user limits and wcu infra limit are present
+        # Verify only user limits are present (wcu infra limit filtered out)
         limit_names = {b.limit_name for b in buckets}
-        assert limit_names == {"rpm", "tpm", "wcu"}
+        assert limit_names == {"rpm", "tpm"}
 
     @pytest.mark.asyncio
     async def test_get_buckets_returns_all_when_no_filter(self, repo_with_buckets):
         """get_buckets should return all buckets when no resource filter."""
         buckets = await repo_with_buckets.get_buckets("entity-1")
 
-        # Should get all buckets: 2 resources × 3 limits each (rpm, tpm, wcu) = 6 buckets
-        assert len(buckets) == 6
+        # Should get all buckets: 2 resources × 2 user limits each (rpm, tpm) = 4 (wcu filtered)
+        assert len(buckets) == 4
 
-        # Verify resources and limits
+        # Verify resources and limits (wcu infra limit filtered out)
         resources = {b.resource for b in buckets}
         assert resources == {"gpt-4", "gpt-3.5"}
 
         limit_names = {b.limit_name for b in buckets}
-        assert limit_names == {"rpm", "tpm", "wcu"}
+        assert limit_names == {"rpm", "tpm"}
 
     @pytest.mark.asyncio
     async def test_build_bucket_update_with_optimistic_locking(self, repo):
@@ -537,9 +537,9 @@ class TestRepositoryTransactions:
         put_item = repo.build_bucket_put_item(state)
         await repo.write_each([put_item])
 
-        # Verify bucket was written (rpm + wcu infra limit)
+        # Verify bucket was written (rpm only; wcu infra limit filtered)
         buckets = await repo.get_buckets("we-test", "api")
-        assert len(buckets) == 2
+        assert len(buckets) == 1
 
         # Update via write_each
         adjust_item = repo.build_composite_adjust(
@@ -2908,8 +2908,8 @@ class TestCompositeNormalGuard:
 
         # Step 2: Read bucket (slow path would do this)
         buckets = await repo.get_buckets("e1", resource="gpt-4")
-        # rpm + wcu infra limit
-        assert len(buckets) == 2
+        # rpm only (wcu infra limit filtered from get_buckets)
+        assert len(buckets) == 1
         rpm_bucket = next(b for b in buckets if b.limit_name == "rpm")
         original_rf = rpm_bucket.last_refill_ms
 

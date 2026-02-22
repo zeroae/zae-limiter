@@ -208,19 +208,19 @@ class TestRepositoryBucketOperations:
     def test_get_buckets_filters_by_resource(self, repo_with_buckets):
         """get_buckets should filter by resource when specified."""
         buckets = repo_with_buckets.get_buckets("entity-1", resource="gpt-4")
-        assert len(buckets) == 3
+        assert len(buckets) == 2
         assert all(b.resource == "gpt-4" for b in buckets)
         limit_names = {b.limit_name for b in buckets}
-        assert limit_names == {"rpm", "tpm", "wcu"}
+        assert limit_names == {"rpm", "tpm"}
 
     def test_get_buckets_returns_all_when_no_filter(self, repo_with_buckets):
         """get_buckets should return all buckets when no resource filter."""
         buckets = repo_with_buckets.get_buckets("entity-1")
-        assert len(buckets) == 6
+        assert len(buckets) == 4
         resources = {b.resource for b in buckets}
         assert resources == {"gpt-4", "gpt-3.5"}
         limit_names = {b.limit_name for b in buckets}
-        assert limit_names == {"rpm", "tpm", "wcu"}
+        assert limit_names == {"rpm", "tpm"}
 
     def test_build_bucket_update_with_optimistic_locking(self, repo):
         """Optimistic locking should add conditional expression."""
@@ -416,7 +416,7 @@ class TestRepositoryTransactions:
         put_item = repo.build_bucket_put_item(state)
         repo.write_each([put_item])
         buckets = repo.get_buckets("we-test", "api")
-        assert len(buckets) == 2
+        assert len(buckets) == 1
         adjust_item = repo.build_composite_adjust(
             entity_id="we-test", resource="api", deltas={"rpm": -5000}
         )
@@ -2120,7 +2120,7 @@ class TestCompositeNormalGuard:
         put_item = repo.build_composite_create("e1", "gpt-4", [state], now_ms)
         repo.transact_write([put_item])
         buckets = repo.get_buckets("e1", resource="gpt-4")
-        assert len(buckets) == 2
+        assert len(buckets) == 1
         rpm_bucket = next(b for b in buckets if b.limit_name == "rpm")
         original_rf = rpm_bucket.last_refill_ms
         spec_result = repo.speculative_consume("e1", "gpt-4", {"rpm": 80})

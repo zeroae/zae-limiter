@@ -1222,7 +1222,11 @@ class SyncRepository:
             item = response.get("Item")
             if not item:
                 return []
-            return self._deserialize_composite_bucket(item)
+            return [
+                b
+                for b in self._deserialize_composite_bucket(item)
+                if b.limit_name != schema.WCU_LIMIT_NAME
+            ]
         key_condition = "GSI3PK = :gsi3pk"
         expression_values: dict[str, Any] = {
             ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)}
@@ -1243,7 +1247,7 @@ class SyncRepository:
             batch_response = client.batch_get_item(RequestItems={self.table_name: {"Keys": chunk}})
             for full_item in batch_response.get("Responses", {}).get(self.table_name, []):
                 buckets.extend(self._deserialize_composite_bucket(full_item))
-        return buckets
+        return [b for b in buckets if b.limit_name != schema.WCU_LIMIT_NAME]
 
     def batch_get_buckets(
         self, keys: list[tuple[str, str]]

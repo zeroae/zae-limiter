@@ -292,16 +292,23 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_buckets(self, entity_id: str, resource: str) -> "list[BucketState]":
+    def get_buckets(
+        self, entity_id: str, resource: str | None = None, shard_id: int = 0
+    ) -> "list[BucketState]":
         """
-        Get all token buckets for an entity/resource pair.
+        Get token buckets for an entity.
+
+        When resource is specified, fetches the bucket at the given shard_id.
+        When resource is None, uses GSI3 to discover all buckets across
+        resources and shards.
 
         Args:
             entity_id: Entity owning the buckets
-            resource: Resource name (e.g., "gpt-4")
+            resource: Resource name filter (None for all resources)
+            shard_id: Shard to fetch when resource is specified
 
         Returns:
-            List of bucket states for all limits on this resource
+            List of bucket states
         """
         ...
 

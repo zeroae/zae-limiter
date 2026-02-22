@@ -6384,3 +6384,61 @@ class TestShardRetry:
         # Verify shard_count was bumped in entity cache
         cache_entry = repo._entity_cache[(ns, "user-1")]
         assert cache_entry[2]["gpt-4"] == 2
+
+
+class TestWcuHiddenFromUser:
+    """Tests that wcu infrastructure limit is hidden from user-facing output."""
+
+    async def test_rate_limit_exceeded_hides_wcu(self, limiter):
+        """wcu never appears in RateLimitExceeded statuses."""
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1)])
+
+        # Create bucket at shard 0
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 1), now_ms)]
+        put_item = repo.build_composite_create(
+            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        await repo.transact_write([put_item])
+
+        # Pre-populate entity cache
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 1})
+
+        # Exhaust rpm via speculative path
+        await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+
+        limiter._speculative_writes = True
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
+        # wcu must not appear in any statuses
+        all_limit_names = [s.limit_name for s in exc_info.value.statuses]
+        assert "wcu" not in all_limit_names
+
+    async def test_get_buckets_hides_wcu(self, limiter):
+        """get_buckets omits wcu from returned bucket states."""
+        repo = limiter._repository
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Create bucket at shard 0
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        put_item = repo.build_composite_create(
+            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        await repo.transact_write([put_item])
+
+        # get_buckets should not include wcu
+        buckets = await repo.get_buckets("user-1", resource="gpt-4")
+        limit_names = {b.limit_name for b in buckets}
+        assert "wcu" not in limit_names
+        assert "rpm" in limit_names

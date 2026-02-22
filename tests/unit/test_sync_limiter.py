@@ -4889,3 +4889,46 @@ class TestShardRetry:
             assert rpm_entry is not None
         cache_entry = repo._entity_cache[ns, "user-1"]
         assert cache_entry[2]["gpt-4"] == 2
+
+
+class TestWcuHiddenFromUser:
+    """Tests that wcu infrastructure limit is hidden from user-facing output."""
+
+    def test_rate_limit_exceeded_hides_wcu(self, sync_limiter):
+        """wcu never appears in RateLimitExceeded statuses."""
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        sync_limiter.create_entity("user-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1)])
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 1), now_ms)]
+        put_item = repo.build_composite_create(
+            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        repo.transact_write([put_item])
+        repo._entity_cache[ns, "user-1"] = (False, None, {"gpt-4": 1})
+        repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        sync_limiter._speculative_writes = True
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+        all_limit_names = [s.limit_name for s in exc_info.value.statuses]
+        assert "wcu" not in all_limit_names
+
+    def test_get_buckets_hides_wcu(self, sync_limiter):
+        """get_buckets omits wcu from returned bucket states."""
+        repo = sync_limiter._repository
+        sync_limiter.create_entity("user-1")
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        put_item = repo.build_composite_create(
+            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        repo.transact_write([put_item])
+        buckets = repo.get_buckets("user-1", resource="gpt-4")
+        limit_names = {b.limit_name for b in buckets}
+        assert "wcu" not in limit_names
+        assert "rpm" in limit_names

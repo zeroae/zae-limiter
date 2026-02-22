@@ -673,8 +673,8 @@ def try_proactive_shard(
             UpdateExpression="SET shard_count = :new",
             ConditionExpression="shard_count = :old",
             ExpressionAttributeValues={
-                ":old": {"N": str(state.shard_count)},
-                ":new": {"N": str(new_count)},
+                ":old": state.shard_count,
+                ":new": new_count,
             },
         )
         logger.info(
@@ -748,7 +748,7 @@ def propagate_shard_count(
                 UpdateExpression="SET shard_count = :new",
                 ConditionExpression=("attribute_not_exists(shard_count) OR shard_count < :new"),
                 ExpressionAttributeValues={
-                    ":new": {"N": str(new_count)},
+                    ":new": new_count,
                 },
             )
             updated += 1

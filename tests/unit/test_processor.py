@@ -1793,7 +1793,7 @@ class TestTryProactiveShard:
         mock_table.update_item.assert_called_once()
         call_kwargs = mock_table.update_item.call_args[1]
         assert call_kwargs["Key"]["PK"] == "ns1/BUCKET#user-1#gpt-4#0"
-        assert call_kwargs["ExpressionAttributeValues"][":new"]["N"] == "2"
+        assert call_kwargs["ExpressionAttributeValues"][":new"] == 2
         assert call_kwargs["ConditionExpression"] == "shard_count = :old"
 
     def test_skips_below_threshold(self) -> None:

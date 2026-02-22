@@ -222,3 +222,8 @@ class TestSchemaVersion:
         assert version == CURRENT_SCHEMA_VERSION
         v = parse_version(version)
         assert v.major >= 0
+
+    def test_schema_version_reflects_bucket_pk_change(self):
+        """Schema version >= 0.9.0 for bucket PK migration."""
+        v = parse_version(CURRENT_SCHEMA_VERSION)
+        assert v >= ParsedVersion(0, 9, 0)

@@ -354,7 +354,7 @@ src/zae_limiter/
 src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 ├── __init__.py               # Re-exports handler, processor types (ProcessResult, ConsumptionDelta, BucketRefillState, LimitRefillInfo, ParsedBucketRecord, ParsedBucketLimit)
 ├── handler.py                # Lambda entry point (returns refills_written count)
-├── processor.py              # Stream processing: usage snapshots + bucket refill (Issue #317)
+├── processor.py              # Stream processing: usage snapshots + bucket refill (Issue #317) + proactive sharding + shard propagation (GHSA-76rv)
 └── archiver.py               # S3 audit archival (gzip JSONL)
 
 src/zae_limiter_provisioner/   # Lambda provisioner for declarative limits (#405)
@@ -591,6 +591,26 @@ Cascade (`cascade=True`) causes parent entities to receive traffic proportional 
 
 Primary mitigation: cascade defaults to `False`.
 
+### Pre-Shard Buckets (GHSA-76rv-2r9v-c5m6, v0.9.0+)
+
+Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE`. This distributes write traffic across DynamoDB partitions.
+
+**Write sharding mechanism:**
+- A reserved `wcu` (write capacity unit) infrastructure limit is auto-injected on every bucket (capacity=1000, 1 per write = 1000 milli consumed)
+- When `wcu` is exhausted on a shard, the client doubles `shard_count` and retries on a new shard
+- Shard selection: `shard_id = hash(entity_id, resource) % shard_count`
+- Effective per-shard limits: `capacity_milli // shard_count`, `refill_amount_milli // shard_count`
+- `wcu` is filtered from user-facing output (`get_buckets`, `RateLimitExceeded`, usage snapshots)
+
+**Aggregator proactive sharding:**
+- Monitors `wcu` consumption ratio per bucket in each stream batch
+- When consumption >= 80% of capacity (`WCU_PROACTIVE_THRESHOLD = 0.8`), doubles `shard_count` on shard 0
+- Propagates `shard_count` changes from shard 0 to all other shards via conditional writes
+
+**GSI3 bucket discovery:**
+- Bucket items set `GSI3PK={ns}/ENTITY#{id}, GSI3SK=BUCKET#{resource}#{shard}`
+- `get_buckets(entity_id)` uses GSI3 (KEYS_ONLY) to discover all bucket PKs, then `BatchGetItem` to fetch full items
+
 ## Key Design Decisions
 
 ### Integer Arithmetic for Precision
@@ -720,7 +740,7 @@ docs/
 6. **Adjustments and rollbacks use independent writes**: `_commit_adjustments()` and `_rollback()` use `write_each()` (1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
 7. **Transaction item limit**: DynamoDB `TransactWriteItems` supports max 100 items per transaction. Cascade operations with many buckets (entity + parent, multiple resources x limits) must stay within this limit
 8. **Speculative writes are pre-committed**: When the speculative path succeeds, `_commit_initial()` is a no-op because the UpdateItem already persisted the consumption. Rollback compensates with `build_composite_adjust` + `write_each`
-9. **Entity metadata cache is immutable**: `Repository._entity_cache` stores `{entity_id: (cascade, parent_id)}` with no TTL. Entity metadata (cascade, parent_id) is set once at `create_entity()` and never changes, so the cache never goes stale. Populated from speculative result (ALL_NEW) or slow path (entity META record)
+9. **Entity metadata cache is immutable**: `Repository._entity_cache` stores `{entity_id: (cascade, parent_id, shard_counts)}` where `shard_counts` is `dict[str, int]` mapping resource to shard_count. Entity metadata (cascade, parent_id) is set once at `create_entity()` and never changes; shard_counts are updated when shard doubling occurs. Populated from speculative result (ALL_NEW) or slow path (entity META record)
 
 ## DynamoDB Pricing Reference
 
@@ -745,8 +765,9 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Pattern | Query |
 |---------|-------|
 | Get entity | `PK={ns}/ENTITY#{id}, SK=#META` |
-| Get buckets | `PK={ns}/ENTITY#{id}, SK begins_with #BUCKET#` |
-| Batch get buckets | `BatchGetItem` with multiple PK/SK pairs (issue #133) |
+| Get bucket (single shard) | `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE` |
+| Get buckets (all for entity) | GSI3: `GSI3PK={ns}/ENTITY#{id}` → BatchGetItem (GHSA-76rv) |
+| Batch get buckets | `BatchGetItem` with `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE` pairs |
 | Batch get configs | `BatchGetItem` with entity/resource/system config keys (issue #298) |
 | Get children | GSI1: `GSI1PK={ns}/PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK={ns}/RESOURCE#{name}, SK begins_with BUCKET#` |
@@ -759,6 +780,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Get resource config (limits) | `PK={ns}/RESOURCE#{resource}, SK=#CONFIG` |
 | Get entity config (limits) | `PK={ns}/ENTITY#{id}, SK=#CONFIG#{resource}` |
 | List entities with custom limits | GSI3: `GSI3PK={ns}/ENTITY_CONFIG#{resource}` |
+| Discover buckets for entity | GSI3: `GSI3PK={ns}/ENTITY#{id}` (KEYS_ONLY, GHSA-76rv) |
 | List resources with entity configs | `PK={ns}/SYSTEM#, SK=#ENTITY_CONFIG_RESOURCES` (wide column, issue #288) |
 | Namespace forward lookup | `PK=_/SYSTEM#, SK=#NAMESPACE#{name}` |
 | Namespace reverse lookup | `PK=_/SYSTEM#, SK=#NSID#{id}` |
@@ -769,25 +791,33 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 - `acquire()` uses `BatchGetItem` to fetch all buckets for entity + parent in a single round trip
 - This reduces cascade scenarios from N sequential GetItem calls to 1 BatchGetItem call
 
-**Speculative write pattern (issue #315):**
-- `speculative_consume()` issues a conditional `UpdateItem` with `ADD -consumed` and condition `attribute_exists(PK) AND tk >= consumed`
+**Speculative write pattern (issue #315, GHSA-76rv):**
+- `speculative_consume()` targets `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE`
+- Issues a conditional `UpdateItem` with `ADD -consumed` for all user limits + wcu, condition `attribute_exists(PK) AND tk >= consumed`
 - Uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to return bucket state on failure without a separate read
-- Uses `ReturnValues=ALL_NEW` on success to reconstruct `BucketState`, `cascade`, and `parent_id` from the response
-- Cascade and parent_id are denormalized into bucket items (via `build_composite_create`) to avoid entity metadata lookup
+- Uses `ReturnValues=ALL_NEW` on success to reconstruct `BucketState`, `cascade`, `parent_id`, and `shard_count` from the response
+- Cascade, parent_id, and shard_count are denormalized into bucket items (via `build_composite_create`) to avoid entity metadata lookup
+- On `wcu` exhaustion, doubles `shard_count` on the current shard and retries on a new shard
 
-**Entity metadata cache (issue #318):**
-- `Repository._entity_cache` stores `{entity_id: (cascade, parent_id)}` -- immutable metadata, no TTL needed
+**Entity metadata cache (issue #318, GHSA-76rv):**
+- `Repository._entity_cache` stores `{entity_id: (cascade, parent_id, shard_counts)}` where `shard_counts` is `dict[str, int]` (resource → shard_count)
 - Populated from speculative result (ALL_NEW on success) or slow path (entity META record)
+- `shard_counts` updated when shard doubling occurs (wcu exhaustion triggers `shard_count *= 2`)
+- Shard selection: `hash(entity_id, resource) % shard_count` from cache
 - On cache hit with `cascade=True`, `speculative_consume()` issues child + parent speculative writes concurrently via `asyncio.gather` (async) or `self._run_in_executor` (sync, strategy controlled by `parallel_mode`)
 - Reduces cascade latency from 2 sequential round trips to 1 parallel round trip (same WCU cost)
 - First acquire for an entity always uses sequential path (populates cache); subsequent acquires use parallel path
 - **Sync parallel modes:** `"auto"` (default: gevent if patched, serial if single-CPU, threadpool otherwise), `"gevent"` (greenlets, warns if unpatched), `"threadpool"` (lazy ThreadPoolExecutor, warns on single-CPU), `"serial"` (sequential). Explicit modes warn on suboptimal conditions. Resolved once at `SyncRepository.__init__`
 
-**Aggregator refill write pattern (issue #317):**
-- `try_refill_bucket()` issues an `UpdateItem` with `ADD b_{limit}_tk +refill_delta SET rf = :now` and condition `rf = :expected_rf`
+**Aggregator refill write pattern (issue #317, GHSA-76rv):**
+- `try_refill_bucket()` targets `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE`
+- Issues `UpdateItem` with `ADD b_{limit}_tk +refill_delta SET rf = :now` and condition `rf = :expected_rf`
+- Uses effective per-shard limits: `capacity_milli // shard_count`, `refill_amount_milli // shard_count`
 - Uses `ADD` for token deltas so it commutes with concurrent speculative writes (no read required)
 - Optimistic lock on `rf` prevents double-refill with the client slow path or another aggregator invocation
 - On `ConditionalCheckFailedException`, the refill is silently skipped (another writer updated `rf` first)
+- **Proactive sharding:** When `wcu` consumption >= 80% capacity in a batch, doubles `shard_count` on shard 0 via conditional write (`shard_count = :old`)
+- **Shard propagation:** On `MODIFY` records showing `shard_count` change on shard 0, propagates new count to shards 1..N via conditional writes (`attribute_not_exists(shard_count) OR shard_count < :new`)
 
 **DynamoDB writer table:**
 
@@ -798,8 +828,17 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Normal path (retry) | `ADD tk -consumed` | `tk >= consumed` | No (skips refill) |
 | Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
 | Aggregator refill | `ADD tk +refill SET rf = :now` | `rf = :expected_rf` | Yes (optimistic lock) |
+| Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
+| Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
+
+**Key builders for bucket records (v0.9.0+, GHSA-76rv):**
+- `pk_bucket(namespace_id, entity_id, resource, shard_id)` - Returns `{ns}/BUCKET#{id}#{resource}#{shard}`
+- `sk_state()` - Returns `#STATE`
+- `parse_bucket_pk(pk)` - Returns `(namespace_id, entity_id, resource, shard_id)`
+- `gsi3_pk_entity(namespace_id, entity_id)` - Returns `{ns}/ENTITY#{entity_id}` (bucket discovery)
+- `gsi3_sk_bucket(resource, shard_id)` - Returns `BUCKET#{resource}#{shard}`
 
 **Key builders for config records:**
 - `pk_system(namespace_id)` - Returns `{ns}/SYSTEM#`
