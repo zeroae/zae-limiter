@@ -1607,3 +1607,119 @@ git add src/zae_limiter/repository_protocol.py src/zae_limiter/repository.py \
     tests/unit/test_sync_*.py
 git commit -m "♻️ refactor(limiter): add SpeculativeFailureReason enum for deterministic shard decisions"
 ```
+
+---
+
+### Task 33: Add high shard count warning
+
+**Problem:** Shard count doubles without any observability signal. At 32 shards, `propagate_shard_count` issues 31 sequential DynamoDB writes per Lambda invocation. Operators have no visibility into runaway shard growth.
+
+**Fix:** Add `WCU_SHARD_WARN_THRESHOLD = 32` constant in `schema.py`. Emit a warning log when doubling crosses the threshold at both doubling sites: `Repository.bump_shard_count()` (client) and `try_proactive_shard()` (aggregator). No hard cap — doubling continues.
+
+**Files:**
+- Modify: `src/zae_limiter/schema.py` (add `WCU_SHARD_WARN_THRESHOLD` constant)
+- Modify: `src/zae_limiter/repository.py:2435` (warning after doubling in `bump_shard_count`)
+- Modify: `src/zae_limiter_aggregator/processor.py:665` (warning after doubling in `try_proactive_shard`)
+- Generate: sync code (`hatch run generate-sync`)
+- Test: `tests/unit/test_schema.py`, `tests/unit/test_repository.py`, `tests/unit/test_processor.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_schema.py`:
+
+```python
+def test_wcu_shard_warn_threshold_constant():
+    assert schema.WCU_SHARD_WARN_THRESHOLD == 32
+```
+
+In `tests/unit/test_repository.py`:
+
+```python
+def test_bump_shard_count_warns_above_threshold(caplog):
+    """bump_shard_count logs warning when new count exceeds threshold."""
+    repo = make_repo(mock_dynamodb, unique_name)
+    # Create entity + bucket with shard_count=32 (at threshold)
+    # ...
+    result = await repo.bump_shard_count("user-1", "api", 32)
+    assert result == 64  # doubling still happens
+    assert "shard count exceeded" in caplog.text.lower() or any(
+        "shard" in r.message.lower() and "64" in r.message for r in caplog.records
+    )
+```
+
+In `tests/unit/test_processor.py`:
+
+```python
+def test_try_proactive_shard_warns_above_threshold(caplog):
+    """Proactive sharding logs warning when new count exceeds threshold."""
+    state = BucketRefillState(
+        ..., shard_id=0, shard_count=32, ...
+    )
+    result = try_proactive_shard(mock_table, state, 900_000, 1000_000)
+    assert result is True  # doubling still happens
+    # Verify warning was logged
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_schema.py -k "test_wcu_shard_warn" -v`
+Expected: FAIL with `AttributeError`
+
+**Step 3: Add constant to schema.py**
+
+After `WCU_LIMIT_REFILL_PERIOD_SECONDS`:
+
+```python
+WCU_SHARD_WARN_THRESHOLD = 32  # Log warning when shard count exceeds this (GHSA-76rv)
+```
+
+**Step 4: Add warning in bump_shard_count (repository.py)**
+
+After the successful `update_item` (line ~2451), before updating the cache:
+
+```python
+if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
+    logger.warning(
+        "High shard count after doubling",
+        entity_id=entity_id,
+        resource=resource,
+        shard_count=new_count,
+        threshold=schema.WCU_SHARD_WARN_THRESHOLD,
+    )
+```
+
+**Step 5: Add warning in try_proactive_shard (processor.py)**
+
+After the successful `table.update_item` in the existing `logger.info` block:
+
+```python
+if new_count > WCU_SHARD_WARN_THRESHOLD:
+    logger.warning(
+        "High shard count after proactive doubling",
+        entity_id=state.entity_id,
+        resource=state.resource,
+        shard_count=new_count,
+        threshold=WCU_SHARD_WARN_THRESHOLD,
+    )
+```
+
+Import `WCU_SHARD_WARN_THRESHOLD` from `zae_limiter.schema`.
+
+**Step 6: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 7: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 8: Commit**
+
+```bash
+git add src/zae_limiter/schema.py src/zae_limiter/repository.py \
+    src/zae_limiter_aggregator/processor.py src/zae_limiter/sync_*.py \
+    tests/unit/test_schema.py tests/unit/test_repository.py \
+    tests/unit/test_processor.py tests/unit/test_sync_*.py
+git commit -m "⚠️ fix(schema): warn when shard count exceeds WCU_SHARD_WARN_THRESHOLD=32"
+```
