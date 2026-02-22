@@ -1532,17 +1532,21 @@ class SyncRateLimiter:
                 if entity and entity.is_parent:
                     parent_ids.add(bucket.entity_id)
             buckets = [b for b in buckets if b.entity_id in parent_ids]
+        entity_buckets: dict[str, list[BucketState]] = {}
+        for bucket in buckets:
+            entity_buckets.setdefault(bucket.entity_id, []).append(bucket)
         entities: list[EntityCapacity] = []
         total_capacity = 0
         total_available = 0
-        for bucket in buckets:
-            available = calculate_available(bucket, now_ms)
-            capacity = bucket.capacity
+        for entity_id, entity_bucket_list in entity_buckets.items():
+            capacity = entity_bucket_list[0].capacity
+            available = sum(calculate_available(b, now_ms) for b in entity_bucket_list)
+            available = min(available, capacity)
             total_capacity += capacity
             total_available += available
             entities.append(
                 EntityCapacity(
-                    entity_id=bucket.entity_id,
+                    entity_id=entity_id,
                     capacity=capacity,
                     available=available,
                     utilization_pct=(capacity - available) / capacity * 100 if capacity > 0 else 0,
