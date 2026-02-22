@@ -1145,10 +1145,20 @@ class SyncRepository:
             },
         )
         items = response.get("Items", [])
-        if not items:
+        gsi3_response = client.query(
+            TableName=self.table_name,
+            IndexName="GSI3",
+            KeyConditionExpression="GSI3PK = :gsi3pk",
+            ExpressionAttributeValues={
+                ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)}
+            },
+        )
+        bucket_items = gsi3_response.get("Items", [])
+        all_items = items + bucket_items
+        if not all_items:
             return
         delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in items
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in all_items
         ]
         for i in range(0, len(delete_requests), 25):
             chunk = delete_requests[i : i + 25]
@@ -1157,7 +1167,7 @@ class SyncRepository:
             action=AuditAction.ENTITY_DELETED,
             entity_id=entity_id,
             principal=principal,
-            details={"records_deleted": len(items)},
+            details={"records_deleted": len(all_items)},
         )
 
     def get_children(self, parent_id: str) -> list[Entity]:

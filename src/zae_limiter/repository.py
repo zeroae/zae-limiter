@@ -1354,7 +1354,7 @@ class Repository:
         """
         client = await self._get_client()
 
-        # First, query all items for this entity
+        # Query entity items (metadata, config, usage, audit)
         response = await client.query(
             TableName=self.table_name,
             KeyConditionExpression="PK = :pk",
@@ -1362,15 +1362,26 @@ class Repository:
                 ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)}
             },
         )
-
-        # Delete all items in batches
         items = response.get("Items", [])
-        if not items:
+
+        # Query bucket items via GSI3 (pre-shard buckets have separate PKs)
+        gsi3_response = await client.query(
+            TableName=self.table_name,
+            IndexName="GSI3",
+            KeyConditionExpression="GSI3PK = :gsi3pk",
+            ExpressionAttributeValues={
+                ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)},
+            },
+        )
+        bucket_items = gsi3_response.get("Items", [])
+
+        all_items = items + bucket_items
+        if not all_items:
             return
 
         # Build delete requests
         delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in items
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in all_items
         ]
 
         # BatchWriteItem in chunks of 25
@@ -1383,7 +1394,7 @@ class Repository:
             action=AuditAction.ENTITY_DELETED,
             entity_id=entity_id,
             principal=principal,
-            details={"records_deleted": len(items)},
+            details={"records_deleted": len(all_items)},
         )
 
     async def get_children(self, parent_id: str) -> list[Entity]:
