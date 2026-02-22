@@ -434,6 +434,10 @@ class TestBucketPKBuilders:
         assert res == resource
         assert shard == 0
 
+    def test_gsi4_sk_bucket(self):
+        assert schema.gsi4_sk_bucket("user-1", "gpt-4", 0) == "BUCKET#user-1#gpt-4#0"
+        assert schema.gsi4_sk_bucket("user-1", "gpt-4", 3) == "BUCKET#user-1#gpt-4#3"
+
     def test_gsi2_sk_bucket_with_shard(self):
         assert gsi2_sk_bucket("user-1", 0) == "BUCKET#user-1#0"
         assert gsi2_sk_bucket("user-1", 3) == "BUCKET#user-1#3"

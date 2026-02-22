@@ -411,6 +411,20 @@ def gsi3_sk_bucket(resource: str, shard_id: int) -> str:
     return f"{BUCKET_PREFIX}{resource}#{shard_id}"
 
 
+def gsi4_sk_bucket(entity_id: str, resource: str, shard_id: int) -> str:
+    """Build GSI4 sort key for bucket item (namespace-scoped discovery).
+
+    Args:
+        entity_id: Entity owning the bucket
+        resource: Resource name
+        shard_id: Shard index (0-based)
+
+    Returns:
+        GSI4SK string in format ``BUCKET#{entity_id}#{resource}#{shard_id}``
+    """
+    return f"{BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}"
+
+
 def get_table_definition(table_name: str) -> dict[str, Any]:
     """
     Get the DynamoDB table definition for CreateTable.

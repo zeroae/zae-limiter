@@ -1888,9 +1888,7 @@ class Repository:
             "GSI3SK": {"S": schema.gsi3_sk_bucket(resource, shard_id)},
             # GSI4: namespace-scoped item discovery
             "GSI4PK": {"S": self._namespace_id},
-            "GSI4SK": {
-                "S": f"{schema.BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}",
-            },
+            "GSI4SK": {"S": schema.gsi4_sk_bucket(entity_id, resource, shard_id)},
             "shard_count": {"N": str(shard_count)},
         }
         if parent_id is not None:
