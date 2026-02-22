@@ -124,7 +124,7 @@ See [ADR-111](../adr/111-flatten-all-records.md).
     "b_wcu_cp": 1000000,                    # wcu capacity (1000 WCU/sec)
     "b_wcu_tc": 1000,                       # wcu total consumed
     "rf": 1704067200000,                    # last_refill_ms (shared across limits)
-    "cascade": false,
+    "cascade": False,
     "GSI2PK": "{ns}/RESOURCE#gpt-4",
     "GSI2SK": "BUCKET#user-1#0",
     "GSI3PK": "{ns}/ENTITY#user-1",         # bucket discovery by entity
