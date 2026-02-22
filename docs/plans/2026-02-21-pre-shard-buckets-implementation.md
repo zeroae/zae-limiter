@@ -1723,3 +1723,81 @@ git add src/zae_limiter/schema.py src/zae_limiter/repository.py \
     tests/unit/test_processor.py tests/unit/test_sync_*.py
 git commit -m "⚠️ fix(schema): warn when shard count exceeds WCU_SHARD_WARN_THRESHOLD=32"
 ```
+
+---
+
+### Task 34: Add missing test coverage for review findings
+
+**Problem:** Two test gaps identified in the design review (the third — propagation GSI attributes — is addressed by Task #29 which rewrites propagation with full attributes).
+
+1. **PK round-trip with `/` in resources** — `parse_bucket_pk` is tested with `gpt-4` but not with resources containing `/`, `.`, `-`, `_`. Since resources like `openai/gpt-4` and `anthropic/claude-3/opus` are valid (see CLAUDE.md naming rules), the parser must handle `#`-delimited splitting correctly when the resource contains `/`.
+2. **Batch size boundary condition** — The test for `try_proactive_shard` passes `wcu_tc_delta=900_000` directly, but at `BatchSize=100`, the maximum achievable delta is `100 * 1000 = 100_000 milli` (100 writes × 1 WCU each × 1000 milli). A test should document that the threshold is unreachable at the current batch size.
+
+**Files:**
+- Modify: `tests/unit/test_schema.py` (parametric PK round-trip tests)
+- Modify: `tests/unit/test_processor.py` (batch size boundary test)
+
+**Step 1: Add parametric PK round-trip tests**
+
+In `tests/unit/test_schema.py`, add to `TestBucketPKBuilders`:
+
+```python
+@pytest.mark.parametrize(
+    "resource",
+    [
+        "gpt-4",                   # hyphen
+        "gpt_4",                   # underscore
+        "gpt-3.5-turbo",           # dot
+        "openai/gpt-4",            # slash (provider/model)
+        "anthropic/claude-3/opus", # nested slash
+    ],
+)
+def test_parse_bucket_pk_round_trip(self, resource):
+    """pk_bucket → parse_bucket_pk round-trips for all valid resource chars."""
+    pk = schema.pk_bucket("ns1", "user-1", resource, 0)
+    ns, entity, res, shard = schema.parse_bucket_pk(pk)
+    assert ns == "ns1"
+    assert entity == "user-1"
+    assert res == resource
+    assert shard == 0
+```
+
+**Step 2: Add batch size boundary test**
+
+In `tests/unit/test_processor.py`, add to `TestTryProactiveShard`:
+
+```python
+def test_unreachable_at_batch_size_100(self) -> None:
+    """At BatchSize=100, max wcu tc_delta is 100_000 milli (10% of capacity).
+
+    Documents that proactive sharding requires BatchSize >= 800 to trigger
+    at the 80% threshold (WCU_PROACTIVE_THRESHOLD). With the default
+    BatchSize=100, the maximum achievable ratio is 100/1000 = 10%.
+    See Task #28 for the BatchSize fix.
+    """
+    mock_table = MagicMock()
+    state = self._make_state()
+    # Max possible: 100 records × 1 WCU × 1000 milli = 100_000
+    max_tc_delta_at_batch_100 = 100 * 1000
+    wcu_capacity_milli = 1000_000
+
+    result = try_proactive_shard(
+        mock_table, state, max_tc_delta_at_batch_100, wcu_capacity_milli
+    )
+
+    assert result is False  # 10% < 80% threshold
+    mock_table.update_item.assert_not_called()
+```
+
+**Step 3: Run tests to verify they pass**
+
+Run: `uv run pytest tests/unit/test_schema.py::TestBucketPKBuilders -v`
+Run: `uv run pytest tests/unit/test_processor.py::TestTryProactiveShard -v`
+Expected: PASS (these test existing behavior, not new code)
+
+**Step 4: Commit**
+
+```bash
+git add tests/unit/test_schema.py tests/unit/test_processor.py
+git commit -m "✅ test: add PK round-trip and batch size boundary tests (review #34)"
+```
