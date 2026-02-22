@@ -24,7 +24,10 @@ from zae_limiter.schema import (
     WCU_SHARD_WARN_THRESHOLD,
     bucket_attr,
     gsi2_pk_resource,
+    gsi2_sk_bucket,
     gsi2_sk_usage,
+    gsi3_sk_bucket,
+    gsi4_sk_bucket,
     parse_bucket_pk,
     parse_namespace,
     pk_bucket,
@@ -706,6 +709,39 @@ def try_proactive_shard(
         raise
 
 
+def _extract_limit_attrs(
+    image: dict[str, Any],
+) -> dict[str, dict[str, int]]:
+    """Extract limit names and their capacity/token fields from a stream image.
+
+    Scans ``b_{name}_cp`` attributes to discover limits and their values.
+
+    Returns:
+        Dict of limit_name -> {"cp_milli": int, "tk_milli": int}
+    """
+    limits: dict[str, dict[str, int]] = {}
+    for attr_name in image:
+        if not attr_name.startswith(BUCKET_ATTR_PREFIX):
+            continue
+        rest = attr_name[len(BUCKET_ATTR_PREFIX) :]
+        idx = rest.rfind("_")
+        if idx <= 0:
+            continue
+        if rest[idx + 1 :] != BUCKET_FIELD_CP:
+            continue
+        limit_name = rest[:idx]
+        if not limit_name:
+            continue
+
+        cp_attr = bucket_attr(limit_name, BUCKET_FIELD_CP)
+        tk_attr = bucket_attr(limit_name, BUCKET_FIELD_TK)
+        limits[limit_name] = {
+            "cp_milli": int(image.get(cp_attr, {}).get("N", "0")),
+            "tk_milli": int(image.get(tk_attr, {}).get("N", "0")),
+        }
+    return limits
+
+
 def propagate_shard_count(
     table: Any,
     record: dict[str, Any],
@@ -713,15 +749,18 @@ def propagate_shard_count(
     """Propagate shard_count changes to all other shard items.
 
     Detects shard_count change in stream record (OldImage vs NewImage).
-    Only propagates from shard 0. Uses conditional write to prevent
-    overwriting a higher shard_count set by another writer.
+    Only propagates from shard 0. Two code paths:
+    - Existing shards (1..old_count-1): UpdateItem with shard_count < :new
+    - New shards (old_count..new_count-1): PutItem cloned from shard 0's
+      NewImage with adjusted PK/GSI keys and effective token capacity.
+      Uses attribute_not_exists(PK) to avoid overwriting client-created items.
 
     Args:
         table: boto3 Table resource
         record: DynamoDB stream record
 
     Returns:
-        Number of shard items updated
+        Number of shard items created or updated
     """
     dynamodb_data = record.get("dynamodb", {})
     new_image = dynamodb_data.get("NewImage", {})
@@ -747,7 +786,9 @@ def propagate_shard_count(
         return 0  # Only propagate from source of truth
 
     updated = 0
-    for target_shard in range(1, new_count):
+
+    # Path 1: Update existing shards (lightweight shard_count update)
+    for target_shard in range(1, old_count):
         try:
             table.update_item(
                 Key={
@@ -755,7 +796,7 @@ def propagate_shard_count(
                     "SK": sk_state(),
                 },
                 UpdateExpression="SET shard_count = :new",
-                ConditionExpression=("attribute_not_exists(shard_count) OR shard_count < :new"),
+                ConditionExpression="shard_count < :new",
                 ExpressionAttributeValues={
                     ":new": new_count,
                 },
@@ -764,6 +805,35 @@ def propagate_shard_count(
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 continue  # Higher value already present
+            raise
+
+    # Path 2: Pre-create new shards (full item cloned from shard 0)
+    limit_attrs = _extract_limit_attrs(new_image)
+    for target_shard in range(old_count, new_count):
+        try:
+            item = dict(new_image)  # Clone shard 0's NewImage
+            item["PK"] = {"S": pk_bucket(namespace_id, entity_id, resource, target_shard)}
+            item["GSI2SK"] = {"S": gsi2_sk_bucket(entity_id, target_shard)}
+            item["GSI3SK"] = {"S": gsi3_sk_bucket(resource, target_shard)}
+            item["GSI4SK"] = {"S": gsi4_sk_bucket(entity_id, resource, target_shard)}
+            item["shard_count"] = {"N": str(new_count)}
+            # Reset tokens to effective per-shard capacity (full bucket)
+            for limit_name, info in limit_attrs.items():
+                cp_milli = info["cp_milli"]
+                if limit_name == WCU_LIMIT_NAME:
+                    effective_cp = cp_milli  # wcu is per-partition, not divided
+                else:
+                    effective_cp = cp_milli // new_count
+                item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = {"N": str(effective_cp)}
+                item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = {"N": "0"}
+            table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+            updated += 1
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # Client already created this shard
             raise
 
     if updated > 0:

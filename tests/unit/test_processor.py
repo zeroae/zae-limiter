@@ -1906,7 +1906,10 @@ class TestPropagateShardsCount:
         }
 
     def test_propagate_on_change(self) -> None:
-        """When shard_count changes, propagate to other shards."""
+        """When shard_count changes, propagate to other shards.
+
+        Existing shards (1) get UpdateItem, new shards (2, 3) get PutItem.
+        """
         mock_table = MagicMock()
         record = self._make_shard_change_record(
             old_shard_count=2,
@@ -1915,13 +1918,15 @@ class TestPropagateShardsCount:
 
         propagated = propagate_shard_count(mock_table, record)
 
-        assert propagated == 3  # Updated shards 1, 2, 3 (not 0)
-        calls = mock_table.update_item.call_args_list
-        updated_pks = {c[1]["Key"]["PK"] for c in calls}
-        assert "ns1/BUCKET#user-1#gpt-4#1" in updated_pks
-        assert "ns1/BUCKET#user-1#gpt-4#2" in updated_pks
-        assert "ns1/BUCKET#user-1#gpt-4#3" in updated_pks
-        assert "ns1/BUCKET#user-1#gpt-4#0" not in updated_pks
+        assert propagated == 3  # 1 updated + 2 created (not shard 0)
+        # Existing shard 1 updated via UpdateItem
+        update_pks = {c[1]["Key"]["PK"] for c in mock_table.update_item.call_args_list}
+        assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
+        assert "ns1/BUCKET#user-1#gpt-4#0" not in update_pks
+        # New shards 2, 3 created via PutItem
+        put_pks = {c.kwargs["Item"]["PK"]["S"] for c in mock_table.put_item.call_args_list}
+        assert "ns1/BUCKET#user-1#gpt-4#2" in put_pks
+        assert "ns1/BUCKET#user-1#gpt-4#3" in put_pks
 
     def test_no_change_no_propagation(self) -> None:
         """No propagation when shard_count unchanged."""
@@ -1938,11 +1943,13 @@ class TestPropagateShardsCount:
 
     def test_conditional_prevents_downgrade(self) -> None:
         """Conditional write prevents overwriting a higher shard_count."""
-        mock_table = MagicMock()
-        mock_table.update_item.side_effect = ClientError(
+        conditional_error = ClientError(
             {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
             "UpdateItem",
         )
+        mock_table = MagicMock()
+        mock_table.update_item.side_effect = conditional_error
+        mock_table.put_item.side_effect = conditional_error
         record = self._make_shard_change_record(
             old_shard_count=2,
             new_shard_count=4,
@@ -1977,3 +1984,178 @@ class TestPropagateShardsCount:
 
         assert propagated == 0
         mock_table.update_item.assert_not_called()
+
+    def test_creates_full_items_for_new_shards(self) -> None:
+        """New shards get full items cloned from shard 0's NewImage."""
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "4"},
+                    "entity_id": {"S": "user-1"},
+                    "GSI2PK": {"S": "ns1/RESOURCE#gpt-4"},
+                    "GSI2SK": {"S": "BUCKET#user-1#0"},
+                    "GSI3PK": {"S": "ns1/ENTITY#user-1"},
+                    "GSI3SK": {"S": "BUCKET#gpt-4#0"},
+                    "GSI4PK": {"S": "ns1"},
+                    "GSI4SK": {"S": "BUCKET#user-1#gpt-4#0"},
+                    "b_rpm_tk": {"N": "50000000"},
+                    "b_rpm_cp": {"N": "100000000"},
+                    "b_rpm_ra": {"N": "100000000"},
+                    "b_rpm_rp": {"N": "60000"},
+                    "b_rpm_tc": {"N": "0"},
+                    "b_wcu_tk": {"N": "1000000"},
+                    "b_wcu_cp": {"N": "1000000"},
+                    "b_wcu_ra": {"N": "1000000"},
+                    "b_wcu_rp": {"N": "1000"},
+                    "b_wcu_tc": {"N": "500"},
+                    "cascade": {"BOOL": False},
+                    "rf": {"N": "1000"},
+                },
+                "OldImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "2"},
+                },
+            },
+        }
+        mock_table = MagicMock()
+        propagated = propagate_shard_count(mock_table, record)
+
+        # Shard 1 is EXISTING (update only), shards 2 and 3 are NEW (put)
+        update_calls = mock_table.update_item.call_args_list
+        put_calls = mock_table.put_item.call_args_list
+
+        assert len(update_calls) == 1  # shard 1
+        assert "shard_count < :new" in update_calls[0].kwargs["ConditionExpression"]
+
+        assert len(put_calls) == 2  # shards 2 and 3
+        for put_call in put_calls:
+            item = put_call.kwargs["Item"]
+            assert "GSI3PK" in item
+            assert "GSI2PK" in item
+            assert "b_rpm_tk" in item
+            assert "b_wcu_tk" in item
+
+        new_pks = {c.kwargs["Item"]["PK"]["S"] for c in put_calls}
+        assert "ns1/BUCKET#user-1#gpt-4#2" in new_pks
+        assert "ns1/BUCKET#user-1#gpt-4#3" in new_pks
+
+        assert propagated == 3  # 1 updated + 2 created
+
+    def test_existing_shards_not_put(self) -> None:
+        """Existing shards get UpdateItem, not PutItem."""
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "4"},
+                    "entity_id": {"S": "user-1"},
+                    "b_rpm_tk": {"N": "50000000"},
+                    "b_rpm_cp": {"N": "100000000"},
+                    "b_rpm_ra": {"N": "100000000"},
+                    "b_rpm_rp": {"N": "60000"},
+                    "b_rpm_tc": {"N": "0"},
+                    "cascade": {"BOOL": False},
+                    "rf": {"N": "1000"},
+                },
+                "OldImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "2"},
+                },
+            },
+        }
+        mock_table = MagicMock()
+        propagate_shard_count(mock_table, record)
+
+        # Shard 1 is existing — UpdateItem, not PutItem
+        update_pks = {c.kwargs["Key"]["PK"] for c in mock_table.update_item.call_args_list}
+        assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
+
+        put_pks = {c.kwargs["Item"]["PK"]["S"] for c in mock_table.put_item.call_args_list}
+        assert "ns1/BUCKET#user-1#gpt-4#1" not in put_pks
+
+    def test_new_shard_skips_if_client_created(self) -> None:
+        """PutItem with attribute_not_exists(PK) skips client-created shards."""
+        mock_table = MagicMock()
+        mock_table.put_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "PutItem",
+        )
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "2"},
+                    "entity_id": {"S": "user-1"},
+                    "b_rpm_tk": {"N": "50000000"},
+                    "b_rpm_cp": {"N": "100000000"},
+                    "b_rpm_ra": {"N": "100000000"},
+                    "b_rpm_rp": {"N": "60000"},
+                    "b_rpm_tc": {"N": "0"},
+                    "cascade": {"BOOL": False},
+                    "rf": {"N": "1000"},
+                },
+                "OldImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "1"},
+                },
+            },
+        }
+
+        propagated = propagate_shard_count(mock_table, record)
+        assert propagated == 0  # Client already created it
+
+    def test_new_shard_tokens_set_to_effective_capacity(self) -> None:
+        """New shard tokens are set to effective per-shard capacity."""
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "2"},
+                    "entity_id": {"S": "user-1"},
+                    "b_rpm_tk": {"N": "50000000"},
+                    "b_rpm_cp": {"N": "100000000"},
+                    "b_rpm_ra": {"N": "100000000"},
+                    "b_rpm_rp": {"N": "60000"},
+                    "b_rpm_tc": {"N": "5000"},
+                    "b_wcu_tk": {"N": "500000"},
+                    "b_wcu_cp": {"N": "1000000"},
+                    "b_wcu_ra": {"N": "1000000"},
+                    "b_wcu_rp": {"N": "1000"},
+                    "b_wcu_tc": {"N": "200"},
+                    "cascade": {"BOOL": False},
+                    "rf": {"N": "1000"},
+                },
+                "OldImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "1"},
+                },
+            },
+        }
+        mock_table = MagicMock()
+        propagate_shard_count(mock_table, record)
+
+        put_calls = mock_table.put_item.call_args_list
+        assert len(put_calls) == 1  # shard 1 is new
+        item = put_calls[0].kwargs["Item"]
+
+        # rpm tokens = effective capacity = 100000000 // 2 = 50000000
+        assert item["b_rpm_tk"]["N"] == "50000000"
+        # rpm tc reset to 0
+        assert item["b_rpm_tc"]["N"] == "0"
+        # wcu tokens = full capacity (not divided) = 1000000
+        assert item["b_wcu_tk"]["N"] == "1000000"
+        # wcu tc reset to 0
+        assert item["b_wcu_tc"]["N"] == "0"
