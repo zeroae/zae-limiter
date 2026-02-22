@@ -1801,3 +1801,82 @@ Expected: PASS (these test existing behavior, not new code)
 git add tests/unit/test_schema.py tests/unit/test_processor.py
 git commit -m "✅ test: add PK round-trip and batch size boundary tests (review #34)"
 ```
+
+---
+
+### Task 31: Add gsi4_sk_bucket schema builder
+
+**Problem:** The GSI4SK format `BUCKET#{entity_id}#{resource}#{shard_id}` is inlined in `repository.py:1892` and `sync_repository.py:1552`. All other GSI SK formats have dedicated builders (`gsi2_sk_bucket`, `gsi3_sk_bucket`).
+
+**Fix:** Add `gsi4_sk_bucket(entity_id, resource, shard_id)` to `schema.py`, use it in `repository.py`, and regenerate sync code.
+
+**Files:**
+- Modify: `src/zae_limiter/schema.py` (add builder)
+- Modify: `src/zae_limiter/repository.py:1891-1893` (use builder)
+- Generate: sync code (`hatch run generate-sync`)
+- Test: `tests/unit/test_schema.py`
+
+**Step 1: Write failing test**
+
+In `tests/unit/test_schema.py`, add to `TestBucketPKBuilders`:
+
+```python
+def test_gsi4_sk_bucket(self):
+    assert schema.gsi4_sk_bucket("user-1", "gpt-4", 0) == "BUCKET#user-1#gpt-4#0"
+    assert schema.gsi4_sk_bucket("user-1", "gpt-4", 3) == "BUCKET#user-1#gpt-4#3"
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/unit/test_schema.py -k "test_gsi4_sk_bucket" -v`
+Expected: FAIL with `AttributeError: module 'zae_limiter.schema' has no attribute 'gsi4_sk_bucket'`
+
+**Step 3: Add builder to schema.py**
+
+After `gsi3_sk_bucket()` (~line 415):
+
+```python
+def gsi4_sk_bucket(entity_id: str, resource: str, shard_id: int) -> str:
+    """Build GSI4 sort key for bucket item (namespace-scoped discovery).
+
+    Args:
+        entity_id: Entity owning the bucket
+        resource: Resource name
+        shard_id: Shard index (0-based)
+
+    Returns:
+        GSI4SK string in format ``BUCKET#{entity_id}#{resource}#{shard_id}``
+    """
+    return f"{BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}"
+```
+
+**Step 4: Replace inline in repository.py**
+
+At line 1891-1893, change:
+
+```python
+# Before:
+"GSI4SK": {
+    "S": f"{schema.BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}",
+},
+
+# After:
+"GSI4SK": {"S": schema.gsi4_sk_bucket(entity_id, resource, shard_id)},
+```
+
+**Step 5: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 6: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 7: Commit**
+
+```bash
+git add src/zae_limiter/schema.py src/zae_limiter/repository.py \
+    src/zae_limiter/sync_repository.py tests/unit/test_schema.py
+git commit -m "♻️ refactor(schema): add gsi4_sk_bucket builder and use in repository"
+```
