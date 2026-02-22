@@ -800,15 +800,16 @@ The version record is stored in DynamoDB:
 | updated_at | ISO timestamp | Last update time |
 | updated_by | `"cli:1.2.0"` | What performed the update |
 
-### Key Patterns (v1.0.0)
+### Key Patterns
 
-| Pattern | Example | Description |
-|---------|---------|-------------|
-| Entity metadata | `PK={ns}/ENTITY#123, SK=#META` | Entity configuration |
-| Bucket state | `PK={ns}/ENTITY#123, SK=#BUCKET#gpt-4` | Token bucket state (composite, one item per resource) |
-| Entity config | `PK={ns}/ENTITY#123, SK=#CONFIG#gpt-4` | Stored limit config |
-| Usage snapshot | `PK={ns}/ENTITY#123, SK=#USAGE#gpt-4#2024-01-15` | Usage data |
-| Version | `PK={ns}/SYSTEM#, SK=#VERSION` | Infrastructure version |
+| Pattern | Example | Since | Description |
+|---------|---------|-------|-------------|
+| Entity metadata | `PK={ns}/ENTITY#123, SK=#META` | v0.1.0 | Entity configuration |
+| Bucket state (pre-v0.9.0) | `PK={ns}/ENTITY#123, SK=#BUCKET#gpt-4` | v0.1.0 | Token bucket state (composite, one item per resource). Orphaned after v0.9.0 migration |
+| Bucket state (v0.9.0+) | `PK={ns}/BUCKET#123#gpt-4#0, SK=#STATE` | v0.9.0 | Token bucket state (per entity/resource/shard partition key) |
+| Entity config | `PK={ns}/ENTITY#123, SK=#CONFIG#gpt-4` | v0.5.0 | Stored limit config |
+| Usage snapshot | `PK={ns}/ENTITY#123, SK=#USAGE#gpt-4#2024-01-15` | v0.1.0 | Usage data |
+| Version | `PK={ns}/SYSTEM#, SK=#VERSION` | v0.1.0 | Infrastructure version |
 
 ### Migration API Reference
 

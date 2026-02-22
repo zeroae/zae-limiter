@@ -62,10 +62,12 @@ BUCKET_FIELD_RP = "rp"  # refill period (ms)
 BUCKET_FIELD_TC = "tc"  # total consumed counter (millitokens)
 BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 
-# Infrastructure limit: DynamoDB partition write capacity ceiling
+# Infrastructure limit: DynamoDB partition write capacity ceiling (GHSA-76rv)
+# Auto-injected on every bucket to track per-partition write pressure.
+# When exhausted, the client doubles shard_count to spread writes.
 WCU_LIMIT_NAME = "wcu"
 WCU_LIMIT_CAPACITY = 1000  # DynamoDB per-partition WCU/sec limit
-WCU_LIMIT_REFILL_AMOUNT = 1000
+WCU_LIMIT_REFILL_AMOUNT = 1000  # Refills to full capacity each second
 WCU_LIMIT_REFILL_PERIOD_SECONDS = 1
 
 # Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
@@ -225,7 +227,15 @@ def gsi2_pk_resource(namespace_id: str, resource: str) -> str:
 
 
 def gsi2_sk_bucket(entity_id: str, shard_id: int = 0) -> str:
-    """Build GSI2 sort key for composite bucket entry."""
+    """Build GSI2 sort key for a composite bucket entry.
+
+    Args:
+        entity_id: Entity owning the bucket
+        shard_id: Shard index (default 0 for backward compatibility)
+
+    Returns:
+        GSI2SK string in format ``BUCKET#{entity_id}#{shard_id}``
+    """
     return f"BUCKET#{entity_id}#{shard_id}"
 
 
@@ -316,7 +326,20 @@ def parse_bucket_sk(sk: str) -> str:
 
 
 def pk_bucket(namespace_id: str, entity_id: str, resource: str, shard_id: int) -> str:
-    """Build partition key for a bucket shard."""
+    """Build partition key for a pre-shard bucket item.
+
+    Bucket items use per-(entity, resource, shard) partition keys to distribute
+    writes across DynamoDB partitions, mitigating hot partition risk (GHSA-76rv).
+
+    Args:
+        namespace_id: Opaque namespace identifier
+        entity_id: Entity owning the bucket
+        resource: Resource name (e.g., "gpt-4")
+        shard_id: Shard index (0-based)
+
+    Returns:
+        PK string in format ``{ns}/BUCKET#{entity_id}#{resource}#{shard_id}``
+    """
     return f"{namespace_id}/{BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}"
 
 
@@ -326,16 +349,19 @@ def sk_state() -> str:
 
 
 def parse_bucket_pk(pk: str) -> tuple[str, str, str, int]:
-    """Parse namespace, entity_id, resource, shard_id from a bucket PK.
+    """Parse namespace, entity_id, resource, and shard_id from a bucket PK.
+
+    Inverse of :func:`pk_bucket`. Splits on the ``BUCKET#`` prefix and
+    separates ``entity_id#resource#shard_id`` components.
 
     Args:
-        pk: A bucket PK like 'ns1/BUCKET#user-1#gpt-4#0'
+        pk: A bucket PK like ``'ns1/BUCKET#user-1#gpt-4#0'``
 
     Returns:
         Tuple of (namespace_id, entity_id, resource, shard_id)
 
     Raises:
-        ValueError: If PK is not a valid bucket PK
+        ValueError: If PK does not match the ``{ns}/BUCKET#{id}#{res}#{shard}`` format
     """
     namespace_id, remainder = parse_namespace(pk)
     if not remainder.startswith(BUCKET_PREFIX):
@@ -356,12 +382,32 @@ def parse_bucket_pk(pk: str) -> tuple[str, str, str, int]:
 
 
 def gsi3_pk_entity(namespace_id: str, entity_id: str) -> str:
-    """Build GSI3 partition key for entity bucket discovery."""
+    """Build GSI3 partition key for entity bucket discovery.
+
+    GSI3 is a KEYS_ONLY index used by ``get_buckets(entity_id)`` (resource=None)
+    to discover all bucket PKs for an entity across resources and shards,
+    then BatchGetItem fetches the full items from the main table.
+
+    Args:
+        namespace_id: Opaque namespace identifier
+        entity_id: Entity whose buckets to discover
+
+    Returns:
+        GSI3PK string in format ``{ns}/ENTITY#{entity_id}``
+    """
     return f"{namespace_id}/{ENTITY_PREFIX}{entity_id}"
 
 
 def gsi3_sk_bucket(resource: str, shard_id: int) -> str:
-    """Build GSI3 sort key for bucket entry."""
+    """Build GSI3 sort key for a bucket entry.
+
+    Args:
+        resource: Resource name (e.g., "gpt-4")
+        shard_id: Shard index (0-based)
+
+    Returns:
+        GSI3SK string in format ``BUCKET#{resource}#{shard_id}``
+    """
     return f"{BUCKET_PREFIX}{resource}#{shard_id}"
 
 

@@ -51,9 +51,10 @@ flowchart TD
 aws dynamodb get-item --table-name <name> \
   --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#META"}}'
 
-# Query bucket state for a specific limit
+# Query bucket state for a specific resource (shard 0)
+# v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
 aws dynamodb get-item --table-name <name> \
-  --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}'
+  --key '{"PK": {"S": "{ns}/BUCKET#<entity_id>#<resource>#0"}, "SK": {"S": "#STATE"}}'
 ```
 
 **Verify stored limits:**
@@ -78,9 +79,10 @@ aws dynamodb query --table-name <name> \
 **Check bucket state:**
 
 ```bash
+# v0.9.0+ bucket key format
 aws dynamodb get-item --table-name <name> \
-  --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}' \
-  --projection-expression "tokens, last_update, capacity"
+  --key '{"PK": {"S": "{ns}/BUCKET#<entity_id>#<resource>#0"}, "SK": {"S": "#STATE"}}' \
+  --projection-expression "b_<limit_name>_tk, rf, b_<limit_name>_cp, shard_count"
 ```
 
 **Interpret the response:**
@@ -216,34 +218,40 @@ aws dynamodb put-item --table-name <name> \
 
 ### Reset Bucket State
 
-Reset a bucket to restore full capacity:
+Reset a bucket to restore full capacity (will be recreated on next acquire):
 
 ```bash
-# Delete the bucket (will be recreated on next acquire with full capacity)
+# v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
 aws dynamodb delete-item --table-name <name> \
-  --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}'
+  --key '{"PK": {"S": "{ns}/BUCKET#<entity_id>#<resource>#0"}, "SK": {"S": "#STATE"}}'
 ```
 
 ### Debug Bucket State
 
-Query all buckets for an entity:
+Query all buckets for an entity using GSI3:
 
 ```bash
+# Discover all bucket PKs via GSI3 (KEYS_ONLY)
 aws dynamodb query --table-name <name> \
-  --key-condition-expression "PK = :pk AND begins_with(SK, :sk)" \
-  --expression-attribute-values '{":pk": {"S": "ENTITY#<entity_id>"}, ":sk": {"S": "#BUCKET#"}}' \
-  --projection-expression "SK, tokens, capacity, last_update"
+  --index-name GSI3 \
+  --key-condition-expression "GSI3PK = :gsi3pk" \
+  --expression-attribute-values '{":gsi3pk": {"S": "{ns}/ENTITY#<entity_id>"}}' \
+  --output json
 ```
+
+Then fetch individual bucket items using the PKs returned above.
 
 **Interpret bucket values:**
 
-All token values are stored as **millitokens** (multiply by 1000):
+All token values are stored as **millitokens** (multiply by 1000). Bucket attributes
+use the `b_{limit_name}_{field}` naming convention:
 
-| Field | Description | Example |
-|-------|-------------|---------|
-| `tokens` | Current available tokens × 1000 | `50000` = 50 tokens |
-| `capacity` | Maximum bucket size × 1000 | `100000` = 100 tokens |
-| `last_update` | Unix timestamp | `1705312800` |
+| Field | Attribute | Description | Example |
+|-------|-----------|-------------|---------|
+| Tokens | `b_rpm_tk` | Current available tokens × 1000 | `50000` = 50 tokens |
+| Capacity | `b_rpm_cp` | Maximum bucket size × 1000 | `100000` = 100 tokens |
+| Refill timestamp | `rf` | Last refill (epoch ms) | `1705312800000` |
+| Shard count | `shard_count` | Number of shards for this bucket | `2` |
 
 ### Verification After Changes
 
@@ -265,9 +273,11 @@ print(f"Available: {available}")
 
 | Pattern | Key | Description |
 |---------|-----|-------------|
-| Entity metadata | `PK=ENTITY#<id>, SK=#META` | Entity configuration |
-| Bucket state | `PK=ENTITY#<id>, SK=#BUCKET#<resource>#<limit>` | Token bucket |
-| Stored limit | `PK=ENTITY#<id>, SK=#LIMIT#<resource>#<limit>` | Limit configuration |
+| Entity metadata | `PK={ns}/ENTITY#<id>, SK=#META` | Entity configuration |
+| Bucket state (v0.9.0+) | `PK={ns}/BUCKET#<id>#<resource>#<shard>, SK=#STATE` | Token bucket (per shard) |
+| Entity config | `PK={ns}/ENTITY#<id>, SK=#CONFIG#<resource>` | Stored limit config |
+| Resource config | `PK={ns}/RESOURCE#<resource>, SK=#CONFIG` | Resource default limits |
+| System config | `PK={ns}/SYSTEM#, SK=#CONFIG` | System default limits |
 
 ## Related
 

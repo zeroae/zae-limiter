@@ -845,7 +845,19 @@ class SyncRateLimiter:
 
     @staticmethod
     def _is_wcu_exhausted(old_buckets: "list[BucketState] | None") -> bool:
-        """Check if wcu infrastructure limit is exhausted in failed result."""
+        """Check if the wcu infrastructure limit is exhausted.
+
+        The wcu limit tracks per-partition write pressure (GHSA-76rv). When
+        exhausted (<1000 millitokens = <1 WCU), the caller should double
+        shard_count to distribute writes across more DynamoDB partitions.
+
+        Args:
+            old_buckets: BucketStates from a failed speculative result's
+                ALL_OLD response. None if the bucket does not exist.
+
+        Returns:
+            True if the wcu limit exists and has fewer than 1000 millitokens.
+        """
         if old_buckets is None:
             return False
         for b in old_buckets:
@@ -861,9 +873,22 @@ class SyncRateLimiter:
         ttl_seconds: int | None,
         result: "SpeculativeResult",
     ) -> "SyncLease | None":
-        """Retry speculative consume on untried shards.
+        """Retry speculative consume on untried shards (GHSA-76rv shard retry).
 
-        Returns a SyncLease if a retry succeeds, None otherwise.
+        When application limits are exhausted on one shard, other shards may
+        still have available tokens (since capacity is divided across shards).
+        This method picks random untried shards up to ``_MAX_SHARD_RETRIES``.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consume: Amount per limit (tokens, not milli)
+            ttl_seconds: TTL in seconds from now, or None for no TTL change
+            result: The failed SpeculativeResult from the initial shard
+
+        Returns:
+            SyncLease if a retry on another shard succeeded, None if all retries
+            failed or no untried shards remain.
         """
         import random
 
@@ -885,7 +910,14 @@ class SyncRateLimiter:
     def _build_lease_from_speculative(
         self, entity_id: str, resource: str, consume: dict[str, int], result: "SpeculativeResult"
     ) -> "SyncLease":
-        """Build a SyncLease from a successful speculative result."""
+        """Build a pre-committed SyncLease from a successful speculative result.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consume: Amount per limit that was consumed
+            result: Successful SpeculativeResult with ALL_NEW buckets
+        """
         entries: list[LeaseEntry] = []
         for state in result.buckets:
             amount = consume.get(state.limit_name, 0)

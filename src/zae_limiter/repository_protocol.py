@@ -31,12 +31,17 @@ class SpeculativeResult:
     Attributes:
         success: True if the speculative write succeeded.
         buckets: On success, deserialized BucketStates from ALL_NEW response.
+            Includes the ``wcu`` infrastructure limit bucket state.
         cascade: On success, whether the entity has cascade enabled.
         parent_id: On success, the entity's parent_id (if any).
         old_buckets: On failure, deserialized BucketStates from ALL_OLD response.
             None if the bucket doesn't exist (first acquire).
         parent_result: On cache hit + cascade, nested parent SpeculativeResult
             from parallel UpdateItem. None for cache miss, non-cascade, or failure.
+        shard_id: The shard index targeted by this speculative write.
+        shard_count: The total shard count read from the bucket item. Used by
+            the limiter to decide whether to retry on another shard or double
+            shards when the ``wcu`` limit is exhausted.
     """
 
     success: bool

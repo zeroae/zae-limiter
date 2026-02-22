@@ -1447,9 +1447,22 @@ class Repository:
     ) -> list[BucketState]:
         """Get all buckets for an entity, optionally filtered by resource.
 
-        With composite items, each item contains all limits for one resource.
-        When resource is specified, fetches the bucket at the given shard_id.
-        When resource is None, uses GSI3 to discover all buckets (Task 16).
+        With pre-shard buckets (v0.9.0+), each item lives on its own partition
+        key ``PK={ns}/BUCKET#{id}#{resource}#{shard}``. When resource is
+        specified, fetches the single bucket at the given shard_id. When
+        resource is None, uses GSI3 (KEYS_ONLY) to discover all bucket PKs,
+        then BatchGetItem to fetch full items.
+
+        The internal ``wcu`` infrastructure limit is filtered from the
+        returned bucket states.
+
+        Args:
+            entity_id: Entity to query buckets for.
+            resource: Resource name filter, or None for all resources.
+            shard_id: Shard index (used only when resource is specified).
+
+        Returns:
+            List of BucketState objects (one per application limit).
         """
         client = await self._get_client()
 
@@ -2268,7 +2281,22 @@ class Repository:
         ttl_seconds: int | None = None,
         shard_id: int = 0,
     ) -> SpeculativeResult:
-        """Single speculative UpdateItem (extracted for parallel reuse)."""
+        """Issue a single speculative UpdateItem on a bucket shard.
+
+        In addition to consuming the application-level limits, this method
+        auto-consumes 1 WCU (1000 millitokens) from the ``wcu`` infrastructure
+        limit and includes ``wcu tk >= 1000`` in the condition expression.
+
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+            consume: Amount per limit (tokens, not milli).
+            ttl_seconds: TTL in seconds, or None for no TTL change.
+            shard_id: Target shard index (default 0).
+
+        Returns:
+            SpeculativeResult with shard_id and shard_count populated.
+        """
         client = await self._get_client()
 
         # Build ADD expression for each limit
@@ -2377,11 +2405,21 @@ class Repository:
             raise
 
     async def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
-        """Double shard_count on shard 0 (conditional write).
+        """Double shard_count on shard 0 via conditional write.
 
-        Also updates the entity cache with the new shard_count.
+        Shard 0 is the source of truth for shard_count. The conditional
+        expression ``shard_count = :old`` prevents double-bumping when
+        multiple clients race to double concurrently. Also updates the
+        entity cache with the new shard_count.
 
-        Returns the new shard_count, or the current if another client already doubled.
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+            current_count: Current shard_count to double.
+
+        Returns:
+            The new shard_count (doubled), or the current value if another
+            client already doubled (ConditionalCheckFailedException).
         """
         new_count = current_count * 2
         client = await self._get_client()

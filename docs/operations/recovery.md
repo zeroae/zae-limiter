@@ -255,20 +255,24 @@ zae-limiter upgrade --name <name> --region <region> --lambda-only
 
 ### Reset Corrupted Bucket
 
-Delete a specific bucket (will be recreated on next acquire):
+Delete a specific bucket shard (will be recreated on next acquire):
 
 ```bash
+# v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
 aws dynamodb delete-item --table-name <name> \
-  --key '{"PK": {"S": "ENTITY#<entity_id>"}, "SK": {"S": "#BUCKET#<resource>#<limit_name>"}}'
+  --key '{"PK": {"S": "{ns}/BUCKET#<entity_id>#<resource>#0"}, "SK": {"S": "#STATE"}}'
 ```
 
 ### Reset All Buckets for Entity
 
+Use GSI3 to discover all bucket items for an entity, then delete them:
+
 ```bash
-# Query all buckets
+# Query GSI3 for all bucket PKs (KEYS_ONLY projection)
 BUCKETS=$(aws dynamodb query --table-name <name> \
-  --key-condition-expression "PK = :pk AND begins_with(SK, :sk)" \
-  --expression-attribute-values '{":pk": {"S": "ENTITY#<entity_id>"}, ":sk": {"S": "#BUCKET#"}}' \
+  --index-name GSI3 \
+  --key-condition-expression "GSI3PK = :gsi3pk" \
+  --expression-attribute-values '{":gsi3pk": {"S": "{ns}/ENTITY#<entity_id>"}}' \
   --projection-expression "PK, SK" \
   --output json)
 
@@ -280,7 +284,7 @@ echo $BUCKETS | jq -r '.Items[] | @base64' | while read item; do
   aws dynamodb delete-item --table-name <name> \
     --key "{\"PK\": {\"S\": \"$PK\"}, \"SK\": {\"S\": \"$SK\"}}"
 
-  echo "Deleted: $SK"
+  echo "Deleted: $PK"
 done
 ```
 
