@@ -18,13 +18,16 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    BUCKET_PREFIX,
     SK_BUCKET,
     bucket_attr,
     gsi2_pk_resource,
     gsi2_sk_usage,
+    parse_bucket_pk,
     parse_namespace,
+    pk_bucket,
     pk_entity,
-    sk_bucket,
+    sk_state,
     sk_usage,
 )
 
@@ -102,7 +105,7 @@ class LimitRefillInfo:
 class BucketRefillState:
     """Per-bucket aggregated state for refill decision.
 
-    Groups all limits for a composite bucket (entity+resource) together
+    Groups all limits for a composite bucket (entity+resource+shard) together
     with the shared ``rf`` timestamp.
     """
 
@@ -111,6 +114,8 @@ class BucketRefillState:
     resource: str
     rf_ms: int  # shared refill timestamp (optimistic lock)
     limits: dict[str, LimitRefillInfo] = field(default_factory=dict)
+    shard_id: int = 0
+    shard_count: int = 1
 
 
 def process_stream_records(
@@ -253,10 +258,16 @@ class ParsedBucketRecord:
     resource: str
     rf_ms: int  # shared refill timestamp from NewImage
     limits: dict[str, ParsedBucketLimit]
+    shard_id: int = 0
+    shard_count: int = 1
 
 
 def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
     """Parse a composite bucket stream record into structured fields.
+
+    Supports both PK formats:
+    - New: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
+    - Old: PK={ns}/ENTITY#{entity}, SK=#BUCKET#{resource}
 
     Shared by :func:`extract_deltas` and :func:`aggregate_bucket_states` to
     avoid duplicating the DynamoDB stream image parsing logic.
@@ -271,18 +282,12 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
     new_image = dynamodb_data.get("NewImage", {})
     old_image = dynamodb_data.get("OldImage", {})
 
-    sk = new_image.get("SK", {}).get("S", "")
-    if not sk.startswith(SK_BUCKET):
-        return None
-
-    resource = sk[len(SK_BUCKET) :]
-    if not resource:
-        return None
-
-    # Extract namespace_id from the PK (e.g. "a7x3kq/ENTITY#user-123")
     pk = new_image.get("PK", {}).get("S", "")
+    sk = new_image.get("SK", {}).get("S", "")
+
+    # Try new PK format: {ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
     try:
-        namespace_id, _remainder = parse_namespace(pk)
+        namespace_id, remainder = parse_namespace(pk)
     except ValueError:
         logger.warning(
             "Skipping pre-migration record with unprefixed PK",
@@ -290,8 +295,30 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         )
         return None
 
-    entity_id = new_image.get("entity_id", {}).get("S", "")
-    if not entity_id:
+    shard_id = 0
+    shard_count = 1
+
+    if remainder.startswith(BUCKET_PREFIX):
+        # New PK format
+        try:
+            namespace_id, entity_id, resource, shard_id = parse_bucket_pk(pk)
+        except ValueError:
+            return None
+        shard_count = int(new_image.get("shard_count", {}).get("N", "1"))
+    elif sk.startswith(SK_BUCKET):
+        # Old PK format: PK={ns}/ENTITY#{entity}, SK=#BUCKET#{resource}
+        resource = sk[len(SK_BUCKET) :]
+        if not resource:
+            return None
+        entity_id = new_image.get("entity_id", {}).get("S", "")
+        if not entity_id:
+            return None
+        shard_count = int(new_image.get("shard_count", {}).get("N", "1"))
+    else:
+        return None
+
+    entity_id_check = new_image.get("entity_id", {}).get("S", "")
+    if not entity_id_check:
         return None
 
     rf_ms = int(new_image.get("rf", {}).get("N", "0"))
@@ -347,6 +374,8 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         resource=resource,
         rf_ms=rf_ms,
         limits=limits,
+        shard_id=shard_id,
+        shard_count=shard_count,
     )
 
 
@@ -389,10 +418,10 @@ def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:
 
 def aggregate_bucket_states(
     records: list[dict[str, Any]],
-) -> dict[tuple[str, str, str], BucketRefillState]:
+) -> dict[tuple[str, str, str, int], BucketRefillState]:
     """Aggregate per-bucket state from stream records for refill decisions.
 
-    For each (namespace_id, entity_id, resource) composite bucket:
+    For each (namespace_id, entity_id, resource, shard_id) composite bucket:
     - Accumulates ``tc`` deltas across all events per limit
     - Keeps the last NewImage's bucket fields (tk, cp, ra, rp) per limit
     - Keeps the last shared ``rf`` timestamp (optimistic lock target)
@@ -401,9 +430,9 @@ def aggregate_bucket_states(
         records: DynamoDB stream records
 
     Returns:
-        Dict mapping (namespace_id, entity_id, resource) to BucketRefillState
+        Dict mapping (namespace_id, entity_id, resource, shard_id) to BucketRefillState
     """
-    bucket_states: dict[tuple[str, str, str], BucketRefillState] = {}
+    bucket_states: dict[tuple[str, str, str, int], BucketRefillState] = {}
 
     for record in records:
         if record.get("eventName") != "MODIFY":
@@ -413,7 +442,7 @@ def aggregate_bucket_states(
         if not parsed:
             continue
 
-        key = (parsed.namespace_id, parsed.entity_id, parsed.resource)
+        key = (parsed.namespace_id, parsed.entity_id, parsed.resource, parsed.shard_id)
 
         if key not in bucket_states:
             bucket_states[key] = BucketRefillState(
@@ -421,6 +450,8 @@ def aggregate_bucket_states(
                 entity_id=parsed.entity_id,
                 resource=parsed.resource,
                 rf_ms=parsed.rf_ms,
+                shard_id=parsed.shard_id,
+                shard_count=parsed.shard_count,
             )
         else:
             bucket_states[key].rf_ms = parsed.rf_ms
@@ -483,12 +514,16 @@ def try_refill_bucket(
         if info.rp_ms <= 0 or info.ra_milli <= 0:
             continue
 
+        # Effective limits: divide capacity and refill_amount by shard_count
+        effective_cp = info.cp_milli // state.shard_count
+        effective_ra = info.ra_milli // state.shard_count
+
         result = refill_bucket(
             tokens_milli=info.tk_milli,
             last_refill_ms=state.rf_ms,
             now_ms=now_ms,
-            capacity_milli=info.cp_milli,
-            refill_amount_milli=info.ra_milli,
+            capacity_milli=effective_cp,
+            refill_amount_milli=effective_ra,
             refill_period_ms=info.rp_ms,
         )
 
@@ -527,8 +562,10 @@ def try_refill_bucket(
     try:
         table.update_item(
             Key={
-                "PK": pk_entity(state.namespace_id, state.entity_id),
-                "SK": sk_bucket(state.resource),
+                "PK": pk_bucket(
+                    state.namespace_id, state.entity_id, state.resource, state.shard_id
+                ),
+                "SK": sk_state(),
             },
             UpdateExpression=update_expr,
             ConditionExpression="rf = :expected_rf",
