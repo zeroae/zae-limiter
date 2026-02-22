@@ -2579,3 +2579,89 @@ Expected: PASS
 git add src/zae_limiter_aggregator/processor.py tests/unit/test_processor.py
 git commit -m "🐛 fix(aggregator): use wcu token level for proactive sharding signal instead of tc_delta"
 ```
+
+#### Task 37 Test Plan
+
+**Scope:** 24 tests across 4 layers validating the signal change from `tc_delta/capacity >= 0.8` to `tk_milli/capacity < 0.2`.
+
+##### Unit Tests — `tests/unit/test_processor.py::TestTryProactiveShard`
+
+**Existing tests to update** (rename `wcu_tc_delta` → `wcu_tk_milli`, invert threshold logic):
+
+| # | Test | Old Params | New Params | Expected |
+|---|------|-----------|------------|----------|
+| 1 | `test_triggers_at_threshold` | `tc_delta=900k` (90%>80%) | `tk_milli=100k` (10%<20%) | True |
+| 2 | `test_skips_below_threshold` | `tc_delta=500k` (50%<80%) | `tk_milli=500k` (50%>=20%) | False |
+| 3 | `test_skips_non_shard_0` | param rename | `tk_milli=100k` | False |
+| 4 | `test_conditional_check_failure_returns_false` | param rename | `tk_milli=100k` | False |
+| 5 | `test_zero_capacity_skips` | `tc_delta=900k, cap=0` | `tk_milli=0, cap=0` | False |
+
+**New unit tests:**
+
+| # | Test | Token Level | Capacity | Expected | Edge Case |
+|---|------|-------------|----------|----------|-----------|
+| 6 | `test_triggers_at_low_token_level` | 150,000 (15%) | 1,000,000 | True | Core happy path |
+| 7 | `test_skips_above_threshold` | 250,000 (25%) | 1,000,000 | False | Core negative path |
+| 8 | `test_triggers_at_zero_tokens` | 0 | 1,000,000 | True | Complete exhaustion |
+| 9 | `test_boundary_at_exactly_20_percent` | 200,000 (20%) | 1,000,000 | False | Boundary: `>=` is safe, `<` shards |
+| 10 | `test_negative_tokens_triggers` | -50,000 | 1,000,000 | True | Overdrawn wcu via adjustment |
+| 11 | `test_one_millitoken_below_threshold` | 199,999 | 1,000,000 | True | Off-by-one: 19.9999% < 20% |
+| 12 | `test_doubles_shard_count_from_2` | 100,000 | 1,000,000 | True, new=4 | Verify `shard_count * 2` with existing count=2 |
+| 13 | `test_negative_capacity_skips` | 100,000 | -1,000,000 | False | Corrupted data guard |
+| 14 | `test_batch_size_independent` | 100,000 | 1,000,000 | True | Token level is invariant to BatchSize |
+
+**Test to remove:**
+- `test_unreachable_at_batch_size_100` (Task 34) — documents the tc_delta limitation; no longer applicable with token-level signal.
+
+**Constant rename regression:**
+
+| # | Test | Description |
+|---|------|-------------|
+| 15 | `test_constant_renamed` | Assert `WCU_PROACTIVE_THRESHOLD_LOW` exists and `WCU_PROACTIVE_THRESHOLD` is removed |
+
+##### Caller Wiring Tests — `tests/unit/test_processor.py::TestProcessStreamRecords`
+
+| # | Test | Description | Validate |
+|---|------|-------------|----------|
+| 16 | `test_process_records_passes_tk_milli` | Mock `try_proactive_shard`, verify call uses `wcu_tk_milli=wcu_info.tk_milli` | Correct parameter wiring at `processor.py:233-238` |
+| 17 | `test_process_records_proactive_shard_selective` | Two bucket states: one with 15% wcu remaining, one with 50% | Only the low-level bucket triggers sharding |
+
+##### Integration Tests — `tests/integration/test_bucket_sharding.py::TestProactiveShardingIntegration`
+
+| # | Test | Description | Validate |
+|---|------|-------------|----------|
+| 18 | `test_proactive_shard_doubles_count` (update) | Change call from `wcu_tc_delta=900k` to `wcu_tk_milli=100k` | DynamoDB conditional write succeeds, shard_count 1→2 |
+| 19 | `test_proactive_shard_skips_healthy_bucket` | Seed bucket with `wcu_tk=500k` (50%), call with `wcu_tk_milli=500k` | No write, shard_count unchanged |
+| 20 | `test_proactive_shard_after_refill` | Seed bucket with `wcu_tk=800k` (80% after aggregator refill) | No sharding — refill masks pressure for one cycle (expected) |
+| 21 | `test_proactive_shard_sustained_pressure` | Two sequential calls: first 80% tokens (no shard), second 10% (shard) | Self-correction: sustained pressure triggers on next batch |
+
+##### E2E Tests — `tests/e2e/test_localstack.py` (new class `TestProactiveShardingE2E`)
+
+| # | Test | Description | Validate |
+|---|------|-------------|----------|
+| 22 | `test_aggregator_proactive_sharding_e2e` | Create entity, exhaust wcu via rapid speculative writes, wait for Lambda stream processing | Full pipeline: writes → Stream → Lambda → proactive shard → propagation |
+| 23 | `test_aggregator_no_shard_under_normal_load` | Create entity, moderate writes (below threshold), wait for Lambda | No false positives under normal load |
+| 24 | `test_aggregator_refill_then_drain_e2e` | Exhaust, wait for refill (tokens recover), exhaust again, verify shard on second cycle | End-to-end validation of the refill-masking self-correction |
+
+**E2E markers:** `@pytest.mark.e2e`, `@pytest.mark.slow` (stream processing delay ~30s).
+
+##### Summary
+
+| Layer | Count | Files | Backend |
+|-------|-------|-------|---------|
+| Unit (function-level) | 14 | `test_processor.py` | Mocked |
+| Constant regression | 1 | `test_processor.py` | Mocked |
+| Caller wiring | 2 | `test_processor.py` | Mocked |
+| Integration (DynamoDB) | 4 | `test_bucket_sharding.py` | LocalStack |
+| E2E (full pipeline) | 3 | `test_localstack.py` | LocalStack + Lambda |
+| **Total** | **24** | | |
+
+##### Key Edge Cases
+
+1. **Boundary precision:** Exactly 20% is safe, 19.9999% triggers
+2. **Negative tokens:** Overdrawn wcu still triggers (strongest signal)
+3. **Zero/negative capacity:** Division-by-zero and corrupted data guards
+4. **Aggregator refill masking:** After refill, tokens recover → no shard for one cycle → self-corrects next batch
+5. **Batch size independence:** Token level is invariant to `BatchSize` (unlike tc_delta)
+6. **Concurrent bumps:** `ConditionalCheckFailedException` returns `False`
+7. **Non-shard-0:** Only shard 0 triggers (source of truth)
