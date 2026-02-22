@@ -1764,7 +1764,11 @@ class TestNewBucketPKParsing:
 
 
 class TestTryProactiveShard:
-    """Tests for try_proactive_shard function."""
+    """Tests for try_proactive_shard function.
+
+    Uses wcu token level (remaining / capacity) as the sharding signal.
+    Triggers when tokens < 20% of capacity (WCU_PROACTIVE_THRESHOLD_LOW).
+    """
 
     def _make_state(
         self,
@@ -1780,14 +1784,14 @@ class TestTryProactiveShard:
             rf_ms=1704067200000,
         )
 
-    def test_triggers_at_threshold(self) -> None:
-        """When wcu tc_delta >= 80% of capacity, aggregator bumps shard_count."""
+    def test_triggers_at_low_token_level(self) -> None:
+        """Proactive sharding triggers when wcu tokens < 20% of capacity."""
         mock_table = MagicMock()
         state = self._make_state()
-        wcu_tc_delta = 900_000  # 90% > 80% threshold
-        wcu_capacity_milli = 1000_000
+        wcu_tk_milli = 150_000  # 15% remaining < 20% threshold
+        wcu_capacity_milli = 1_000_000
 
-        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+        result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
 
         assert result is True
         mock_table.update_item.assert_called_once()
@@ -1796,14 +1800,14 @@ class TestTryProactiveShard:
         assert call_kwargs["ExpressionAttributeValues"][":new"] == 2
         assert call_kwargs["ConditionExpression"] == "shard_count = :old"
 
-    def test_skips_below_threshold(self) -> None:
-        """Below threshold, no sharding."""
+    def test_skips_above_threshold(self) -> None:
+        """No sharding when wcu tokens >= 20% of capacity."""
         mock_table = MagicMock()
         state = self._make_state()
-        wcu_tc_delta = 500_000  # 50% < 80%
-        wcu_capacity_milli = 1000_000
+        wcu_tk_milli = 250_000  # 25% remaining >= 20% threshold
+        wcu_capacity_milli = 1_000_000
 
-        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+        result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
 
         assert result is False
         mock_table.update_item.assert_not_called()
@@ -1812,10 +1816,8 @@ class TestTryProactiveShard:
         """Only shard 0 can be bumped."""
         mock_table = MagicMock()
         state = self._make_state(shard_id=1, shard_count=2)
-        wcu_tc_delta = 900_000
-        wcu_capacity_milli = 1000_000
 
-        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is False
         mock_table.update_item.assert_not_called()
@@ -1829,7 +1831,7 @@ class TestTryProactiveShard:
         )
         state = self._make_state()
 
-        result = try_proactive_shard(mock_table, state, 900_000, 1000_000)
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is False
 
@@ -1838,17 +1840,65 @@ class TestTryProactiveShard:
         mock_table = MagicMock()
         state = self._make_state()
 
-        result = try_proactive_shard(mock_table, state, 900_000, 0)
+        result = try_proactive_shard(mock_table, state, 100_000, 0)
 
         assert result is False
         mock_table.update_item.assert_not_called()
+
+    def test_triggers_at_zero_tokens(self) -> None:
+        """Proactive sharding triggers when wcu tokens are completely exhausted."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 0, 1_000_000)
+
+        assert result is True
+
+    def test_boundary_at_exactly_20_percent(self) -> None:
+        """At exactly 20% remaining, no sharding (threshold is strictly less than)."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 200_000, 1_000_000)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_negative_tokens_triggers(self) -> None:
+        """Negative tokens (overdrawn wcu) trigger sharding."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, -50_000, 1_000_000)
+
+        assert result is True
+
+    def test_one_millitoken_below_threshold(self) -> None:
+        """Off-by-one: 19.9999% < 20% triggers sharding."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 199_999, 1_000_000)
+
+        assert result is True
+
+    def test_doubles_shard_count_from_2(self) -> None:
+        """Verify shard_count * 2 with existing count=2."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_count=2)
+
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
+
+        assert result is True
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["ExpressionAttributeValues"][":new"] == 4
 
     def test_warns_above_threshold(self, capsys) -> None:
         """Proactive sharding logs warning when new count exceeds threshold."""
         mock_table = MagicMock()
         state = self._make_state(shard_id=0, shard_count=32)
 
-        result = try_proactive_shard(mock_table, state, 900_000, 1000_000)
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is True
         captured = capsys.readouterr().out
@@ -1856,26 +1906,16 @@ class TestTryProactiveShard:
         assert "High shard count" in captured
         assert '"shard_count": 64' in captured
 
-    def test_unreachable_at_batch_size_100(self) -> None:
-        """At BatchSize=100, max wcu tc_delta is 100_000 milli (10% of capacity).
-
-        Documents that proactive sharding requires BatchSize >= 800 to trigger
-        at the 80% threshold (WCU_PROACTIVE_THRESHOLD). With the default
-        BatchSize=100, the maximum achievable ratio is 100/1000 = 10%.
-        See Task #28 for the BatchSize fix.
-        """
+    def test_batch_size_independent(self) -> None:
+        """Token level is invariant to BatchSize (unlike tc_delta)."""
         mock_table = MagicMock()
         state = self._make_state()
-        # Max possible: 100 records * 1 WCU * 1000 milli = 100_000
-        max_tc_delta_at_batch_100 = 100 * 1000
-        wcu_capacity_milli = 1000_000
 
-        result = try_proactive_shard(
-            mock_table, state, max_tc_delta_at_batch_100, wcu_capacity_milli
-        )
+        # With old tc_delta metric, BatchSize=100 could only reach 10%.
+        # With token level, we check remaining tokens regardless of batch size.
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
-        assert result is False  # 10% < 80% threshold
-        mock_table.update_item.assert_not_called()
+        assert result is True  # 10% remaining < 20% threshold
 
 
 class TestPropagateShardsCount:

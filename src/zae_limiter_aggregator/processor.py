@@ -229,7 +229,7 @@ def process_stream_records(
             )
             errors.append(error_msg)
 
-    # Proactive sharding (check wcu consumption per bucket)
+    # Proactive sharding (check wcu token level per bucket)
     for state in bucket_states.values():
         wcu_info = state.limits.get(WCU_LIMIT_NAME)
         if wcu_info:
@@ -237,7 +237,7 @@ def process_stream_records(
                 try_proactive_shard(
                     table,
                     state,
-                    wcu_tc_delta=wcu_info.tc_delta,
+                    wcu_tk_milli=wcu_info.tk_milli,
                     wcu_capacity_milli=wcu_info.cp_milli,
                 )
             except Exception as e:
@@ -633,16 +633,20 @@ def try_refill_bucket(
         raise
 
 
-WCU_PROACTIVE_THRESHOLD = 0.8  # Shard when wcu consumption >= 80% of capacity
+WCU_PROACTIVE_THRESHOLD_LOW = 0.2  # Shard when wcu tokens < 20% of capacity
 
 
 def try_proactive_shard(
     table: Any,
     state: BucketRefillState,
-    wcu_tc_delta: int,
+    wcu_tk_milli: int,
     wcu_capacity_milli: int,
 ) -> bool:
-    """Proactively double shard_count when wcu consumption approaches capacity.
+    """Proactively double shard_count when wcu token level is low.
+
+    Checks remaining wcu tokens against capacity. When tokens drop
+    below 20% of capacity, the partition is under sustained write
+    pressure and should be split.
 
     Only acts on shard 0 (source of truth for shard_count).
     Uses conditional write to prevent double-bumping.
@@ -650,7 +654,7 @@ def try_proactive_shard(
     Args:
         table: boto3 Table resource
         state: Aggregated bucket state
-        wcu_tc_delta: Accumulated wcu tc_delta in this batch (millitokens)
+        wcu_tk_milli: Remaining wcu tokens in millitokens (from last NewImage)
         wcu_capacity_milli: wcu capacity in millitokens
 
     Returns:
@@ -662,8 +666,8 @@ def try_proactive_shard(
     if wcu_capacity_milli <= 0:
         return False
 
-    consumption_ratio = wcu_tc_delta / wcu_capacity_milli
-    if consumption_ratio < WCU_PROACTIVE_THRESHOLD:
+    token_ratio = wcu_tk_milli / wcu_capacity_milli
+    if token_ratio >= WCU_PROACTIVE_THRESHOLD_LOW:
         return False
 
     new_count = state.shard_count * 2
@@ -687,7 +691,7 @@ def try_proactive_shard(
             resource=state.resource,
             old_count=state.shard_count,
             new_count=new_count,
-            consumption_ratio=round(consumption_ratio, 2),
+            token_ratio=round(token_ratio, 2),
         )
         if new_count > WCU_SHARD_WARN_THRESHOLD:
             logger.warning(
