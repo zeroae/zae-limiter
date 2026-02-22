@@ -21,6 +21,7 @@ from zae_limiter.schema import (
     BUCKET_PREFIX,
     SK_BUCKET,
     WCU_LIMIT_NAME,
+    WCU_SHARD_WARN_THRESHOLD,
     bucket_attr,
     gsi2_pk_resource,
     gsi2_sk_usage,
@@ -685,6 +686,14 @@ def try_proactive_shard(
             new_count=new_count,
             consumption_ratio=round(consumption_ratio, 2),
         )
+        if new_count > WCU_SHARD_WARN_THRESHOLD:
+            logger.warning(
+                "High shard count after proactive doubling",
+                entity_id=state.entity_id,
+                resource=state.resource,
+                shard_count=new_count,
+                threshold=WCU_SHARD_WARN_THRESHOLD,
+            )
         return True
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":

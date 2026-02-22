@@ -451,3 +451,6 @@ class TestWCULimitConstants:
         assert schema.WCU_LIMIT_CAPACITY == 1000
         assert schema.WCU_LIMIT_REFILL_AMOUNT == 1000
         assert schema.WCU_LIMIT_REFILL_PERIOD_SECONDS == 1
+
+    def test_wcu_shard_warn_threshold_constant(self):
+        assert schema.WCU_SHARD_WARN_THRESHOLD == 32

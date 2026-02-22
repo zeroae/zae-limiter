@@ -2447,6 +2447,15 @@ class Repository:
                 },
             )
             effective_count = new_count
+            if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
+                logger.warning(
+                    "High shard count after doubling: entity_id=%s resource=%s "
+                    "shard_count=%d threshold=%d",
+                    entity_id,
+                    resource,
+                    new_count,
+                    schema.WCU_SHARD_WARN_THRESHOLD,
+                )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 effective_count = current_count  # Another client already doubled

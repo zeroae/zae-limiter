@@ -1843,6 +1843,19 @@ class TestTryProactiveShard:
         assert result is False
         mock_table.update_item.assert_not_called()
 
+    def test_warns_above_threshold(self, capsys) -> None:
+        """Proactive sharding logs warning when new count exceeds threshold."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_id=0, shard_count=32)
+
+        result = try_proactive_shard(mock_table, state, 900_000, 1000_000)
+
+        assert result is True
+        captured = capsys.readouterr().out
+        assert '"level": "WARNING"' in captured
+        assert "High shard count" in captured
+        assert '"shard_count": 64' in captured
+
     def test_unreachable_at_batch_size_100(self) -> None:
         """At BatchSize=100, max wcu tc_delta is 100_000 milli (10% of capacity).
 

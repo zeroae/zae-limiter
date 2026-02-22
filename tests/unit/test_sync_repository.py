@@ -2711,3 +2711,23 @@ class TestBumpShardCount:
             assert (
                 exc_info.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
             )
+
+    def test_bump_shard_count_warns_above_threshold(self, repo, caplog):
+        """bump_shard_count logs warning when new count exceeds threshold."""
+        import logging
+
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+        put_item = repo.build_composite_create(
+            "e1", "gpt-4", states, now_ms, shard_id=0, shard_count=32
+        )
+        repo.transact_write([put_item])
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_repository"):
+            result = repo.bump_shard_count("e1", "gpt-4", current_count=32)
+        assert result == 64
+        assert any(
+            "shard count" in r.message.lower() and "64" in str(r.message)
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+        )
