@@ -1434,3 +1434,176 @@ Phase 8: Sync                                                   │
 Phase 9: Integration                                            │
   Task 19 (CFN) ── Task 20 (version) ── Task 21 (integration) ── Task 22 (docs)
 ```
+
+---
+
+## Phase 10: Design Review Fixes
+
+Review: https://github.com/zeroae/zae-limiter-ghsa-76rv-2r9v-c5m6/pull/1#pullrequestreview-3838469366
+
+### Task 32: Add SpeculativeFailureReason enum
+
+**Problem:** On speculative failure, the limiter inspects `old_buckets` token values via `_is_wcu_exhausted()` to distinguish between app-limit exhaustion (retry on another shard) vs wcu exhaustion (double shards). This is implicit and fragile — the decision logic is spread across the limiter with no structured failure classification.
+
+**Fix:** Add a `SpeculativeFailureReason` enum to `repository_protocol.py` and populate it in `_speculative_consume_single()` when constructing the failure `SpeculativeResult`. Replace `_is_wcu_exhausted()` in the limiter with a match on `result.failure_reason`.
+
+**Files:**
+- Modify: `src/zae_limiter/repository_protocol.py` (add enum, add field to `SpeculativeResult`)
+- Modify: `src/zae_limiter/repository.py:2402-2415` (set `failure_reason` on failure results)
+- Modify: `src/zae_limiter/limiter.py:732-752` (replace `_is_wcu_exhausted` with `result.failure_reason`)
+- Modify: `src/zae_limiter/limiter.py:1007-1026` (remove `_is_wcu_exhausted` method)
+- Generate: sync code (`hatch run generate-sync`)
+- Test: `tests/unit/test_repository.py`, `tests/unit/test_limiter.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_repository.py`:
+
+```python
+from zae_limiter.repository_protocol import SpeculativeFailureReason
+
+def test_speculative_failure_reason_wcu_exhausted():
+    """Failure reason is WCU_EXHAUSTED when wcu tokens < 1000 milli."""
+    # Setup: bucket with wcu at 0, rpm has tokens
+    result = await repo.speculative_consume(entity_id="user-1", resource="api", consume={"rpm": 1})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.WCU_EXHAUSTED
+
+def test_speculative_failure_reason_app_limit_exhausted():
+    """Failure reason is APP_LIMIT_EXHAUSTED when user limit exhausted but wcu has tokens."""
+    # Setup: bucket with rpm at 0, wcu full
+    result = await repo.speculative_consume(entity_id="user-1", resource="api", consume={"rpm": 100})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+
+def test_speculative_failure_reason_bucket_missing():
+    """Failure reason is BUCKET_MISSING when no bucket exists."""
+    result = await repo.speculative_consume(entity_id="no-bucket", resource="api", consume={"rpm": 1})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+```
+
+In `tests/unit/test_limiter.py`:
+
+```python
+def test_wcu_exhausted_triggers_doubling_via_failure_reason():
+    """Limiter uses failure_reason instead of inspecting old_buckets."""
+    # Setup: mock speculative result with failure_reason=WCU_EXHAUSTED
+    # Verify bump_shard_count is called
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_repository.py -k "test_speculative_failure_reason" -v`
+Expected: FAIL with `ImportError: cannot import name 'SpeculativeFailureReason'`
+
+**Step 3: Add SpeculativeFailureReason enum**
+
+In `repository_protocol.py` before `SpeculativeResult`:
+
+```python
+from enum import Enum
+
+class SpeculativeFailureReason(Enum):
+    """Classifies why a speculative write failed (GHSA-76rv).
+
+    Used by the limiter to decide the recovery path without
+    inspecting individual BucketState token values.
+    """
+    APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
+    WCU_EXHAUSTED = "wcu_exhausted"
+    BOTH_EXHAUSTED = "both_exhausted"
+    BUCKET_MISSING = "bucket_missing"
+```
+
+Add field to `SpeculativeResult`:
+
+```python
+    failure_reason: SpeculativeFailureReason | None = None
+```
+
+**Step 4: Populate failure_reason in `_speculative_consume_single`**
+
+In `repository.py:2402-2415`, classify the failure:
+
+```python
+if old_item:
+    old_buckets = self._deserialize_composite_bucket(old_item)
+    old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+
+    # Classify failure reason
+    wcu_exhausted = any(
+        b.limit_name == WCU_LIMIT_NAME and b.tokens_milli < 1000
+        for b in old_buckets
+    )
+    app_exhausted = any(
+        b.limit_name != WCU_LIMIT_NAME
+        and b.tokens_milli < consume.get(b.limit_name, 0) * 1000
+        for b in old_buckets
+    )
+    if wcu_exhausted and app_exhausted:
+        reason = SpeculativeFailureReason.BOTH_EXHAUSTED
+    elif wcu_exhausted:
+        reason = SpeculativeFailureReason.WCU_EXHAUSTED
+    else:
+        reason = SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+
+    return SpeculativeResult(
+        success=False,
+        old_buckets=old_buckets,
+        shard_id=shard_id,
+        shard_count=old_shard_count,
+        failure_reason=reason,
+    )
+else:
+    return SpeculativeResult(
+        success=False,
+        shard_id=shard_id,
+        failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
+    )
+```
+
+**Step 5: Replace `_is_wcu_exhausted` in limiter**
+
+In `limiter.py:732-752`, replace:
+
+```python
+# Before:
+if self._is_wcu_exhausted(result.old_buckets):
+    ...
+if result.shard_count > 1:
+    ...
+
+# After:
+if result.failure_reason in (
+    SpeculativeFailureReason.WCU_EXHAUSTED,
+    SpeculativeFailureReason.BOTH_EXHAUSTED,
+):
+    await self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+    return None
+
+if result.shard_count > 1 and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED:
+    retry_result = await self._retry_on_other_shard(...)
+    ...
+```
+
+Remove `_is_wcu_exhausted()` static method (lines 1007-1026).
+
+**Step 6: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 7: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 8: Commit**
+
+```bash
+git add src/zae_limiter/repository_protocol.py src/zae_limiter/repository.py \
+    src/zae_limiter/limiter.py src/zae_limiter/sync_*.py \
+    tests/unit/test_repository.py tests/unit/test_limiter.py \
+    tests/unit/test_sync_*.py
+git commit -m "♻️ refactor(limiter): add SpeculativeFailureReason enum for deterministic shard decisions"
+```
