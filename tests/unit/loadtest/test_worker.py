@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("gevent")
 pytestmark = pytest.mark.gevent
 
 # 'lambda' is a Python keyword, so we import via importlib

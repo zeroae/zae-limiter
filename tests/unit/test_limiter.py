@@ -1,6 +1,7 @@
 """Tests for RateLimiter."""
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1041,7 +1042,7 @@ class TestWriteOnEnter:
             buckets = await limiter._repository.get_buckets(
                 entity_id="enter-test", resource="gpt-4"
             )
-            bucket = buckets[0]
+            bucket = next(b for b in buckets if b.limit_name == "rpm")
             # 100 capacity - 10 consumed = 90 tokens = 90000 millitokens
             assert bucket.tokens_milli <= 90_000
 
@@ -1136,7 +1137,8 @@ class TestWriteOnEnter:
         buckets = await limiter._repository.get_buckets(
             entity_id="concurrent-adjust", resource="gpt-4"
         )
-        assert buckets[0].total_consumed_milli == 50_000
+        rpd_bucket = next(b for b in buckets if b.limit_name == "rpd")
+        assert rpd_bucket.total_consumed_milli == 50_000
 
 
 class TestRateLimiterLeaseCounter:
@@ -1162,7 +1164,7 @@ class TestRateLimiterLeaseCounter:
         buckets = await limiter._repository.get_buckets(
             entity_id="counter-test-1", resource="gpt-4"
         )
-        bucket = buckets[0]
+        bucket = next(b for b in buckets if b.limit_name == "tpm")
         # Counter should be 100 tokens * 1000 = 100000 millitokens
         assert bucket.total_consumed_milli == 100_000
 
@@ -1181,7 +1183,7 @@ class TestRateLimiterLeaseCounter:
         buckets = await limiter._repository.get_buckets(
             entity_id="counter-test-2", resource="gpt-4"
         )
-        bucket = buckets[0]
+        bucket = next(b for b in buckets if b.limit_name == "tpm")
         # Counter: (100 + 50) * 1000 = 150000 millitokens
         assert bucket.total_consumed_milli == 150_000
 
@@ -1201,7 +1203,7 @@ class TestRateLimiterLeaseCounter:
         buckets = await limiter._repository.get_buckets(
             entity_id="counter-test-3", resource="gpt-4"
         )
-        bucket = buckets[0]
+        bucket = next(b for b in buckets if b.limit_name == "tpm")
         # Counter: (100 - 30) * 1000 = 70000 millitokens
         assert bucket.total_consumed_milli == 70_000
 
@@ -1221,7 +1223,7 @@ class TestRateLimiterLeaseCounter:
         buckets = await limiter._repository.get_buckets(
             entity_id="counter-test-4", resource="gpt-4"
         )
-        bucket = buckets[0]
+        bucket = next(b for b in buckets if b.limit_name == "tpm")
         # Counter: (100 - 40) * 1000 = 60000 millitokens
         assert bucket.total_consumed_milli == 60_000
 
@@ -1241,7 +1243,7 @@ class TestRateLimiterLeaseCounter:
         buckets = await limiter._repository.get_buckets(
             entity_id="counter-test-5", resource="gpt-4"
         )
-        bucket = buckets[0]
+        bucket = next(b for b in buckets if b.limit_name == "tpm")
         # Counter: (100 + 200) * 1000 = 300000 millitokens
         assert bucket.total_consumed_milli == 300_000
 
@@ -3840,21 +3842,21 @@ class TestLeaseCommitTTL:
         bucket = next((b for b in buckets if b.limit_name == "rpm"), None)
         assert bucket is not None
         # We need to check the raw item has ttl - let's query directly
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
         assert item is not None
         assert "ttl" in item
 
     async def test_get_item_returns_none_for_missing_bucket(self, limiter):
         """_get_item returns None when bucket doesn't exist."""
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Query for a bucket that doesn't exist
-        pk = pk_entity(limiter._repository.namespace_id, "nonexistent-user")
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        pk = pk_bucket(limiter._repository.namespace_id, "nonexistent-user", "api", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is None
 
     async def test_commit_removes_ttl_for_entity_config(self, limiter):
@@ -3883,10 +3885,10 @@ class TestLeaseCommitTTL:
             pass
 
         # Verify TTL was removed
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
         assert item is not None
         assert "ttl" not in item
@@ -3910,10 +3912,10 @@ class TestLeaseCommitTTL:
             pass
 
         # Verify TTL IS set (entity_default is treated as a default, not custom)
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
-        pk = pk_entity(limiter._repository.namespace_id, "user-1")
-        item = await limiter._repository._get_item(pk, sk_bucket("gpt-4"))
+        pk = pk_bucket(limiter._repository.namespace_id, "user-1", "gpt-4", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
         assert "ttl" in item, "entity_default config should have TTL (treated as default)"
 
@@ -3934,10 +3936,10 @@ class TestLeaseCommitTTL:
         now_after = int(time.time())
 
         # Get TTL from item
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
 
         # TTL = now + (60 seconds * 7 multiplier) = now + 420
@@ -3974,10 +3976,10 @@ class TestLeaseCommitTTL:
         ):
             pass
 
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
-        pk = pk_entity(limiter._repository.namespace_id, "user-slow")
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        pk = pk_bucket(limiter._repository.namespace_id, "user-slow", "api", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
 
         # Time to fill = (capacity / refill_amount) × refill_period = 100 × 60 = 6000 seconds
         # Expected TTL = time_to_fill × multiplier = 6000 × 7 = 42000 seconds
@@ -4011,10 +4013,10 @@ class TestLeaseCommitTTL:
                 pass
 
             # Verify no TTL set
-            from zae_limiter.schema import pk_entity, sk_bucket
+            from zae_limiter.schema import pk_bucket, sk_state
 
-            pk = pk_entity(limiter._repository.namespace_id, "user-1")
-            item = await limiter._repository._get_item(pk, sk_bucket("api"))
+            pk = pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0)
+            item = await limiter._repository._get_item(pk, sk_state())
             assert item is not None
             assert "ttl" not in item
 
@@ -4024,7 +4026,7 @@ class TestLeaseCommitTTL:
         When an entity's custom limits are deleted, the next acquire() should set TTL
         on the bucket since the entity now uses default limits again.
         """
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Set system defaults
         await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
@@ -4042,7 +4044,7 @@ class TestLeaseCommitTTL:
 
         # Verify no TTL (entity has custom config)
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
         assert item is not None
         assert "ttl" not in item
@@ -4063,7 +4065,7 @@ class TestLeaseCommitTTL:
 
         # Verify TTL is now set (entity uses default config)
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
         assert item is not None
         assert "ttl" in item
@@ -4085,7 +4087,7 @@ class TestBucketLimitSync:
         3. Update limit to rpm=200 - set_limits() syncs bucket
         4. Bucket capacity is now 200
         """
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Step 1: Set initial limit (rpm=100)
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)], resource="api")
@@ -4100,7 +4102,7 @@ class TestBucketLimitSync:
 
         # Verify bucket was created with capacity=100
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Initial capacity should be 100 RPM"
@@ -4110,7 +4112,7 @@ class TestBucketLimitSync:
 
         # Verify bucket capacity was updated immediately (no acquire needed)
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Bucket capacity should be synced to 200 RPM"
@@ -4124,7 +4126,7 @@ class TestBucketLimitSync:
         3. Update limit to rpm=100 - set_limits() syncs bucket
         4. Bucket capacity is now 100
         """
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Step 1: Set initial limit (rpm=200)
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 200)], resource="api")
@@ -4139,7 +4141,7 @@ class TestBucketLimitSync:
 
         # Verify bucket was created with capacity=200
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "Initial capacity should be 200 RPM"
@@ -4149,7 +4151,7 @@ class TestBucketLimitSync:
 
         # Verify bucket capacity was updated immediately (no acquire needed)
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-1"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-1", "api", 0), sk_state()
         )
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Bucket capacity should be synced to 100 RPM"
@@ -4160,7 +4162,7 @@ class TestBucketLimitSync:
         Verifies that the SET expression correctly handles multiple limits
         and all parameters (capacity, refill) are updated.
         """
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Set initial limits: rpm=100, tpm=10000
         await limiter.set_limits(
@@ -4177,7 +4179,7 @@ class TestBucketLimitSync:
 
         # Verify initial values
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-2"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-2", "api", 0), sk_state()
         )
         assert item is not None
         assert item["b_rpm_cp"] == 100000
@@ -4192,7 +4194,7 @@ class TestBucketLimitSync:
 
         # Verify both buckets synced
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-2"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-2", "api", 0), sk_state()
         )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "rpm capacity should be synced"
@@ -4204,7 +4206,7 @@ class TestBucketLimitSync:
         Verifies that all bucket parameters are updated:
         capacity, refill_amount, refill_period.
         """
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Initial: 100 per minute
         await limiter.set_limits(
@@ -4217,7 +4219,7 @@ class TestBucketLimitSync:
 
         # Verify initial values (per minute: refill_period=60s)
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-3"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-3", "api", 0), sk_state()
         )
         assert item is not None
         assert item["b_rpm_cp"] == 100000  # capacity: 100 * 1000
@@ -4233,7 +4235,7 @@ class TestBucketLimitSync:
 
         # Verify all params updated
         item = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-3"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-3", "api", 0), sk_state()
         )
         assert item is not None
         assert item["b_rpm_cp"] == 200000, "capacity should be synced"
@@ -4276,8 +4278,8 @@ class TestBucketLimitSync:
         original_update = limiter._repository._client.update_item
 
         async def mock_update_item(**kwargs):
-            # Only fail for bucket sync calls (not other updates)
-            if kwargs.get("Key", {}).get("SK", {}).get("S", "").startswith("#BUCKET#"):
+            # Only fail for bucket sync calls (SK=#STATE for bucket items)
+            if kwargs.get("Key", {}).get("SK", {}).get("S", "") == "#STATE":
                 raise ClientError(
                     {"Error": {"Code": "InternalServerError", "Message": "Test error"}},
                     "UpdateItem",
@@ -4304,7 +4306,7 @@ class TestBucketReconciliation:
 
         Transition: system defaults (TTL) → entity config (no TTL).
         """
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Create bucket with system defaults (has TTL)
         await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
@@ -4312,8 +4314,8 @@ class TestBucketReconciliation:
             pass
 
         # Verify bucket has TTL
-        pk = pk_entity(limiter._repository.namespace_id, "user-ttl")
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        pk = pk_bucket(limiter._repository.namespace_id, "user-ttl", "api", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
         assert "ttl" in item
 
@@ -4321,7 +4323,7 @@ class TestBucketReconciliation:
         await limiter.set_limits("user-ttl", [Limit.per_minute("rpm", 200)], resource="api")
 
         # Verify TTL removed and capacity updated
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
         assert "ttl" not in item
         assert item["b_rpm_cp"] == 200000
@@ -4331,7 +4333,7 @@ class TestBucketReconciliation:
 
         Transition: entity config (no TTL) → resource defaults (TTL).
         """
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Set resource defaults
         await limiter.set_resource_defaults("api", [Limit.per_minute("rpm", 100)])
@@ -4344,8 +4346,8 @@ class TestBucketReconciliation:
         async with limiter.acquire(entity_id="user-del", resource="api", consume={"rpm": 1}):
             pass
 
-        pk = pk_entity(limiter._repository.namespace_id, "user-del")
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        pk = pk_bucket(limiter._repository.namespace_id, "user-del", "api", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
         assert "ttl" not in item
         assert item["b_rpm_cp"] == 500000
@@ -4353,7 +4355,7 @@ class TestBucketReconciliation:
         # Delete entity config — should reconcile to resource defaults
         await limiter.delete_limits("user-del", resource="api")
 
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
         assert "ttl" in item, "TTL should be set (now using defaults)"
         assert item["b_rpm_cp"] == 100000, "Capacity should match resource defaults"
@@ -4363,7 +4365,7 @@ class TestBucketReconciliation:
 
         Entity had [rpm, tpm], defaults have [rpm] only — tpm attrs removed.
         """
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Set system defaults with rpm only
         await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
@@ -4384,15 +4386,15 @@ class TestBucketReconciliation:
         ):
             pass
 
-        pk = pk_entity(limiter._repository.namespace_id, "user-stale")
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        pk = pk_bucket(limiter._repository.namespace_id, "user-stale", "api", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
         assert "b_tpm_cp" in item, "tpm limit should exist in bucket"
 
         # Delete entity config — tpm attrs should be removed
         await limiter.delete_limits("user-stale", resource="api")
 
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
         assert "b_rpm_cp" in item, "rpm limit should still exist"
         assert item["b_rpm_cp"] == 100000, "rpm should match system defaults"
@@ -4402,7 +4404,7 @@ class TestBucketReconciliation:
 
     async def test_delete_limits_no_effective_defaults(self, limiter):
         """delete_limits() leaves bucket as-is when no fallback config exists."""
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         # Set entity config (no resource or system defaults)
         await limiter.set_limits("user-orphan", [Limit.per_minute("rpm", 100)], resource="api")
@@ -4413,15 +4415,15 @@ class TestBucketReconciliation:
             pass
 
         item_before = await limiter._repository._get_item(
-            pk_entity(limiter._repository.namespace_id, "user-orphan"), sk_bucket("api")
+            pk_bucket(limiter._repository.namespace_id, "user-orphan", "api", 0), sk_state()
         )
         assert item_before is not None
 
         # Delete entity config — no fallback, bucket left as-is
         await limiter.delete_limits("user-orphan", resource="api")
 
-        pk = pk_entity(limiter._repository.namespace_id, "user-orphan")
-        item_after = await limiter._repository._get_item(pk, sk_bucket("api"))
+        pk = pk_bucket(limiter._repository.namespace_id, "user-orphan", "api", 0)
+        item_after = await limiter._repository._get_item(pk, sk_state())
         assert item_after is not None
         # Bucket should be unchanged (no reconciliation)
         assert item_after["b_rpm_cp"] == item_before["b_rpm_cp"]
@@ -5526,7 +5528,7 @@ class TestCascadeEntityCache:
         cache = limiter._repository._entity_cache
         ns_id = limiter._repository.namespace_id
         assert (ns_id, "entity-1") in cache
-        cascade, parent_id = cache[(ns_id, "entity-1")]
+        cascade, parent_id, _shards = cache[(ns_id, "entity-1")]
         assert cascade is False
         assert parent_id is None
 
@@ -5544,7 +5546,7 @@ class TestCascadeEntityCache:
         cache = limiter._repository._entity_cache
         ns_id = limiter._repository.namespace_id
         assert (ns_id, "entity-1") in cache
-        cascade, parent_id = cache[(ns_id, "entity-1")]
+        cascade, parent_id, _shards = cache[(ns_id, "entity-1")]
         assert cascade is False
         assert parent_id is None
 
@@ -5561,7 +5563,7 @@ class TestCascadeEntityCache:
         cache = limiter._repository._entity_cache
         ns_id = limiter._repository.namespace_id
         assert (ns_id, "child-1") in cache
-        cascade, parent_id = cache[(ns_id, "child-1")]
+        cascade, parent_id, _shards = cache[(ns_id, "child-1")]
         assert cascade is True
         assert parent_id == "parent-1"
 
@@ -5584,7 +5586,7 @@ class TestCascadeEntityCache:
         single_call_count = 0
         original_single = limiter._repository._speculative_consume_single
 
-        async def counting_single(entity_id, resource, consume, ttl_seconds=None):
+        async def counting_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             nonlocal single_call_count
             single_call_count += 1
             return await original_single(entity_id, resource, consume, ttl_seconds)
@@ -5617,9 +5619,11 @@ class TestCascadeEntityCache:
         single_calls: list[str] = []
         original_single = limiter._repository._speculative_consume_single
 
-        async def tracking_single(entity_id, resource, consume, ttl_seconds=None):
+        async def tracking_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             single_calls.append(entity_id)
-            return await original_single(entity_id, resource, consume, ttl_seconds)
+            return await original_single(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id
+            )
 
         limiter._repository._speculative_consume_single = tracking_single
         try:
@@ -5682,7 +5686,7 @@ class TestCascadeEntityCache:
             compensated_entity_ids.append(entity_id)
             return await original_compensate(entity_id, resource, consume)
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=False,
@@ -5741,7 +5745,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -5808,7 +5812,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -5866,7 +5870,7 @@ class TestCascadeEntityCache:
 
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -5941,7 +5945,7 @@ class TestCascadeEntityCache:
 
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6022,7 +6026,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6100,7 +6104,7 @@ class TestCascadeEntityCache:
         )
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6162,7 +6166,7 @@ class TestCascadeEntityCache:
         )
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6217,7 +6221,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         original_parent_acquire = limiter._try_parent_only_acquire
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6278,7 +6282,7 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         original_parent_acquire = limiter._try_parent_only_acquire
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6301,3 +6305,173 @@ class TestCascadeEntityCache:
         finally:
             limiter._repository._speculative_consume_single = original_single
             limiter._try_parent_only_acquire = original_parent_acquire
+
+
+class TestShardRetry:
+    """Tests for shard retry and doubling in acquire flow."""
+
+    async def test_acquire_retries_on_another_shard(self, limiter):
+        """When one shard's app limit is exhausted, retry on another shard."""
+        repo = limiter._repository
+        ns = repo._namespace_id
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Create buckets at shard 0 and shard 1
+        now_ms = int(time.time() * 1000)
+        for shard_id in range(2):
+            states = [
+                BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 100), now_ms),
+            ]
+            put_item = repo.build_composite_create(
+                "user-1", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+            )
+            await repo.transact_write([put_item])
+
+        # Pre-populate entity cache with shard_count=2
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 2})
+
+        # Exhaust shard 0's rpm tokens via direct speculative_consume_single
+        for _ in range(100):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+
+        # Force shard_id=0 first, then let retry find shard 1
+        limiter._speculative_writes = True
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                rpm_entry = next(e for e in lease.entries if e.limit.name == "rpm")
+                assert rpm_entry is not None
+
+    async def test_acquire_doubles_shards_on_wcu_exhaustion(self, limiter):
+        """When wcu is exhausted, shard_count doubles and acquire falls to slow path."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100_000)])
+
+        # Create bucket at shard 0 with shard_count=1
+        now_ms = int(time.time() * 1000)
+        states = [
+            BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 100_000), now_ms),
+        ]
+        put_item = repo.build_composite_create(
+            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        await repo.transact_write([put_item])
+
+        # Pre-populate entity cache
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 1})
+
+        # Exhaust wcu tokens on shard 0
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+
+        # Now shard 0's wcu is exhausted. Acquire should:
+        # 1. Detect wcu exhaustion
+        # 2. Call bump_shard_count to double to 2
+        # 3. Fall through to slow path (new shard doesn't exist yet)
+        limiter._speculative_writes = True
+
+        # Acquire should still succeed (falls to slow path which creates bucket)
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            rpm_entry = next(e for e in lease.entries if e.limit.name == "rpm")
+            assert rpm_entry is not None
+
+        # Verify shard_count was bumped in entity cache
+        cache_entry = repo._entity_cache[(ns, "user-1")]
+        assert cache_entry[2]["gpt-4"] == 2
+
+    async def test_retry_on_other_shard_returns_none_when_all_exhausted(self, limiter):
+        """_retry_on_other_shard returns None when all shards are exhausted."""
+        repo = limiter._repository
+        ns = repo._namespace_id
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1)])
+
+        now_ms = int(time.time() * 1000)
+        # Create 2 shards, each with only 1 rpm token
+        for shard_id in range(2):
+            states = [
+                BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 1), now_ms),
+            ]
+            put_item = repo.build_composite_create(
+                "user-1", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+            )
+            await repo.transact_write([put_item])
+
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 2})
+
+        # Exhaust rpm on both shards
+        for shard_id in range(2):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=shard_id)
+
+        # Both shards exhausted, retry should return None and fall to slow path
+        limiter._speculative_writes = True
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
+
+class TestWcuHiddenFromUser:
+    """Tests that wcu infrastructure limit is hidden from user-facing output."""
+
+    async def test_rate_limit_exceeded_hides_wcu(self, limiter):
+        """wcu never appears in RateLimitExceeded statuses."""
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1)])
+
+        # Create bucket at shard 0
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 1), now_ms)]
+        put_item = repo.build_composite_create(
+            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        await repo.transact_write([put_item])
+
+        # Pre-populate entity cache
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 1})
+
+        # Exhaust rpm via speculative path
+        await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+
+        limiter._speculative_writes = True
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
+        # wcu must not appear in any statuses
+        all_limit_names = [s.limit_name for s in exc_info.value.statuses]
+        assert "wcu" not in all_limit_names
+
+    async def test_get_buckets_hides_wcu(self, limiter):
+        """get_buckets omits wcu from returned bucket states."""
+        repo = limiter._repository
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 100)])
+
+        # Create bucket at shard 0
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("user-1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        put_item = repo.build_composite_create(
+            "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=1
+        )
+        await repo.transact_write([put_item])
+
+        # get_buckets should not include wcu
+        buckets = await repo.get_buckets("user-1", resource="gpt-4")
+        limit_names = {b.limit_name for b in buckets}
+        assert "wcu" not in limit_names
+        assert "rpm" in limit_names

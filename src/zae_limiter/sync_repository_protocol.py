@@ -33,12 +33,17 @@ class SpeculativeResult:
     Attributes:
         success: True if the speculative write succeeded.
         buckets: On success, deserialized BucketStates from ALL_NEW response.
+            Includes the ``wcu`` infrastructure limit bucket state.
         cascade: On success, whether the entity has cascade enabled.
         parent_id: On success, the entity's parent_id (if any).
         old_buckets: On failure, deserialized BucketStates from ALL_OLD response.
             None if the bucket doesn't exist (first acquire).
         parent_result: On cache hit + cascade, nested parent SpeculativeResult
             from parallel UpdateItem. None for cache miss, non-cascade, or failure.
+        shard_id: The shard index targeted by this speculative write.
+        shard_count: The total shard count read from the bucket item. Used by
+            the limiter to decide whether to retry on another shard or double
+            shards when the ``wcu`` limit is exhausted.
     """
 
     success: bool
@@ -47,6 +52,8 @@ class SpeculativeResult:
     parent_id: str | None = None
     old_buckets: "list[BucketState] | None" = None
     parent_result: "SpeculativeResult | None" = None
+    shard_id: int = 0
+    shard_count: int = 1
 
 
 @runtime_checkable
@@ -290,16 +297,23 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_buckets(self, entity_id: str, resource: str) -> "list[BucketState]":
+    def get_buckets(
+        self, entity_id: str, resource: str | None = None, shard_id: int = 0
+    ) -> "list[BucketState]":
         """
-        Get all token buckets for an entity/resource pair.
+        Get token buckets for an entity.
+
+        When resource is specified, fetches the bucket at the given shard_id.
+        When resource is None, uses GSI3 to discover all buckets across
+        resources and shards.
 
         Args:
             entity_id: Entity owning the buckets
-            resource: Resource name (e.g., "gpt-4")
+            resource: Resource name filter (None for all resources)
+            shard_id: Shard to fetch when resource is specified
 
         Returns:
-            List of bucket states for all limits on this resource
+            List of bucket states
         """
         ...
 
@@ -489,7 +503,12 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def speculative_consume(
-        self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None = None,
+        shard_id: int | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -503,12 +522,29 @@ class SyncRepositoryProtocol(Protocol):
             resource: Resource name
             consume: Amount per limit (tokens, not milli)
             ttl_seconds: TTL in seconds from now, or None for no TTL change
+            shard_id: Explicit shard to target (skips random selection and
+                cascade logic). None means auto-select from entity cache.
 
         Returns:
             SpeculativeResult with success flag and either:
             - On success: buckets, cascade, parent_id from ALL_NEW
             - On failure with ALL_OLD: old_buckets from ALL_OLD
             - On failure without ALL_OLD: old_buckets is None (bucket missing)
+        """
+        ...
+
+    def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
+        """Double shard_count on shard 0 via conditional write.
+
+        Also updates the entity cache with the new shard_count.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            current_count: Expected current shard_count
+
+        Returns:
+            The new shard_count, or current_count if another client already doubled.
         """
         ...
 

@@ -131,7 +131,7 @@ class TestE2ELocalStackCLIWorkflow:
             assert "Client:" in result.output
             assert "Schema:" in result.output
             # Schema should be initialized by deploy (not N/A)
-            assert "Schema:        0.8.0" in result.output
+            assert "Schema:        0.9.0" in result.output
             assert "Lambda:" in result.output
             # Lambda version should match client version (fix #274)
             assert f"Lambda:        {__version__}" in result.output
@@ -790,21 +790,10 @@ class TestE2ELocalStackAggregatorWorkflow:
         # Note: In LocalStack, Lambda processing may not be reliable
         # This test verifies the infrastructure is set up correctly
         repo = e2e_limiter_with_aggregator._repository
-        client = await repo._get_client()
 
-        # Query for BUCKET records to verify data exists
-        response = await client.query(
-            TableName=repo.table_name,
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk_prefix)",
-            ExpressionAttributeValues={
-                ":pk": {"S": f"{repo._namespace_id}/ENTITY#snapshot-user"},
-                ":sk_prefix": {"S": "#BUCKET#"},
-            },
-        )
-
-        # Verify bucket records were created
-        items = response.get("Items", [])
-        assert len(items) > 0, "Bucket records should exist"
+        # Verify bucket records were created (uses GSI3 for pre-shard bucket discovery)
+        buckets = await repo.get_buckets("snapshot-user")
+        assert len(buckets) > 0, "Bucket records should exist"
 
 
 class TestE2ELocalStackErrorHandling:

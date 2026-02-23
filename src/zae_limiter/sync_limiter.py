@@ -42,7 +42,7 @@ from .models import (
     validate_identifier,
     validate_resource,
 )
-from .schema import DEFAULT_RESOURCE
+from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
@@ -622,6 +622,15 @@ class SyncRateLimiter:
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None
                 self._compensate_speculative(result.parent_id, resource, consume)
+            if self._is_wcu_exhausted(result.old_buckets):
+                self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+                return None
+            if result.shard_count > 1:
+                retry_result = self._retry_on_other_shard(
+                    entity_id, resource, consume, ttl_seconds=None, result=result
+                )
+                if retry_result is not None:
+                    return retry_result
             self._check_speculative_failure(result, consume, now_ms)
             return None
         entries: list[LeaseEntry] = []
@@ -831,6 +840,102 @@ class SyncRateLimiter:
         would_help, statuses = would_refill_satisfy(result.old_buckets, consume, now_ms)
         if not would_help:
             raise RateLimitExceeded(statuses)
+
+    _MAX_SHARD_RETRIES = 2
+
+    @staticmethod
+    def _is_wcu_exhausted(old_buckets: "list[BucketState] | None") -> bool:
+        """Check if the wcu infrastructure limit is exhausted.
+
+        The wcu limit tracks per-partition write pressure (GHSA-76rv). When
+        exhausted (<1000 millitokens = <1 WCU), the caller should double
+        shard_count to distribute writes across more DynamoDB partitions.
+
+        Args:
+            old_buckets: BucketStates from a failed speculative result's
+                ALL_OLD response. None if the bucket does not exist.
+
+        Returns:
+            True if the wcu limit exists and has fewer than 1000 millitokens.
+        """
+        if old_buckets is None:
+            return False
+        for b in old_buckets:
+            if b.limit_name == WCU_LIMIT_NAME and b.tokens_milli < 1000:
+                return True
+        return False
+
+    def _retry_on_other_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None,
+        result: "SpeculativeResult",
+    ) -> "SyncLease | None":
+        """Retry speculative consume on untried shards (GHSA-76rv shard retry).
+
+        When application limits are exhausted on one shard, other shards may
+        still have available tokens (since capacity is divided across shards).
+        This method picks random untried shards up to ``_MAX_SHARD_RETRIES``.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consume: Amount per limit (tokens, not milli)
+            ttl_seconds: TTL in seconds from now, or None for no TTL change
+            result: The failed SpeculativeResult from the initial shard
+
+        Returns:
+            SyncLease if a retry on another shard succeeded, None if all retries
+            failed or no untried shards remain.
+        """
+        import random
+
+        tried_shards = {result.shard_id}
+        shard_count = result.shard_count
+        for _ in range(self._MAX_SHARD_RETRIES):
+            untried = [s for s in range(shard_count) if s not in tried_shards]
+            if not untried:
+                break
+            new_shard = random.choice(untried)
+            tried_shards.add(new_shard)
+            retry = self._repository.speculative_consume(
+                entity_id, resource, consume, ttl_seconds, shard_id=new_shard
+            )
+            if retry.success:
+                return self._build_lease_from_speculative(entity_id, resource, consume, retry)
+        return None
+
+    def _build_lease_from_speculative(
+        self, entity_id: str, resource: str, consume: dict[str, int], result: "SpeculativeResult"
+    ) -> "SyncLease":
+        """Build a pre-committed SyncLease from a successful speculative result.
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            consume: Amount per limit that was consumed
+            result: Successful SpeculativeResult with ALL_NEW buckets
+        """
+        entries: list[LeaseEntry] = []
+        for state in result.buckets:
+            amount = consume.get(state.limit_name, 0)
+            if amount == 0:
+                continue
+            limit = Limit.from_bucket_state(state)
+            entries.append(
+                LeaseEntry(
+                    entity_id=state.entity_id,
+                    resource=state.resource,
+                    limit=limit,
+                    state=state,
+                    consumed=amount,
+                    _cascade=result.cascade,
+                    _parent_id=result.parent_id,
+                )
+            )
+        return SyncLease(entries=entries, repository=self._repository, _committed=True)
 
     def _try_parent_only_acquire(
         self,

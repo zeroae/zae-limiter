@@ -22,8 +22,8 @@ from zae_limiter.schema import (
     BUCKET_FIELD_TK,
     bucket_attr,
     get_table_definition,
-    pk_entity,
-    sk_bucket,
+    pk_bucket,
+    sk_state,
 )
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
@@ -57,7 +57,7 @@ def dynamodb_table():
     table.delete()
 
 
-def _seed_bucket(table, entity_id: str, resource: str, limits: dict, rf_ms: int):
+def _seed_bucket(table, entity_id: str, resource: str, limits: dict, rf_ms: int, shard_id: int = 0):
     """Seed a composite bucket item (simulates what a speculative write creates).
 
     Args:
@@ -66,12 +66,14 @@ def _seed_bucket(table, entity_id: str, resource: str, limits: dict, rf_ms: int)
         resource: Resource name
         limits: Dict of limit_name -> {tk, cp, ra, rp, tc} in millitokens/ms
         rf_ms: Shared refill timestamp
+        shard_id: Shard index (default 0)
     """
     item = {
-        "PK": pk_entity("default", entity_id),
-        "SK": sk_bucket(resource),
+        "PK": pk_bucket("default", entity_id, resource, shard_id),
+        "SK": sk_state(),
         "entity_id": entity_id,
         "rf": rf_ms,
+        "shard_count": 1,
     }
     for limit_name, fields in limits.items():
         item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = fields["tk"]
@@ -83,12 +85,12 @@ def _seed_bucket(table, entity_id: str, resource: str, limits: dict, rf_ms: int)
     table.put_item(Item=item)
 
 
-def _get_bucket(table, entity_id: str, resource: str) -> dict:
+def _get_bucket(table, entity_id: str, resource: str, shard_id: int = 0) -> dict:
     """Read a bucket item from DynamoDB."""
     response = table.get_item(
         Key={
-            "PK": pk_entity("default", entity_id),
-            "SK": sk_bucket(resource),
+            "PK": pk_bucket("default", entity_id, resource, shard_id),
+            "SK": sk_state(),
         }
     )
     return response.get("Item", {})
@@ -100,6 +102,7 @@ def _make_stream_record(
     limits_old: dict,
     limits_new: dict,
     rf_ms: int,
+    shard_id: int = 0,
 ) -> dict:
     """Build a DynamoDB stream MODIFY record for a composite bucket.
 
@@ -109,14 +112,16 @@ def _make_stream_record(
         limits_old: Dict of limit_name -> {tk, cp, ra, rp, tc} for OldImage
         limits_new: Dict of limit_name -> {tk, cp, ra, rp, tc} for NewImage
         rf_ms: Shared refill timestamp in NewImage
+        shard_id: Shard index (default 0)
     """
 
     def _build_image(limits: dict, rf: int) -> dict:
         image = {
-            "PK": {"S": pk_entity("default", entity_id)},
-            "SK": {"S": sk_bucket(resource)},
+            "PK": {"S": pk_bucket("default", entity_id, resource, shard_id)},
+            "SK": {"S": sk_state()},
             "entity_id": {"S": entity_id},
             "rf": {"N": str(rf)},
+            "shard_count": {"N": "1"},
         }
         for limit_name, fields in limits.items():
             image[bucket_attr(limit_name, BUCKET_FIELD_TK)] = {"N": str(fields["tk"])}
@@ -316,8 +321,8 @@ class TestTryRefillBucketIntegration:
         # Simulate concurrent speculative consume (ADD -1000_000)
         dynamodb_table.update_item(
             Key={
-                "PK": pk_entity("default", entity_id),
-                "SK": sk_bucket(resource),
+                "PK": pk_bucket("default", entity_id, resource, 0),
+                "SK": sk_state(),
             },
             UpdateExpression="ADD b_tpm_tk :consumed, b_tpm_tc :consumed_tc",
             ExpressionAttributeValues={
@@ -499,7 +504,7 @@ class TestAggregateAndRefillIntegration:
         bucket_states = aggregate_bucket_states(records)
         assert len(bucket_states) == 1
 
-        key = ("default", entity_id, resource)
+        key = ("default", entity_id, resource, 0)
         state = bucket_states[key]
 
         # Verify aggregation: tc_delta = 5k across both events

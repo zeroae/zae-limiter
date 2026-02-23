@@ -355,10 +355,12 @@ as needed.
 
 | Key | Pattern | Purpose |
 |-----|---------|---------|
-| PK | `{ns}/ENTITY#{id}` | Partition key |
-| SK | `#META`, `#BUCKET#...`, `#LIMIT#...` | Sort key |
+| PK | `{ns}/ENTITY#{id}` or `{ns}/BUCKET#{id}#{resource}#{shard}` | Partition key |
+| SK | `#META`, `#STATE`, `#CONFIG#...` | Sort key |
 | GSI1PK | `{ns}/PARENT#{id}` | Parent lookups |
 | GSI2PK | `{ns}/RESOURCE#{name}` | Resource aggregation |
+| GSI3PK | `{ns}/ENTITY_CONFIG#{resource}` or `{ns}/ENTITY#{id}` | Entity configs + Bucket discovery |
+| GSI4PK | `{ns}` | Namespace item discovery |
 
 ### Lambda Function
 

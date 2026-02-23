@@ -7,6 +7,8 @@ Run with: pytest tests/unit/ -m gevent -n 0
 
 import pytest
 
+pytest.importorskip("gevent")
+
 from zae_limiter.sync_repository import SyncRepository
 
 pytestmark = pytest.mark.gevent

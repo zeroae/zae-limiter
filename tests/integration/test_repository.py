@@ -22,6 +22,7 @@ import pytest
 from zae_limiter import Limit, StackOptions
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
+from zae_limiter.schema import WCU_LIMIT_NAME
 
 pytestmark = pytest.mark.integration
 
@@ -315,15 +316,18 @@ class TestRepositoryBatchGetBuckets:
         keys = [(entity_id, "gpt-4") for entity_id in entity_ids]
         result = await test_repo.batch_get_buckets(keys)
 
-        # Should return all 6 bucket states (3 entities × 2 limits per composite item)
-        assert len(result) == 6
+        # Filter wcu infrastructure limit from result
+        user_result = {k: v for k, v in result.items() if k[2] != WCU_LIMIT_NAME}
+
+        # Should return all 6 user bucket states (3 entities × 2 limits per composite item)
+        assert len(user_result) == 6
 
         # Result uses 3-tuple keys for backward compatibility
         for entity_id in entity_ids:
             for limit in limits:
                 key = (entity_id, "gpt-4", limit.name)
-                assert key in result
-                bucket = result[key]
+                assert key in user_result
+                bucket = user_result[key]
                 assert bucket.entity_id == entity_id
                 assert bucket.resource == "gpt-4"
                 assert bucket.limit_name == limit.name
@@ -351,10 +355,11 @@ class TestRepositoryBatchGetBuckets:
             ("dedup-entity", "api"),  # Another duplicate
         ]
         result = await test_repo.batch_get_buckets(keys)
+        user_result = {k: v for k, v in result.items() if k[2] != WCU_LIMIT_NAME}
 
-        # Should return single bucket state (deduplication worked)
-        assert len(result) == 1
-        assert ("dedup-entity", "api", "rpm") in result
+        # Should return single user bucket state (deduplication worked)
+        assert len(user_result) == 1
+        assert ("dedup-entity", "api", "rpm") in user_result
 
     @pytest.mark.asyncio
     async def test_batch_get_buckets_missing_buckets(self, test_repo):
@@ -373,10 +378,11 @@ class TestRepositoryBatchGetBuckets:
             ("missing-entity", "api"),  # Entity doesn't exist
         ]
         result = await test_repo.batch_get_buckets(keys)
+        user_result = {k: v for k, v in result.items() if k[2] != WCU_LIMIT_NAME}
 
-        # Should only return the one existing bucket
-        assert len(result) == 1
-        assert ("exists-entity", "api", "rpm") in result
+        # Should only return the one existing user bucket
+        assert len(user_result) == 1
+        assert ("exists-entity", "api", "rpm") in user_result
 
     @pytest.mark.asyncio
     async def test_batch_get_buckets_chunking_over_100_items(self, test_repo):
@@ -397,15 +403,16 @@ class TestRepositoryBatchGetBuckets:
         # Batch get all 110 composite items (2-tuple keys, requires 2 DynamoDB calls)
         keys = [(entity_id, "api") for entity_id in entity_ids]
         result = await test_repo.batch_get_buckets(keys)
+        user_result = {k: v for k, v in result.items() if k[2] != WCU_LIMIT_NAME}
 
-        # Should return all 110 bucket states
-        assert len(result) == 110
+        # Should return all 110 user bucket states
+        assert len(user_result) == 110
 
         # Result uses 3-tuple keys for backward compatibility
         for entity_id in entity_ids:
             key = (entity_id, "api", "rpm")
-            assert key in result
-            assert result[key].entity_id == entity_id
+            assert key in user_result
+            assert user_result[key].entity_id == entity_id
 
 
 class TestRepositoryPing:
@@ -449,7 +456,7 @@ class TestBucketTTLDowngrade:
         5. Acquire again (TTL should be set)
         """
         from zae_limiter import Limit
-        from zae_limiter.schema import pk_entity, sk_bucket
+        from zae_limiter.schema import pk_bucket, sk_state
 
         limiter = localstack_limiter
 
@@ -469,8 +476,8 @@ class TestBucketTTLDowngrade:
 
         # Verify no TTL (entity has custom config)
         ns_id = limiter._repository._namespace_id
-        pk = pk_entity(ns_id, "user-downgrade")
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        pk = pk_bucket(ns_id, "user-downgrade", "api", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None, "Bucket should exist after acquire"
         assert "ttl" not in item, "Custom config entity should NOT have TTL"
 
@@ -489,7 +496,7 @@ class TestBucketTTLDowngrade:
             pass
 
         # Verify TTL is now set (entity uses default config)
-        item = await limiter._repository._get_item(pk, sk_bucket("api"))
+        item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None, "Bucket should still exist"
         assert "ttl" in item, "Default config entity should have TTL after downgrade"
 
@@ -635,11 +642,13 @@ class TestSpeculativeConsume:
         )
 
         assert result.success is True
-        assert len(result.buckets) == 1
-        assert result.buckets[0].entity_id == "spec-entity-1"
-        assert result.buckets[0].limit_name == "rpm"
+        # Filter wcu infrastructure limit from result
+        user_buckets = [b for b in result.buckets if b.limit_name != WCU_LIMIT_NAME]
+        assert len(user_buckets) == 1
+        assert user_buckets[0].entity_id == "spec-entity-1"
+        assert user_buckets[0].limit_name == "rpm"
         # Tokens should be reduced: 100_000 - 1_000 = 99_000
-        assert result.buckets[0].tokens_milli == 99_000
+        assert user_buckets[0].tokens_milli == 99_000
 
     @pytest.mark.asyncio
     async def test_speculative_success_multi_limit(self, test_repo):
@@ -664,8 +673,8 @@ class TestSpeculativeConsume:
         )
 
         assert result.success is True
-        assert len(result.buckets) == 2
-        bucket_map = {b.limit_name: b for b in result.buckets}
+        bucket_map = {b.limit_name: b for b in result.buckets if b.limit_name != WCU_LIMIT_NAME}
+        assert len(bucket_map) == 2
         assert bucket_map["rpm"].tokens_milli == 99_000  # 100_000 - 1_000
         assert bucket_map["tpm"].tokens_milli == 9_500_000  # 10_000_000 - 500_000
 
@@ -686,14 +695,16 @@ class TestSpeculativeConsume:
             entity_id="spec-entity-tc", resource="api", consume={"rpm": 3}
         )
         assert result1.success is True
-        assert result1.buckets[0].total_consumed_milli == 3_000
+        rpm1 = next(b for b in result1.buckets if b.limit_name == "rpm")
+        assert rpm1.total_consumed_milli == 3_000
 
         # Second consume — counter accumulates
         result2 = await repo.speculative_consume(
             entity_id="spec-entity-tc", resource="api", consume={"rpm": 7}
         )
         assert result2.success is True
-        assert result2.buckets[0].total_consumed_milli == 10_000
+        rpm2 = next(b for b in result2.buckets if b.limit_name == "rpm")
+        assert rpm2.total_consumed_milli == 10_000
 
     @pytest.mark.asyncio
     async def test_speculative_failure_insufficient_tokens(self, test_repo):
@@ -716,10 +727,11 @@ class TestSpeculativeConsume:
 
         assert result.success is False
         assert result.old_buckets is not None
-        assert len(result.old_buckets) == 1
-        assert result.old_buckets[0].limit_name == "rpm"
+        user_old = [b for b in result.old_buckets if b.limit_name != WCU_LIMIT_NAME]
+        assert len(user_old) == 1
+        assert user_old[0].limit_name == "rpm"
         # Old bucket should have original tokens (unconsumed)
-        assert result.old_buckets[0].tokens_milli == 10_000
+        assert user_old[0].tokens_milli == 10_000
 
     @pytest.mark.asyncio
     async def test_speculative_failure_multi_limit_one_exhausted(self, test_repo):
@@ -746,11 +758,11 @@ class TestSpeculativeConsume:
 
         assert result.success is False
         assert result.old_buckets is not None
-        assert len(result.old_buckets) == 2
+        old_map = {b.limit_name: b for b in result.old_buckets if b.limit_name != WCU_LIMIT_NAME}
+        assert len(old_map) == 2
         # Tokens untouched (transaction-like: neither limit consumed)
-        bucket_map = {b.limit_name: b for b in result.old_buckets}
-        assert bucket_map["rpm"].tokens_milli == 100_000
-        assert bucket_map["tpm"].tokens_milli == 5_000
+        assert old_map["rpm"].tokens_milli == 100_000
+        assert old_map["tpm"].tokens_milli == 5_000
 
     @pytest.mark.asyncio
     async def test_speculative_failure_bucket_missing(self, test_repo):
@@ -844,7 +856,7 @@ class TestSpeculativeConsume:
         )
 
         assert result.success is True
-        bucket = result.buckets[0]
+        bucket = next(b for b in result.buckets if b.limit_name == "rpm")
         assert bucket.entity_id == "spec-fields"
         assert bucket.resource == "api"
         assert bucket.limit_name == "rpm"
@@ -871,7 +883,8 @@ class TestSpeculativeConsume:
                 entity_id="spec-drain", resource="api", consume={"rpm": 3}
             )
             assert result.success is True
-            assert result.buckets[0].tokens_milli == expected_remaining
+            rpm = next(b for b in result.buckets if b.limit_name == "rpm")
+            assert rpm.tokens_milli == expected_remaining
 
         # Fourth attempt fails (1 < 3)
         result = await repo.speculative_consume(
@@ -879,7 +892,8 @@ class TestSpeculativeConsume:
         )
         assert result.success is False
         assert result.old_buckets is not None
-        assert result.old_buckets[0].tokens_milli == 1_000
+        rpm_old = next(b for b in result.old_buckets if b.limit_name == "rpm")
+        assert rpm_old.tokens_milli == 1_000
 
     @pytest.mark.asyncio
     async def test_speculative_rejects_expired_ttl_bucket(self, test_repo):

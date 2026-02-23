@@ -7,6 +7,7 @@ Changes should be made to the source file, then regenerated.
 """
 
 import logging
+import random
 import time
 import warnings
 from typing import TYPE_CHECKING, Any, cast
@@ -119,7 +120,7 @@ class SyncRepository:
             ttl_seconds=config_cache_ttl, namespace_id=self._namespace_id
         )
         self._config_cache_ttl = config_cache_ttl
-        self._entity_cache: dict[tuple[str, str], tuple[bool, str | None]] = {}
+        self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         self._on_unavailable_cache: OnUnavailableAction | None = None
         self._namespace_cache: dict[str, str] = {}
         self._parallel_mode = parallel_mode
@@ -1118,11 +1119,13 @@ class SyncRepository:
             },
         )
         item = response.get("Item")
+        cache_key = (self._namespace_id, entity_id)
+        existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
-            self._entity_cache[self._namespace_id, entity_id] = (False, None)
+            self._entity_cache[cache_key] = (False, None, existing_shards)
             return None
         entity = self._deserialize_entity(item)
-        self._entity_cache[self._namespace_id, entity_id] = (entity.cascade, entity.parent_id)
+        self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         return entity
 
     def delete_entity(self, entity_id: str, principal: str | None = None) -> None:
@@ -1142,10 +1145,20 @@ class SyncRepository:
             },
         )
         items = response.get("Items", [])
-        if not items:
+        gsi3_response = client.query(
+            TableName=self.table_name,
+            IndexName="GSI3",
+            KeyConditionExpression="GSI3PK = :gsi3pk",
+            ExpressionAttributeValues={
+                ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)}
+            },
+        )
+        bucket_items = gsi3_response.get("Items", [])
+        all_items = items + bucket_items
+        if not all_items:
             return
         delete_requests = [
-            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in items
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in all_items
         ]
         for i in range(0, len(delete_requests), 25):
             chunk = delete_requests[i : i + 25]
@@ -1154,7 +1167,7 @@ class SyncRepository:
             action=AuditAction.ENTITY_DELETED,
             entity_id=entity_id,
             principal=principal,
-            details={"records_deleted": len(items)},
+            details={"records_deleted": len(all_items)},
         )
 
     def get_children(self, parent_id: str) -> list[Entity]:
@@ -1175,14 +1188,16 @@ class SyncRepository:
                 entities.append(entity)
         return entities
 
-    def get_bucket(self, entity_id: str, resource: str, limit_name: str) -> BucketState | None:
+    def get_bucket(
+        self, entity_id: str, resource: str, limit_name: str, shard_id: int = 0
+    ) -> BucketState | None:
         """Get a single limit's bucket from the composite item."""
         client = self._get_client()
         response = client.get_item(
             TableName=self.table_name,
             Key={
-                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                "SK": {"S": schema.sk_bucket(resource)},
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
             },
         )
         item = response.get("Item")
@@ -1194,38 +1209,68 @@ class SyncRepository:
                 return b
         return None
 
-    def get_buckets(self, entity_id: str, resource: str | None = None) -> list[BucketState]:
+    def get_buckets(
+        self, entity_id: str, resource: str | None = None, shard_id: int = 0
+    ) -> list[BucketState]:
         """Get all buckets for an entity, optionally filtered by resource.
 
-        With composite items, each item contains all limits for one resource.
+        With pre-shard buckets (v0.9.0+), each item lives on its own partition
+        key ``PK={ns}/BUCKET#{id}#{resource}#{shard}``. When resource is
+        specified, fetches the single bucket at the given shard_id. When
+        resource is None, uses GSI3 (KEYS_ONLY) to discover all bucket PKs,
+        then BatchGetItem to fetch full items.
+
+        The internal ``wcu`` infrastructure limit is filtered from the
+        returned bucket states.
+
+        Args:
+            entity_id: Entity to query buckets for.
+            resource: Resource name filter, or None for all resources.
+            shard_id: Shard index (used only when resource is specified).
+
+        Returns:
+            List of BucketState objects (one per application limit).
         """
         client = self._get_client()
         if resource:
             response = client.get_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
             )
             item = response.get("Item")
             if not item:
                 return []
-            return self._deserialize_composite_bucket(item)
-        key_condition = "PK = :pk AND begins_with(SK, :sk_prefix)"
+            return [
+                b
+                for b in self._deserialize_composite_bucket(item)
+                if b.limit_name != schema.WCU_LIMIT_NAME
+            ]
+        key_condition = "GSI3PK = :gsi3pk"
         expression_values: dict[str, Any] = {
-            ":pk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-            ":sk_prefix": {"S": schema.SK_BUCKET},
+            ":gsi3pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)}
         }
         response = client.query(
             TableName=self.table_name,
+            IndexName="GSI3",
             KeyConditionExpression=key_condition,
             ExpressionAttributeValues=expression_values,
         )
+        gsi3_items = response.get("Items", [])
+        if not gsi3_items:
+            return []
+        request_keys = [{"PK": item["PK"], "SK": item["SK"]} for item in gsi3_items]
         buckets: list[BucketState] = []
-        for item in response.get("Items", []):
-            buckets.extend(self._deserialize_composite_bucket(item))
-        return buckets
+        for i in range(0, len(request_keys), 100):
+            chunk = request_keys[i : i + 100]
+            batch_response = client.batch_get_item(RequestItems={self.table_name: {"Keys": chunk}})
+            for full_item in batch_response.get("Responses", {}).get(self.table_name, []):
+                buckets.extend(self._deserialize_composite_bucket(full_item))
+        return [b for b in buckets if b.limit_name != schema.WCU_LIMIT_NAME]
 
     def batch_get_buckets(
         self, keys: list[tuple[str, str]]
@@ -1233,12 +1278,12 @@ class SyncRepository:
         """
         Batch get composite buckets in a single DynamoDB call.
 
-        With composite items, each (entity_id, resource) pair is a single
+        With composite items, each (entity_id, resource, shard) is a single
         DynamoDB item containing all limits. Returns individual BucketStates
         keyed by (entity_id, resource, limit_name) for backward compatibility.
 
         Args:
-            keys: List of (entity_id, resource) tuples
+            keys: List of (entity_id, resource) tuples. Uses shard_id=0.
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -1257,8 +1302,8 @@ class SyncRepository:
             chunk = unique_keys[i : i + 100]
             request_keys = [
                 {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": schema.sk_state()},
                 }
                 for entity_id, resource in chunk
             ]
@@ -1303,8 +1348,8 @@ class SyncRepository:
         for eid, resource in unique_bucket_keys:
             request_keys.append(
                 {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, eid)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, 0)},
+                    "SK": {"S": schema.sk_state()},
                 }
             )
         entity: Entity | None = None
@@ -1321,10 +1366,12 @@ class SyncRepository:
                     for bucket in self._deserialize_composite_bucket(item):
                         key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                         buckets[key] = bucket
+        cache_key = (self._namespace_id, entity_id)
+        existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if entity is not None:
-            self._entity_cache[self._namespace_id, entity_id] = (entity.cascade, entity.parent_id)
+            self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
-            self._entity_cache[self._namespace_id, entity_id] = (False, None)
+            self._entity_cache[cache_key] = (False, None, existing_shards)
         return (entity, buckets)
 
     def batch_get_configs(
@@ -1430,6 +1477,7 @@ class SyncRepository:
         new_tokens_milli: int,
         new_last_refill_ms: int,
         expected_tokens_milli: int | None = None,
+        shard_id: int = 0,
     ) -> dict[str, Any]:
         """Build an UpdateItem for a single limit in a composite bucket.
 
@@ -1441,8 +1489,10 @@ class SyncRepository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": "SET #tokens = :tokens, #refill = :refill",
                 "ExpressionAttributeNames": {"#tokens": tk_attr, "#refill": schema.BUCKET_FIELD_RF},
@@ -1468,6 +1518,8 @@ class SyncRepository:
         ttl_seconds: int | None = 86400,
         cascade: bool = False,
         parent_id: str | None = None,
+        shard_id: int = 0,
+        shard_count: int = 1,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -1482,23 +1534,37 @@ class SyncRepository:
             ttl_seconds: TTL in seconds from now, or None to omit TTL
             cascade: Whether the entity has cascade enabled
             parent_id: The entity's parent_id (if any)
+            shard_id: Shard index for this bucket (default 0)
+            shard_count: Total number of shards (default 1)
         """
         item: dict[str, Any] = {
-            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-            "SK": {"S": schema.sk_bucket(resource)},
+            "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": schema.sk_state()},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
             schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
             "GSI2PK": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
-            "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id)},
+            "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id, shard_id)},
             "cascade": {"BOOL": cascade},
+            "GSI3PK": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)},
+            "GSI3SK": {"S": schema.gsi3_sk_bucket(resource, shard_id)},
             "GSI4PK": {"S": self._namespace_id},
-            "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            "GSI4SK": {"S": f"{schema.BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}"},
+            "shard_count": {"N": str(shard_count)},
         }
         if parent_id is not None:
             item["parent_id"] = {"S": parent_id}
         if ttl_seconds is not None:
             item["ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
+        wcu_cp_milli = schema.WCU_LIMIT_CAPACITY * 1000
+        wcu_ra_milli = schema.WCU_LIMIT_REFILL_AMOUNT * 1000
+        wcu_rp_ms = schema.WCU_LIMIT_REFILL_PERIOD_SECONDS * 1000
+        wcu_name = schema.WCU_LIMIT_NAME
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TK)] = {"N": str(wcu_cp_milli)}
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_CP)] = {"N": str(wcu_cp_milli)}
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_RA)] = {"N": str(wcu_ra_milli)}
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_RP)] = {"N": str(wcu_rp_ms)}
+        item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TC)] = {"N": "0"}
         for state in states:
             name = state.limit_name
             item[schema.bucket_attr(name, schema.BUCKET_FIELD_TK)] = {"N": str(state.tokens_milli)}
@@ -1530,6 +1596,7 @@ class SyncRepository:
         now_ms: int,
         expected_rf: int,
         ttl_seconds: int | None = None,
+        shard_id: int = 0,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -1547,6 +1614,7 @@ class SyncRepository:
                 - None: Don't change TTL
                 - 0: REMOVE ttl (entity has custom limits)
                 - >0: SET ttl to (now + ttl_seconds)
+            shard_id: Shard index for this bucket (default 0)
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -1590,8 +1658,10 @@ class SyncRepository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": update_expr,
                 "ConditionExpression": " AND ".join(condition_parts),
@@ -1601,7 +1671,7 @@ class SyncRepository:
         }
 
     def build_composite_retry(
-        self, entity_id: str, resource: str, consumed: dict[str, int]
+        self, entity_id: str, resource: str, consumed: dict[str, int], shard_id: int = 0
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -1634,8 +1704,10 @@ class SyncRepository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": update_expr,
                 "ConditionExpression": condition_expr,
@@ -1645,7 +1717,7 @@ class SyncRepository:
         }
 
     def build_composite_adjust(
-        self, entity_id: str, resource: str, deltas: dict[str, int]
+        self, entity_id: str, resource: str, deltas: dict[str, int], shard_id: int = 0
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -1676,8 +1748,10 @@ class SyncRepository:
             "Update": {
                 "TableName": self.table_name,
                 "Key": {
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 "UpdateExpression": update_expr,
                 "ExpressionAttributeNames": attr_names,
@@ -1722,7 +1796,12 @@ class SyncRepository:
                 client.delete_item(**item["Delete"])
 
     def speculative_consume(
-        self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None = None,
+        shard_id: int | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -1730,11 +1809,16 @@ class SyncRepository:
         issues child+parent UpdateItems concurrently via _run_in_executor
         and returns nested parent_result.
 
+        When ``shard_id`` is explicitly provided, targets that shard directly
+        without cascade logic (used for shard retry).
+
         Args:
             entity_id: Entity owning the bucket
             resource: Resource name
             consume: Amount per limit (tokens, not milli)
             ttl_seconds: TTL in seconds from now, or None for no TTL change
+            shard_id: Explicit shard to target (skips random selection and
+                cascade logic). None means auto-select from entity cache.
 
         Returns:
             SpeculativeResult with:
@@ -1742,39 +1826,74 @@ class SyncRepository:
             - On cache miss or non-cascade: parent_result is None
             - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
-        cache_entry = self._entity_cache.get((self._namespace_id, entity_id))
+        if shard_id is not None:
+            return self._speculative_consume_single(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id
+            )
+        cache_key = (self._namespace_id, entity_id)
+        cache_entry = self._entity_cache.get(cache_key)
+        shard_count = 1
         if cache_entry is not None:
-            cascade_cached, parent_id_cached = cache_entry
+            shard_count = cache_entry[2].get(resource, 1)
+        effective_shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        if cache_entry is not None:
+            cascade_cached, parent_id_cached, shards_cached = cache_entry
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
                 child_result, parent_result = self._run_in_executor(
                     lambda: self._speculative_consume_single(
-                        entity_id, resource, consume, ttl_seconds
+                        entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
                     ),
                     lambda: self._speculative_consume_single(
                         parent_id_cached, resource, consume, ttl_seconds
                     ),
                 )
                 if child_result.success:
-                    self._entity_cache[self._namespace_id, entity_id] = (
+                    shards_cached = {**shards_cached, resource: child_result.shard_count}
+                    self._entity_cache[cache_key] = (
                         child_result.cascade,
                         child_result.parent_id,
+                        shards_cached,
                     )
                 else:
                     child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 return child_result
-        result = self._speculative_consume_single(entity_id, resource, consume, ttl_seconds)
+        result = self._speculative_consume_single(
+            entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
+        )
         if result.success:
-            self._entity_cache[self._namespace_id, entity_id] = (result.cascade, result.parent_id)
+            existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
+            existing_shards = {**existing_shards, resource: result.shard_count}
+            self._entity_cache[cache_key] = (result.cascade, result.parent_id, existing_shards)
         return result
 
     def _speculative_consume_single(
-        self, entity_id: str, resource: str, consume: dict[str, int], ttl_seconds: int | None = None
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        ttl_seconds: int | None = None,
+        shard_id: int = 0,
     ) -> SpeculativeResult:
-        """Single speculative UpdateItem (extracted for parallel reuse)."""
+        """Issue a single speculative UpdateItem on a bucket shard.
+
+        In addition to consuming the application-level limits, this method
+        auto-consumes 1 WCU (1000 millitokens) from the ``wcu`` infrastructure
+        limit and includes ``wcu tk >= 1000`` in the condition expression.
+
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+            consume: Amount per limit (tokens, not milli).
+            ttl_seconds: TTL in seconds, or None for no TTL change.
+            shard_id: Target shard index (default 0).
+
+        Returns:
+            SpeculativeResult with shard_id and shard_count populated.
+        """
         client = self._get_client()
         add_parts: list[str] = []
         condition_parts: list[str] = ["attribute_exists(PK)"]
@@ -1797,6 +1916,17 @@ class SyncRepository:
             add_parts.append(f"{tk_alias} {neg_val}")
             add_parts.append(f"{tc_alias} {pos_val}")
             condition_parts.append(f"{tk_alias} >= {thresh_val}")
+        wcu_tk_attr = schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+        wcu_tc_attr = schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TC)
+        attr_names["#wcu_tk"] = wcu_tk_attr
+        attr_names["#wcu_tc"] = wcu_tc_attr
+        wcu_milli = 1000
+        attr_values[":neg_wcu"] = {"N": str(-wcu_milli)}
+        attr_values[":pos_wcu"] = {"N": str(wcu_milli)}
+        attr_values[":thresh_wcu"] = {"N": str(wcu_milli)}
+        add_parts.append("#wcu_tk :neg_wcu")
+        add_parts.append("#wcu_tc :pos_wcu")
+        condition_parts.append("#wcu_tk >= :thresh_wcu")
         update_expr = "ADD " + ", ".join(add_parts)
         if ttl_seconds is not None:
             now_ms = self._now_ms()
@@ -1813,8 +1943,10 @@ class SyncRepository:
             response = client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
                 },
                 UpdateExpression=update_expr,
                 ConditionExpression=condition_expr,
@@ -1827,18 +1959,75 @@ class SyncRepository:
             buckets = self._deserialize_composite_bucket(item)
             cascade = item.get("cascade", {}).get("BOOL", False)
             parent_id = item.get("parent_id", {}).get("S")
+            shard_count = int(item.get("shard_count", {}).get("N", "1"))
             return SpeculativeResult(
-                success=True, buckets=buckets, cascade=cascade, parent_id=parent_id
+                success=True,
+                buckets=buckets,
+                cascade=cascade,
+                parent_id=parent_id,
+                shard_id=shard_id,
+                shard_count=shard_count,
             )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 old_item = cast(dict[str, Any] | None, e.response.get("Item"))
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
-                    return SpeculativeResult(success=False, old_buckets=old_buckets)
+                    old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    return SpeculativeResult(
+                        success=False,
+                        old_buckets=old_buckets,
+                        shard_id=shard_id,
+                        shard_count=old_shard_count,
+                    )
                 else:
-                    return SpeculativeResult(success=False)
+                    return SpeculativeResult(success=False, shard_id=shard_id)
             raise
+
+    def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
+        """Double shard_count on shard 0 via conditional write.
+
+        Shard 0 is the source of truth for shard_count. The conditional
+        expression ``shard_count = :old`` prevents double-bumping when
+        multiple clients race to double concurrently. Also updates the
+        entity cache with the new shard_count.
+
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+            current_count: Current shard_count to double.
+
+        Returns:
+            The new shard_count (doubled), or the current value if another
+            client already doubled (ConditionalCheckFailedException).
+        """
+        new_count = current_count * 2
+        client = self._get_client()
+        try:
+            client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET shard_count = :new",
+                ConditionExpression="shard_count = :old",
+                ExpressionAttributeValues={
+                    ":old": {"N": str(current_count)},
+                    ":new": {"N": str(new_count)},
+                },
+            )
+            effective_count = new_count
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                effective_count = current_count
+            else:
+                raise
+        cache_key = (self._namespace_id, entity_id)
+        entry = self._entity_cache.get(cache_key, (False, None, {}))
+        shards = {**entry[2], resource: effective_count}
+        self._entity_cache[cache_key] = (entry[0], entry[1], shards)
+        return effective_count
 
     def set_limits(
         self,
@@ -1999,8 +2188,8 @@ class SyncRepository:
             client.update_item(
                 TableName=self.table_name,
                 Key={
-                    "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                    "SK": {"S": schema.sk_bucket(resource)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "SK": {"S": schema.sk_state()},
                 },
                 UpdateExpression=update_expr,
                 ConditionExpression="attribute_exists(PK)",

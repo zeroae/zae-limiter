@@ -50,6 +50,7 @@ class TestResolveParallelMode:
         assert result == (10, 20)
 
     def test_gevent_without_patching_warns(self):
+        pytest.importorskip("gevent")
         with pytest.warns(UserWarning, match="without monkey-patching"):
             executor = SyncRepository._resolve_parallel_mode("gevent")
         assert executor is not None

@@ -934,18 +934,19 @@ Resources:
           Destination: !GetAtt AggregatorDLQ.Arn
 
       # Filter to process:
-      # 1. MODIFY events on BUCKET records (for usage snapshots)
+      # 1. MODIFY events on BUCKET records (for usage snapshots + refill)
       # 2. REMOVE events on AUDIT records (for S3 archival)
       FilterCriteria:
         Filters:
-          # Usage snapshots: bucket modifications
+          # Usage snapshots + refill: bucket modifications (pre-shard PK format)
+          # PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
           - Pattern: >-
               {
                 "eventName": ["MODIFY"],
                 "dynamodb": {
                   "NewImage": {
                     "SK": {
-                      "S": [{"prefix": "#BUCKET#"}]
+                      "S": ["#STATE"]
                     }
                   }
                 }

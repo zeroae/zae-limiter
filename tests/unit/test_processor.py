@@ -21,6 +21,8 @@ from zae_limiter_aggregator.processor import (
     get_window_end,
     get_window_key,
     process_stream_records,
+    propagate_shard_count,
+    try_proactive_shard,
     try_refill_bucket,
     update_snapshot,
 )
@@ -937,7 +939,7 @@ class TestAggregateBucketStates:
         states = aggregate_bucket_states(records)
 
         assert len(states) == 1
-        key = ("default", "entity-1", "gpt-4")
+        key = ("default", "entity-1", "gpt-4", 0)
         assert key in states
         state = states[key]
         assert state.namespace_id == "default"
@@ -977,7 +979,7 @@ class TestAggregateBucketStates:
         states = aggregate_bucket_states(records)
 
         assert len(states) == 1
-        state = states[("default", "entity-1", "gpt-4")]
+        state = states[("default", "entity-1", "gpt-4", 0)]
         assert len(state.limits) == 2
         assert state.limits["tpm"].tc_delta == 5000000
         assert state.limits["rpm"].tc_delta == 1000
@@ -1014,7 +1016,7 @@ class TestAggregateBucketStates:
         ]
         states = aggregate_bucket_states(records)
 
-        state = states[("default", "entity-1", "gpt-4")]
+        state = states[("default", "entity-1", "gpt-4", 0)]
         assert state.limits["tpm"].tc_delta == 5000000  # 2M + 3M
         # Last event's values
         assert state.limits["tpm"].tk_milli == 95000000
@@ -1028,8 +1030,8 @@ class TestAggregateBucketStates:
         ]
         states = aggregate_bucket_states(records)
         assert len(states) == 2
-        assert ("default", "e1", "gpt-4") in states
-        assert ("default", "e2", "gpt-4") in states
+        assert ("default", "e1", "gpt-4", 0) in states
+        assert ("default", "e2", "gpt-4", 0) in states
 
     def test_non_modify_events_skipped(self) -> None:
         """INSERT and REMOVE events are ignored."""
@@ -1062,7 +1064,7 @@ class TestAggregateBucketStates:
         ]
         states = aggregate_bucket_states(records)
         # Key created but no limits populated
-        assert len(states) == 0 or len(states[("default", "entity-1", "gpt-4")].limits) == 0
+        assert len(states) == 0 or len(states[("default", "entity-1", "gpt-4", 0)].limits) == 0
 
 
 class TestTryRefillBucket:
@@ -1501,7 +1503,7 @@ class TestNamespaceExtraction:
         states = aggregate_bucket_states(records)
 
         assert len(states) == 1
-        key = ("nsabc", "e1", "gpt-4")
+        key = ("nsabc", "e1", "gpt-4", 0)
         assert key in states
         assert states[key].namespace_id == "nsabc"
 
@@ -1522,10 +1524,10 @@ class TestNamespaceExtraction:
         states = aggregate_bucket_states(records)
 
         assert len(states) == 2
-        assert ("ns1", "user-1", "gpt-4") in states
-        assert ("ns2", "user-1", "gpt-4") in states
-        assert states[("ns1", "user-1", "gpt-4")].limits["tpm"].tc_delta == 3000000
-        assert states[("ns2", "user-1", "gpt-4")].limits["tpm"].tc_delta == 7000000
+        assert ("ns1", "user-1", "gpt-4", 0) in states
+        assert ("ns2", "user-1", "gpt-4", 0) in states
+        assert states[("ns1", "user-1", "gpt-4", 0)].limits["tpm"].tc_delta == 3000000
+        assert states[("ns2", "user-1", "gpt-4", 0)].limits["tpm"].tc_delta == 7000000
 
     def test_update_snapshot_uses_namespaced_keys(self) -> None:
         """update_snapshot passes namespace_id to pk_entity and gsi2_pk_resource."""
@@ -1546,7 +1548,7 @@ class TestNamespaceExtraction:
         assert call_kwargs["ExpressionAttributeValues"][":gsi2pk"] == "a7x3kq/RESOURCE#gpt-4"
 
     def test_try_refill_bucket_uses_namespaced_key(self) -> None:
-        """try_refill_bucket passes namespace_id to pk_entity."""
+        """try_refill_bucket uses new bucket PK format."""
         mock_table = MagicMock()
         state = BucketRefillState(
             namespace_id="a7x3kq",
@@ -1568,7 +1570,8 @@ class TestNamespaceExtraction:
         try_refill_bucket(mock_table, state, now_ms)
 
         call_kwargs = mock_table.update_item.call_args[1]
-        assert call_kwargs["Key"]["PK"] == "a7x3kq/ENTITY#entity-1"
+        assert call_kwargs["Key"]["PK"] == "a7x3kq/BUCKET#entity-1#gpt-4#0"
+        assert call_kwargs["Key"]["SK"] == "#STATE"
 
     def test_pre_migration_records_skipped_in_extract_deltas(self) -> None:
         """extract_deltas returns empty list for pre-migration records."""
@@ -1581,3 +1584,362 @@ class TestNamespaceExtraction:
         records = [self._make_record(pk="ENTITY#user-123", entity_id="user-123")]
         states = aggregate_bucket_states(records)
         assert len(states) == 0
+
+
+class TestNewBucketPKParsing:
+    """Tests for _parse_bucket_record with new BUCKET PK scheme."""
+
+    def _make_new_pk_record(
+        self,
+        pk: str = "ns1/BUCKET#user-1#gpt-4#0",
+        sk: str = "#STATE",
+        entity_id: str = "user-1",
+        resource: str = "gpt-4",
+        rf: int = 1704067200000,
+        shard_count: int = 1,
+        limits: dict[str, tuple[int, int]] | None = None,
+    ) -> dict:
+        """Helper to create a stream record with new BUCKET PK."""
+        if limits is None:
+            limits = {"rpm": (0, 1000)}
+
+        new_image: dict = {
+            "PK": {"S": pk},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf)},
+            "shard_count": {"N": str(shard_count)},
+        }
+        old_image: dict = {
+            "PK": {"S": pk},
+            "SK": {"S": sk},
+            "entity_id": {"S": entity_id},
+            "rf": {"N": str(rf - 1000)},
+            "shard_count": {"N": str(shard_count)},
+        }
+
+        for name, (old_tc, new_tc) in limits.items():
+            new_image[f"b_{name}_tc"] = {"N": str(new_tc)}
+            old_image[f"b_{name}_tc"] = {"N": str(old_tc)}
+            # Add bucket config attrs
+            new_image[f"b_{name}_tk"] = {"N": "100000000"}
+            new_image[f"b_{name}_cp"] = {"N": "100000000"}
+            new_image[f"b_{name}_ra"] = {"N": "100000000"}
+            new_image[f"b_{name}_rp"] = {"N": "60000"}
+
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {"NewImage": new_image, "OldImage": old_image},
+        }
+
+    def test_parse_bucket_record_new_pk(self) -> None:
+        """Parser handles new BUCKET PK scheme."""
+        record = self._make_new_pk_record()
+        result = _parse_bucket_record(record)
+
+        assert result is not None
+        assert result.namespace_id == "ns1"
+        assert result.entity_id == "user-1"
+        assert result.resource == "gpt-4"
+        assert result.shard_id == 0
+        assert result.shard_count == 1
+
+    def test_parse_bucket_record_new_pk_with_shards(self) -> None:
+        """Parser extracts shard_id and shard_count from new PK."""
+        record = self._make_new_pk_record(
+            pk="ns1/BUCKET#user-1#gpt-4#2",
+            shard_count=4,
+        )
+        result = _parse_bucket_record(record)
+
+        assert result is not None
+        assert result.shard_id == 2
+        assert result.shard_count == 4
+
+    def test_parse_bucket_record_old_pk_still_works(self) -> None:
+        """Old ENTITY PK with #BUCKET# SK still parses (backwards compat)."""
+        record = self._make_new_pk_record(
+            pk="ns1/ENTITY#user-1",
+            sk="#BUCKET#gpt-4",
+        )
+        result = _parse_bucket_record(record)
+
+        assert result is not None
+        assert result.namespace_id == "ns1"
+        assert result.entity_id == "user-1"
+        assert result.resource == "gpt-4"
+        assert result.shard_id == 0
+        assert result.shard_count == 1
+
+    def test_aggregate_bucket_states_keys_by_shard(self) -> None:
+        """Different shards for same (entity, resource) are aggregated separately."""
+        records = [
+            self._make_new_pk_record(
+                pk="ns1/BUCKET#user-1#gpt-4#0",
+                shard_count=2,
+                limits={"rpm": (0, 1000)},
+            ),
+            self._make_new_pk_record(
+                pk="ns1/BUCKET#user-1#gpt-4#1",
+                shard_count=2,
+                limits={"rpm": (0, 2000)},
+            ),
+        ]
+        states = aggregate_bucket_states(records)
+        assert ("ns1", "user-1", "gpt-4", 0) in states
+        assert ("ns1", "user-1", "gpt-4", 1) in states
+        assert len(states) == 2
+        assert states[("ns1", "user-1", "gpt-4", 0)].shard_id == 0
+        assert states[("ns1", "user-1", "gpt-4", 1)].shard_id == 1
+        assert states[("ns1", "user-1", "gpt-4", 0)].shard_count == 2
+
+    def test_try_refill_bucket_new_pk_and_effective_limits(self) -> None:
+        """Refill uses new PK and divides capacity/refill_amount by shard_count."""
+        mock_table = MagicMock()
+        state = BucketRefillState(
+            namespace_id="ns1",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_id=0,
+            shard_count=2,
+            rf_ms=1704067195000,  # 5s ago
+            limits={
+                "rpm": LimitRefillInfo(
+                    tc_delta=5000_000,
+                    tk_milli=0,  # empty bucket
+                    cp_milli=10000_000,  # original capacity 10000
+                    ra_milli=10000_000,  # original refill_amount 10000
+                    rp_ms=60_000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        result = try_refill_bucket(mock_table, state, now_ms)
+
+        assert result is True
+        call_kwargs = mock_table.update_item.call_args[1]
+        # Verify new PK format
+        assert call_kwargs["Key"]["PK"] == "ns1/BUCKET#user-1#gpt-4#0"
+        assert call_kwargs["Key"]["SK"] == "#STATE"
+
+    def test_extract_deltas_filters_wcu(self) -> None:
+        """wcu limit deltas are excluded from usage snapshots."""
+        record = self._make_new_pk_record(
+            limits={"rpm": (0, 1000), "wcu": (0, 500)},
+        )
+        deltas = extract_deltas(record)
+        limit_names = [d.limit_name for d in deltas]
+        assert "rpm" in limit_names
+        assert "wcu" not in limit_names
+
+    def test_try_refill_bucket_old_pk_shard_0(self) -> None:
+        """Refill for shard_count=1 (old format) uses new PK format."""
+        mock_table = MagicMock()
+        state = BucketRefillState(
+            namespace_id="ns1",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_id=0,
+            shard_count=1,
+            rf_ms=1704067195000,
+            limits={
+                "rpm": LimitRefillInfo(
+                    tc_delta=5000_000,
+                    tk_milli=0,
+                    cp_milli=10000_000,
+                    ra_milli=10000_000,
+                    rp_ms=60_000,
+                ),
+            },
+        )
+        now_ms = 1704067200000
+
+        result = try_refill_bucket(mock_table, state, now_ms)
+
+        assert result is True
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["Key"]["PK"] == "ns1/BUCKET#user-1#gpt-4#0"
+        assert call_kwargs["Key"]["SK"] == "#STATE"
+
+
+class TestTryProactiveShard:
+    """Tests for try_proactive_shard function."""
+
+    def _make_state(
+        self,
+        shard_id: int = 0,
+        shard_count: int = 1,
+    ) -> BucketRefillState:
+        return BucketRefillState(
+            namespace_id="ns1",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_id=shard_id,
+            shard_count=shard_count,
+            rf_ms=1704067200000,
+        )
+
+    def test_triggers_at_threshold(self) -> None:
+        """When wcu tc_delta >= 80% of capacity, aggregator bumps shard_count."""
+        mock_table = MagicMock()
+        state = self._make_state()
+        wcu_tc_delta = 900_000  # 90% > 80% threshold
+        wcu_capacity_milli = 1000_000
+
+        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+
+        assert result is True
+        mock_table.update_item.assert_called_once()
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["Key"]["PK"] == "ns1/BUCKET#user-1#gpt-4#0"
+        assert call_kwargs["ExpressionAttributeValues"][":new"] == 2
+        assert call_kwargs["ConditionExpression"] == "shard_count = :old"
+
+    def test_skips_below_threshold(self) -> None:
+        """Below threshold, no sharding."""
+        mock_table = MagicMock()
+        state = self._make_state()
+        wcu_tc_delta = 500_000  # 50% < 80%
+        wcu_capacity_milli = 1000_000
+
+        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_skips_non_shard_0(self) -> None:
+        """Only shard 0 can be bumped."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_id=1, shard_count=2)
+        wcu_tc_delta = 900_000
+        wcu_capacity_milli = 1000_000
+
+        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_conditional_check_failure_returns_false(self) -> None:
+        """If another writer already bumped, silently skip."""
+        mock_table = MagicMock()
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 900_000, 1000_000)
+
+        assert result is False
+
+    def test_zero_capacity_skips(self) -> None:
+        """Zero wcu capacity does not divide by zero."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 900_000, 0)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+
+class TestPropagateShardsCount:
+    """Tests for propagate_shard_count function."""
+
+    def _make_shard_change_record(
+        self,
+        pk: str = "ns1/BUCKET#user-1#gpt-4#0",
+        sk: str = "#STATE",
+        old_shard_count: int = 2,
+        new_shard_count: int = 4,
+    ) -> dict:
+        """Helper to create a stream record with shard_count change."""
+        return {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": pk},
+                    "SK": {"S": sk},
+                    "shard_count": {"N": str(new_shard_count)},
+                },
+                "OldImage": {
+                    "PK": {"S": pk},
+                    "SK": {"S": sk},
+                    "shard_count": {"N": str(old_shard_count)},
+                },
+            },
+        }
+
+    def test_propagate_on_change(self) -> None:
+        """When shard_count changes, propagate to other shards."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            old_shard_count=2,
+            new_shard_count=4,
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 3  # Updated shards 1, 2, 3 (not 0)
+        calls = mock_table.update_item.call_args_list
+        updated_pks = {c[1]["Key"]["PK"] for c in calls}
+        assert "ns1/BUCKET#user-1#gpt-4#1" in updated_pks
+        assert "ns1/BUCKET#user-1#gpt-4#2" in updated_pks
+        assert "ns1/BUCKET#user-1#gpt-4#3" in updated_pks
+        assert "ns1/BUCKET#user-1#gpt-4#0" not in updated_pks
+
+    def test_no_change_no_propagation(self) -> None:
+        """No propagation when shard_count unchanged."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            old_shard_count=2,
+            new_shard_count=2,
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 0
+        mock_table.update_item.assert_not_called()
+
+    def test_conditional_prevents_downgrade(self) -> None:
+        """Conditional write prevents overwriting a higher shard_count."""
+        mock_table = MagicMock()
+        mock_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        record = self._make_shard_change_record(
+            old_shard_count=2,
+            new_shard_count=4,
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 0  # All skipped
+
+    def test_skips_non_shard_0(self) -> None:
+        """Only propagates from shard 0."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            pk="ns1/BUCKET#user-1#gpt-4#1",
+            old_shard_count=2,
+            new_shard_count=4,
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 0
+        mock_table.update_item.assert_not_called()
+
+    def test_skips_non_bucket_pk(self) -> None:
+        """Non-bucket PK returns 0."""
+        mock_table = MagicMock()
+        record = self._make_shard_change_record(
+            pk="ns1/ENTITY#user-1",
+        )
+
+        propagated = propagate_shard_count(mock_table, record)
+
+        assert propagated == 0
+        mock_table.update_item.assert_not_called()

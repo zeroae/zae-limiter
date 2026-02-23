@@ -219,71 +219,55 @@ async with limiter.acquire("api-key", "llm-api", {"rpm": 1}, limits=limits):
     pass  # Checks both api-key AND project-1 limits
 ```
 
-#### Write Sharding for High-Fanout Parents
+#### Write Sharding (Automatic Pre-Shard Buckets)
 
-When a parent entity has many children (1000+) with `cascade=True`, the parent partition may experience write throttling. DynamoDB limits throughput per partition to ~1,000 WCU (or ~3,000 RCU).
+Starting with v0.9.0 (GHSA-76rv), zae-limiter automatically handles DynamoDB hot partition
+mitigation via **pre-shard buckets**. Each bucket item lives on its own DynamoDB partition
+key (`PK={ns}/BUCKET#{id}#{resource}#{shard}`), and an auto-injected `wcu:1000`
+infrastructure limit tracks per-partition write pressure.
 
-**Manual Write Sharding Solution:**
+**How it works:**
 
-Instead of one parent, distribute ownership across multiple sharded parent entities:
+1. Every bucket starts with `shard_count=1` (shard 0)
+2. An internal `wcu` limit (capacity: 1000 millitokens) is auto-injected on every bucket
+3. When `wcu` is exhausted on a speculative write, the client doubles `shard_count` via a
+   conditional write on shard 0 (source of truth)
+4. The Lambda aggregator proactively doubles shards at >=80% wcu capacity before clients
+   experience throttling
+5. Shard count changes on shard 0 are propagated to all other shards by the aggregator
+6. Clients pick a random shard from the entity cache: `random.randrange(shard_count)`
+7. If application limits are exhausted on one shard but the entity has multiple shards,
+   the client retries on up to 2 other randomly chosen shards
+
+**Shard-aware capacity:** The aggregator divides effective capacity and refill amount
+by `shard_count` when computing refills, so each shard receives its proportional share
+of tokens.
+
+**No application code changes required.** Pre-shard buckets are transparent to users.
+The `wcu` limit is filtered from all user-facing output (bucket states, exceptions,
+usage snapshots).
+
+**When automatic sharding is insufficient:**
+
+For extreme high-fanout cascade scenarios (1000+ children with `cascade=True` writing to the
+same parent), automatic bucket sharding handles the per-bucket partition pressure. However,
+if you need to distribute traffic across multiple *logical* parents for application-level
+load balancing, you can still use manual entity sharding:
 
 ```python
-# OLD: Single parent becomes a hotspot
-# ├── project-1 (parent)
-# │   ├── api-key-1 (child, cascade=True)
-# │   ├── api-key-2 (child, cascade=True)
-# │   └── ... (1000+ children)
-
-# NEW: Distribute across shards (e.g., 10 shards = 10x capacity)
+# Manual entity sharding for application-level distribution
+# (Only needed for extreme cascade fan-out beyond what pre-shard handles)
 num_shards = 10
 api_key_id = "api-key-12345"
 shard_id = hash(api_key_id) % num_shards
 parent_id = f"project-1-shard-{shard_id}"
 
-# Create shard parents once during setup
-for shard in range(num_shards):
-    parent_id = f"project-1-shard-{shard}"
-    await limiter.create_entity(entity_id=parent_id, parent_id="project-1")
-    # Set the same limits on all shards
-    await limiter.set_limits(
-        parent_id,
-        [
-            Limit.per_minute("rpm", 10000),
-            Limit.per_minute("tpm", 100000),
-        ],
-        resource="llm-api"
-    )
-
-# For each child, assign to a random shard
-shard_id = hash(api_key_id) % num_shards
-sharded_parent = f"project-1-shard-{shard_id}"
 await limiter.create_entity(
     entity_id=api_key_id,
-    parent_id=sharded_parent,
-    cascade=True
+    parent_id=parent_id,
+    cascade=True,
 )
-
-# On acquire, use the same sharding logic
-shard_id = hash(api_key_id) % num_shards
-sharded_parent = f"project-1-shard-{shard_id}"
-async with limiter.acquire(api_key_id, "llm-api", {"rpm": 1}, limits=limits):
-    pass  # Cascades to sharded parent instead of single hotspot
 ```
-
-**Benefits:**
-- Distributes parent write traffic across N partitions
-- With 10 shards: ~10x capacity improvement
-- Only requires application-level sharding logic
-
-**Drawbacks:**
-- More parent entities to manage
-- Limits checked per shard (not globally across all shards)
-- Requires hash consistency in sharding logic
-
-**When to use:**
-- Parent has >500 API keys with `cascade=True` and hitting throttling
-- Cost-effective alternative to on-demand billing
-- Temporary solution before implementing more sophisticated load distribution
 
 #### Stored Limits Optimization
 

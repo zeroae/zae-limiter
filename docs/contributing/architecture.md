@@ -9,7 +9,7 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 | Record Type | PK | SK |
 |-------------|----|----|
 | Entity metadata | `{ns}/ENTITY#{id}` | `#META` |
-| Bucket | `{ns}/ENTITY#{id}` | `#BUCKET#{resource}` |
+| Bucket (v0.9.0+) | `{ns}/BUCKET#{id}#{resource}#{shard}` | `#STATE` |
 | Entity config | `{ns}/ENTITY#{id}` | `#CONFIG#{resource}` |
 | Resource config | `{ns}/RESOURCE#{resource}` | `#CONFIG` |
 | System config | `{ns}/SYSTEM#` | `#CONFIG` |
@@ -25,7 +25,7 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 |-------|---------|-------------|
 | **GSI1** | Parent → Children lookup | `GSI1PK={ns}/PARENT#{id}` → `GSI1SK=CHILD#{id}` |
 | **GSI2** | Resource aggregation | `GSI2PK={ns}/RESOURCE#{name}` → buckets/usage |
-| **GSI3** | Entity config queries (sparse) | `GSI3PK={ns}/ENTITY_CONFIG#{resource}` → `GSI3SK=entity_id` |
+| **GSI3** | Entity config queries (sparse) + Bucket discovery by entity (KEYS_ONLY) | `GSI3PK={ns}/ENTITY_CONFIG#{resource}` → `GSI3SK=entity_id` or `GSI3PK={ns}/ENTITY#{id}` → `GSI3SK=BUCKET#{resource}#{shard}` |
 | **GSI4** | Namespace item discovery (KEYS_ONLY) | `GSI4PK={ns}` → `GSI4SK=PK` |
 
 ### Access Patterns
@@ -33,8 +33,9 @@ All data is stored in a single DynamoDB table using a composite key pattern:
 | Pattern | Query |
 |---------|-------|
 | Get entity | `PK={ns}/ENTITY#{id}, SK=#META` |
-| Get buckets | `PK={ns}/ENTITY#{id}, SK begins_with #BUCKET#` |
-| Batch get buckets | `BatchGetItem` with multiple PK/SK pairs |
+| Get bucket (specific shard) | `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE` |
+| Get buckets (all resources) | GSI3: `GSI3PK={ns}/ENTITY#{id}` then BatchGetItem on discovered PKs |
+| Batch get buckets | `BatchGetItem` with multiple `PK={ns}/BUCKET#{id}#{resource}#0, SK=#STATE` pairs |
 | Get children | GSI1: `GSI1PK={ns}/PARENT#{id}` |
 | Resource capacity | GSI2: `GSI2PK={ns}/RESOURCE#{name}, SK begins_with BUCKET#` |
 | Get version | `PK={ns}/SYSTEM#, SK=#VERSION` |
@@ -103,26 +104,36 @@ See [ADR-111](../adr/111-flatten-all-records.md).
 }
 ```
 
-**Bucket records** (composite, one item per entity+resource):
+**Bucket records** (composite, one item per entity+resource+shard, v0.9.0+):
 
 ```python
-# Bucket record (FLAT structure, ADR-114/115):
+# Bucket record (FLAT structure, ADR-114/115, GHSA-76rv):
 {
-    "PK": "{ns}/ENTITY#user-1",
-    "SK": "#BUCKET#gpt-4",
+    "PK": "{ns}/BUCKET#user-1#gpt-4#0",   # per-(entity, resource, shard) PK
+    "SK": "#STATE",
     "entity_id": "user-1",
     "resource": "gpt-4",
-    "b_tpm_tk": 9500000,            # tokens_milli for tpm limit
-    "b_tpm_cp": 10000000,           # capacity_milli for tpm limit
-    "b_tpm_tc": 500000,             # total_consumed_milli for tpm
-    "b_rpm_tk": 95000,              # tokens_milli for rpm limit
-    "b_rpm_cp": 100000,             # capacity_milli for rpm limit
-    "b_rpm_tc": 5000,               # total_consumed_milli for rpm
-    "rf": 1704067200000,            # last_refill_ms (shared across limits)
+    "shard_count": 1,                       # total shards for this entity+resource
+    "b_tpm_tk": 9500000,                    # tokens_milli for tpm limit
+    "b_tpm_cp": 10000000,                   # capacity_milli for tpm limit
+    "b_tpm_tc": 500000,                     # total_consumed_milli for tpm
+    "b_rpm_tk": 95000,                      # tokens_milli for rpm limit
+    "b_rpm_cp": 100000,                     # capacity_milli for rpm limit
+    "b_rpm_tc": 5000,                       # total_consumed_milli for rpm
+    "b_wcu_tk": 999000,                     # wcu infrastructure limit tokens
+    "b_wcu_cp": 1000000,                    # wcu capacity (1000 WCU/sec)
+    "b_wcu_tc": 1000,                       # wcu total consumed
+    "rf": 1704067200000,                    # last_refill_ms (shared across limits)
+    "cascade": False,
     "GSI2PK": "{ns}/RESOURCE#gpt-4",
+    "GSI2SK": "BUCKET#user-1#0",
+    "GSI3PK": "{ns}/ENTITY#user-1",         # bucket discovery by entity
+    "GSI3SK": "BUCKET#gpt-4#0",
     "ttl": 1234567890
 }
 ```
+
+The `wcu` (write capacity unit) limit is a reserved infrastructure limit auto-injected on every bucket. It tracks per-partition write pressure and is hidden from user-facing output (get_buckets, RateLimitExceeded, usage snapshots). When exhausted, the client doubles `shard_count` to spread writes across more DynamoDB partitions.
 
 The `total_consumed_milli` counter tracks net consumption (increases on consume,
 decreases on release) and is used by the aggregator Lambda to accurately calculate
@@ -178,10 +189,15 @@ Config records use four-level precedence: **Entity (resource-specific) > Entity 
 - `pk_system(namespace_id)` - Returns `{ns}/SYSTEM#`
 - `pk_resource(namespace_id, resource)` - Returns `{ns}/RESOURCE#{resource}`
 - `pk_entity(namespace_id, entity_id)` - Returns `{ns}/ENTITY#{entity_id}`
+- `pk_bucket(namespace_id, entity_id, resource, shard_id)` - Returns `{ns}/BUCKET#{id}#{resource}#{shard}` (v0.9.0+)
+- `sk_state()` - Returns `#STATE` (bucket state sort key)
 - `sk_config()` - Returns `#CONFIG` (system/resource level)
 - `sk_config(resource)` - Returns `#CONFIG#{resource}` (entity level)
 - `sk_namespace(name)` - Returns `#NAMESPACE#{name}` (forward lookup)
 - `sk_nsid(id)` - Returns `#NSID#{id}` (reverse lookup)
+- `gsi3_pk_entity(namespace_id, entity_id)` - Returns `{ns}/ENTITY#{id}` (bucket discovery)
+- `gsi3_sk_bucket(resource, shard_id)` - Returns `BUCKET#{resource}#{shard}` (bucket discovery)
+- `parse_bucket_pk(pk)` - Parses `{ns}/BUCKET#{id}#{res}#{shard}` into components
 
 **Audit entity IDs for config levels** (see [ADR-106](../adr/106-audit-entity-ids-for-config.md)):
 
@@ -379,19 +395,30 @@ state including denormalized `cascade` and `parent_id` fields.
 
 ```
 Speculative flow (first acquire — sequential, populates entity cache):
-1. UpdateItem with condition: attribute_exists(PK) AND tk >= consumed
-   +- SUCCESS -> Populate entity cache, Lease is pre-committed
+1. Pick shard: random.randrange(shard_count) from entity cache (shard 0 if no cache)
+2. UpdateItem on PK={ns}/BUCKET#{id}#{resource}#{shard} with condition:
+   attribute_exists(PK) AND all app limits tk >= consumed AND wcu tk >= 1000
+   +- SUCCESS -> Populate entity cache (cascade, parent_id, shard_counts), Lease pre-committed
    |  +- cascade=False -> DONE
    |  +- cascade=True -> Speculative UpdateItem on parent (sequential)
    |     +- SUCCESS -> DONE (child + parent both speculative)
    |     +- FAIL -> [parent failure handling]
    +- FAIL -> Check ALL_OLD
       +- No item (bucket missing) -> Fall back to normal path
-      +- Refill would help -> Fall back to normal path
-      +- Refill won't help -> RateLimitExceeded (fast rejection)
+      +- wcu exhausted -> Double shard_count (conditional write on shard 0), fall back
+      +- App limits: Refill would help -> Fall back to normal path
+      +- App limits: Refill won't help, multi-shard -> Retry on another shard (up to 2 retries)
+      +- App limits: Refill won't help, single shard -> RateLimitExceeded (fast rejection)
+
+Shard retry flow (when app limits exhausted on multi-shard entity):
+1. Pick untried shard: random choice from remaining shards
+2. Speculative UpdateItem on new shard
+   +- SUCCESS -> Lease pre-committed on new shard, DONE
+   +- FAIL -> Try next untried shard (up to _MAX_SHARD_RETRIES=2 total retries)
+   +- All retries exhausted -> RateLimitExceeded
 
 Speculative flow (subsequent acquire — parallel, issue #318):
-1. Entity cache hit: cascade=True, parent_id known
+1. Entity cache hit: cascade=True, parent_id known, shard_counts known
 2. asyncio.gather(child_speculative, parent_speculative)
    +- BOTH SUCCEED -> DONE (1 round trip, 0 RCU, 2 WCU)
    +- CHILD FAILS, PARENT SUCCEEDS -> Compensate parent, check child
@@ -416,8 +443,10 @@ UpdateItem (1 WCU). This avoids the cost of compensating the child (1 WCU), re-r
 (0.5 RCU), and using TransactWriteItems for the full cascade write (4 WCU). The child is
 only compensated when the parent-only path also fails.
 
-**Entity metadata cache (issue #318):** `Repository._entity_cache` stores
-`{entity_id: (cascade, parent_id)}` as immutable metadata (no TTL). After the first acquire
+**Entity metadata cache (issue #318, GHSA-76rv):** `Repository._entity_cache` stores
+`{(namespace_id, entity_id): (cascade, parent_id, shard_counts)}` where `shard_counts` is
+`dict[str, int]` mapping resource to shard count. `cascade` and `parent_id` are immutable
+(no TTL); `shard_counts` is updated when shard doubling occurs. After the first acquire
 populates the cache, `speculative_consume()` issues child and parent speculative writes
 concurrently via `asyncio.gather`. This reduces cascade latency
 from 2 sequential round trips to 1 parallel round trip. In the sync codepath,
@@ -425,6 +454,10 @@ from 2 sequential round trips to 1 parallel round trip. In the sync codepath,
 a lazy `ThreadPoolExecutor(max_workers=2)` for true parallel execution.
 The `_compensate_speculative()` method handles compensation for either child or parent when
 one side of the parallel write fails.
+
+The shard_count from the cache determines which shard to target. With multiple shards,
+`speculative_consume()` picks a random shard via `random.randrange(shard_count)`. When the
+speculative write succeeds, the returned `shard_count` from ALL_NEW updates the cache.
 
 ### Aggregator Refill Path (Issue #317)
 
@@ -438,17 +471,21 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 The aggregator processes DynamoDB Stream records in each batch to:
 
 1. **Aggregate bucket states** -- `aggregate_bucket_states()` accumulates `tc` deltas and keeps
-   the last NewImage per (entity_id, resource) across all stream records in the batch
-2. **Compute refill** -- For each bucket, `try_refill_bucket()` calls `refill_bucket()` to
-   calculate the refill delta, then checks if projected tokens are insufficient to cover
-   the observed consumption rate
+   the last NewImage per (entity_id, resource, shard_id) across all stream records in the batch
+2. **Compute refill** -- For each bucket, `try_refill_bucket()` calls `refill_bucket()` with
+   effective capacity (`cp // shard_count`) and effective refill amount (`ra // shard_count`),
+   then checks if projected tokens are insufficient to cover the observed consumption rate
 3. **Write refill** -- Issues a single `UpdateItem` with `ADD b_{limit}_tk +refill_delta`
    and `SET rf = :now`, conditioned on `rf = :expected_rf` (optimistic lock)
+4. **Proactive sharding** -- `try_proactive_shard()` checks if wcu consumption >= 80% of capacity
+   on shard 0, and conditionally doubles `shard_count`
+5. **Shard propagation** -- `propagate_shard_count()` detects shard_count changes in stream records
+   from shard 0 and propagates to all other shards via conditional writes (`shard_count < :new`)
 
 ```
-Aggregator refill flow (per composite bucket):
-1. Aggregate tc deltas + last NewImage across stream batch
-2. For each limit: refill_bucket(tk, rf, now, cp, ra, rp)
+Aggregator refill flow (per composite bucket shard):
+1. Aggregate tc deltas + last NewImage across stream batch per (entity, resource, shard)
+2. For each limit: refill_bucket(tk, rf, now, cp/shard_count, ra/shard_count, rp)
    +- refill_delta = new_tk - current_tk
    +- projected = new_tk after refill
    +- consumption_estimate = max(0, accumulated tc_delta)
@@ -458,6 +495,23 @@ Aggregator refill flow (per composite bucket):
    +- YES -> UpdateItem (ADD tk +delta, SET rf = :now, condition rf = :expected_rf)
       +- SUCCESS -> refill written (1 WCU)
       +- ConditionalCheckFailedException -> silently skip (another writer updated rf)
+
+Proactive sharding flow (per bucket):
+1. Check wcu limit info in aggregated state
+2. consumption_ratio = wcu_tc_delta / wcu_capacity_milli
+   +- ratio < 0.8 -> SKIP
+3. Is this shard 0?
+   +- NO -> SKIP (only shard 0 is source of truth)
+   +- YES -> UpdateItem (SET shard_count = :new, condition shard_count = :old)
+      +- SUCCESS -> shard_count doubled
+      +- ConditionalCheckFailedException -> concurrent bump, skip
+
+Shard propagation flow (per stream record):
+1. Detect shard_count increase (new > old) in stream record
+2. Is this shard 0?
+   +- NO -> SKIP
+   +- YES -> For each target shard 1..new_count:
+      UpdateItem (SET shard_count = :new, condition shard_count < :new OR not exists)
 ```
 
 **Key design properties:**
@@ -467,6 +521,12 @@ Aggregator refill flow (per composite bucket):
 - **Optimistic lock on `rf`** prevents double-refill with the client slow path or another
   aggregator invocation
 - **No read required** -- all state is derived from stream record NewImage fields
+- **Shard-aware capacity** -- effective capacity and refill amount are divided by `shard_count`
+  so each shard gets its proportional share of tokens
+- **Proactive sharding** -- the aggregator doubles shard_count when wcu consumption >= 80%
+  of capacity, preventing hot partitions before clients experience throttling
+- **Shard propagation** -- shard_count changes on shard 0 are propagated to other shards
+  via conditional writes that only update if the target has a lower value
 
 ### Optimistic Locking
 
@@ -520,8 +580,9 @@ src/zae_limiter_aggregator/   # Lambda aggregator (top-level package)
 5. **Initial writes are atomic**: Multi-entity initial consumption uses `transact_write()` for cross-item atomicity
 6. **Adjustments and rollbacks use independent writes**: `write_each()` dispatches each item as a single-item API call (1 WCU each), avoiding transaction overhead for unconditional ADD operations
 7. **Speculative writes skip reads**: With `speculative_writes=True`, `acquire()` tries a conditional UpdateItem first, saving 1 round trip and 1 RCU when the bucket has sufficient tokens
-8. **Entity metadata cache enables parallel cascade**: `Repository._entity_cache` stores immutable `(cascade, parent_id)` per entity. After first acquire, cascade speculative writes run concurrently via `asyncio.gather`
-9. **Aggregator-assisted refill**: The Lambda aggregator proactively refills buckets for active entities, keeping speculative writes on the fast path by ensuring buckets have sufficient tokens between client requests
+8. **Entity metadata cache enables parallel cascade**: `Repository._entity_cache` stores `(cascade, parent_id, shard_counts)` per entity. `cascade` and `parent_id` are immutable; `shard_counts` (`dict[str, int]`) is updated on shard doubling. After first acquire, cascade speculative writes run concurrently via `asyncio.gather`
+9. **Aggregator-assisted refill**: The Lambda aggregator proactively refills buckets for active entities, keeping speculative writes on the fast path by ensuring buckets have sufficient tokens between client requests. Effective capacity and refill amount are divided by `shard_count` so each shard receives its proportional share
+10. **Pre-shard buckets (GHSA-76rv)**: Each bucket item lives on its own DynamoDB partition (`PK={ns}/BUCKET#{id}#{resource}#{shard}`). An auto-injected `wcu:1000` infrastructure limit tracks per-partition write pressure. When wcu is exhausted, the client doubles shard_count (conditional write on shard 0). The aggregator proactively doubles shards at >=80% wcu capacity and propagates shard_count changes from shard 0 to all other shards
 
 ## Next Steps
 
