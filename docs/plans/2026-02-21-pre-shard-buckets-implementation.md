@@ -1434,3 +1434,1234 @@ Phase 8: Sync                                                   │
 Phase 9: Integration                                            │
   Task 19 (CFN) ── Task 20 (version) ── Task 21 (integration) ── Task 22 (docs)
 ```
+
+---
+
+## Phase 10: Design Review Fixes
+
+Review: https://github.com/zeroae/zae-limiter-ghsa-76rv-2r9v-c5m6/pull/1#pullrequestreview-3838469366
+
+### Task 32: Add SpeculativeFailureReason enum
+
+**Problem:** On speculative failure, the limiter inspects `old_buckets` token values via `_is_wcu_exhausted()` to distinguish between app-limit exhaustion (retry on another shard) vs wcu exhaustion (double shards). This is implicit and fragile — the decision logic is spread across the limiter with no structured failure classification.
+
+**Fix:** Add a `SpeculativeFailureReason` enum to `repository_protocol.py` and populate it in `_speculative_consume_single()` when constructing the failure `SpeculativeResult`. Replace `_is_wcu_exhausted()` in the limiter with a match on `result.failure_reason`.
+
+**Files:**
+- Modify: `src/zae_limiter/repository_protocol.py` (add enum, add field to `SpeculativeResult`)
+- Modify: `src/zae_limiter/repository.py:2402-2415` (set `failure_reason` on failure results)
+- Modify: `src/zae_limiter/limiter.py:732-752` (replace `_is_wcu_exhausted` with `result.failure_reason`)
+- Modify: `src/zae_limiter/limiter.py:1007-1026` (remove `_is_wcu_exhausted` method)
+- Generate: sync code (`hatch run generate-sync`)
+- Test: `tests/unit/test_repository.py`, `tests/unit/test_limiter.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_repository.py`:
+
+```python
+from zae_limiter.repository_protocol import SpeculativeFailureReason
+
+def test_speculative_failure_reason_wcu_exhausted():
+    """Failure reason is WCU_EXHAUSTED when wcu tokens < 1000 milli."""
+    # Setup: bucket with wcu at 0, rpm has tokens
+    result = await repo.speculative_consume(entity_id="user-1", resource="api", consume={"rpm": 1})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.WCU_EXHAUSTED
+
+def test_speculative_failure_reason_app_limit_exhausted():
+    """Failure reason is APP_LIMIT_EXHAUSTED when user limit exhausted but wcu has tokens."""
+    # Setup: bucket with rpm at 0, wcu full
+    result = await repo.speculative_consume(entity_id="user-1", resource="api", consume={"rpm": 100})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+
+def test_speculative_failure_reason_bucket_missing():
+    """Failure reason is BUCKET_MISSING when no bucket exists."""
+    result = await repo.speculative_consume(entity_id="no-bucket", resource="api", consume={"rpm": 1})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+```
+
+In `tests/unit/test_limiter.py`:
+
+```python
+def test_wcu_exhausted_triggers_doubling_via_failure_reason():
+    """Limiter uses failure_reason instead of inspecting old_buckets."""
+    # Setup: mock speculative result with failure_reason=WCU_EXHAUSTED
+    # Verify bump_shard_count is called
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_repository.py -k "test_speculative_failure_reason" -v`
+Expected: FAIL with `ImportError: cannot import name 'SpeculativeFailureReason'`
+
+**Step 3: Add SpeculativeFailureReason enum**
+
+In `repository_protocol.py` before `SpeculativeResult`:
+
+```python
+from enum import Enum
+
+class SpeculativeFailureReason(Enum):
+    """Classifies why a speculative write failed (GHSA-76rv).
+
+    Used by the limiter to decide the recovery path without
+    inspecting individual BucketState token values.
+    """
+    APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
+    WCU_EXHAUSTED = "wcu_exhausted"
+    BOTH_EXHAUSTED = "both_exhausted"
+    BUCKET_MISSING = "bucket_missing"
+```
+
+Add field to `SpeculativeResult`:
+
+```python
+    failure_reason: SpeculativeFailureReason | None = None
+```
+
+**Step 4: Populate failure_reason in `_speculative_consume_single`**
+
+In `repository.py:2402-2415`, classify the failure:
+
+```python
+if old_item:
+    old_buckets = self._deserialize_composite_bucket(old_item)
+    old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+
+    # Classify failure reason
+    wcu_exhausted = any(
+        b.limit_name == WCU_LIMIT_NAME and b.tokens_milli < 1000
+        for b in old_buckets
+    )
+    app_exhausted = any(
+        b.limit_name != WCU_LIMIT_NAME
+        and b.tokens_milli < consume.get(b.limit_name, 0) * 1000
+        for b in old_buckets
+    )
+    if wcu_exhausted and app_exhausted:
+        reason = SpeculativeFailureReason.BOTH_EXHAUSTED
+    elif wcu_exhausted:
+        reason = SpeculativeFailureReason.WCU_EXHAUSTED
+    else:
+        reason = SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+
+    return SpeculativeResult(
+        success=False,
+        old_buckets=old_buckets,
+        shard_id=shard_id,
+        shard_count=old_shard_count,
+        failure_reason=reason,
+    )
+else:
+    return SpeculativeResult(
+        success=False,
+        shard_id=shard_id,
+        failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
+    )
+```
+
+**Step 5: Replace `_is_wcu_exhausted` in limiter**
+
+In `limiter.py:732-752`, replace:
+
+```python
+# Before:
+if self._is_wcu_exhausted(result.old_buckets):
+    ...
+if result.shard_count > 1:
+    ...
+
+# After:
+if result.failure_reason in (
+    SpeculativeFailureReason.WCU_EXHAUSTED,
+    SpeculativeFailureReason.BOTH_EXHAUSTED,
+):
+    await self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+    return None
+
+if result.shard_count > 1 and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED:
+    retry_result = await self._retry_on_other_shard(...)
+    ...
+```
+
+Remove `_is_wcu_exhausted()` static method (lines 1007-1026).
+
+**Step 6: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 7: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 8: Commit**
+
+```bash
+git add src/zae_limiter/repository_protocol.py src/zae_limiter/repository.py \
+    src/zae_limiter/limiter.py src/zae_limiter/sync_*.py \
+    tests/unit/test_repository.py tests/unit/test_limiter.py \
+    tests/unit/test_sync_*.py
+git commit -m "♻️ refactor(limiter): add SpeculativeFailureReason enum for deterministic shard decisions"
+```
+
+---
+
+### Task 33: Add high shard count warning
+
+**Problem:** Shard count doubles without any observability signal. At 32 shards, `propagate_shard_count` issues 31 sequential DynamoDB writes per Lambda invocation. Operators have no visibility into runaway shard growth.
+
+**Fix:** Add `WCU_SHARD_WARN_THRESHOLD = 32` constant in `schema.py`. Emit a warning log when doubling crosses the threshold at both doubling sites: `Repository.bump_shard_count()` (client) and `try_proactive_shard()` (aggregator). No hard cap — doubling continues.
+
+**Files:**
+- Modify: `src/zae_limiter/schema.py` (add `WCU_SHARD_WARN_THRESHOLD` constant)
+- Modify: `src/zae_limiter/repository.py:2435` (warning after doubling in `bump_shard_count`)
+- Modify: `src/zae_limiter_aggregator/processor.py:665` (warning after doubling in `try_proactive_shard`)
+- Generate: sync code (`hatch run generate-sync`)
+- Test: `tests/unit/test_schema.py`, `tests/unit/test_repository.py`, `tests/unit/test_processor.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_schema.py`:
+
+```python
+def test_wcu_shard_warn_threshold_constant():
+    assert schema.WCU_SHARD_WARN_THRESHOLD == 32
+```
+
+In `tests/unit/test_repository.py`:
+
+```python
+def test_bump_shard_count_warns_above_threshold(caplog):
+    """bump_shard_count logs warning when new count exceeds threshold."""
+    repo = make_repo(mock_dynamodb, unique_name)
+    # Create entity + bucket with shard_count=32 (at threshold)
+    # ...
+    result = await repo.bump_shard_count("user-1", "api", 32)
+    assert result == 64  # doubling still happens
+    assert "shard count exceeded" in caplog.text.lower() or any(
+        "shard" in r.message.lower() and "64" in r.message for r in caplog.records
+    )
+```
+
+In `tests/unit/test_processor.py`:
+
+```python
+def test_try_proactive_shard_warns_above_threshold(caplog):
+    """Proactive sharding logs warning when new count exceeds threshold."""
+    state = BucketRefillState(
+        ..., shard_id=0, shard_count=32, ...
+    )
+    result = try_proactive_shard(mock_table, state, 900_000, 1000_000)
+    assert result is True  # doubling still happens
+    # Verify warning was logged
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_schema.py -k "test_wcu_shard_warn" -v`
+Expected: FAIL with `AttributeError`
+
+**Step 3: Add constant to schema.py**
+
+After `WCU_LIMIT_REFILL_PERIOD_SECONDS`:
+
+```python
+WCU_SHARD_WARN_THRESHOLD = 32  # Log warning when shard count exceeds this (GHSA-76rv)
+```
+
+**Step 4: Add warning in bump_shard_count (repository.py)**
+
+After the successful `update_item` (line ~2451), before updating the cache:
+
+```python
+if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
+    logger.warning(
+        "High shard count after doubling",
+        entity_id=entity_id,
+        resource=resource,
+        shard_count=new_count,
+        threshold=schema.WCU_SHARD_WARN_THRESHOLD,
+    )
+```
+
+**Step 5: Add warning in try_proactive_shard (processor.py)**
+
+After the successful `table.update_item` in the existing `logger.info` block:
+
+```python
+if new_count > WCU_SHARD_WARN_THRESHOLD:
+    logger.warning(
+        "High shard count after proactive doubling",
+        entity_id=state.entity_id,
+        resource=state.resource,
+        shard_count=new_count,
+        threshold=WCU_SHARD_WARN_THRESHOLD,
+    )
+```
+
+Import `WCU_SHARD_WARN_THRESHOLD` from `zae_limiter.schema`.
+
+**Step 6: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 7: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 8: Commit**
+
+```bash
+git add src/zae_limiter/schema.py src/zae_limiter/repository.py \
+    src/zae_limiter_aggregator/processor.py src/zae_limiter/sync_*.py \
+    tests/unit/test_schema.py tests/unit/test_repository.py \
+    tests/unit/test_processor.py tests/unit/test_sync_*.py
+git commit -m "⚠️ fix(schema): warn when shard count exceeds WCU_SHARD_WARN_THRESHOLD=32"
+```
+
+---
+
+### Task 34: Add missing test coverage for review findings
+
+**Problem:** Two test gaps identified in the design review (the third — propagation GSI attributes — is addressed by Task #29 which rewrites propagation with full attributes).
+
+1. **PK round-trip with `/` in resources** — `parse_bucket_pk` is tested with `gpt-4` but not with resources containing `/`, `.`, `-`, `_`. Since resources like `openai/gpt-4` and `anthropic/claude-3/opus` are valid (see CLAUDE.md naming rules), the parser must handle `#`-delimited splitting correctly when the resource contains `/`.
+2. **Batch size boundary condition** — The test for `try_proactive_shard` passes `wcu_tc_delta=900_000` directly, but at `BatchSize=100`, the maximum achievable delta is `100 * 1000 = 100_000 milli` (100 writes × 1 WCU each × 1000 milli). A test should document that the threshold is unreachable at the current batch size.
+
+**Files:**
+- Modify: `tests/unit/test_schema.py` (parametric PK round-trip tests)
+- Modify: `tests/unit/test_processor.py` (batch size boundary test)
+
+**Step 1: Add parametric PK round-trip tests**
+
+In `tests/unit/test_schema.py`, add to `TestBucketPKBuilders`:
+
+```python
+@pytest.mark.parametrize(
+    "resource",
+    [
+        "gpt-4",                   # hyphen
+        "gpt_4",                   # underscore
+        "gpt-3.5-turbo",           # dot
+        "openai/gpt-4",            # slash (provider/model)
+        "anthropic/claude-3/opus", # nested slash
+    ],
+)
+def test_parse_bucket_pk_round_trip(self, resource):
+    """pk_bucket → parse_bucket_pk round-trips for all valid resource chars."""
+    pk = schema.pk_bucket("ns1", "user-1", resource, 0)
+    ns, entity, res, shard = schema.parse_bucket_pk(pk)
+    assert ns == "ns1"
+    assert entity == "user-1"
+    assert res == resource
+    assert shard == 0
+```
+
+**Step 2: Add batch size boundary test**
+
+In `tests/unit/test_processor.py`, add to `TestTryProactiveShard`:
+
+```python
+def test_unreachable_at_batch_size_100(self) -> None:
+    """At BatchSize=100, max wcu tc_delta is 100_000 milli (10% of capacity).
+
+    Documents that proactive sharding requires BatchSize >= 800 to trigger
+    at the 80% threshold (WCU_PROACTIVE_THRESHOLD). With the default
+    BatchSize=100, the maximum achievable ratio is 100/1000 = 10%.
+    See Task #28 for the BatchSize fix.
+    """
+    mock_table = MagicMock()
+    state = self._make_state()
+    # Max possible: 100 records × 1 WCU × 1000 milli = 100_000
+    max_tc_delta_at_batch_100 = 100 * 1000
+    wcu_capacity_milli = 1000_000
+
+    result = try_proactive_shard(
+        mock_table, state, max_tc_delta_at_batch_100, wcu_capacity_milli
+    )
+
+    assert result is False  # 10% < 80% threshold
+    mock_table.update_item.assert_not_called()
+```
+
+**Step 3: Run tests to verify they pass**
+
+Run: `uv run pytest tests/unit/test_schema.py::TestBucketPKBuilders -v`
+Run: `uv run pytest tests/unit/test_processor.py::TestTryProactiveShard -v`
+Expected: PASS (these test existing behavior, not new code)
+
+**Step 4: Commit**
+
+```bash
+git add tests/unit/test_schema.py tests/unit/test_processor.py
+git commit -m "✅ test: add PK round-trip and batch size boundary tests (review #34)"
+```
+
+---
+
+### Task 31: Add gsi4_sk_bucket schema builder
+
+**Problem:** The GSI4SK format `BUCKET#{entity_id}#{resource}#{shard_id}` is inlined in `repository.py:1892` and `sync_repository.py:1552`. All other GSI SK formats have dedicated builders (`gsi2_sk_bucket`, `gsi3_sk_bucket`).
+
+**Fix:** Add `gsi4_sk_bucket(entity_id, resource, shard_id)` to `schema.py`, use it in `repository.py`, and regenerate sync code.
+
+**Files:**
+- Modify: `src/zae_limiter/schema.py` (add builder)
+- Modify: `src/zae_limiter/repository.py:1891-1893` (use builder)
+- Generate: sync code (`hatch run generate-sync`)
+- Test: `tests/unit/test_schema.py`
+
+**Step 1: Write failing test**
+
+In `tests/unit/test_schema.py`, add to `TestBucketPKBuilders`:
+
+```python
+def test_gsi4_sk_bucket(self):
+    assert schema.gsi4_sk_bucket("user-1", "gpt-4", 0) == "BUCKET#user-1#gpt-4#0"
+    assert schema.gsi4_sk_bucket("user-1", "gpt-4", 3) == "BUCKET#user-1#gpt-4#3"
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/unit/test_schema.py -k "test_gsi4_sk_bucket" -v`
+Expected: FAIL with `AttributeError: module 'zae_limiter.schema' has no attribute 'gsi4_sk_bucket'`
+
+**Step 3: Add builder to schema.py**
+
+After `gsi3_sk_bucket()` (~line 415):
+
+```python
+def gsi4_sk_bucket(entity_id: str, resource: str, shard_id: int) -> str:
+    """Build GSI4 sort key for bucket item (namespace-scoped discovery).
+
+    Args:
+        entity_id: Entity owning the bucket
+        resource: Resource name
+        shard_id: Shard index (0-based)
+
+    Returns:
+        GSI4SK string in format ``BUCKET#{entity_id}#{resource}#{shard_id}``
+    """
+    return f"{BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}"
+```
+
+**Step 4: Replace inline in repository.py**
+
+At line 1891-1893, change:
+
+```python
+# Before:
+"GSI4SK": {
+    "S": f"{schema.BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}",
+},
+
+# After:
+"GSI4SK": {"S": schema.gsi4_sk_bucket(entity_id, resource, shard_id)},
+```
+
+**Step 5: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 6: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 7: Commit**
+
+```bash
+git add src/zae_limiter/schema.py src/zae_limiter/repository.py \
+    src/zae_limiter/sync_repository.py tests/unit/test_schema.py
+git commit -m "♻️ refactor(schema): add gsi4_sk_bucket builder and use in repository"
+```
+
+---
+
+### Task 30: Fix inflated capacity in get_resource_capacity
+
+**Problem:**
+
+`get_resource_capacity()` (`limiter.py:1844`) iterates all buckets from
+`get_resource_buckets()` and sums `capacity` and `available`. With pre-shard buckets,
+GSI2 returns one item per `(entity, shard)`. Each shard stores the **full, undivided**
+capacity, so a 2-shard entity with `capacity=1000` produces `total_capacity=2000` and
+two duplicate `EntityCapacity` entries.
+
+**Fix:** Deduplicate in `get_resource_capacity()` — group buckets by `entity_id`, use
+capacity from shard 0, sum available tokens across shards.
+
+Note: `get_resource_buckets()` still returns per-shard items to other callers. This is
+acceptable — callers consuming raw buckets can decide how to aggregate.
+
+**Files:**
+- Modify: `src/zae_limiter/limiter.py` (`get_resource_capacity` — deduplicate by entity)
+- Test: `tests/unit/test_limiter.py` (new test with sharded entity)
+
+**Step 1: Write failing test**
+
+Add to `TestGetResourceCapacity` in `tests/unit/test_limiter.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_get_resource_capacity_sharded_entity_deduplication(self, limiter):
+    """Sharded entities should report capacity once, not per-shard."""
+    await limiter.create_entity("sharded-user")
+    limits = [Limit.per_minute("rpm", 100)]
+
+    async with limiter.acquire("sharded-user", "gpt-4", {"rpm": 10}, limits=limits):
+        pass
+
+    # Manually create shard 1 to simulate sharding
+    repo = limiter._repository
+    client = await repo._get_client()
+    shard0_key = {
+        "PK": {"S": schema.pk_bucket(repo._namespace_id, "sharded-user", "gpt-4", 0)},
+        "SK": {"S": schema.sk_state()},
+    }
+    shard0_resp = await client.get_item(TableName=repo.table_name, Key=shard0_key)
+    shard0_item = shard0_resp["Item"]
+
+    shard1_item = dict(shard0_item)
+    shard1_item["PK"] = {"S": schema.pk_bucket(repo._namespace_id, "sharded-user", "gpt-4", 1)}
+    shard1_item["GSI2SK"] = {"S": schema.gsi2_sk_bucket("sharded-user", 1)}
+    shard1_item["GSI3SK"] = {"S": schema.gsi3_sk_bucket("gpt-4", 1)}
+    shard1_item["shard_count"] = {"N": "2"}
+    await client.update_item(
+        TableName=repo.table_name, Key=shard0_key,
+        UpdateExpression="SET shard_count = :sc",
+        ExpressionAttributeValues={":sc": {"N": "2"}},
+    )
+    await client.put_item(TableName=repo.table_name, Item=shard1_item)
+
+    capacity = await limiter.get_resource_capacity("gpt-4", "rpm")
+
+    assert capacity.total_capacity == 100  # Not 200
+    assert len(capacity.entities) == 1  # Not 2
+    assert capacity.entities[0].entity_id == "sharded-user"
+    assert capacity.entities[0].capacity == 100
+```
+
+**Step 2: Run test — expect FAIL**
+
+Run: `uv run pytest tests/unit/test_limiter.py::TestGetResourceCapacity::test_get_resource_capacity_sharded_entity_deduplication -v`
+Expected: FAIL (`total_capacity == 200`, `len(entities) == 2`)
+
+**Step 3: Deduplicate by entity in `get_resource_capacity()`**
+
+In `limiter.py`, replace the per-bucket loop (lines 1879-1895) with entity-grouped
+aggregation:
+
+```python
+from collections import defaultdict
+
+entity_buckets: dict[str, list[BucketState]] = defaultdict(list)
+for bucket in buckets:
+    entity_buckets[bucket.entity_id].append(bucket)
+
+entities: list[EntityCapacity] = []
+total_capacity = 0
+total_available = 0
+
+for entity_id, entity_bucket_list in entity_buckets.items():
+    # Capacity is the same on all shards (undivided); take from first
+    capacity = entity_bucket_list[0].capacity
+    # Available tokens are distributed across shards; sum them
+    available = sum(calculate_available(b, now_ms) for b in entity_bucket_list)
+    available = min(available, capacity)
+
+    total_capacity += capacity
+    total_available += available
+
+    entities.append(
+        EntityCapacity(
+            entity_id=entity_id,
+            capacity=capacity,
+            available=available,
+            utilization_pct=(
+                ((capacity - available) / capacity * 100) if capacity > 0 else 0
+            ),
+        )
+    )
+```
+
+**Step 4: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 5: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 6: Commit**
+
+```bash
+git add src/zae_limiter/limiter.py src/zae_limiter/sync_limiter.py \
+    tests/unit/test_limiter.py tests/unit/test_sync_limiter.py
+git commit -m "🐛 fix(limiter): deduplicate sharded entities in get_resource_capacity"
+```
+
+---
+
+### Task 35: Handle DynamoDB per-partition throttling with shard probe
+
+**Problem:** The design plan's Failure Handling table (row 4) specifies catching `ProvisionedThroughputExceededException` for DynamoDB throttle retry with shard probe. This is only correct for provisioned tables. On-demand tables (`PAY_PER_REQUEST`) return `ThrottlingException` with `ThrottlingReason: TableWriteKeyRangeThroughputExceeded` for per-partition throttling. The code must handle both capacity modes as a defensive fallback behind the `wcu` infrastructure limit.
+
+**References:**
+- [DynamoDB Error Handling](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Programming.Errors.html): On-demand → `ThrottlingException`, provisioned → `ProvisionedThroughputExceededException`
+- [Key Range Throughput Exceeded](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/throttling-key-range-limit-exceeded-mitigation.html): Per-partition throttling uses `TableWriteKeyRangeThroughputExceeded` reason
+
+**Fix:** In `speculative_consume()` or the limiter's `_try_speculative_acquire()`, catch both:
+1. `ProvisionedThroughputExceededException` (provisioned tables)
+2. `ThrottlingException` where `ThrottlingReason` contains `KeyRangeThroughputExceeded` (on-demand tables)
+
+On either, probe shard 1 with a GetItem. If it exists, read `shard_count` and update entity cache, then fall through to slow path on a different shard. If shard 1 doesn't exist, raise `RateLimiterUnavailable`.
+
+Ignore `ThrottlingException` with other reasons (table-level caps, control plane throttling) — retry on a different shard won't help for those.
+
+**Files:**
+- Modify: `src/zae_limiter/repository.py` (catch both exceptions in `_speculative_consume_single`)
+- Modify: `src/zae_limiter/limiter.py` (shard probe logic on throttle)
+- Modify: `docs/plans/2026-02-21-pre-shard-buckets-design.md` (update Failure Handling row 4)
+- Generate: sync code (`hatch run generate-sync`)
+- Test: `tests/unit/test_repository.py`, `tests/unit/test_limiter.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_repository.py`:
+
+```python
+def test_speculative_consume_handles_provisioned_throttle():
+    """ProvisionedThroughputExceededException returns throttled SpeculativeResult."""
+    # Mock client to raise ProvisionedThroughputExceededException
+    result = await repo.speculative_consume("user-1", "api", {"rpm": 1})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.PARTITION_THROTTLED
+
+def test_speculative_consume_handles_on_demand_throttle():
+    """ThrottlingException with KeyRangeThroughputExceeded returns throttled result."""
+    # Mock client to raise ThrottlingException with ThrottlingReason
+    result = await repo.speculative_consume("user-1", "api", {"rpm": 1})
+    assert not result.success
+    assert result.failure_reason == SpeculativeFailureReason.PARTITION_THROTTLED
+
+def test_speculative_consume_reraises_non_partition_throttle():
+    """ThrottlingException without KeyRange reason is re-raised."""
+    # Mock client to raise ThrottlingException with MaxOnDemandThroughputExceeded
+    with pytest.raises(ClientError):
+        await repo.speculative_consume("user-1", "api", {"rpm": 1})
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_repository.py -k "test_speculative_consume_handles" -v`
+Expected: FAIL
+
+**Step 3: Add throttle handling in `_speculative_consume_single`**
+
+```python
+def _is_partition_throttle(e: ClientError) -> bool:
+    """Check if a ClientError is a per-partition throttle (hot key)."""
+    code = e.response.get("Error", {}).get("Code", "")
+    if code == "ProvisionedThroughputExceededException":
+        return True
+    if code == "ThrottlingException":
+        reason = e.response.get("Error", {}).get("ThrottlingReason", "")
+        return "KeyRangeThroughputExceeded" in reason
+    return False
+```
+
+In `_speculative_consume_single`, extend the `except ClientError` block:
+
+```python
+except ClientError as e:
+    if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+        # ... existing logic ...
+    elif _is_partition_throttle(e):
+        return SpeculativeResult(
+            success=False,
+            shard_id=shard_id,
+            failure_reason=SpeculativeFailureReason.PARTITION_THROTTLED,
+        )
+    raise
+```
+
+**Step 4: Add shard probe in limiter**
+
+In `_try_speculative_acquire()`, after the existing wcu/shard-retry logic:
+
+```python
+if result.failure_reason == SpeculativeFailureReason.PARTITION_THROTTLED:
+    # Probe shard 1 to discover shard_count
+    probe = await self._repository.get_buckets(entity_id, resource, shard_id=1)
+    if probe:
+        shard_count = probe[0].shard_count  # or from item attributes
+        # Update entity cache, fall through to slow path on different shard
+        return None
+    raise RateLimiterUnavailable("DynamoDB partition throttled, no shards available")
+```
+
+**Step 5: Update design plan Failure Handling table**
+
+Replace row 4 in `docs/plans/2026-02-21-pre-shard-buckets-design.md`:
+
+```markdown
+| `ProvisionedThroughputExceededException` or `ThrottlingException` (KeyRange) | DynamoDB per-partition throttle | Probe shard 1; if exists, discover `shard_count` and retry; if not, `RateLimiterUnavailable` |
+```
+
+**Step 6: Generate sync code**
+
+Run: `hatch run generate-sync`
+
+**Step 7: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 8: Commit**
+
+```bash
+git add src/zae_limiter/repository.py src/zae_limiter/limiter.py \
+    src/zae_limiter/sync_*.py docs/plans/2026-02-21-pre-shard-buckets-design.md \
+    tests/unit/test_repository.py tests/unit/test_limiter.py tests/unit/test_sync_*.py
+git commit -m "🐛 fix(repository): handle both ProvisionedThroughput and ThrottlingException for partition throttle"
+```
+
+---
+
+### Task 36: Fix propagate_shard_count to pre-create new shard items
+
+**Problem:** `propagate_shard_count()` (`processor.py:700-768`) uses `attribute_not_exists(shard_count) OR shard_count < :new` as the condition expression. When the target shard doesn't exist, this creates an incomplete item with only `PK`, `SK`, and `shard_count` — missing all GSI attributes (`GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK`, `GSI4PK`, `GSI4SK`), limit attributes, `cascade`, `parent_id`, and `wcu` infrastructure limit. These incomplete items are invisible to GSI3 bucket discovery and GSI2 resource capacity queries.
+
+Without pre-creation, every new shard's first client access hits the slow path (+2 RT), which goes against the architecture's core principle: keep clients on the speculative fast path. The aggregator also can't refill new shards until a client creates them.
+
+**Fix:** Split propagation into two code paths based on `old_count`/`new_count` from the stream record's OldImage/NewImage:
+1. **Existing shards** `range(1, old_count)`: UpdateItem with `shard_count < :new` (drop `attribute_not_exists`)
+2. **New shards** `range(old_count, new_count)`: PutItem cloned from shard 0's NewImage with adjusted PK/GSI keys, tokens set to effective capacity, condition `attribute_not_exists(PK)` to avoid overwriting client-created items
+
+**Cost:** +N WCU per doubling event in the aggregator Lambda (async, rare). Keeps clients on the fast path.
+
+**Files:**
+- Modify: `src/zae_limiter_aggregator/processor.py:700-768` (`propagate_shard_count`)
+- Test: `tests/unit/test_processor.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_processor.py`:
+
+```python
+def test_propagate_creates_full_items_for_new_shards():
+    """New shards get full items cloned from shard 0's NewImage."""
+    record = make_modify_record(
+        pk="ns1/BUCKET#user-1#gpt-4#0",
+        sk="#STATE",
+        new_image={
+            "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+            "SK": {"S": "#STATE"},
+            "shard_count": {"N": "4"},
+            "GSI2PK": {"S": "ns1/RESOURCE#gpt-4"},
+            "GSI2SK": {"S": "BUCKET#user-1#0"},
+            "GSI3PK": {"S": "ns1/ENTITY#user-1"},
+            "GSI3SK": {"S": "BUCKET#gpt-4#0"},
+            "GSI4PK": {"S": "ns1"},
+            "GSI4SK": {"S": "BUCKET#user-1#gpt-4#0"},
+            "b_rpm_tk": {"N": "50000000"},
+            "b_rpm_cp": {"N": "100000000"},
+            "b_rpm_ra": {"N": "100000000"},
+            "b_rpm_rp": {"N": "60000"},
+            "b_rpm_tc": {"N": "0"},
+            "b_wcu_tk": {"N": "1000000"},
+            "b_wcu_cp": {"N": "1000000"},
+            "b_wcu_ra": {"N": "1000000"},
+            "b_wcu_rp": {"N": "1000"},
+            "b_wcu_tc": {"N": "500"},
+            "cascade": {"BOOL": False},
+            "rf": {"N": "1000"},
+        },
+        old_image={
+            "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+            "SK": {"S": "#STATE"},
+            "shard_count": {"N": "2"},
+        },
+    )
+    mock_table = MagicMock()
+    propagated = propagate_shard_count(mock_table, record)
+
+    # Shards 2 and 3 are NEW (old_count=2, new_count=4)
+    # Shard 1 is EXISTING (update only)
+    calls = mock_table.update_item.call_args_list
+    put_calls = mock_table.put_item.call_args_list
+
+    # 1 existing shard updated
+    assert len(calls) == 1
+    assert "shard_count < :new" in calls[0].kwargs["ConditionExpression"]
+
+    # 2 new shards pre-created with full attributes
+    assert len(put_calls) == 2
+    for put_call in put_calls:
+        item = put_call.kwargs["Item"]
+        assert "GSI3PK" in item  # Has GSI attributes
+        assert "GSI2PK" in item
+        assert "b_rpm_tk" in item  # Has limit attributes
+        assert "b_wcu_tk" in item  # Has wcu
+
+    # Verify PKs are correct for new shards
+    new_pks = {c.kwargs["Item"]["PK"]["S"] for c in put_calls}
+    assert "ns1/BUCKET#user-1#gpt-4#2" in new_pks
+    assert "ns1/BUCKET#user-1#gpt-4#3" in new_pks
+
+
+def test_propagate_existing_shards_not_created():
+    """Existing shards get UpdateItem, not PutItem."""
+    record = make_modify_record(
+        pk="ns1/BUCKET#user-1#gpt-4#0",
+        sk="#STATE",
+        new_image={"shard_count": {"N": "4"}, "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"}, "SK": {"S": "#STATE"}, ...},
+        old_image={"shard_count": {"N": "2"}, ...},
+    )
+    mock_table = MagicMock()
+    propagate_shard_count(mock_table, record)
+
+    # Shard 1 is existing — UpdateItem, not PutItem
+    update_pks = {c.kwargs["Key"]["PK"] for c in mock_table.update_item.call_args_list}
+    assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
+
+    put_pks = {c.kwargs["Item"]["PK"]["S"] for c in mock_table.put_item.call_args_list}
+    assert "ns1/BUCKET#user-1#gpt-4#1" not in put_pks
+
+
+def test_propagate_new_shard_skips_if_client_created():
+    """PutItem with attribute_not_exists(PK) skips client-created shards."""
+    mock_table = MagicMock()
+    mock_table.put_item.side_effect = ClientError(
+        {"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem"
+    )
+    record = make_modify_record(
+        pk="ns1/BUCKET#user-1#gpt-4#0",
+        sk="#STATE",
+        new_image={"shard_count": {"N": "2"}, "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"}, "SK": {"S": "#STATE"}, ...},
+        old_image={"shard_count": {"N": "1"}, ...},
+    )
+    propagated = propagate_shard_count(mock_table, record)
+    assert propagated == 0  # Client already created it
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_processor.py -k "test_propagate" -v`
+Expected: FAIL (current code uses UpdateItem for all shards, no PutItem)
+
+**Step 3: Rewrite propagate_shard_count with two code paths**
+
+```python
+def propagate_shard_count(
+    table: Any,
+    record: dict[str, Any],
+) -> int:
+    """Propagate shard_count changes to all other shard items.
+
+    Detects shard_count change in stream record (OldImage vs NewImage).
+    Only propagates from shard 0. Two code paths:
+    - Existing shards (1..old_count-1): UpdateItem with shard_count < :new
+    - New shards (old_count..new_count-1): PutItem cloned from shard 0's
+      NewImage with adjusted PK/GSI keys and effective token capacity.
+      Uses attribute_not_exists(PK) to avoid overwriting client-created items.
+
+    Args:
+        table: boto3 Table resource
+        record: DynamoDB stream record
+
+    Returns:
+        Number of shard items created or updated
+    """
+    dynamodb_data = record.get("dynamodb", {})
+    new_image = dynamodb_data.get("NewImage", {})
+    old_image = dynamodb_data.get("OldImage", {})
+
+    new_count_raw = new_image.get("shard_count", {}).get("N")
+    old_count_raw = old_image.get("shard_count", {}).get("N")
+    if not new_count_raw or not old_count_raw:
+        return 0
+
+    new_count = int(new_count_raw)
+    old_count = int(old_count_raw)
+    if new_count <= old_count:
+        return 0
+
+    pk = new_image.get("PK", {}).get("S", "")
+    try:
+        namespace_id, entity_id, resource, shard_id = parse_bucket_pk(pk)
+    except ValueError:
+        return 0
+
+    if shard_id != 0:
+        return 0  # Only propagate from source of truth
+
+    updated = 0
+
+    # Path 1: Update existing shards (lightweight shard_count update)
+    for target_shard in range(1, old_count):
+        try:
+            table.update_item(
+                Key={
+                    "PK": pk_bucket(namespace_id, entity_id, resource, target_shard),
+                    "SK": sk_state(),
+                },
+                UpdateExpression="SET shard_count = :new",
+                ConditionExpression="shard_count < :new",
+                ExpressionAttributeValues={
+                    ":new": new_count,
+                },
+            )
+            updated += 1
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # Higher value already present
+            raise
+
+    # Path 2: Pre-create new shards (full item cloned from shard 0)
+    for target_shard in range(old_count, new_count):
+        try:
+            item = dict(new_image)  # Clone shard 0's NewImage
+            item["PK"] = {"S": pk_bucket(namespace_id, entity_id, resource, target_shard)}
+            item["GSI2SK"] = {"S": gsi2_sk_bucket(entity_id, target_shard)}
+            item["GSI3SK"] = {"S": gsi3_sk_bucket(resource, target_shard)}
+            item["GSI4SK"] = {"S": gsi4_sk_bucket(entity_id, resource, target_shard)}
+            item["shard_count"] = {"N": str(new_count)}
+            # Reset tokens to effective per-shard capacity (full bucket)
+            for limit_name, info in _extract_limit_attrs(new_image).items():
+                cp_milli = info["cp_milli"]
+                if limit_name == WCU_LIMIT_NAME:
+                    effective_cp = cp_milli  # wcu is per-partition, not divided
+                else:
+                    effective_cp = cp_milli // new_count
+                item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = {"N": str(effective_cp)}
+                item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = {"N": "0"}
+            table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+            updated += 1
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # Client already created this shard
+            raise
+
+    if updated > 0:
+        logger.info(
+            "Shard count propagated",
+            entity_id=entity_id,
+            resource=resource,
+            new_count=new_count,
+            shards_updated=updated,
+        )
+    return updated
+```
+
+**Note:** `_extract_limit_attrs` is a helper that parses `b_{name}_cp` attributes from the NewImage to get limit names and their capacity values. This may already exist in the parser or can be extracted from `_parse_bucket_record`.
+
+**Step 4: Run tests**
+
+Run: `uv run pytest tests/unit/test_processor.py -v`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add src/zae_limiter_aggregator/processor.py tests/unit/test_processor.py
+git commit -m "🐛 fix(aggregator): pre-create full shard items during propagation to keep clients on fast path"
+```
+
+---
+
+### Task 37: Fix proactive sharding signal to use wcu token level
+
+**Problem:** `try_proactive_shard()` (`processor.py:635-697`) compares `wcu_tc_delta / wcu_capacity_milli >= 0.8`. This is dimensionally incorrect — `tc_delta` is a count (total consumed in this batch), while `capacity_milli` is a rate (tokens per second). The comparison produces a dimensionless ratio that varies with batch size rather than measuring actual partition pressure. With `BatchSize=100`, the maximum achievable ratio is `100 × 1000 / 1_000_000 = 0.1` (10%), so proactive sharding can never trigger.
+
+**Three options considered:**
+- **Option A (increase BatchSize):** Requires `BatchSize >= 800` — increases Lambda latency and cost, tight coupling to a constant.
+- **Option B (normalize by time span):** `tc_delta / (time_span_sec × capacity_rate)` — requires per-bucket first/last timestamps, division-by-zero edge cases for sub-second batches.
+- **Option C (use remaining wcu token level):** Check `wcu_tk_milli / wcu_cp_milli < 0.2` (less than 20% tokens remaining). Token level directly measures partition headroom, naturally accounts for refill, requires no time span computation, and the data is already available in `BucketRefillState.tk_milli`.
+
+**Decision: Option C.** The token level from the last NewImage in the batch directly measures how much headroom the partition has. It naturally accounts for both consumption and refill. The only weakness is that aggregator refill can temporarily mask sustained pressure for one batch cycle, but this self-corrects: if pressure continues, tokens drain again and the next batch triggers sharding.
+
+**Fix:** Change `try_proactive_shard` signature and body:
+- Remove `wcu_tc_delta` parameter
+- Add `wcu_tk_milli` parameter (remaining wcu tokens from last NewImage)
+- Change threshold check to `wcu_tk_milli / wcu_capacity_milli < WCU_PROACTIVE_THRESHOLD_LOW` where `WCU_PROACTIVE_THRESHOLD_LOW = 0.2` (less than 20% remaining)
+- Rename `WCU_PROACTIVE_THRESHOLD` to `WCU_PROACTIVE_THRESHOLD_LOW` to clarify it's a low-water mark
+
+**BatchSize stays at 100** — no CloudFormation change needed.
+
+**Files:**
+- Modify: `src/zae_limiter_aggregator/processor.py` (`try_proactive_shard`, callers)
+- Modify: `src/zae_limiter_aggregator/__init__.py` (if re-exports change)
+- Test: `tests/unit/test_processor.py`
+
+**Step 1: Write failing tests**
+
+In `tests/unit/test_processor.py`, update `TestTryProactiveShard`:
+
+```python
+def test_proactive_shard_triggers_at_low_token_level(self) -> None:
+    """Proactive sharding triggers when wcu tokens < 20% of capacity."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    # 15% remaining → below 20% threshold → should trigger
+    wcu_tk_milli = 150_000  # 15% of 1_000_000
+    wcu_capacity_milli = 1_000_000
+
+    result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
+
+    assert result is True
+    mock_table.update_item.assert_called_once()
+
+def test_proactive_shard_skips_above_threshold(self) -> None:
+    """No sharding when wcu tokens >= 20% of capacity."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    # 25% remaining → above 20% threshold → no sharding
+    wcu_tk_milli = 250_000
+    wcu_capacity_milli = 1_000_000
+
+    result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
+
+    assert result is False
+    mock_table.update_item.assert_not_called()
+
+def test_proactive_shard_triggers_at_zero_tokens(self) -> None:
+    """Proactive sharding triggers when wcu tokens are completely exhausted."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    result = try_proactive_shard(mock_table, state, 0, 1_000_000)
+
+    assert result is True
+
+def test_proactive_shard_boundary_at_exactly_20_percent(self) -> None:
+    """At exactly 20% remaining, no sharding (threshold is strictly less than)."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    wcu_tk_milli = 200_000  # Exactly 20%
+    wcu_capacity_milli = 1_000_000
+
+    result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
+
+    assert result is False  # Not strictly less than 20%
+
+def test_proactive_shard_negative_tokens(self) -> None:
+    """Negative tokens (overdrawn wcu) trigger sharding."""
+    mock_table = MagicMock()
+    state = self._make_state(shard_id=0, shard_count=1)
+
+    result = try_proactive_shard(mock_table, state, -50_000, 1_000_000)
+
+    assert result is True
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/unit/test_processor.py::TestTryProactiveShard -v`
+Expected: FAIL (old signature takes `wcu_tc_delta`, not `wcu_tk_milli`; old logic checks `>=0.8` not `<0.2`)
+
+**Step 3: Update try_proactive_shard**
+
+In `processor.py`, replace the function:
+
+```python
+WCU_PROACTIVE_THRESHOLD_LOW = 0.2  # Shard when wcu tokens < 20% of capacity
+
+
+def try_proactive_shard(
+    table: Any,
+    state: BucketRefillState,
+    wcu_tk_milli: int,
+    wcu_capacity_milli: int,
+) -> bool:
+    """Proactively double shard_count when wcu token level is low.
+
+    Checks remaining wcu tokens against capacity. When tokens drop
+    below 20% of capacity, the partition is under sustained write
+    pressure and should be split.
+
+    Only acts on shard 0 (source of truth for shard_count).
+    Uses conditional write to prevent double-bumping.
+
+    Args:
+        table: boto3 Table resource
+        state: Aggregated bucket state
+        wcu_tk_milli: Remaining wcu tokens in millitokens (from last NewImage)
+        wcu_capacity_milli: wcu capacity in millitokens
+
+    Returns:
+        True if shard_count was bumped, False otherwise
+    """
+    if state.shard_id != 0:
+        return False
+
+    if wcu_capacity_milli <= 0:
+        return False
+
+    token_ratio = wcu_tk_milli / wcu_capacity_milli
+    if token_ratio >= WCU_PROACTIVE_THRESHOLD_LOW:
+        return False
+
+    new_count = state.shard_count * 2
+
+    try:
+        table.update_item(
+            Key={
+                "PK": pk_bucket(state.namespace_id, state.entity_id, state.resource, 0),
+                "SK": sk_state(),
+            },
+            UpdateExpression="SET shard_count = :new",
+            ConditionExpression="shard_count = :old",
+            ExpressionAttributeValues={
+                ":old": state.shard_count,
+                ":new": new_count,
+            },
+        )
+        logger.info(
+            "Proactive shard doubling",
+            entity_id=state.entity_id,
+            resource=state.resource,
+            old_count=state.shard_count,
+            new_count=new_count,
+            token_ratio=round(token_ratio, 2),
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            logger.debug(
+                "Proactive shard skipped - concurrent bump",
+                entity_id=state.entity_id,
+                resource=state.resource,
+            )
+            return False
+        raise
+```
+
+**Step 4: Update callers**
+
+In the `process_records()` function, change the call site from:
+
+```python
+# Before:
+wcu_tc_delta = ...  # accumulated from extract_deltas
+try_proactive_shard(table, state, wcu_tc_delta, wcu_capacity_milli)
+
+# After:
+wcu_tk_milli = state.limits[WCU_LIMIT_NAME].tk_milli  # from last NewImage
+try_proactive_shard(table, state, wcu_tk_milli, wcu_capacity_milli)
+```
+
+**Step 5: Remove Task 34's `test_unreachable_at_batch_size_100` test**
+
+This test documents that proactive sharding can't trigger at BatchSize=100 using the old tc_delta metric. With the new token-level signal, proactive sharding can trigger at any batch size, so this test becomes incorrect. Remove it.
+
+**Step 6: Run all unit tests**
+
+Run: `uv run pytest tests/unit/ -v`
+Expected: PASS
+
+**Step 7: Commit**
+
+```bash
+git add src/zae_limiter_aggregator/processor.py tests/unit/test_processor.py
+git commit -m "🐛 fix(aggregator): use wcu token level for proactive sharding signal instead of tc_delta"
+```
+
+#### Task 37 Test Plan
+
+**Scope:** 24 tests across 4 layers validating the signal change from `tc_delta/capacity >= 0.8` to `tk_milli/capacity < 0.2`.
+
+##### Unit Tests — `tests/unit/test_processor.py::TestTryProactiveShard`
+
+**Existing tests to update** (rename `wcu_tc_delta` → `wcu_tk_milli`, invert threshold logic):
+
+| # | Test | Old Params | New Params | Expected |
+|---|------|-----------|------------|----------|
+| 1 | `test_triggers_at_threshold` | `tc_delta=900k` (90%>80%) | `tk_milli=100k` (10%<20%) | True |
+| 2 | `test_skips_below_threshold` | `tc_delta=500k` (50%<80%) | `tk_milli=500k` (50%>=20%) | False |
+| 3 | `test_skips_non_shard_0` | param rename | `tk_milli=100k` | False |
+| 4 | `test_conditional_check_failure_returns_false` | param rename | `tk_milli=100k` | False |
+| 5 | `test_zero_capacity_skips` | `tc_delta=900k, cap=0` | `tk_milli=0, cap=0` | False |
+
+**New unit tests:**
+
+| # | Test | Token Level | Capacity | Expected | Edge Case |
+|---|------|-------------|----------|----------|-----------|
+| 6 | `test_triggers_at_low_token_level` | 150,000 (15%) | 1,000,000 | True | Core happy path |
+| 7 | `test_skips_above_threshold` | 250,000 (25%) | 1,000,000 | False | Core negative path |
+| 8 | `test_triggers_at_zero_tokens` | 0 | 1,000,000 | True | Complete exhaustion |
+| 9 | `test_boundary_at_exactly_20_percent` | 200,000 (20%) | 1,000,000 | False | Boundary: `>=` is safe, `<` shards |
+| 10 | `test_negative_tokens_triggers` | -50,000 | 1,000,000 | True | Overdrawn wcu via adjustment |
+| 11 | `test_one_millitoken_below_threshold` | 199,999 | 1,000,000 | True | Off-by-one: 19.9999% < 20% |
+| 12 | `test_doubles_shard_count_from_2` | 100,000 | 1,000,000 | True, new=4 | Verify `shard_count * 2` with existing count=2 |
+| 13 | `test_negative_capacity_skips` | 100,000 | -1,000,000 | False | Corrupted data guard |
+| 14 | `test_batch_size_independent` | 100,000 | 1,000,000 | True | Token level is invariant to BatchSize |
+
+**Test to remove:**
+- `test_unreachable_at_batch_size_100` (Task 34) — documents the tc_delta limitation; no longer applicable with token-level signal.
+
+**Constant rename regression:**
+
+| # | Test | Description |
+|---|------|-------------|
+| 15 | `test_constant_renamed` | Assert `WCU_PROACTIVE_THRESHOLD_LOW` exists and `WCU_PROACTIVE_THRESHOLD` is removed |
+
+##### Caller Wiring Tests — `tests/unit/test_processor.py::TestProcessStreamRecords`
+
+| # | Test | Description | Validate |
+|---|------|-------------|----------|
+| 16 | `test_process_records_passes_tk_milli` | Mock `try_proactive_shard`, verify call uses `wcu_tk_milli=wcu_info.tk_milli` | Correct parameter wiring at `processor.py:233-238` |
+| 17 | `test_process_records_proactive_shard_selective` | Two bucket states: one with 15% wcu remaining, one with 50% | Only the low-level bucket triggers sharding |
+
+##### Integration Tests — `tests/integration/test_bucket_sharding.py::TestProactiveShardingIntegration`
+
+| # | Test | Description | Validate |
+|---|------|-------------|----------|
+| 18 | `test_proactive_shard_doubles_count` (update) | Change call from `wcu_tc_delta=900k` to `wcu_tk_milli=100k` | DynamoDB conditional write succeeds, shard_count 1→2 |
+| 19 | `test_proactive_shard_skips_healthy_bucket` | Seed bucket with `wcu_tk=500k` (50%), call with `wcu_tk_milli=500k` | No write, shard_count unchanged |
+| 20 | `test_proactive_shard_after_refill` | Seed bucket with `wcu_tk=800k` (80% after aggregator refill) | No sharding — refill masks pressure for one cycle (expected) |
+| 21 | `test_proactive_shard_sustained_pressure` | Two sequential calls: first 80% tokens (no shard), second 10% (shard) | Self-correction: sustained pressure triggers on next batch |
+
+##### E2E Tests — `tests/e2e/test_localstack.py` (new class `TestProactiveShardingE2E`)
+
+| # | Test | Description | Validate |
+|---|------|-------------|----------|
+| 22 | `test_aggregator_proactive_sharding_e2e` | Create entity, exhaust wcu via rapid speculative writes, wait for Lambda stream processing | Full pipeline: writes → Stream → Lambda → proactive shard → propagation |
+| 23 | `test_aggregator_no_shard_under_normal_load` | Create entity, moderate writes (below threshold), wait for Lambda | No false positives under normal load |
+| 24 | `test_aggregator_refill_then_drain_e2e` | Exhaust, wait for refill (tokens recover), exhaust again, verify shard on second cycle | End-to-end validation of the refill-masking self-correction |
+
+**E2E markers:** `@pytest.mark.e2e`, `@pytest.mark.slow` (stream processing delay ~30s).
+
+##### Summary
+
+| Layer | Count | Files | Backend |
+|-------|-------|-------|---------|
+| Unit (function-level) | 14 | `test_processor.py` | Mocked |
+| Constant regression | 1 | `test_processor.py` | Mocked |
+| Caller wiring | 2 | `test_processor.py` | Mocked |
+| Integration (DynamoDB) | 4 | `test_bucket_sharding.py` | LocalStack |
+| E2E (full pipeline) | 3 | `test_localstack.py` | LocalStack + Lambda |
+| **Total** | **24** | | |
+
+##### Key Edge Cases
+
+1. **Boundary precision:** Exactly 20% is safe, 19.9999% triggers
+2. **Negative tokens:** Overdrawn wcu still triggers (strongest signal)
+3. **Zero/negative capacity:** Division-by-zero and corrupted data guards
+4. **Aggregator refill masking:** After refill, tokens recover → no shard for one cycle → self-corrects next batch
+5. **Batch size independence:** Token level is invariant to `BatchSize` (unlike tc_delta)
+6. **Concurrent bumps:** `ConditionalCheckFailedException` returns `False`
+7. **Non-shard-0:** Only shard 0 triggers (source of truth)

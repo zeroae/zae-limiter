@@ -1499,6 +1499,40 @@ class TestRateLimiterResourceCapacity:
         assert len(capacity.entities) == 0
         assert capacity.utilization_pct == 0.0
 
+    def test_get_resource_capacity_sharded_entity_deduplication(self, sync_limiter):
+        """Sharded entities should report capacity once, not per-shard."""
+        from zae_limiter import schema
+
+        sync_limiter.create_entity("sharded-user")
+        limits = [Limit.per_minute("rpm", 100)]
+        with sync_limiter.acquire("sharded-user", "gpt-4", {"rpm": 10}, limits=limits):
+            pass
+        repo = sync_limiter._repository
+        client = repo._get_client()
+        shard0_key = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "sharded-user", "gpt-4", 0)},
+            "SK": {"S": schema.sk_state()},
+        }
+        shard0_resp = client.get_item(TableName=repo.table_name, Key=shard0_key)
+        shard0_item = shard0_resp["Item"]
+        shard1_item = dict(shard0_item)
+        shard1_item["PK"] = {"S": schema.pk_bucket(repo._namespace_id, "sharded-user", "gpt-4", 1)}
+        shard1_item["GSI2SK"] = {"S": schema.gsi2_sk_bucket("sharded-user", 1)}
+        shard1_item["GSI3SK"] = {"S": schema.gsi3_sk_bucket("gpt-4", 1)}
+        shard1_item["shard_count"] = {"N": "2"}
+        client.update_item(
+            TableName=repo.table_name,
+            Key=shard0_key,
+            UpdateExpression="SET shard_count = :sc",
+            ExpressionAttributeValues={":sc": {"N": "2"}},
+        )
+        client.put_item(TableName=repo.table_name, Item=shard1_item)
+        capacity = sync_limiter.get_resource_capacity("gpt-4", "rpm")
+        assert capacity.total_capacity == 100
+        assert len(capacity.entities) == 1
+        assert capacity.entities[0].entity_id == "sharded-user"
+        assert capacity.entities[0].capacity == 100
+
 
 class TestRateLimiterCapacityEdgeCases:
     """Tests for edge cases in capacity calculations."""

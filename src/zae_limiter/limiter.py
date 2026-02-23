@@ -44,7 +44,8 @@ from .models import (
     validate_resource,
 )
 from .repository import Repository
-from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
+from .repository_protocol import SpeculativeFailureReason
+from .schema import DEFAULT_RESOURCE
 
 _UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated params
 
@@ -736,13 +737,19 @@ class RateLimiter:
                 await self._compensate_speculative(result.parent_id, resource, consume)
 
             # Shard doubling: if wcu exhausted, double shard_count and update cache
-            if self._is_wcu_exhausted(result.old_buckets):
+            if result.failure_reason in (
+                SpeculativeFailureReason.WCU_EXHAUSTED,
+                SpeculativeFailureReason.BOTH_EXHAUSTED,
+            ):
                 await self._repository.bump_shard_count(entity_id, resource, result.shard_count)
                 # Fall through to slow path (new shard bucket will be created)
                 return None
 
-            # Shard retry: if multi-shard, try another shard
-            if result.shard_count > 1:
+            # Shard retry: if multi-shard and app limit exhausted, try another shard
+            if (
+                result.shard_count > 1
+                and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+            ):
                 retry_result = await self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result
                 )
@@ -1002,28 +1009,6 @@ class RateLimiter:
             raise RateLimitExceeded(statuses)
 
     _MAX_SHARD_RETRIES = 2
-
-    @staticmethod
-    def _is_wcu_exhausted(old_buckets: "list[BucketState] | None") -> bool:
-        """Check if the wcu infrastructure limit is exhausted.
-
-        The wcu limit tracks per-partition write pressure (GHSA-76rv). When
-        exhausted (<1000 millitokens = <1 WCU), the caller should double
-        shard_count to distribute writes across more DynamoDB partitions.
-
-        Args:
-            old_buckets: BucketStates from a failed speculative result's
-                ALL_OLD response. None if the bucket does not exist.
-
-        Returns:
-            True if the wcu limit exists and has fewer than 1000 millitokens.
-        """
-        if old_buckets is None:
-            return False
-        for b in old_buckets:
-            if b.limit_name == WCU_LIMIT_NAME and b.tokens_milli < 1000:
-                return True
-        return False
 
     async def _retry_on_other_shard(
         self,
@@ -1872,20 +1857,28 @@ class RateLimiter:
                     parent_ids.add(bucket.entity_id)
             buckets = [b for b in buckets if b.entity_id in parent_ids]
 
+        # Group buckets by entity_id to deduplicate shards (GHSA-76rv).
+        # Each shard stores full undivided capacity; available tokens are
+        # distributed across shards.
+        entity_buckets: dict[str, list[BucketState]] = {}
+        for bucket in buckets:
+            entity_buckets.setdefault(bucket.entity_id, []).append(bucket)
+
         entities: list[EntityCapacity] = []
         total_capacity = 0
         total_available = 0
 
-        for bucket in buckets:
-            available = calculate_available(bucket, now_ms)
-            capacity = bucket.capacity
+        for entity_id, entity_bucket_list in entity_buckets.items():
+            capacity = entity_bucket_list[0].capacity
+            available = sum(calculate_available(b, now_ms) for b in entity_bucket_list)
+            available = min(available, capacity)
 
             total_capacity += capacity
             total_available += available
 
             entities.append(
                 EntityCapacity(
-                    entity_id=bucket.entity_id,
+                    entity_id=entity_id,
                     capacity=capacity,
                     available=available,
                     utilization_pct=(

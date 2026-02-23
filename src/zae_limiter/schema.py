@@ -69,6 +69,7 @@ WCU_LIMIT_NAME = "wcu"
 WCU_LIMIT_CAPACITY = 1000  # DynamoDB per-partition WCU/sec limit
 WCU_LIMIT_REFILL_AMOUNT = 1000  # Refills to full capacity each second
 WCU_LIMIT_REFILL_PERIOD_SECONDS = 1
+WCU_SHARD_WARN_THRESHOLD = 32  # Log warning when shard count exceeds this (GHSA-76rv)
 
 # Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
 LIMIT_ATTR_PREFIX = "l_"
@@ -409,6 +410,20 @@ def gsi3_sk_bucket(resource: str, shard_id: int) -> str:
         GSI3SK string in format ``BUCKET#{resource}#{shard_id}``
     """
     return f"{BUCKET_PREFIX}{resource}#{shard_id}"
+
+
+def gsi4_sk_bucket(entity_id: str, resource: str, shard_id: int) -> str:
+    """Build GSI4 sort key for bucket item (namespace-scoped discovery).
+
+    Args:
+        entity_id: Entity owning the bucket
+        resource: Resource name
+        shard_id: Shard index (0-based)
+
+    Returns:
+        GSI4SK string in format ``BUCKET#{entity_id}#{resource}#{shard_id}``
+    """
+    return f"{BUCKET_PREFIX}{entity_id}#{resource}#{shard_id}"
 
 
 def get_table_definition(table_name: str) -> dict[str, Any]:

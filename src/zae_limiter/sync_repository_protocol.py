@@ -7,6 +7,7 @@ Changes should be made to the source file, then regenerated.
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .config_cache import CacheStats as CacheStats
@@ -24,6 +25,19 @@ if TYPE_CHECKING:
         UsageSummary,
     )
     from .sync_config_cache import ConfigSource
+
+
+class SpeculativeFailureReason(Enum):
+    """Classifies why a speculative write failed (GHSA-76rv).
+
+    Used by the limiter to decide the recovery path without
+    inspecting individual BucketState token values.
+    """
+
+    APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
+    WCU_EXHAUSTED = "wcu_exhausted"
+    BOTH_EXHAUSTED = "both_exhausted"
+    BUCKET_MISSING = "bucket_missing"
 
 
 @dataclass
@@ -54,6 +68,7 @@ class SpeculativeResult:
     parent_result: "SpeculativeResult | None" = None
     shard_id: int = 0
     shard_count: int = 1
+    failure_reason: SpeculativeFailureReason | None = None
 
 
 @runtime_checkable

@@ -1764,7 +1764,11 @@ class TestNewBucketPKParsing:
 
 
 class TestTryProactiveShard:
-    """Tests for try_proactive_shard function."""
+    """Tests for try_proactive_shard function.
+
+    Uses wcu token level (remaining / capacity) as the sharding signal.
+    Triggers when tokens < 20% of capacity (WCU_PROACTIVE_THRESHOLD_LOW).
+    """
 
     def _make_state(
         self,
@@ -1780,14 +1784,14 @@ class TestTryProactiveShard:
             rf_ms=1704067200000,
         )
 
-    def test_triggers_at_threshold(self) -> None:
-        """When wcu tc_delta >= 80% of capacity, aggregator bumps shard_count."""
+    def test_triggers_at_low_token_level(self) -> None:
+        """Proactive sharding triggers when wcu tokens < 20% of capacity."""
         mock_table = MagicMock()
         state = self._make_state()
-        wcu_tc_delta = 900_000  # 90% > 80% threshold
-        wcu_capacity_milli = 1000_000
+        wcu_tk_milli = 150_000  # 15% remaining < 20% threshold
+        wcu_capacity_milli = 1_000_000
 
-        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+        result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
 
         assert result is True
         mock_table.update_item.assert_called_once()
@@ -1796,14 +1800,14 @@ class TestTryProactiveShard:
         assert call_kwargs["ExpressionAttributeValues"][":new"] == 2
         assert call_kwargs["ConditionExpression"] == "shard_count = :old"
 
-    def test_skips_below_threshold(self) -> None:
-        """Below threshold, no sharding."""
+    def test_skips_above_threshold(self) -> None:
+        """No sharding when wcu tokens >= 20% of capacity."""
         mock_table = MagicMock()
         state = self._make_state()
-        wcu_tc_delta = 500_000  # 50% < 80%
-        wcu_capacity_milli = 1000_000
+        wcu_tk_milli = 250_000  # 25% remaining >= 20% threshold
+        wcu_capacity_milli = 1_000_000
 
-        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+        result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
 
         assert result is False
         mock_table.update_item.assert_not_called()
@@ -1812,10 +1816,8 @@ class TestTryProactiveShard:
         """Only shard 0 can be bumped."""
         mock_table = MagicMock()
         state = self._make_state(shard_id=1, shard_count=2)
-        wcu_tc_delta = 900_000
-        wcu_capacity_milli = 1000_000
 
-        result = try_proactive_shard(mock_table, state, wcu_tc_delta, wcu_capacity_milli)
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is False
         mock_table.update_item.assert_not_called()
@@ -1829,7 +1831,7 @@ class TestTryProactiveShard:
         )
         state = self._make_state()
 
-        result = try_proactive_shard(mock_table, state, 900_000, 1000_000)
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
 
         assert result is False
 
@@ -1838,10 +1840,82 @@ class TestTryProactiveShard:
         mock_table = MagicMock()
         state = self._make_state()
 
-        result = try_proactive_shard(mock_table, state, 900_000, 0)
+        result = try_proactive_shard(mock_table, state, 100_000, 0)
 
         assert result is False
         mock_table.update_item.assert_not_called()
+
+    def test_triggers_at_zero_tokens(self) -> None:
+        """Proactive sharding triggers when wcu tokens are completely exhausted."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 0, 1_000_000)
+
+        assert result is True
+
+    def test_boundary_at_exactly_20_percent(self) -> None:
+        """At exactly 20% remaining, no sharding (threshold is strictly less than)."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 200_000, 1_000_000)
+
+        assert result is False
+        mock_table.update_item.assert_not_called()
+
+    def test_negative_tokens_triggers(self) -> None:
+        """Negative tokens (overdrawn wcu) trigger sharding."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, -50_000, 1_000_000)
+
+        assert result is True
+
+    def test_one_millitoken_below_threshold(self) -> None:
+        """Off-by-one: 19.9999% < 20% triggers sharding."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        result = try_proactive_shard(mock_table, state, 199_999, 1_000_000)
+
+        assert result is True
+
+    def test_doubles_shard_count_from_2(self) -> None:
+        """Verify shard_count * 2 with existing count=2."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_count=2)
+
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
+
+        assert result is True
+        call_kwargs = mock_table.update_item.call_args[1]
+        assert call_kwargs["ExpressionAttributeValues"][":new"] == 4
+
+    def test_warns_above_threshold(self, capsys) -> None:
+        """Proactive sharding logs warning when new count exceeds threshold."""
+        mock_table = MagicMock()
+        state = self._make_state(shard_id=0, shard_count=32)
+
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
+
+        assert result is True
+        captured = capsys.readouterr().out
+        assert '"level": "WARNING"' in captured
+        assert "High shard count" in captured
+        assert '"shard_count": 64' in captured
+
+    def test_batch_size_independent(self) -> None:
+        """Token level is invariant to BatchSize (unlike tc_delta)."""
+        mock_table = MagicMock()
+        state = self._make_state()
+
+        # With old tc_delta metric, BatchSize=100 could only reach 10%.
+        # With token level, we check remaining tokens regardless of batch size.
+        result = try_proactive_shard(mock_table, state, 100_000, 1_000_000)
+
+        assert result is True  # 10% remaining < 20% threshold
 
 
 class TestPropagateShardsCount:
@@ -1872,7 +1946,10 @@ class TestPropagateShardsCount:
         }
 
     def test_propagate_on_change(self) -> None:
-        """When shard_count changes, propagate to other shards."""
+        """When shard_count changes, propagate to other shards.
+
+        Existing shards (1) get UpdateItem, new shards (2, 3) get PutItem.
+        """
         mock_table = MagicMock()
         record = self._make_shard_change_record(
             old_shard_count=2,
@@ -1881,13 +1958,15 @@ class TestPropagateShardsCount:
 
         propagated = propagate_shard_count(mock_table, record)
 
-        assert propagated == 3  # Updated shards 1, 2, 3 (not 0)
-        calls = mock_table.update_item.call_args_list
-        updated_pks = {c[1]["Key"]["PK"] for c in calls}
-        assert "ns1/BUCKET#user-1#gpt-4#1" in updated_pks
-        assert "ns1/BUCKET#user-1#gpt-4#2" in updated_pks
-        assert "ns1/BUCKET#user-1#gpt-4#3" in updated_pks
-        assert "ns1/BUCKET#user-1#gpt-4#0" not in updated_pks
+        assert propagated == 3  # 1 updated + 2 created (not shard 0)
+        # Existing shard 1 updated via UpdateItem
+        update_pks = {c[1]["Key"]["PK"] for c in mock_table.update_item.call_args_list}
+        assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
+        assert "ns1/BUCKET#user-1#gpt-4#0" not in update_pks
+        # New shards 2, 3 created via PutItem
+        put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
+        assert "ns1/BUCKET#user-1#gpt-4#2" in put_pks
+        assert "ns1/BUCKET#user-1#gpt-4#3" in put_pks
 
     def test_no_change_no_propagation(self) -> None:
         """No propagation when shard_count unchanged."""
@@ -1904,11 +1983,13 @@ class TestPropagateShardsCount:
 
     def test_conditional_prevents_downgrade(self) -> None:
         """Conditional write prevents overwriting a higher shard_count."""
-        mock_table = MagicMock()
-        mock_table.update_item.side_effect = ClientError(
+        conditional_error = ClientError(
             {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
             "UpdateItem",
         )
+        mock_table = MagicMock()
+        mock_table.update_item.side_effect = conditional_error
+        mock_table.put_item.side_effect = conditional_error
         record = self._make_shard_change_record(
             old_shard_count=2,
             new_shard_count=4,
@@ -1943,3 +2024,178 @@ class TestPropagateShardsCount:
 
         assert propagated == 0
         mock_table.update_item.assert_not_called()
+
+    def test_creates_full_items_for_new_shards(self) -> None:
+        """New shards get full items cloned from shard 0's NewImage."""
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "4"},
+                    "entity_id": {"S": "user-1"},
+                    "GSI2PK": {"S": "ns1/RESOURCE#gpt-4"},
+                    "GSI2SK": {"S": "BUCKET#user-1#0"},
+                    "GSI3PK": {"S": "ns1/ENTITY#user-1"},
+                    "GSI3SK": {"S": "BUCKET#gpt-4#0"},
+                    "GSI4PK": {"S": "ns1"},
+                    "GSI4SK": {"S": "BUCKET#user-1#gpt-4#0"},
+                    "b_rpm_tk": {"N": "50000000"},
+                    "b_rpm_cp": {"N": "100000000"},
+                    "b_rpm_ra": {"N": "100000000"},
+                    "b_rpm_rp": {"N": "60000"},
+                    "b_rpm_tc": {"N": "0"},
+                    "b_wcu_tk": {"N": "1000000"},
+                    "b_wcu_cp": {"N": "1000000"},
+                    "b_wcu_ra": {"N": "1000000"},
+                    "b_wcu_rp": {"N": "1000"},
+                    "b_wcu_tc": {"N": "500"},
+                    "cascade": {"BOOL": False},
+                    "rf": {"N": "1000"},
+                },
+                "OldImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "2"},
+                },
+            },
+        }
+        mock_table = MagicMock()
+        propagated = propagate_shard_count(mock_table, record)
+
+        # Shard 1 is EXISTING (update only), shards 2 and 3 are NEW (put)
+        update_calls = mock_table.update_item.call_args_list
+        put_calls = mock_table.put_item.call_args_list
+
+        assert len(update_calls) == 1  # shard 1
+        assert "shard_count < :new" in update_calls[0].kwargs["ConditionExpression"]
+
+        assert len(put_calls) == 2  # shards 2 and 3
+        for put_call in put_calls:
+            item = put_call.kwargs["Item"]
+            assert "GSI3PK" in item
+            assert "GSI2PK" in item
+            assert "b_rpm_tk" in item
+            assert "b_wcu_tk" in item
+
+        new_pks = {c.kwargs["Item"]["PK"] for c in put_calls}
+        assert "ns1/BUCKET#user-1#gpt-4#2" in new_pks
+        assert "ns1/BUCKET#user-1#gpt-4#3" in new_pks
+
+        assert propagated == 3  # 1 updated + 2 created
+
+    def test_existing_shards_not_put(self) -> None:
+        """Existing shards get UpdateItem, not PutItem."""
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "4"},
+                    "entity_id": {"S": "user-1"},
+                    "b_rpm_tk": {"N": "50000000"},
+                    "b_rpm_cp": {"N": "100000000"},
+                    "b_rpm_ra": {"N": "100000000"},
+                    "b_rpm_rp": {"N": "60000"},
+                    "b_rpm_tc": {"N": "0"},
+                    "cascade": {"BOOL": False},
+                    "rf": {"N": "1000"},
+                },
+                "OldImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "2"},
+                },
+            },
+        }
+        mock_table = MagicMock()
+        propagate_shard_count(mock_table, record)
+
+        # Shard 1 is existing — UpdateItem, not PutItem
+        update_pks = {c.kwargs["Key"]["PK"] for c in mock_table.update_item.call_args_list}
+        assert "ns1/BUCKET#user-1#gpt-4#1" in update_pks
+
+        put_pks = {c.kwargs["Item"]["PK"] for c in mock_table.put_item.call_args_list}
+        assert "ns1/BUCKET#user-1#gpt-4#1" not in put_pks
+
+    def test_new_shard_skips_if_client_created(self) -> None:
+        """PutItem with attribute_not_exists(PK) skips client-created shards."""
+        mock_table = MagicMock()
+        mock_table.put_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "PutItem",
+        )
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "2"},
+                    "entity_id": {"S": "user-1"},
+                    "b_rpm_tk": {"N": "50000000"},
+                    "b_rpm_cp": {"N": "100000000"},
+                    "b_rpm_ra": {"N": "100000000"},
+                    "b_rpm_rp": {"N": "60000"},
+                    "b_rpm_tc": {"N": "0"},
+                    "cascade": {"BOOL": False},
+                    "rf": {"N": "1000"},
+                },
+                "OldImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "1"},
+                },
+            },
+        }
+
+        propagated = propagate_shard_count(mock_table, record)
+        assert propagated == 0  # Client already created it
+
+    def test_new_shard_tokens_set_to_effective_capacity(self) -> None:
+        """New shard tokens are set to effective per-shard capacity."""
+        record = {
+            "eventName": "MODIFY",
+            "dynamodb": {
+                "NewImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "2"},
+                    "entity_id": {"S": "user-1"},
+                    "b_rpm_tk": {"N": "50000000"},
+                    "b_rpm_cp": {"N": "100000000"},
+                    "b_rpm_ra": {"N": "100000000"},
+                    "b_rpm_rp": {"N": "60000"},
+                    "b_rpm_tc": {"N": "5000"},
+                    "b_wcu_tk": {"N": "500000"},
+                    "b_wcu_cp": {"N": "1000000"},
+                    "b_wcu_ra": {"N": "1000000"},
+                    "b_wcu_rp": {"N": "1000"},
+                    "b_wcu_tc": {"N": "200"},
+                    "cascade": {"BOOL": False},
+                    "rf": {"N": "1000"},
+                },
+                "OldImage": {
+                    "PK": {"S": "ns1/BUCKET#user-1#gpt-4#0"},
+                    "SK": {"S": "#STATE"},
+                    "shard_count": {"N": "1"},
+                },
+            },
+        }
+        mock_table = MagicMock()
+        propagate_shard_count(mock_table, record)
+
+        put_calls = mock_table.put_item.call_args_list
+        assert len(put_calls) == 1  # shard 1 is new
+        item = put_calls[0].kwargs["Item"]
+
+        # rpm tokens = effective capacity = 100000000 // 2 = 50000000
+        assert item["b_rpm_tk"] == 50000000
+        # rpm tc reset to 0
+        assert item["b_rpm_tc"] == 0
+        # wcu tokens = full capacity (not divided) = 1000000
+        assert item["b_wcu_tk"] == 1000000
+        # wcu tc reset to 0
+        assert item["b_wcu_tc"] == 0

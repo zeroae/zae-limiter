@@ -279,7 +279,7 @@ class TestProactiveShardingIntegration:
         result = try_proactive_shard(
             dynamodb_table,
             state,
-            wcu_tc_delta=900_000,
+            wcu_tk_milli=100_000,  # 10% remaining < 20% threshold
             wcu_capacity_milli=1_000_000,
         )
         assert result is True
