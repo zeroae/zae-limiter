@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771644957366,
+  "lastUpdate": 1771811184208,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -12264,6 +12264,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.015623026263760836",
             "extra": "mean: 1.089375033799979 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "216cce51f80d972779d474b080fc4646104458e4",
+          "message": "Merge commit from fork\n\nPre-shard buckets to mitigate DynamoDB hot partition DoS",
+          "timestamp": "2026-02-22T20:41:38-05:00",
+          "tree_id": "90c8fb5ec97795c5eaddd71f2539bc8008543a5d",
+          "url": "https://github.com/zeroae/zae-limiter/commit/216cce51f80d972779d474b080fc4646104458e4"
+        },
+        "date": 1771811183588,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 26.71918109144201,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009720920800927514",
+            "extra": "mean: 37.42629673333416 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.730402333215135,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01070329468693166",
+            "extra": "mean: 53.389136133326545 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 41.847162695701265,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028745801492282837",
+            "extra": "mean: 23.896482714292233 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 38.470416108965686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004159831266210941",
+            "extra": "mean: 25.994000095230213 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.961400452215496,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007341025976227237",
+            "extra": "mean: 41.733787722225514 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 195.90245498783594,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007165331179167395",
+            "extra": "mean: 5.104581257351229 msec\nrounds: 136"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.628990179189334,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008508310941423434",
+            "extra": "mean: 37.553057523807425 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.5901712348135,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006940194657357099",
+            "extra": "mean: 37.60788116665973 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 23.361629787505127,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03288826508991545",
+            "extra": "mean: 42.805232729732154 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 29.19710883268035,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007251766796233641",
+            "extra": "mean: 34.24996651999663 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 30.11308599877136,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005416002441992879",
+            "extra": "mean: 33.208154090909204 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.399526306897823,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009196989625320671",
+            "extra": "mean: 40.98440221428795 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.77263119232247,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00329883590197175",
+            "extra": "mean: 32.49640869999742 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9299471913991886,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004692940686874531",
+            "extra": "mean: 518.1488926000156 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.940264311954875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012081488658517632",
+            "extra": "mean: 515.3936985999962 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9499388716045907,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007178990887475775",
+            "extra": "mean: 1.0526993156000117 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9254421023954867,
+            "unit": "iter/sec",
+            "range": "stddev: 0.016315510033313437",
+            "extra": "mean: 1.0805646268000146 sec\nrounds: 5"
           }
         ]
       }
