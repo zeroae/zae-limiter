@@ -4036,12 +4036,12 @@ use CLI deployment or CloudFormation template export. See the
 <tbody>
 <tr>
 <td>PK</td>
-<td><code>{ns}/ENTITY#{id}</code></td>
+<td><code>{ns}/ENTITY#{id}</code> or <code>{ns}/BUCKET#{id}#{resource}#{shard}</code></td>
 <td>Partition key</td>
 </tr>
 <tr>
 <td>SK</td>
-<td><code>#META</code>, <code>#BUCKET#...</code>, <code>#LIMIT#...</code></td>
+<td><code>#META</code>, <code>#STATE</code>, <code>#CONFIG#...</code></td>
 <td>Sort key</td>
 </tr>
 <tr>
@@ -4053,6 +4053,16 @@ use CLI deployment or CloudFormation template export. See the
 <td>GSI2PK</td>
 <td><code>{ns}/RESOURCE#{name}</code></td>
 <td>Resource aggregation</td>
+</tr>
+<tr>
+<td>GSI3PK</td>
+<td><code>{ns}/ENTITY_CONFIG#{resource}</code> or <code>{ns}/ENTITY#{id}</code></td>
+<td>Entity configs + Bucket discovery</td>
+</tr>
+<tr>
+<td>GSI4PK</td>
+<td><code>{ns}</code></td>
+<td>Namespace item discovery</td>
 </tr>
 </tbody>
 </table>

@@ -1212,10 +1212,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#key-patterns-v100" class="md-nav__link">
+  <a href="#key-patterns" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key Patterns (v1.0.0)
+        Key Patterns
       
     </span>
   </a>
@@ -3403,10 +3403,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#key-patterns-v100" class="md-nav__link">
+  <a href="#key-patterns" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key Patterns (v1.0.0)
+        Key Patterns
       
     </span>
   </a>
@@ -4223,12 +4223,13 @@
 </tr>
 </tbody>
 </table>
-<h3 id="key-patterns-v100">Key Patterns (v1.0.0)<a class="headerlink" href="#key-patterns-v100" title="Permanent link">&para;</a></h3>
+<h3 id="key-patterns">Key Patterns<a class="headerlink" href="#key-patterns" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
 <th>Pattern</th>
 <th>Example</th>
+<th>Since</th>
 <th>Description</th>
 </tr>
 </thead>
@@ -4236,26 +4237,37 @@
 <tr>
 <td>Entity metadata</td>
 <td><code>PK={ns}/ENTITY#123, SK=#META</code></td>
+<td>v0.1.0</td>
 <td>Entity configuration</td>
 </tr>
 <tr>
-<td>Bucket state</td>
+<td>Bucket state (pre-v0.9.0)</td>
 <td><code>PK={ns}/ENTITY#123, SK=#BUCKET#gpt-4</code></td>
-<td>Token bucket state (composite, one item per resource)</td>
+<td>v0.1.0</td>
+<td>Token bucket state (composite, one item per resource). Orphaned after v0.9.0 migration</td>
+</tr>
+<tr>
+<td>Bucket state (v0.9.0+)</td>
+<td><code>PK={ns}/BUCKET#123#gpt-4#0, SK=#STATE</code></td>
+<td>v0.9.0</td>
+<td>Token bucket state (per entity/resource/shard partition key)</td>
 </tr>
 <tr>
 <td>Entity config</td>
 <td><code>PK={ns}/ENTITY#123, SK=#CONFIG#gpt-4</code></td>
+<td>v0.5.0</td>
 <td>Stored limit config</td>
 </tr>
 <tr>
 <td>Usage snapshot</td>
 <td><code>PK={ns}/ENTITY#123, SK=#USAGE#gpt-4#2024-01-15</code></td>
+<td>v0.1.0</td>
 <td>Usage data</td>
 </tr>
 <tr>
 <td>Version</td>
 <td><code>PK={ns}/SYSTEM#, SK=#VERSION</code></td>
+<td>v0.1.0</td>
 <td>Infrastructure version</td>
 </tr>
 </tbody>

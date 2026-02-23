@@ -7203,7 +7203,7 @@ property.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.SpeculativeResult" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SpeculativeResult</span><span class="p">(</span><span class="n">success</span><span class="p">,</span> <span class="n">buckets</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">old_buckets</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_result</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SpeculativeResult</span><span class="p">(</span><span class="n">success</span><span class="p">,</span> <span class="n">buckets</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">old_buckets</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">parent_result</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">failure_reason</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -7246,7 +7246,8 @@ property.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>On success, deserialized BucketStates from ALL_NEW response.</p>
+                <p>On success, deserialized BucketStates from ALL_NEW response.
+Includes the <code>wcu</code> infrastructure limit bucket state.</p>
               </div>
             </td>
           </tr>
@@ -7303,6 +7304,30 @@ None if the bucket doesn't exist (first acquire).</p>
               <div class="doc-md-description">
                 <p>On cache hit + cascade, nested parent SpeculativeResult
 from parallel UpdateItem. None for cache miss, non-cascade, or failure.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.shard_id">shard_id</span></code></td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The shard index targeted by this speculative write.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.repository_protocol.SpeculativeResult.shard_count">shard_count</span></code></td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The total shard count read from the bucket item. Used by
+the limiter to decide whether to retry on another shard or double
+shards when the <code>wcu</code> limit is exhausted.</p>
               </div>
             </td>
           </tr>

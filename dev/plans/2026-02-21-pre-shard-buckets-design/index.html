@@ -12,7 +12,7 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/operations/rate-limits/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/plans/2026-02-21-pre-shard-buckets-design/">
       
       
       
@@ -25,7 +25,7 @@
     
     
       
-        <title>Rate Limit Operations - zae-limiter</title>
+        <title>Pre-Shard Buckets Design - zae-limiter</title>
       
     
     
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#rate-limit-operations" class="md-skip">
+        <a href="#pre-shard-buckets-design" class="md-skip">
           Skip to content
         </a>
       
@@ -119,7 +119,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Rate Limit Operations
+              Pre-Shard Buckets Design
             
           </span>
         </div>
@@ -813,7 +813,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../" class="md-nav__link">
+      <a href="../../operations/" class="md-nav__link">
         
   
   
@@ -2509,10 +2509,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#decision-tree" class="md-nav__link">
+  <a href="#problem" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Decision Tree
+        Problem
       
     </span>
   </a>
@@ -2520,22 +2520,33 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
+  <a href="#solution-overview" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Troubleshooting
+        Solution Overview
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Troubleshooting">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Model">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#symptoms" class="md-nav__link">
+  <a href="#bucket-item-new-pk-scheme" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Symptoms
+        Bucket Item (New PK Scheme)
       
     </span>
   </a>
@@ -2543,10 +2554,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#diagnostic-steps" class="md-nav__link">
+  <a href="#bucket-attributes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Diagnostic Steps
+        Bucket Attributes
       
     </span>
   </a>
@@ -2554,10 +2565,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#unexpected-ratelimitexceeded" class="md-nav__link">
+  <a href="#limit-types" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Unexpected RateLimitExceeded
+        Limit Types
       
     </span>
   </a>
@@ -2565,32 +2576,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#limits-not-enforcing" class="md-nav__link">
+  <a href="#gsi-usage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Limits Not Enforcing
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#cascade-not-working" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cascade Not Working
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verification" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verification
+        GSI Usage
       
     </span>
   </a>
@@ -2603,34 +2592,33 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#procedures" class="md-nav__link">
+  <a href="#access-patterns" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Procedures
+        Access Patterns
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Procedures">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#acquire-flow-hot-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acquire Flow (Hot Path)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Acquire Flow (Hot Path)">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#adjust-limits-at-runtime" class="md-nav__link">
+  <a href="#failure-handling" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Adjust Limits at Runtime
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Adjust Limits at Runtime">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#programmatic-adjustment" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Programmatic Adjustment
+        Failure Handling
       
     </span>
   </a>
@@ -2638,48 +2626,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#direct-dynamodb-update" class="md-nav__link">
+  <a href="#shard-retry-on-false-rejection" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Direct DynamoDB Update
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#reset-bucket-state" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Reset Bucket State
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#debug-bucket-state" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Debug Bucket State
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verification-after-changes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verification After Changes
+        Shard Retry on False Rejection
       
     </span>
   </a>
@@ -2692,10 +2642,82 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#dynamodb-key-patterns" class="md-nav__link">
+  <a href="#shard-doubling" class="md-nav__link">
     <span class="md-ellipsis">
       
-        DynamoDB Key Patterns
+        Shard Doubling
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Shard Doubling">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#client-side-reactive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Client-Side (Reactive)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregator-proactive-sharding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregator (Proactive Sharding)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregator-shard-count-propagation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregator (Shard Count Propagation)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregator-future-shard-merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregator (Future: Shard Merging)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#shard-0-as-source-of-truth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shard 0 as Source of Truth
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cascade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cascade
       
     </span>
   </a>
@@ -2703,10 +2725,154 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#related" class="md-nav__link">
+  <a href="#entity-cache" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Related
+        Entity Cache
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#aggregator-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregator Changes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Aggregator Changes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#breaks-must-fix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Breaks (Must Fix)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#new-responsibilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        New Responsibilities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#new-dataclass-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        New Dataclass Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migration-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration Strategy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cost-and-latency-impact" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost and Latency Impact
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cost and Latency Impact">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#steady-state-unsharded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Steady-State (Unsharded)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sharded-steady-state-n-shards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharded Steady-State (N shards)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#doubling-events-rare" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Doubling Events (Rare)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#net-impact-users-who-never-hit-partition-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Net Impact (Users Who Never Hit Partition Limits)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#future-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Future Work
       
     </span>
   </a>
@@ -2732,7 +2898,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/operations/rate-limits.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/plans/2026-02-21-pre-shard-buckets-design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2740,327 +2906,566 @@
   
 
 
-<h1 id="rate-limit-operations">Rate Limit Operations<a class="headerlink" href="#rate-limit-operations" title="Permanent link">&para;</a></h1>
-<p>This guide covers troubleshooting rate limit enforcement issues and procedures for adjusting limits at runtime.</p>
-<h2 id="decision-tree">Decision Tree<a class="headerlink" href="#decision-tree" title="Permanent link">&para;</a></h2>
-<div class="mermaid">flowchart TD
-    START([Rate Limit Issue]) --&gt; Q1{What's happening?}
-
-    Q1 --&gt;|Unexpected RateLimitExceeded| A1[Check bucket state]
-    Q1 --&gt;|Limits not enforcing| A2[Check entity exists]
-    Q1 --&gt;|Cascade not working| A3[Check parent entity]
-    Q1 --&gt;|Need to adjust limits| A4[Runtime adjustment]
-
-    A1 --&gt; CHECK1[Query bucket in DynamoDB]
-    A2 --&gt; CHECK2[Query entity metadata]
-    A3 --&gt; CHECK3[Verify parent_id and entity cascade setting]
-
-    CHECK1 --&gt; FIX1{Bucket state?}
-    FIX1 --&gt;|Depleted| WAIT[Wait for refill or reset]
-    FIX1 --&gt;|Has capacity| CONFIG[Check limit configuration]
-
-    CHECK2 --&gt; FIX2{Entity exists?}
-    FIX2 --&gt;|No| CREATE[Create entity first]
-    FIX2 --&gt;|Yes| LIMITS[Check stored limits config]
-
-    click A1 "#unexpected-ratelimitexceeded" "Diagnose unexpected limits"
-    click A2 "#limits-not-enforcing" "Check entity setup"
-    click A3 "#cascade-not-working" "Check parent setup"
-    click A4 "#adjust-limits-at-runtime" "Adjust limits"
-    click WAIT "#reset-bucket-state" "Reset bucket"
-    click CHECK1 "#debug-bucket-state" "Query bucket state"</div>
-<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
-<h3 id="symptoms">Symptoms<a class="headerlink" href="#symptoms" title="Permanent link">&para;</a></h3>
-<ul>
-<li>Requests succeed when they should be rate limited</li>
-<li><code>RateLimitExceeded</code> raised unexpectedly</li>
-<li>Cascade to parent entity not working</li>
-<li>Bucket state appears incorrect</li>
-</ul>
-<h3 id="diagnostic-steps">Diagnostic Steps<a class="headerlink" href="#diagnostic-steps" title="Permanent link">&para;</a></h3>
-<p><strong>Check entity and bucket state:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Query entity metadata</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Query bucket state for a specific resource (shard 0)</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#STATE&quot;}}&#39;</span>
-</span></code></pre></div>
-<p><strong>Verify stored limits:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>query<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--key-condition-expression<span class="w"> </span><span class="s2">&quot;PK = :pk AND begins_with(SK, :sk)&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--expression-attribute-values<span class="w"> </span><span class="s1">&#39;{&quot;:pk&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;:sk&quot;: {&quot;S&quot;: &quot;#LIMIT#&quot;}}&#39;</span>
-</span></code></pre></div>
-<h3 id="unexpected-ratelimitexceeded">Unexpected RateLimitExceeded<a class="headerlink" href="#unexpected-ratelimitexceeded" title="Permanent link">&para;</a></h3>
-<p><strong>Possible causes:</strong></p>
+<h1 id="pre-shard-buckets-design">Pre-Shard Buckets Design<a class="headerlink" href="#pre-shard-buckets-design" title="Permanent link">&para;</a></h1>
+<p><strong>Advisory:</strong> <a href="https://github.com/zeroae/zae-limiter/security/advisories/GHSA-76rv-2r9v-c5m6">GHSA-76rv-2r9v-c5m6</a>
+<strong>Date:</strong> 2026-02-21
+<strong>Status:</strong> Approved</p>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>All rate limit buckets for a single entity share the same DynamoDB partition key (<code>{ns}/ENTITY#{id}</code>). A high-traffic entity can exceed DynamoDB's per-partition throughput limit (~1,000 WCU/sec), causing throttling that degrades service for that entity and potentially co-located entities.</p>
+<p>With multiple resources per entity, the problem compounds: 10 resources at 100 writes/sec each = 1,000 WCU on one partition.</p>
+<h2 id="solution-overview">Solution Overview<a class="headerlink" href="#solution-overview" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Move buckets to their own PK: <code>{ns}/BUCKET#{entity}#{resource}#{shard}</code> — one partition per (entity, resource, shard)</li>
+<li>Auto-inject a reserved <code>wcu:1000</code> infrastructure limit on every bucket to track partition write pressure in-band</li>
+<li>When <code>wcu</code> is exhausted, the client doubles the shard count; the aggregator can proactively shard or merge</li>
+</ol>
+<p><strong>$0.625/M preserved on the hot path.</strong></p>
+<h2 id="data-model">Data Model<a class="headerlink" href="#data-model" title="Permanent link">&para;</a></h2>
+<h3 id="bucket-item-new-pk-scheme">Bucket Item (New PK Scheme)<a class="headerlink" href="#bucket-item-new-pk-scheme" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
-<th>Cause</th>
-<th>Diagnosis</th>
-<th>Solution</th>
+<th>Key</th>
+<th>Value</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Bucket depleted</td>
-<td>Check bucket <code>tokens</code> value</td>
-<td>Wait for refill or increase limit</td>
+<td>PK</td>
+<td><code>{ns}/BUCKET#{entity_id}#{resource}#{shard_id}</code></td>
 </tr>
 <tr>
-<td>Limit too restrictive</td>
-<td>Compare limit capacity vs usage</td>
-<td>Increase capacity</td>
+<td>SK</td>
+<td><code>#STATE</code></td>
 </tr>
 <tr>
-<td>Cascade triggered</td>
-<td>Check <code>violations</code> array</td>
-<td>Increase parent limit</td>
+<td>GSI2PK</td>
+<td><code>{ns}/RESOURCE#{resource}</code></td>
 </tr>
 <tr>
-<td>Clock skew</td>
-<td>Compare server time with bucket <code>last_update</code></td>
-<td>Sync NTP</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Check bucket state:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># v0.9.0+ bucket key format</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#STATE&quot;}}&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--projection-expression<span class="w"> </span><span class="s2">&quot;b_&lt;limit_name&gt;_tk, rf, b_&lt;limit_name&gt;_cp, shard_count&quot;</span>
-</span></code></pre></div>
-<p><strong>Interpret the response:</strong></p>
-<ul>
-<li><code>tokens</code>: Current token count (in millitokens, divide by 1000)</li>
-<li><code>last_update</code>: Unix timestamp of last access</li>
-<li><code>capacity</code>: Maximum bucket capacity (in millitokens)</li>
-</ul>
-<h3 id="limits-not-enforcing">Limits Not Enforcing<a class="headerlink" href="#limits-not-enforcing" title="Permanent link">&para;</a></h3>
-<p><strong>Common causes:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Cause</th>
-<th>Solution</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Entity not created</strong></td>
-<td>Create entity before rate limiting: <code>await limiter.create_entity(...)</code></td>
+<td>GSI2SK</td>
+<td><code>BUCKET#{entity_id}#{shard_id}</code></td>
 </tr>
 <tr>
-<td><strong>No stored limits configured</strong></td>
-<td>Set limits via <code>set_system_defaults()</code>, <code>set_resource_defaults()</code>, or <code>set_limits()</code></td>
+<td>GSI3PK</td>
+<td><code>{ns}/ENTITY#{entity_id}</code></td>
 </tr>
 <tr>
-<td><strong>Stale bucket state</strong></td>
-<td>Bucket refills over time; tokens may have refilled</td>
+<td>GSI3SK</td>
+<td><code>BUCKET#{resource}#{shard_id}</code></td>
 </tr>
 <tr>
-<td><strong>Limit configuration mismatch</strong></td>
-<td>Verify limit <code>capacity</code> and <code>refill_rate</code> match expectations</td>
+<td>GSI4PK</td>
+<td><code>{ns}</code></td>
+</tr>
+<tr>
+<td>GSI4SK</td>
+<td><code>BUCKET#{entity_id}#{resource}#{shard_id}</code></td>
 </tr>
 </tbody>
 </table>
-<p><strong>Verify entity exists:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span></code></pre></div>
-<h3 id="cascade-not-working">Cascade Not Working<a class="headerlink" href="#cascade-not-working" title="Permanent link">&para;</a></h3>
-<p>If cascade to parent is not enforced:</p>
-<p><strong>Step 1: Verify parent entity exists:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;parent_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span></code></pre></div>
-<p><strong>Step 2: Verify child has <code>parent_id</code> set:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;child_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1"># Check the &quot;parent_id&quot; attribute in response</span>
-</span></code></pre></div>
-<p><strong>Step 3: Ensure entity was created with <code>cascade=True</code>:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Check the entity&#39;s cascade setting in its metadata</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;child_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Check the &quot;cascade&quot; attribute in response — should be true</span>
-</span></code></pre></div>
-<p>If cascade is not enabled, recreate the entity with cascade:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;child-id&quot;</span><span class="p">,</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;parent-id&quot;</span><span class="p">,</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Entity property — applies to all acquire() calls</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="verification">Verification<a class="headerlink" href="#verification" title="Permanent link">&para;</a></h3>
-<p>Test that rate limiting is working correctly:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span><span class="p">,</span> <span class="n">RateLimitExceeded</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># Consume all capacity</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">):</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="k">try</span><span class="p">:</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>        <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>            <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;test-entity&quot;</span><span class="p">,</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>            <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;test&quot;</span><span class="p">,</span>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>            <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>            <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>        <span class="p">):</span>
-</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>            <span class="k">pass</span>
-</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>    <span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rate limited after </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2"> requests, retry_after=</span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="si">}</span><span class="s2">s&quot;</span><span class="p">)</span>
-</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>        <span class="k">break</span>
-</span></code></pre></div>
-<h2 id="procedures">Procedures<a class="headerlink" href="#procedures" title="Permanent link">&para;</a></h2>
-<h3 id="adjust-limits-at-runtime">Adjust Limits at Runtime<a class="headerlink" href="#adjust-limits-at-runtime" title="Permanent link">&para;</a></h3>
-<h4 id="programmatic-adjustment">Programmatic Adjustment<a class="headerlink" href="#programmatic-adjustment" title="Permanent link">&para;</a></h4>
-<p>Update stored limits for an entity without redeployment:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="c1"># Update limits for an entity</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;api-key-123&quot;</span><span class="p">,</span>
-</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>  <span class="c1"># Resource these limits apply to</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1000</span><span class="p">),</span>      <span class="c1"># Requests per minute</span>
-</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>   <span class="c1"># Tokens per minute</span>
-</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>    <span class="p">],</span>
-</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="p">)</span>
-</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>
-</span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Limits updated successfully&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<h4 id="direct-dynamodb-update">Direct DynamoDB Update<a class="headerlink" href="#direct-dynamodb-update" title="Permanent link">&para;</a></h4>
-<div class="admonition warning">
-<p class="admonition-title">Advanced</p>
-<p>Direct DynamoDB updates bypass validation. Use programmatic API when possible.</p>
-</div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Update a stored limit</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>put-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--item<span class="w"> </span><span class="s1">&#39;{</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="s1">    &quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;},</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="s1">    &quot;SK&quot;: {&quot;S&quot;: &quot;#LIMIT#&lt;resource&gt;#&lt;limit_name&gt;&quot;},</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="s1">    &quot;capacity&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="s1">    &quot;refill_amount&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="s1">    &quot;refill_period&quot;: {&quot;N&quot;: &quot;60&quot;}</span>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="s1">  }&#39;</span>
-</span></code></pre></div>
-<h3 id="reset-bucket-state">Reset Bucket State<a class="headerlink" href="#reset-bucket-state" title="Permanent link">&para;</a></h3>
-<p>Reset a bucket to restore full capacity (will be recreated on next acquire):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>delete-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#STATE&quot;}}&#39;</span>
-</span></code></pre></div>
-<h3 id="debug-bucket-state">Debug Bucket State<a class="headerlink" href="#debug-bucket-state" title="Permanent link">&para;</a></h3>
-<p>Query all buckets for an entity using GSI3:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Discover all bucket PKs via GSI3 (KEYS_ONLY)</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>query<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--index-name<span class="w"> </span>GSI3<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span>--key-condition-expression<span class="w"> </span><span class="s2">&quot;GSI3PK = :gsi3pk&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">  </span>--expression-attribute-values<span class="w"> </span><span class="s1">&#39;{&quot;:gsi3pk&quot;: {&quot;S&quot;: &quot;{ns}/ENTITY#&lt;entity_id&gt;&quot;}}&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">  </span>--output<span class="w"> </span>json
-</span></code></pre></div>
-<p>Then fetch individual bucket items using the PKs returned above.</p>
-<p><strong>Interpret bucket values:</strong></p>
-<p>All token values are stored as <strong>millitokens</strong> (multiply by 1000). Bucket attributes
-use the <code>b_{limit_name}_{field}</code> naming convention:</p>
+<p>Shard 0 uses suffix <code>#0</code>. Unsharded buckets always have <code>shard_id=0</code>.</p>
+<h3 id="bucket-attributes">Bucket Attributes<a class="headerlink" href="#bucket-attributes" title="Permanent link">&para;</a></h3>
+<p>Existing attributes unchanged (<code>b_rps_tk</code>, <code>b_rps_cp</code>, etc.), plus:</p>
 <table>
 <thead>
 <tr>
-<th>Field</th>
 <th>Attribute</th>
+<th>Type</th>
 <th>Description</th>
-<th>Example</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Tokens</td>
-<td><code>b_rpm_tk</code></td>
-<td>Current available tokens × 1000</td>
-<td><code>50000</code> = 50 tokens</td>
-</tr>
-<tr>
-<td>Capacity</td>
-<td><code>b_rpm_cp</code></td>
-<td>Maximum bucket size × 1000</td>
-<td><code>100000</code> = 100 tokens</td>
-</tr>
-<tr>
-<td>Refill timestamp</td>
-<td><code>rf</code></td>
-<td>Last refill (epoch ms)</td>
-<td><code>1705312800000</code></td>
-</tr>
-<tr>
-<td>Shard count</td>
 <td><code>shard_count</code></td>
-<td>Number of shards for this bucket</td>
-<td><code>2</code></td>
+<td>N</td>
+<td>Number of shards (default 1)</td>
+</tr>
+<tr>
+<td><code>b_wcu_tk</code></td>
+<td>N</td>
+<td>Current tokens for infrastructure limit</td>
+</tr>
+<tr>
+<td><code>b_wcu_cp</code></td>
+<td>N</td>
+<td>Capacity: 1000 (auto-injected)</td>
+</tr>
+<tr>
+<td><code>b_wcu_ra</code></td>
+<td>N</td>
+<td>Refill amount: 1000</td>
+</tr>
+<tr>
+<td><code>b_wcu_rp</code></td>
+<td>N</td>
+<td>Refill period: 1 (per second)</td>
 </tr>
 </tbody>
 </table>
-<h3 id="verification-after-changes">Verification After Changes<a class="headerlink" href="#verification-after-changes" title="Permanent link">&para;</a></h3>
-<p>After adjusting limits, verify:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a># Check available capacity
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>available = await limiter.available(
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>    entity_id=&quot;&lt;entity_id&gt;&quot;,
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    resource=&quot;&lt;resource&gt;&quot;,
-</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    limits=[Limit.per_minute(&quot;&lt;limit_name&gt;&quot;, &lt;capacity&gt;)],
-</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>)
-</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>
-</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>print(f&quot;Available: {available}&quot;)
-</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a># Output: {&#39;&lt;limit_name&gt;&#39;: &lt;available_tokens&gt;}
-</span></code></pre></div>
-<h2 id="dynamodb-key-patterns">DynamoDB Key Patterns<a class="headerlink" href="#dynamodb-key-patterns" title="Permanent link">&para;</a></h2>
+<p><code>wcu</code> is a reserved limit name. Users cannot create limits named <code>wcu</code>; rejected with <code>ValidationError</code>. The <code>wcu</code> limit is hidden from all user-facing output (<code>RateLimitExceeded</code>, <code>get_status()</code>, usage snapshots).</p>
+<h3 id="limit-types">Limit Types<a class="headerlink" href="#limit-types" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Examples</th>
+<th>Divided on shard?</th>
+<th>Visible to user?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Application</td>
+<td><code>rps</code>, <code>tpm</code></td>
+<td>Yes (<code>original / shard_count</code>)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Infrastructure</td>
+<td><code>wcu</code></td>
+<td>No (per-partition)</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<p>Bucket items store <strong>original (undivided)</strong> limits. Effective limits are derived at runtime by the refill logic (aggregator and client slow path).</p>
+<h3 id="gsi-usage">GSI Usage<a class="headerlink" href="#gsi-usage" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>GSI</th>
+<th>Projection</th>
+<th>Bucket use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GSI1</td>
+<td>ALL</td>
+<td><strong>Not used</strong> for buckets (preserves $0.625/M)</td>
+</tr>
+<tr>
+<td>GSI2</td>
+<td>ALL</td>
+<td>Resource capacity aggregation (existing, updated GSI2SK to include shard)</td>
+</tr>
+<tr>
+<td>GSI3</td>
+<td>KEYS_ONLY</td>
+<td><strong>New:</strong> Bucket discovery (<code>GSI3PK={ns}/ENTITY#{id}</code>)</td>
+</tr>
+<tr>
+<td>GSI4</td>
+<td>KEYS_ONLY</td>
+<td>Namespace discovery (existing, updated GSI4SK)</td>
+</tr>
+</tbody>
+</table>
+<p>GSI3 is overloaded: <code>ENTITY_CONFIG#</code> prefix for entity configs (existing), <code>ENTITY#</code> prefix for bucket discovery (new). No collision.</p>
+<h2 id="access-patterns">Access Patterns<a class="headerlink" href="#access-patterns" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
 <th>Pattern</th>
+<th>Method</th>
 <th>Key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Single bucket read/write</td>
+<td>Table GetItem/UpdateItem</td>
+<td><code>PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE</code></td>
+</tr>
+<tr>
+<td>All buckets for entity</td>
+<td>GSI3 Query + BatchGetItem</td>
+<td><code>GSI3PK={ns}/ENTITY#{id}, GSI3SK begins_with BUCKET#</code></td>
+</tr>
+<tr>
+<td>All shards for (entity, resource)</td>
+<td>GSI3 Query</td>
+<td><code>GSI3PK={ns}/ENTITY#{id}, GSI3SK begins_with BUCKET#{resource}#</code></td>
+</tr>
+<tr>
+<td>Resource capacity (all entities)</td>
+<td>GSI2 Query</td>
+<td><code>GSI2PK={ns}/RESOURCE#{resource}, GSI2SK begins_with BUCKET#</code></td>
+</tr>
+<tr>
+<td>All items in namespace</td>
+<td>GSI4 Query</td>
+<td><code>GSI4PK={ns}</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="acquire-flow-hot-path">Acquire Flow (Hot Path)<a class="headerlink" href="#acquire-flow-hot-path" title="Permanent link">&para;</a></h2>
+<ol>
+<li><code>acquire(entity='A', resource='r')</code></li>
+<li>Entity cache lookup: <code>(cascade, parent_id, {resource: shard_count})</code></li>
+<li>Pick <code>shard_id = random(0, shard_count - 1)</code></li>
+<li>Compute PK: <code>{ns}/BUCKET#A#r#{shard_id}</code></li>
+<li><code>speculative_consume()</code> with <code>ADD b_wcu_tk -1</code> in UpdateExpression and <code>b_wcu_tk &gt;= 1</code> in ConditionExpression</li>
+<li><code>ALL_NEW</code> returns <code>shard_count</code> — update entity cache</li>
+</ol>
+<p><strong>No extra round trips. Same structure as today.</strong></p>
+<h3 id="failure-handling">Failure Handling<a class="headerlink" href="#failure-handling" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Cause</th>
+<th>ALL_OLD signal</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>wcu</code> exhausted (<code>b_wcu_tk &lt; 1</code>)</td>
+<td>Infrastructure limit hit</td>
+<td>Trigger doubling (bump <code>shard_count</code> on shard 0)</td>
+</tr>
+<tr>
+<td>App limit exhausted (<code>b_rps_tk &lt; consumed</code>, <code>b_wcu_tk &gt;= 1</code>)</td>
+<td>Shard drained</td>
+<td>Retry on another random shard (max 2 retries)</td>
+</tr>
+<tr>
+<td>Both exhausted</td>
+<td>Partition hot + shard drained</td>
+<td>Trigger doubling (priority)</td>
+</tr>
+<tr>
+<td>Bucket missing</td>
+<td>First write for this shard</td>
+<td>Fall back to slow path (create bucket)</td>
+</tr>
+<tr>
+<td><code>ProvisionedThroughputExceededException</code></td>
+<td>DynamoDB throttle</td>
+<td>Retry on <code>#s1</code>; if exists, discover <code>shard_count</code>; if not, <code>RateLimiterUnavailable</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="shard-retry-on-false-rejection">Shard Retry on False Rejection<a class="headerlink" href="#shard-retry-on-false-rejection" title="Permanent link">&para;</a></h3>
+<p>With N shards, one shard may be drained while others have capacity. On application limit exhaustion (not <code>wcu</code>), retry on a different random shard (max 2 retries, 3 total attempts).</p>
+<p>Retries hit <strong>different partitions</strong> — no extra pressure on the exhausted shard.</p>
+<h2 id="shard-doubling">Shard Doubling<a class="headerlink" href="#shard-doubling" title="Permanent link">&para;</a></h2>
+<p>Shard count doubles: 1 → 2 → 4 → 8. Since shards are consumed uniformly, if one shard's <code>wcu</code> is exhausted, all shards are likely near exhaustion.</p>
+<h3 id="client-side-reactive">Client-Side (Reactive)<a class="headerlink" href="#client-side-reactive" title="Permanent link">&para;</a></h3>
+<p>On <code>wcu</code> exhaustion:
+1. Bump <code>shard_count</code> on shard 0 (conditional write: <code>shard_count = :old_count</code>)
+2. Retry acquire on a new shard (lazy creation on first access)
+3. Cost: +1 RT, +1 WCU (one-time per doubling event)</p>
+<h3 id="aggregator-proactive-sharding">Aggregator (Proactive Sharding)<a class="headerlink" href="#aggregator-proactive-sharding" title="Permanent link">&para;</a></h3>
+<p>The aggregator observes <code>wcu</code> consumption via DynamoDB streams and proactively shards before exhaustion:</p>
+<ol>
+<li>In <code>process_stream_records()</code>, after <code>aggregate_bucket_states()</code>, compute the <code>wcu</code> consumption rate for each bucket from accumulated <code>tc_delta</code></li>
+<li>If <code>wcu</code> <code>tc_delta &gt;= threshold * capacity</code> (e.g., 80% of 1000 = 800), the bucket is approaching the partition write ceiling</li>
+<li>Bump <code>shard_count</code> on shard 0 (conditional write: <code>shard_count = :old_count</code>, same as client-side)</li>
+<li>Pre-create new shard bucket items with correct attributes (original limits + new <code>shard_count</code>) to avoid lazy-creation slow path on client</li>
+<li>Cost: +1 WCU (bump) + N WCU (pre-create new shards)</li>
+</ol>
+<h3 id="aggregator-shard-count-propagation">Aggregator (Shard Count Propagation)<a class="headerlink" href="#aggregator-shard-count-propagation" title="Permanent link">&para;</a></h3>
+<p>When <code>shard_count</code> changes on any shard item (detected via OldImage vs NewImage in the stream):</p>
+<ol>
+<li>Read <code>shard_count</code> from NewImage; compare with OldImage</li>
+<li>If <code>shard_count</code> changed (increased by client or proactive sharding), propagate the new value to all other existing shard items</li>
+<li>Uses conditional write (<code>shard_count &lt; :new_count</code>) to avoid overwriting a higher value set by another writer</li>
+<li>Cost: +N WCU per propagation event (one per existing shard)</li>
+<li>Propagation ensures all shards have consistent <code>shard_count</code> for effective limit derivation in the refill logic</li>
+</ol>
+<h3 id="aggregator-future-shard-merging">Aggregator (Future: Shard Merging)<a class="headerlink" href="#aggregator-future-shard-merging" title="Permanent link">&para;</a></h3>
+<p>Can merge shards when traffic drops (future work).</p>
+<h3 id="shard-0-as-source-of-truth">Shard 0 as Source of Truth<a class="headerlink" href="#shard-0-as-source-of-truth" title="Permanent link">&para;</a></h3>
+<p>Shard 0 (original PK suffix <code>#0</code>) is the authority for <code>shard_count</code>.</p>
+<ul>
+<li><strong>Warm cache clients:</strong> route to random shards using cached <code>shard_count</code></li>
+<li><strong>Stale cache clients:</strong> route to fewer shards; self-correcting via own <code>wcu</code> exhaustion or cache TTL</li>
+<li><strong>Cold cache clients:</strong> first acquire hits shard 0, learns <code>shard_count</code> from <code>ALL_NEW</code></li>
+<li><strong>Shard 0 throttled (DynamoDB):</strong> probe <code>#s1</code> via retry logic; if it exists, discover <code>shard_count</code></li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Actor</th>
+<th>Extra RT</th>
+<th>Extra RCU</th>
+<th>Extra WCU</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Triggering client</td>
+<td>+1</td>
+<td>0</td>
+<td>+1 (update shard 0)</td>
+</tr>
+<tr>
+<td>Same client (cached)</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Other client (stale cache)</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Other client (cold cache)</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Aggregator propagation</td>
+<td>0</td>
+<td>0</td>
+<td>+N shards</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cascade">Cascade<a class="headerlink" href="#cascade" title="Permanent link">&para;</a></h2>
+<p>Parent is unaware of child shards. Each cascade write goes to the parent's own bucket PK (different partition). Parent protects itself with its own <code>wcu</code> limit and can shard independently.</p>
+<p>The parallel cascade optimization (issue #318) still works: child + parent speculative writes fire concurrently via <code>asyncio.gather</code>, hitting different partitions.</p>
+<h2 id="entity-cache">Entity Cache<a class="headerlink" href="#entity-cache" title="Permanent link">&para;</a></h2>
+<p>Updated structure:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>entity_cache = {
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    entity_id: (cascade, parent_id, {resource: shard_count})
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>}
+</span></code></pre></div>
+<p>Populated from <code>ALL_NEW</code> response on speculative write success. <code>shard_count</code> per resource enables independent sharding granularity.</p>
+<h2 id="aggregator-changes">Aggregator Changes<a class="headerlink" href="#aggregator-changes" title="Permanent link">&para;</a></h2>
+<h3 id="breaks-must-fix">Breaks (Must Fix)<a class="headerlink" href="#breaks-must-fix" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Issue</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_parse_bucket_record()</code></td>
+<td>SK check fails (<code>#STATE</code> not <code>#BUCKET#</code>), resource/entity extraction from wrong key</td>
+<td>Parse new PK format to extract entity_id, resource, shard_id</td>
+</tr>
+<tr>
+<td><code>aggregate_bucket_states()</code></td>
+<td>Merges shard states together (keys by entity+resource)</td>
+<td>Key must include <code>shard_id</code>: <code>(ns, entity, resource, shard)</code></td>
+</tr>
+<tr>
+<td><code>try_refill_bucket()</code></td>
+<td>Wrong PK/SK construction, missing effective limit computation</td>
+<td>Use new PK, divide capacity/refill by <code>shard_count</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="new-responsibilities">New Responsibilities<a class="headerlink" href="#new-responsibilities" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Responsibility</th>
+<th>Trigger</th>
+<th>Action</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Proactive sharding</td>
+<td><code>wcu</code> <code>tc_delta</code> &gt;= 80% of capacity in a batch</td>
+<td>Bump <code>shard_count</code> on shard 0, pre-create new shard buckets</td>
+<td>+1 WCU (bump) + N WCU (pre-create)</td>
+</tr>
+<tr>
+<td>Shard count propagation</td>
+<td><code>shard_count</code> changed in stream record (OldImage != NewImage)</td>
+<td>Update all other shard items with new <code>shard_count</code> (conditional: <code>shard_count &lt; :new</code>)</td>
+<td>+N WCU</td>
+</tr>
+<tr>
+<td>Effective limit refill</td>
+<td>Every refill cycle</td>
+<td><code>effective_capacity = capacity / shard_count</code> for application limits</td>
+<td>0 (math only)</td>
+</tr>
+<tr>
+<td><code>wcu</code> filtering</td>
+<td>Every <code>extract_deltas()</code> call</td>
+<td>Skip <code>wcu</code> limit — no usage snapshots for internal limits</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<h3 id="new-dataclass-fields">New Dataclass Fields<a class="headerlink" href="#new-dataclass-fields" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Dataclass</th>
+<th>New fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ParsedBucketRecord</code></td>
+<td><code>shard_id: int</code>, <code>shard_count: int</code></td>
+</tr>
+<tr>
+<td><code>BucketRefillState</code></td>
+<td><code>shard_id: int</code>, <code>shard_count: int</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="migration-strategy">Migration Strategy<a class="headerlink" href="#migration-strategy" title="Permanent link">&para;</a></h2>
+<p><strong>Clean break</strong> — bump schema version in the VERSION record. New code creates bucket items at new PKs on first access. Old bucket items are ignored and expire via TTL.</p>
+<p>Since buckets are ephemeral (they refill from limits config), losing old bucket state means entities briefly start with full tokens after upgrade. No data loss.</p>
+<h2 id="cost-and-latency-impact">Cost and Latency Impact<a class="headerlink" href="#cost-and-latency-impact" title="Permanent link">&para;</a></h2>
+<h3 id="steady-state-unsharded">Steady-State (Unsharded)<a class="headerlink" href="#steady-state-unsharded" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>RT</th>
+<th>RCU</th>
+<th>WCU</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Speculative acquire (success)</td>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Speculative acquire (fast reject)</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Speculative fallback (refill helps)</td>
+<td>3</td>
+<td>1</td>
+<td>2</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Cascade (both speculative success)</td>
+<td>1</td>
+<td>0</td>
+<td>2</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sharded-steady-state-n-shards">Sharded Steady-State (N shards)<a class="headerlink" href="#sharded-steady-state-n-shards" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>RT</th>
+<th>RCU</th>
+<th>WCU</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>First shard has tokens</td>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Shard retry (first drained)</td>
+<td>2</td>
+<td>0</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Shard retry (2 drained)</td>
+<td>3</td>
+<td>0</td>
+<td>3</td>
+</tr>
+</tbody>
+</table>
+<h3 id="doubling-events-rare">Doubling Events (Rare)<a class="headerlink" href="#doubling-events-rare" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>RT</th>
+<th>RCU</th>
+<th>WCU</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Client bumps shard_count</td>
+<td>+1</td>
+<td>0</td>
+<td>+1</td>
+</tr>
+<tr>
+<td>Client retries on new shard</td>
+<td>+1</td>
+<td>0</td>
+<td>+1</td>
+</tr>
+<tr>
+<td>Aggregator propagation</td>
+<td>—</td>
+<td>0</td>
+<td>+N</td>
+</tr>
+</tbody>
+</table>
+<h3 id="net-impact-users-who-never-hit-partition-limits">Net Impact (Users Who Never Hit Partition Limits)<a class="headerlink" href="#net-impact-users-who-never-hit-partition-limits" title="Permanent link">&para;</a></h3>
+<p><strong>Zero extra cost.</strong> The <code>wcu</code> limit adds attributes to the same bucket item and conditions to the same <code>UpdateItem</code>. GSI3 KEYS_ONLY replication is ~0.1 WCU (negligible).</p>
+<h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Shard count only doubles</strong> — no fine-grained scaling</li>
+<li><strong>No shard merging in v1</strong> — follow-up work for the aggregator</li>
+<li><strong>Stale shard_count across clients</strong> — self-correcting via <code>wcu</code> exhaustion or cache TTL</li>
+<li><strong>get_status() for sharded entities</strong> — GSI3 query + BatchGetItem (more expensive than single table query, but off hot path)</li>
+<li><strong>Breaking schema change</strong> — requires schema version bump</li>
+</ol>
+<h2 id="future-work">Future Work<a class="headerlink" href="#future-work" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
 <th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Entity metadata</td>
-<td><code>PK={ns}/ENTITY#&lt;id&gt;, SK=#META</code></td>
-<td>Entity configuration</td>
+<td>Shard merging</td>
+<td>Aggregator consolidates shards when traffic drops</td>
 </tr>
 <tr>
-<td>Bucket state (v0.9.0+)</td>
-<td><code>PK={ns}/BUCKET#&lt;id&gt;#&lt;resource&gt;#&lt;shard&gt;, SK=#STATE</code></td>
-<td>Token bucket (per shard)</td>
+<td>Adaptive <code>wcu</code> ceiling</td>
+<td>Adjust based on observed DynamoDB adaptive capacity</td>
 </tr>
 <tr>
-<td>Entity config</td>
-<td><code>PK={ns}/ENTITY#&lt;id&gt;, SK=#CONFIG#&lt;resource&gt;</code></td>
-<td>Stored limit config</td>
+<td>Shard-aware CloudWatch metrics</td>
+<td>Per-shard operational visibility</td>
 </tr>
 <tr>
-<td>Resource config</td>
-<td><code>PK={ns}/RESOURCE#&lt;resource&gt;, SK=#CONFIG</code></td>
-<td>Resource default limits</td>
-</tr>
-<tr>
-<td>System config</td>
-<td><code>PK={ns}/SYSTEM#, SK=#CONFIG</code></td>
-<td>System default limits</td>
+<td>RCU sharding</td>
+<td>Same pattern for read-heavy workloads (3,000 RCU ceiling)</td>
 </tr>
 </tbody>
 </table>
-<h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="../recovery/">Recovery &amp; Rollback</a> - Reset corrupted buckets</li>
-<li><a href="../../performance/">Performance Tuning</a> - Capacity planning for rate limits</li>
-<li><a href="../../guide/hierarchical/">Hierarchical Limits</a> - Cascade configuration</li>
-</ul>
 
 
 

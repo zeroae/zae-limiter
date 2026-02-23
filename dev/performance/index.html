@@ -1170,10 +1170,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#write-sharding-for-high-fanout-parents" class="md-nav__link">
+  <a href="#write-sharding-automatic-pre-shard-buckets" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Write Sharding for High-Fanout Parents
+        Write Sharding (Automatic Pre-Shard Buckets)
       
     </span>
   </a>
@@ -3529,10 +3529,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#write-sharding-for-high-fanout-parents" class="md-nav__link">
+  <a href="#write-sharding-automatic-pre-shard-buckets" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Write Sharding for High-Fanout Parents
+        Write Sharding (Automatic Pre-Shard Buckets)
       
     </span>
   </a>
@@ -4494,63 +4494,48 @@ the DynamoDB cost is identical—all limits are stored in a single item.</p>
 </span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="s2">&quot;api-key&quot;</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="n">limits</span><span class="o">=</span><span class="n">limits</span><span class="p">):</span>
 </span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>    <span class="k">pass</span>  <span class="c1"># Checks both api-key AND project-1 limits</span>
 </span></code></pre></div>
-<h4 id="write-sharding-for-high-fanout-parents">Write Sharding for High-Fanout Parents<a class="headerlink" href="#write-sharding-for-high-fanout-parents" title="Permanent link">&para;</a></h4>
-<p>When a parent entity has many children (1000+) with <code>cascade=True</code>, the parent partition may experience write throttling. DynamoDB limits throughput per partition to ~1,000 WCU (or ~3,000 RCU).</p>
-<p><strong>Manual Write Sharding Solution:</strong></p>
-<p>Instead of one parent, distribute ownership across multiple sharded parent entities:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># OLD: Single parent becomes a hotspot</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1"># ├── project-1 (parent)</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="c1"># │   ├── api-key-1 (child, cascade=True)</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># │   ├── api-key-2 (child, cascade=True)</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># │   └── ... (1000+ children)</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1"># NEW: Distribute across shards (e.g., 10 shards = 10x capacity)</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="n">num_shards</span> <span class="o">=</span> <span class="mi">10</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="n">api_key_id</span> <span class="o">=</span> <span class="s2">&quot;api-key-12345&quot;</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="n">shard_id</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">)</span> <span class="o">%</span> <span class="n">num_shards</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="n">parent_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard_id</span><span class="si">}</span><span class="s2">&quot;</span>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="c1"># Create shard parents once during setup</span>
-</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="k">for</span> <span class="n">shard</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_shards</span><span class="p">):</span>
-</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>    <span class="n">parent_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard</span><span class="si">}</span><span class="s2">&quot;</span>
-</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="n">parent_id</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">)</span>
-</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>    <span class="c1"># Set the same limits on all shards</span>
-</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>    <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-8-19"><a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>        <span class="n">parent_id</span><span class="p">,</span>
-</span><span id="__span-8-20"><a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>        <span class="p">[</span>
-</span><span id="__span-8-21"><a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">10000</span><span class="p">),</span>
-</span><span id="__span-8-22"><a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>            <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100000</span><span class="p">),</span>
-</span><span id="__span-8-23"><a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a>        <span class="p">],</span>
-</span><span id="__span-8-24"><a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;llm-api&quot;</span>
-</span><span id="__span-8-25"><a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>    <span class="p">)</span>
-</span><span id="__span-8-26"><a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a>
-</span><span id="__span-8-27"><a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a><span class="c1"># For each child, assign to a random shard</span>
-</span><span id="__span-8-28"><a id="__codelineno-8-28" name="__codelineno-8-28" href="#__codelineno-8-28"></a><span class="n">shard_id</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">)</span> <span class="o">%</span> <span class="n">num_shards</span>
-</span><span id="__span-8-29"><a id="__codelineno-8-29" name="__codelineno-8-29" href="#__codelineno-8-29"></a><span class="n">sharded_parent</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard_id</span><span class="si">}</span><span class="s2">&quot;</span>
-</span><span id="__span-8-30"><a id="__codelineno-8-30" name="__codelineno-8-30" href="#__codelineno-8-30"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-8-31"><a id="__codelineno-8-31" name="__codelineno-8-31" href="#__codelineno-8-31"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="n">api_key_id</span><span class="p">,</span>
-</span><span id="__span-8-32"><a id="__codelineno-8-32" name="__codelineno-8-32" href="#__codelineno-8-32"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="n">sharded_parent</span><span class="p">,</span>
-</span><span id="__span-8-33"><a id="__codelineno-8-33" name="__codelineno-8-33" href="#__codelineno-8-33"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span>
-</span><span id="__span-8-34"><a id="__codelineno-8-34" name="__codelineno-8-34" href="#__codelineno-8-34"></a><span class="p">)</span>
-</span><span id="__span-8-35"><a id="__codelineno-8-35" name="__codelineno-8-35" href="#__codelineno-8-35"></a>
-</span><span id="__span-8-36"><a id="__codelineno-8-36" name="__codelineno-8-36" href="#__codelineno-8-36"></a><span class="c1"># On acquire, use the same sharding logic</span>
-</span><span id="__span-8-37"><a id="__codelineno-8-37" name="__codelineno-8-37" href="#__codelineno-8-37"></a><span class="n">shard_id</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">)</span> <span class="o">%</span> <span class="n">num_shards</span>
-</span><span id="__span-8-38"><a id="__codelineno-8-38" name="__codelineno-8-38" href="#__codelineno-8-38"></a><span class="n">sharded_parent</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard_id</span><span class="si">}</span><span class="s2">&quot;</span>
-</span><span id="__span-8-39"><a id="__codelineno-8-39" name="__codelineno-8-39" href="#__codelineno-8-39"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">,</span> <span class="s2">&quot;llm-api&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="n">limits</span><span class="o">=</span><span class="n">limits</span><span class="p">):</span>
-</span><span id="__span-8-40"><a id="__codelineno-8-40" name="__codelineno-8-40" href="#__codelineno-8-40"></a>    <span class="k">pass</span>  <span class="c1"># Cascades to sharded parent instead of single hotspot</span>
+<h4 id="write-sharding-automatic-pre-shard-buckets">Write Sharding (Automatic Pre-Shard Buckets)<a class="headerlink" href="#write-sharding-automatic-pre-shard-buckets" title="Permanent link">&para;</a></h4>
+<p>Starting with v0.9.0 (GHSA-76rv), zae-limiter automatically handles DynamoDB hot partition
+mitigation via <strong>pre-shard buckets</strong>. Each bucket item lives on its own DynamoDB partition
+key (<code>PK={ns}/BUCKET#{id}#{resource}#{shard}</code>), and an auto-injected <code>wcu:1000</code>
+infrastructure limit tracks per-partition write pressure.</p>
+<p><strong>How it works:</strong></p>
+<ol>
+<li>Every bucket starts with <code>shard_count=1</code> (shard 0)</li>
+<li>An internal <code>wcu</code> limit (capacity: 1000 millitokens) is auto-injected on every bucket</li>
+<li>When <code>wcu</code> is exhausted on a speculative write, the client doubles <code>shard_count</code> via a
+   conditional write on shard 0 (source of truth)</li>
+<li>The Lambda aggregator proactively doubles shards at &gt;=80% wcu capacity before clients
+   experience throttling</li>
+<li>Shard count changes on shard 0 are propagated to all other shards by the aggregator</li>
+<li>Clients pick a random shard from the entity cache: <code>random.randrange(shard_count)</code></li>
+<li>If application limits are exhausted on one shard but the entity has multiple shards,
+   the client retries on up to 2 other randomly chosen shards</li>
+</ol>
+<p><strong>Shard-aware capacity:</strong> The aggregator divides effective capacity and refill amount
+by <code>shard_count</code> when computing refills, so each shard receives its proportional share
+of tokens.</p>
+<p><strong>No application code changes required.</strong> Pre-shard buckets are transparent to users.
+The <code>wcu</code> limit is filtered from all user-facing output (bucket states, exceptions,
+usage snapshots).</p>
+<p><strong>When automatic sharding is insufficient:</strong></p>
+<p>For extreme high-fanout cascade scenarios (1000+ children with <code>cascade=True</code> writing to the
+same parent), automatic bucket sharding handles the per-bucket partition pressure. However,
+if you need to distribute traffic across multiple <em>logical</em> parents for application-level
+load balancing, you can still use manual entity sharding:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Manual entity sharding for application-level distribution</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1"># (Only needed for extreme cascade fan-out beyond what pre-shard handles)</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">num_shards</span> <span class="o">=</span> <span class="mi">10</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">api_key_id</span> <span class="o">=</span> <span class="s2">&quot;api-key-12345&quot;</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="n">shard_id</span> <span class="o">=</span> <span class="nb">hash</span><span class="p">(</span><span class="n">api_key_id</span><span class="p">)</span> <span class="o">%</span> <span class="n">num_shards</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="n">parent_id</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;project-1-shard-</span><span class="si">{</span><span class="n">shard_id</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="n">api_key_id</span><span class="p">,</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="n">parent_id</span><span class="p">,</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="p">)</span>
 </span></code></pre></div>
-<p><strong>Benefits:</strong>
-- Distributes parent write traffic across N partitions
-- With 10 shards: ~10x capacity improvement
-- Only requires application-level sharding logic</p>
-<p><strong>Drawbacks:</strong>
-- More parent entities to manage
-- Limits checked per shard (not globally across all shards)
-- Requires hash consistency in sharding logic</p>
-<p><strong>When to use:</strong>
-- Parent has &gt;500 API keys with <code>cascade=True</code> and hitting throttling
-- Cost-effective alternative to on-demand billing
-- Temporary solution before implementing more sophisticated load distribution</p>
 <h4 id="stored-limits-optimization">Stored Limits Optimization<a class="headerlink" href="#stored-limits-optimization" title="Permanent link">&para;</a></h4>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Config caching reduces RCUs (60s TTL by default)</span>
 </span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>  <span class="c1"># seconds (0 to disable)</span>
