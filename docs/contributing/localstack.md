@@ -54,7 +54,7 @@ LocalStack provides a local AWS environment for development and testing. This gu
       -e SERVICES=dynamodb,dynamodbstreams,lambda,cloudformation,logs,iam,cloudwatch,sqs,s3,sts,resourcegroupstaggingapi \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v "${TMPDIR:-/tmp}/localstack:/var/lib/localstack" \
-      localstack/localstack:4
+      localstack/localstack:4.14
     ```
 
     !!! important "Docker Socket Required"

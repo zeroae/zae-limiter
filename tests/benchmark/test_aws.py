@@ -23,7 +23,6 @@ Example: GEVENT=1 pytest tests/benchmark/test_aws.py --run-aws -o "addopts=" -v
 import os
 import time
 import uuid
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -94,10 +93,7 @@ class TestAWSLatencyBenchmarks:
             yield limiter
 
         # Cleanup
-        try:
-            repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        repo.delete_stack()
 
     @pytest.mark.benchmark(group="aws-acquire")
     def test_acquire_single_limit_aws_latency(self, benchmark, aws_benchmark_limiter):
@@ -232,10 +228,7 @@ class TestAWSThroughputBenchmarks:
         with limiter:
             yield limiter
 
-        try:
-            repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        repo.delete_stack()
 
     def test_sequential_throughput_aws(self, aws_throughput_limiter):
         """Measure max sequential TPS on real AWS.
@@ -451,10 +444,7 @@ class TestAWSCascadeSpeculativeComparison:
 
             yield table_name
 
-        try:
-            repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        repo.delete_stack()
 
     @pytest.fixture(scope="class", params=[False, True], ids=["baseline", "speculative"])
     def aws_speculative_limiter(self, request, aws_speculative_stack):
@@ -637,10 +627,7 @@ class TestAWSCascadeBenchmarks:
 
             yield table_name
 
-        try:
-            repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        repo.delete_stack()
 
     @pytest.fixture(scope="class")
     def aws_cascade_limiter(self, aws_cascade_stack):

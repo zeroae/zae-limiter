@@ -19,8 +19,6 @@ WARNING: These tests create real AWS resources and may incur charges.
 Resources are cleaned up after tests, but verify via AWS Console.
 """
 
-import warnings
-
 import pytest
 
 from zae_limiter import RateLimiter, Repository, StackOptions
@@ -74,10 +72,7 @@ class TestTagBasedDiscovery:
 
         yield limiter
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
 
     @pytest.mark.asyncio
     async def test_stack_has_managed_by_tag(self, deployed_limiter, discovery_name):
@@ -191,10 +186,7 @@ class TestDiscoveryWithUserTags:
 
         yield limiter
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
 
     @pytest.mark.asyncio
     async def test_user_tags_applied_alongside_managed_tags(self, tagged_limiter, discovery_name):

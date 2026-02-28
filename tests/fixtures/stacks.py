@@ -102,10 +102,7 @@ async def create_shared_stack(
 
 async def destroy_shared_stack(repo: Repository) -> None:
     """Delete the CloudFormation stack and close the Repository."""
-    try:
-        await repo.delete_stack()
-    except Exception as e:
-        warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+    await repo.delete_stack()
     await repo.close()
 
 
