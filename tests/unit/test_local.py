@@ -831,7 +831,7 @@ class TestConstants:
         assert CONTAINER_NAME == "zae-limiter-localstack"
 
     def test_default_image(self) -> None:
-        assert DEFAULT_IMAGE == "localstack/localstack:4"
+        assert DEFAULT_IMAGE == "localstack/localstack:4.14"
 
     def test_default_port(self) -> None:
         assert DEFAULT_PORT == 4566

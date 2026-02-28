@@ -17,8 +17,6 @@ To run these tests locally:
 Note: These tests use minimal stack options (no aggregator) for faster execution.
 """
 
-import warnings
-
 import pytest
 import pytest_asyncio  # type: ignore[import-untyped]
 from click.testing import CliRunner
@@ -343,10 +341,7 @@ class TestE2EConfigCLIWorkflow:
 
         yield limiter
 
-        try:
-            repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        repo.delete_stack()
 
     def test_resource_config_cli_workflow(self, e2e_limiter, cli_runner, localstack_endpoint):
         """

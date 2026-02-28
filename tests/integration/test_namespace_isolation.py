@@ -12,7 +12,6 @@ To run:
 """
 
 import uuid
-import warnings
 
 import pytest
 
@@ -207,10 +206,7 @@ class TestNamespaceIsolationViaBuilder:
             entity_b = await repo_b.get_entity("builder-user")
             assert entity_b is None
         finally:
-            try:
-                await repo_default.delete_stack()
-            except Exception as e:
-                warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+            await repo_default.delete_stack()
             await repo_default.close()
             await repo_a.close()
             await repo_b.close()

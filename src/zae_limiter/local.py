@@ -43,7 +43,7 @@ docker: Any = _import_docker()
 # ---------------------------------------------------------------------------
 
 CONTAINER_NAME = "zae-limiter-localstack"
-DEFAULT_IMAGE = "localstack/localstack:4"
+DEFAULT_IMAGE = "localstack/localstack:4.14"
 DEFAULT_PORT = 4566
 LOCALSTACK_SERVICES = (
     "dynamodb,dynamodbstreams,lambda,cloudformation,"
@@ -440,7 +440,7 @@ def status(docker_host: str | None) -> None:
         LocalStack: running
         Endpoint:   http://localhost:4566
         Health:     healthy
-        Image:      localstack/localstack:4
+        Image:      localstack/localstack:4.14
         Services:   dynamodb,dynamodbstreams,lambda,cloudformation,...
 
         To configure your shell:

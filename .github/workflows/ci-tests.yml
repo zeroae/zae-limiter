@@ -97,7 +97,7 @@ jobs:
         python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11", "3.12"]') }}
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:4.14
         ports:
           - 4566:4566
         env:
@@ -160,7 +160,7 @@ jobs:
         python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11", "3.12"]') }}
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:4.14
         ports:
           - 4566:4566
         env:
@@ -244,7 +244,7 @@ jobs:
       cancel-in-progress: false
     services:
       localstack:
-        image: localstack/localstack:4
+        image: localstack/localstack:4.14
         ports:
           - 4566:4566
         env:

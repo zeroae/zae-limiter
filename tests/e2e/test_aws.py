@@ -109,10 +109,7 @@ class TestE2EAWSFullWorkflow:
         yield limiter
 
         # Clean up stack after test completes
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_complete_aws_workflow(self, aws_limiter):
@@ -360,10 +357,7 @@ class TestE2EAWSUsageSnapshots:
 
         yield limiter
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
 
     @pytest.mark.asyncio(loop_scope="class")
     @pytest.mark.slow
@@ -526,10 +520,7 @@ class TestE2EAWSRateLimiting:
 
         yield limiter
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_high_throughput_operations(self, aws_limiter_minimal):
@@ -649,10 +640,7 @@ class TestE2EAWSXRayTracingEnabled:
 
         yield limiter
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_lambda_tracing_enabled(
@@ -884,10 +872,7 @@ class TestE2EAWSXRayTracingDisabled:
 
         yield limiter
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_lambda_tracing_disabled(
@@ -1259,10 +1244,7 @@ class TestE2EAWSProvisioner:
 
         yield repo
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
         await repo.close()
 
     # NOTE: test_provisioner_cfn_event_lifecycle passes NamespaceId directly.
@@ -1530,10 +1512,7 @@ class TestE2EAWSProvisionerCFNStack:
         except Exception:
             pass  # May already be deleted by the test
 
-        try:
-            await repo.delete_stack()
-        except Exception as e:
-            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
+        await repo.delete_stack()
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")

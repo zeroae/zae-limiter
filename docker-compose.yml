@@ -18,7 +18,7 @@ name: zae-limiter
 
 services:
   localstack:
-    image: localstack/localstack:4
+    image: localstack/localstack:4.14
     container_name: zae-limiter-localstack
     ports:
       - "4566:4566"
