@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772245613840,
+  "lastUpdate": 1772256037775,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -12693,6 +12693,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.011256938289530762",
             "extra": "mean: 1.0785821742000166 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "57c9c030b5a8080e3b188a8fb6e8c0b71742a904",
+          "message": "🐛 fix(infra): upgrade LocalStack to 4.14.0 for CFN deletion fix (#262)\n\n## Summary\n\n- Upgrade LocalStack from 4 to 4.14.0 to pick up the fix for\nCloudFormation v2 engine deletion bug with conditional resources\n\n## Context\n\nLocalStack's v2 CloudFormation engine incorrectly tries to resolve\n`!GetAtt` references during stack deletion, even for resources that were\nnever created due to their `Condition` evaluating to `false`.\n\n**Upstream issue:**\nhttps://github.com/localstack/localstack/issues/13609\n\n**Minimal reproduction:** Posted at\nhttps://github.com/localstack/localstack/issues/13609#issuecomment-3821192522\n\n## Status\n\n🚧 **WIP** - Waiting for LocalStack 4.14.0 to be released with the fix.\n\n## Test plan\n\n- [x] Wait for LocalStack 4.14.0 release\n- [ ] Verify fix with minimal reproduction script\n- [x] Run full test suite with new version\n- [x] Remove WIP status and mark ready for review\n\nFixes #81\n\n---\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-02-28T00:15:36-05:00",
+          "tree_id": "2260467983177e023376abf5288f3cf1f507618a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/57c9c030b5a8080e3b188a8fb6e8c0b71742a904"
+        },
+        "date": 1772256036633,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.74283790486621,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006846587445938084",
+            "extra": "mean: 38.84575600000062 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.390512291001723,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01161649378136764",
+            "extra": "mean: 57.502618857146864 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.05582845172157,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007759581400043127",
+            "extra": "mean: 28.525926904770976 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 41.0934549567981,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003259016978869119",
+            "extra": "mean: 24.334775478267975 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.438778841740707,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00757551317065533",
+            "extra": "mean: 42.66433873334563 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 192.38492315840725,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009368827426173373",
+            "extra": "mean: 5.197912516131074 msec\nrounds: 93"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.219649465181995,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009197380221927828",
+            "extra": "mean: 39.65162169999985 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.322973886662968,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004967416625744977",
+            "extra": "mean: 39.489832611116704 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 24.221812658975594,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006435377210266147",
+            "extra": "mean: 41.28510174193927 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.65413948132592,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009074223585959499",
+            "extra": "mean: 40.56113987500728 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 25.949189013469933,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005318356097585549",
+            "extra": "mean: 38.5368498214303 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 21.80381452122749,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011241899795158786",
+            "extra": "mean: 45.86353452174308 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 28.680663827827725,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005041086542014777",
+            "extra": "mean: 34.86669646152817 msec\nrounds: 39"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9311339981156477,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002486249398802975",
+            "extra": "mean: 517.8304565999952 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9322656309492052,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001130506641573267",
+            "extra": "mean: 517.5271887999997 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9491210615909004,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004363020690059557",
+            "extra": "mean: 1.0536063738000052 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9213045132022369,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008377224632008826",
+            "extra": "mean: 1.0854174550000153 sec\nrounds: 5"
           }
         ]
       }
