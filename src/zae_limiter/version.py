@@ -9,7 +9,8 @@ from dataclasses import dataclass
 # 0.7.0: Composite bucket items (ADR-114) + ADD-based writes (ADR-115)
 # 0.8.0: Composite limit config items (ADR-114 for configs)
 # 0.9.0: Bucket PK migration (GHSA-76rv) - per-(entity, resource, shard) partition keys
-CURRENT_SCHEMA_VERSION = "0.9.0"
+# 0.10.0: Local Secondary Indexes (ADR-123) - 5 LSI slots, odd=ALL / even=KEYS_ONLY
+CURRENT_SCHEMA_VERSION = "0.10.0"
 
 
 @dataclass(frozen=True, order=False)

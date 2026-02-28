@@ -11,32 +11,11 @@ The project has not yet reached v1.0. Once we release v1.0, adding an LSI become
 
 An LSI slot that is defined but has no items with the sort key attribute populated costs nothing — zero storage, zero write amplification, zero RCU/WCU. The cost of defining unused slots is zero; the cost of not defining them is permanent.
 
+LSI sort keys can be overloaded following the same single-table design pattern used for GSIs. Different item types in different partitions use different value formats for the same LSI sort key attribute. Since queries always specify a PK, the formats never collide — a single LSI can serve multiple unrelated access patterns. Projection types cannot be changed after table creation, so a mix of ALL and KEYS_ONLY preserves flexibility for future use cases.
+
 ## Decision
 
-Define all 5 Local Secondary Indexes on the DynamoDB table before v1.0.
-
-### Overloading
-
-LSI sort keys are overloaded following the same single-table design pattern used for GSIs. Different item types in different partitions use different value formats for the same LSI sort key attribute. Since queries always specify a PK, the formats never collide. This maximizes the value of each slot — a single LSI can serve multiple unrelated access patterns across different partition key spaces.
-
-### Projection pattern
-
-Odd-numbered LSIs use ALL projection; even-numbered use KEYS_ONLY:
-
-| Slot | Sort Key Attribute | Projection |
-|------|-------------------|------------|
-| LSI1 | `LSI1SK` (String) | ALL |
-| LSI2 | `LSI2SK` (String) | KEYS_ONLY |
-| LSI3 | `LSI3SK` (String) | ALL |
-| LSI4 | `LSI4SK` (String) | KEYS_ONLY |
-| LSI5 | `LSI5SK` (String) | ALL |
-
-Projection types cannot be changed after table creation. The alternating pattern provides a permanent mix of:
-
-- **ALL** (3 slots) — single-query data retrieval, no follow-up reads required
-- **KEYS_ONLY** (2 slots) — cheap discovery and filtering, follow up with BatchGetItem when full data is needed
-
-Which slots are populated, and with what value formats, are separate decisions that can be made independently as access patterns are implemented.
+Define all 5 Local Secondary Indexes on the DynamoDB table before v1.0, with overloaded sort keys (`LSI1SK`–`LSI5SK`, all String), odd-numbered LSIs (1, 3, 5) using ALL projection and even-numbered (2, 4) using KEYS_ONLY. Which slots are populated, and with what value formats, are separate decisions.
 
 ## Consequences
 

@@ -357,6 +357,60 @@ class TestGetTableDefinitionGSI4:
 
 
 # =============================================================================
+# Step 7: get_table_definition() includes LSIs (ADR-123)
+# =============================================================================
+
+
+class TestGetTableDefinitionLSIs:
+    """Test that get_table_definition() includes all 5 LSIs."""
+
+    def test_lsi_attributes_in_attribute_definitions(self):
+        defn = get_table_definition("test-table")
+        attr_names = [a["AttributeName"] for a in defn["AttributeDefinitions"]]
+        for i in range(1, 6):
+            assert f"LSI{i}SK" in attr_names
+
+    def test_all_five_lsis_present(self):
+        defn = get_table_definition("test-table")
+        lsi_names = [lsi["IndexName"] for lsi in defn["LocalSecondaryIndexes"]]
+        assert lsi_names == ["LSI1", "LSI2", "LSI3", "LSI4", "LSI5"]
+
+    def test_lsis_share_table_hash_key(self):
+        defn = get_table_definition("test-table")
+        for lsi in defn["LocalSecondaryIndexes"]:
+            hash_key = next(k for k in lsi["KeySchema"] if k["KeyType"] == "HASH")
+            assert hash_key["AttributeName"] == "PK"
+
+    def test_lsi_sort_keys_match_index_names(self):
+        defn = get_table_definition("test-table")
+        for lsi in defn["LocalSecondaryIndexes"]:
+            range_key = next(k for k in lsi["KeySchema"] if k["KeyType"] == "RANGE")
+            assert range_key["AttributeName"] == f"{lsi['IndexName']}SK"
+
+    def test_odd_lsis_have_all_projection(self):
+        defn = get_table_definition("test-table")
+        for lsi in defn["LocalSecondaryIndexes"]:
+            num = int(lsi["IndexName"][3:])
+            if num % 2 == 1:
+                assert lsi["Projection"]["ProjectionType"] == "ALL"
+
+    def test_even_lsis_have_keys_only_projection(self):
+        defn = get_table_definition("test-table")
+        for lsi in defn["LocalSecondaryIndexes"]:
+            num = int(lsi["IndexName"][3:])
+            if num % 2 == 0:
+                assert lsi["Projection"]["ProjectionType"] == "KEYS_ONLY"
+
+    def test_existing_gsis_still_present(self):
+        defn = get_table_definition("test-table")
+        gsi_names = [g["IndexName"] for g in defn["GlobalSecondaryIndexes"]]
+        assert "GSI1" in gsi_names
+        assert "GSI2" in gsi_names
+        assert "GSI3" in gsi_names
+        assert "GSI4" in gsi_names
+
+
+# =============================================================================
 # Provisioner state key builder (Issue #405)
 # =============================================================================
 
