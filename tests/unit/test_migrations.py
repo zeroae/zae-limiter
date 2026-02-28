@@ -68,9 +68,10 @@ class TestGetMigrationsBetween:
         assert result == []
 
     def test_migrations_for_upgrade(self):
-        """Test that no migrations returned when none are registered."""
+        """Test that 0.10.0 LSI migration returned for 0.9.0 → 1.0.0 upgrade."""
         result = get_migrations_between("0.9.0", "1.0.0")
-        assert result == []
+        assert len(result) == 1
+        assert result[0].version == "0.10.0"
 
 
 class TestApplyMigrations:
