@@ -1,6 +1,6 @@
 # ADR-123: Local Secondary Indexes
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-02-27
 
 ## Context
@@ -15,7 +15,7 @@ LSI sort keys can be overloaded following the same single-table design pattern u
 
 ## Decision
 
-Define all 5 Local Secondary Indexes on the DynamoDB table before v1.0, with overloaded sort keys (`LSI1SK`–`LSI5SK`, all String), odd-numbered LSIs (1, 3, 5) using ALL projection and even-numbered (2, 4) using KEYS_ONLY. Which slots are populated, and with what value formats, are separate decisions.
+All 5 Local Secondary Indexes must be defined on the DynamoDB table before v1.0, with overloaded sort keys (`LSI1SK`–`LSI5SK`, all String), odd-numbered LSIs (1, 3, 5) using ALL projection and even-numbered (2, 4) using KEYS_ONLY. Which slots are populated, and with what value formats, are separate decisions.
 
 ## Consequences
 
