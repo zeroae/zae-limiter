@@ -16,6 +16,7 @@ from .limits_cli import limits
 from .loadtest.cli import loadtest
 from .local import local
 from .models import StackOptions
+from .naming import DEFAULT_STACK_NAME
 
 if TYPE_CHECKING:
     from .models import Limit
@@ -92,8 +93,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Resource identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -1161,8 +1163,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Resource identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -1287,8 +1290,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Resource identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -1436,8 +1440,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Resource identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -1571,8 +1576,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Resource identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -1718,8 +1724,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Resource identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -1908,8 +1915,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Resource identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Resource identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2159,8 +2167,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2249,8 +2258,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2328,8 +2338,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2406,8 +2417,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2496,8 +2508,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2597,8 +2610,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2678,8 +2692,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2789,8 +2804,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2868,8 +2884,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -2959,8 +2976,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -3060,8 +3078,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -3149,8 +3168,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -3244,8 +3264,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -3326,8 +3347,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier used as the CloudFormation stack name. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
 )
 @click.option(
     "--region",
@@ -3416,8 +3438,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier.",
 )
 @click.option(
     "--region",
@@ -3481,8 +3504,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier.",
 )
 @click.option(
     "--region",
@@ -3543,8 +3567,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier.",
 )
 @click.option(
     "--region",
@@ -3607,8 +3632,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier.",
 )
 @click.option(
     "--region",
@@ -3678,8 +3704,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier.",
 )
 @click.option(
     "--region",
@@ -3740,8 +3767,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier.",
 )
 @click.option(
     "--region",
@@ -3802,8 +3830,9 @@ Examples:
 @click.option(
     "--name",
     "-n",
-    default="limiter",
-    help="Stack identifier. Default: limiter",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier.",
 )
 @click.option(
     "--region",
