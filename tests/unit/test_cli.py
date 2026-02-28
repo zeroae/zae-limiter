@@ -1891,7 +1891,7 @@ class TestAuditCommands:
 
         assert result.exit_code == 0
         mock_repo_class.open.assert_called_once_with(
-            "default", stack="limiter", region="us-east-1", endpoint_url="http://localhost:4566"
+            "default", stack="zae-limiter", region="us-east-1", endpoint_url="http://localhost:4566"
         )
 
     @patch("zae_limiter.repository.Repository")
@@ -4449,7 +4449,7 @@ class TestEntityCommandsEdgeCases:
         assert result.exit_code == 0
         # Verify Repository was called with region
         mock_repo_class.open.assert_called_once_with(
-            "default", stack="limiter", region="us-west-2", endpoint_url=None
+            "default", stack="zae-limiter", region="us-west-2", endpoint_url=None
         )
 
     @patch("zae_limiter.repository.Repository")
@@ -4481,7 +4481,7 @@ class TestEntityCommandsEdgeCases:
         assert result.exit_code == 0
         # Verify Repository was called with endpoint_url
         mock_repo_class.open.assert_called_once_with(
-            "default", stack="limiter", region=None, endpoint_url="http://localhost:4566"
+            "default", stack="zae-limiter", region=None, endpoint_url="http://localhost:4566"
         )
 
     def test_entity_set_limits_repo_init_validation_error(self, runner: CliRunner) -> None:
