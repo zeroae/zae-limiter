@@ -113,3 +113,4 @@ async def apply_migrations(
 # Import migrations to register them
 from . import m_0_8_0_composite_limits as _  # noqa: F401, E402
 from . import m_0_9_0_bucket_pk as __  # noqa: F401, E402
+from . import m_0_10_0_lsi as ___  # noqa: F401, E402

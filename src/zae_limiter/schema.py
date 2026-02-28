@@ -11,6 +11,11 @@ GSI1_NAME = "GSI1"  # For parent -> children lookups
 GSI2_NAME = "GSI2"  # For resource aggregation
 GSI3_NAME = "GSI3"  # For entity config queries (sparse)
 GSI4_NAME = "GSI4"  # For namespace-scoped item discovery
+LSI1_NAME = "LSI1"  # Reserved, ALL projection (ADR-123)
+LSI2_NAME = "LSI2"  # Reserved, KEYS_ONLY projection (ADR-123)
+LSI3_NAME = "LSI3"  # Reserved, ALL projection (ADR-123)
+LSI4_NAME = "LSI4"  # Reserved, KEYS_ONLY projection (ADR-123)
+LSI5_NAME = "LSI5"  # Reserved, ALL projection (ADR-123)
 
 # Namespace constants
 RESERVED_NAMESPACE = "_"
@@ -446,6 +451,11 @@ def get_table_definition(table_name: str) -> dict[str, Any]:
             {"AttributeName": "GSI3SK", "AttributeType": "S"},
             {"AttributeName": "GSI4PK", "AttributeType": "S"},
             {"AttributeName": "GSI4SK", "AttributeType": "S"},
+            {"AttributeName": "LSI1SK", "AttributeType": "S"},
+            {"AttributeName": "LSI2SK", "AttributeType": "S"},
+            {"AttributeName": "LSI3SK", "AttributeType": "S"},
+            {"AttributeName": "LSI4SK", "AttributeType": "S"},
+            {"AttributeName": "LSI5SK", "AttributeType": "S"},
         ],
         "KeySchema": [
             {"AttributeName": "PK", "KeyType": "HASH"},
@@ -483,6 +493,48 @@ def get_table_definition(table_name: str) -> dict[str, Any]:
                     {"AttributeName": "GSI4SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "KEYS_ONLY"},
+            },
+        ],
+        "LocalSecondaryIndexes": [
+            {
+                "IndexName": LSI1_NAME,
+                "KeySchema": [
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "LSI1SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": LSI2_NAME,
+                "KeySchema": [
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "LSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "KEYS_ONLY"},
+            },
+            {
+                "IndexName": LSI3_NAME,
+                "KeySchema": [
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "LSI3SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": LSI4_NAME,
+                "KeySchema": [
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "LSI4SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "KEYS_ONLY"},
+            },
+            {
+                "IndexName": LSI5_NAME,
+                "KeySchema": [
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "LSI5SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
             },
         ],
         "StreamSpecification": {

@@ -364,6 +364,16 @@ Resources:
           AttributeType: S
         - AttributeName: GSI4SK
           AttributeType: S
+        - AttributeName: LSI1SK
+          AttributeType: S
+        - AttributeName: LSI2SK
+          AttributeType: S
+        - AttributeName: LSI3SK
+          AttributeType: S
+        - AttributeName: LSI4SK
+          AttributeType: S
+        - AttributeName: LSI5SK
+          AttributeType: S
 
       KeySchema:
         - AttributeName: PK
@@ -407,6 +417,52 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: KEYS_ONLY
+
+      LocalSecondaryIndexes:
+        - IndexName: LSI1
+          KeySchema:
+            - AttributeName: PK
+              KeyType: HASH
+            - AttributeName: LSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+        - IndexName: LSI2
+          KeySchema:
+            - AttributeName: PK
+              KeyType: HASH
+            - AttributeName: LSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+
+        - IndexName: LSI3
+          KeySchema:
+            - AttributeName: PK
+              KeyType: HASH
+            - AttributeName: LSI3SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+        - IndexName: LSI4
+          KeySchema:
+            - AttributeName: PK
+              KeyType: HASH
+            - AttributeName: LSI4SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+
+        - IndexName: LSI5
+          KeySchema:
+            - AttributeName: PK
+              KeyType: HASH
+            - AttributeName: LSI5SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
       TimeToLiveSpecification:
         AttributeName: ttl

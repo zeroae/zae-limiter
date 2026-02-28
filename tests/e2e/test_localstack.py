@@ -39,6 +39,7 @@ from zae_limiter import (
 )
 from zae_limiter.cli import cli
 from zae_limiter.sync_repository import SyncRepository
+from zae_limiter.version import CURRENT_SCHEMA_VERSION
 
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 
@@ -130,7 +131,7 @@ class TestE2ELocalStackCLIWorkflow:
             assert "Client:" in result.output
             assert "Schema:" in result.output
             # Schema should be initialized by deploy (not N/A)
-            assert "Schema:        0.9.0" in result.output
+            assert f"Schema:        {CURRENT_SCHEMA_VERSION}" in result.output
             assert "Lambda:" in result.output
             # Lambda version should match client version (fix #274)
             assert f"Lambda:        {__version__}" in result.output
