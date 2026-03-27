@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772275809843,
+  "lastUpdate": 1774579132414,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -24533,6 +24533,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0002118038385395892",
             "extra": "mean: 3.9843876919994723 msec\nrounds: 250"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d82ed0758860829241d41823025923323045da4e",
+          "message": "build(deps): bump actions/download-artifact from 7 to 8 (#417)\n\nBumps\n[actions/download-artifact](https://github.com/actions/download-artifact)\nfrom 7 to 8.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/actions/download-artifact/releases\">actions/download-artifact's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v8.0.0</h2>\n<h2>v8 - What's new</h2>\n<h3>Direct downloads</h3>\n<p>To support direct uploads in <code>actions/upload-artifact</code>,\nthe action will no longer attempt to unzip all downloaded files.\nInstead, the action checks the <code>Content-Type</code> header ahead of\nunzipping and skips non-zipped files. Callers wishing to download a\nzipped file as-is can also set the new <code>skip-decompress</code>\nparameter to <code>false</code>.</p>\n<h3>Enforced checks (breaking)</h3>\n<p>A previous release introduced digest checks on the download. If a\ndownload hash didn't match the expected hash from the server, the action\nwould log a warning. Callers can now configure the behavior on mismatch\nwith the <code>digest-mismatch</code> parameter. To be secure by\ndefault, we are now defaulting the behavior to <code>error</code> which\nwill fail the workflow run.</p>\n<h3>ESM</h3>\n<p>To support new versions of the @actions/* packages, we've upgraded\nthe package to ESM.</p>\n<h2>What's Changed</h2>\n<ul>\n<li>Don't attempt to un-zip non-zipped downloads by <a\nhref=\"https://github.com/danwkennedy\"><code>@​danwkennedy</code></a> in\n<a\nhref=\"https://redirect.github.com/actions/download-artifact/pull/460\">actions/download-artifact#460</a></li>\n<li>Add a setting to specify what to do on hash mismatch and default it\nto <code>error</code> by <a\nhref=\"https://github.com/danwkennedy\"><code>@​danwkennedy</code></a> in\n<a\nhref=\"https://redirect.github.com/actions/download-artifact/pull/461\">actions/download-artifact#461</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/actions/download-artifact/compare/v7...v8.0.0\">https://github.com/actions/download-artifact/compare/v7...v8.0.0</a></p>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3\"><code>70fc10c</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/actions/download-artifact/issues/461\">#461</a>\nfrom actions/danwkennedy/digest-mismatch-behavior</li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/f258da9a506b755b84a09a531814700b86ccfc62\"><code>f258da9</code></a>\nAdd change docs</li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/ccc058e5fbb0bb2352213eaec3491e117cbc4a5c\"><code>ccc058e</code></a>\nFix linting issues</li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/bd7976ba57ecea96e6f3df575eb922d11a12a9fd\"><code>bd7976b</code></a>\nAdd a setting to specify what to do on hash mismatch and default it to\n<code>error</code></li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/ac21fcf45e0aaee541c0f7030558bdad38d77d6c\"><code>ac21fcf</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/actions/download-artifact/issues/460\">#460</a>\nfrom actions/danwkennedy/download-no-unzip</li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/15999bff51058bc7c19b50ebbba518eaef7c26c0\"><code>15999bf</code></a>\nAdd note about package bumps</li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/974686ed5098c7f9c9289ec946b9058e496a2561\"><code>974686e</code></a>\nBump the version to <code>v8</code> and add release notes</li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/fbe48b1d2756394be4cd4358ed3bc1343b330e75\"><code>fbe48b1</code></a>\nUpdate test names to make it clearer what they do</li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/96bf374a614d4360e225874c3efd6893a3f285e7\"><code>96bf374</code></a>\nOne more test fix</li>\n<li><a\nhref=\"https://github.com/actions/download-artifact/commit/b8c4819ef592cbe04fd93534534b38f853864332\"><code>b8c4819</code></a>\nFix skip decompress test</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/actions/download-artifact/compare/v7...v8\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=actions/download-artifact&package-manager=github_actions&previous-version=7&new-version=8)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\n\n\n</details>",
+          "timestamp": "2026-03-26T22:33:56-04:00",
+          "tree_id": "d55ec4915d1e101042dfce0a41c8193a4c12ded5",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d82ed0758860829241d41823025923323045da4e"
+        },
+        "date": 1774579131470,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 272.3407570691315,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000107796016994065",
+            "extra": "mean: 3.671870529999879 msec\nrounds: 200"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 220.9012198523422,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001323603886729609",
+            "extra": "mean: 4.526910266355404 msec\nrounds: 214"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 132.3559989893254,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004529240937447429",
+            "extra": "mean: 7.555381000000239 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 1096.5526892085088,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000017059913601877253",
+            "extra": "mean: 911.9488829322005 usec\nrounds: 914"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 271.07715707071804,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009721241706422376",
+            "extra": "mean: 3.6889866000000953 msec\nrounds: 215"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 271.09422977681993,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011714840288527532",
+            "extra": "mean: 3.688754278625762 msec\nrounds: 262"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 122.68189392152956,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009261979182273665",
+            "extra": "mean: 8.151162066666702 msec\nrounds: 135"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 267.6781850452117,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00020591831928904564",
+            "extra": "mean: 3.7358292751092015 msec\nrounds: 229"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 218.78045147199472,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00021136231410398201",
+            "extra": "mean: 4.570792286384902 msec\nrounds: 213"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 122.2345314243701,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010189546289786269",
+            "extra": "mean: 8.180994260355371 msec\nrounds: 169"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 220.2290011864583,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012602588708703467",
+            "extra": "mean: 4.5407280358745465 msec\nrounds: 223"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 217.7016235889573,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014142189706977296",
+            "extra": "mean: 4.593443004761881 msec\nrounds: 210"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1083.7958071703022,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001923549955591453",
+            "extra": "mean: 922.6830306816875 usec\nrounds: 880"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 269.23871252935254,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012932552840758493",
+            "extra": "mean: 3.71417613241996 msec\nrounds: 219"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 238.36309532990185,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006872902088433394",
+            "extra": "mean: 4.1952803080358105 msec\nrounds: 224"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 134.90611559650566,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00028188786073037953",
+            "extra": "mean: 7.4125623999947265 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 136.20918493883758,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012931814926778692",
+            "extra": "mean: 7.341648806202262 msec\nrounds: 129"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 270.2497622819496,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010451671810632659",
+            "extra": "mean: 3.700280775665243 msec\nrounds: 263"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 248.66647027350058,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000800147011464225",
+            "extra": "mean: 4.021450897260619 msec\nrounds: 146"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 110.90575554956595,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01887809542997353",
+            "extra": "mean: 9.016664599999777 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 26.701110330000887,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004352004625379899",
+            "extra": "mean: 37.4516260799993 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 26.815554439735298,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007404874083455297",
+            "extra": "mean: 37.29178907142788 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 120.74666417999745,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013551248787567358",
+            "extra": "mean: 8.281802290697627 msec\nrounds: 86"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 103.83824648379824,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02439983872618805",
+            "extra": "mean: 9.630362933334286 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 126.59395922552169,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005211071275623207",
+            "extra": "mean: 7.899271071999123 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 173.1419320290061,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00044747781833848996",
+            "extra": "mean: 5.775608417217339 msec\nrounds: 151"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 134.6409226002544,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012220086619344218",
+            "extra": "mean: 7.42716241605812 msec\nrounds: 137"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 138.17857200509158,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011033134094810297",
+            "extra": "mean: 7.237012117646954 msec\nrounds: 136"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 207.80841422682212,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010262066499922896",
+            "extra": "mean: 4.812124685714139 msec\nrounds: 175"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 247.70325040244234,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000833957701468544",
+            "extra": "mean: 4.0370887276420655 msec\nrounds: 246"
           }
         ]
       }
