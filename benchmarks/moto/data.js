@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774727393771,
+  "lastUpdate": 1774728284494,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -25001,6 +25001,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00008542282844974261",
             "extra": "mean: 3.973843899598239 msec\nrounds: 249"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6878b6db1be7d462fd0107481ee07801ad641370",
+          "message": "build(deps): bump codecov/codecov-action from 5 to 6 (#420)\n\nBumps\n[codecov/codecov-action](https://github.com/codecov/codecov-action) from\n5 to 6.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/codecov/codecov-action/releases\">codecov/codecov-action's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v6.0.0</h2>\n<h2>⚠️ This version introduces support for node24 which make cause\nbreaking changes for systems that do not currently support node24.\n⚠️</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>Revert &quot;Revert &quot;build(deps): bump actions/github-script\nfrom 7.0.1 to 8.0.0&quot;&quot; by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1929\">codecov/codecov-action#1929</a></li>\n<li>Th/6.0.0 by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1928\">codecov/codecov-action#1928</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.4...v6.0.0\">https://github.com/codecov/codecov-action/compare/v5.5.4...v6.0.0</a></p>\n<h2>v5.5.4</h2>\n<p>This is a mirror of <code>v5.5.2</code>. <code>v6</code> will be\nreleased which requires <code>node24</code></p>\n<h2>What's Changed</h2>\n<ul>\n<li>Revert &quot;build(deps): bump actions/github-script from 7.0.1 to\n8.0.0&quot; by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1926\">codecov/codecov-action#1926</a></li>\n<li>chore(release): 5.5.4 by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1927\">codecov/codecov-action#1927</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.3...v5.5.4\">https://github.com/codecov/codecov-action/compare/v5.5.3...v5.5.4</a></p>\n<h2>v5.5.3</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>build(deps): bump actions/github-script from 7.0.1 to 8.0.0 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1874\">codecov/codecov-action#1874</a></li>\n<li>chore(release): bump to 5.5.3 by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1922\">codecov/codecov-action#1922</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.2...v5.5.3\">https://github.com/codecov/codecov-action/compare/v5.5.2...v5.5.3</a></p>\n<h2>v5.5.2</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>check gpg only when skip-validation = false by <a\nhref=\"https://github.com/maxweng-sentry\"><code>@​maxweng-sentry</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1894\">codecov/codecov-action#1894</a></li>\n<li>chore: <code>disable_search</code> alignment by <a\nhref=\"https://github.com/freemanzMrojo\"><code>@​freemanzMrojo</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1881\">codecov/codecov-action#1881</a></li>\n<li>chore(release): 5.5.2 by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1902\">codecov/codecov-action#1902</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li><a\nhref=\"https://github.com/maxweng-sentry\"><code>@​maxweng-sentry</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1894\">codecov/codecov-action#1894</a></li>\n<li><a\nhref=\"https://github.com/freemanzMrojo\"><code>@​freemanzMrojo</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1881\">codecov/codecov-action#1881</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.1...v5.5.2\">https://github.com/codecov/codecov-action/compare/v5.5.1...v5.5.2</a></p>\n<h2>v5.5.1</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>build(deps): bump ossf/scorecard-action from 2.4.1 to 2.4.2 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1833\">codecov/codecov-action#1833</a></li>\n<li>build(deps): bump github/codeql-action from 3.28.18 to 3.29.9 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1861\">codecov/codecov-action#1861</a></li>\n<li>Document a <code>codecov-cli</code> version reference example by <a\nhref=\"https://github.com/webknjaz\"><code>@​webknjaz</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1774\">codecov/codecov-action#1774</a></li>\n<li>docs: fix typo in README by <a\nhref=\"https://github.com/datalater\"><code>@​datalater</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1866\">codecov/codecov-action#1866</a></li>\n<li>fix: update to use local app/ dir by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1872\">codecov/codecov-action#1872</a></li>\n<li>build(deps): bump github/codeql-action from 3.29.9 to 3.29.11 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1867\">codecov/codecov-action#1867</a></li>\n<li>build(deps): bump actions/checkout from 4.2.2 to 5.0.0 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1868\">codecov/codecov-action#1868</a></li>\n<li>fix: overwrite pr number on fork by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1871\">codecov/codecov-action#1871</a></li>\n</ul>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/codecov/codecov-action/blob/main/CHANGELOG.md\">codecov/codecov-action's\nchangelog</a>.</em></p>\n<blockquote>\n<h2>v5.5.2</h2>\n<h3>What's Changed</h3>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.1..v5.5.2\">https://github.com/codecov/codecov-action/compare/v5.5.1..v5.5.2</a></p>\n<h2>v5.5.1</h2>\n<h3>What's Changed</h3>\n<ul>\n<li>fix: overwrite pr number on fork by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1871\">codecov/codecov-action#1871</a></li>\n<li>build(deps): bump actions/checkout from 4.2.2 to 5.0.0 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1868\">codecov/codecov-action#1868</a></li>\n<li>build(deps): bump github/codeql-action from 3.29.9 to 3.29.11 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1867\">codecov/codecov-action#1867</a></li>\n<li>fix: update to use local app/ dir by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1872\">codecov/codecov-action#1872</a></li>\n<li>docs: fix typo in README by <a\nhref=\"https://github.com/datalater\"><code>@​datalater</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1866\">codecov/codecov-action#1866</a></li>\n<li>Document a <code>codecov-cli</code> version reference example by <a\nhref=\"https://github.com/webknjaz\"><code>@​webknjaz</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1774\">codecov/codecov-action#1774</a></li>\n<li>build(deps): bump github/codeql-action from 3.28.18 to 3.29.9 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1861\">codecov/codecov-action#1861</a></li>\n<li>build(deps): bump ossf/scorecard-action from 2.4.1 to 2.4.2 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1833\">codecov/codecov-action#1833</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.0..v5.5.1\">https://github.com/codecov/codecov-action/compare/v5.5.0..v5.5.1</a></p>\n<h2>v5.5.0</h2>\n<h3>What's Changed</h3>\n<ul>\n<li>feat: upgrade wrapper to 0.2.4 by <a\nhref=\"https://github.com/jviall\"><code>@​jviall</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1864\">codecov/codecov-action#1864</a></li>\n<li>Pin actions/github-script by Git SHA by <a\nhref=\"https://github.com/martincostello\"><code>@​martincostello</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1859\">codecov/codecov-action#1859</a></li>\n<li>fix: check reqs exist by <a\nhref=\"https://github.com/joseph-sentry\"><code>@​joseph-sentry</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1835\">codecov/codecov-action#1835</a></li>\n<li>fix: Typo in README by <a\nhref=\"https://github.com/spalmurray\"><code>@​spalmurray</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1838\">codecov/codecov-action#1838</a></li>\n<li>docs: Refine OIDC docs by <a\nhref=\"https://github.com/spalmurray\"><code>@​spalmurray</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1837\">codecov/codecov-action#1837</a></li>\n<li>build(deps): bump github/codeql-action from 3.28.17 to 3.28.18 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1829\">codecov/codecov-action#1829</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.4.3..v5.5.0\">https://github.com/codecov/codecov-action/compare/v5.4.3..v5.5.0</a></p>\n<h2>v5.4.3</h2>\n<h3>What's Changed</h3>\n<ul>\n<li>build(deps): bump github/codeql-action from 3.28.13 to 3.28.17 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1822\">codecov/codecov-action#1822</a></li>\n<li>fix: OIDC on forks by <a\nhref=\"https://github.com/joseph-sentry\"><code>@​joseph-sentry</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1823\">codecov/codecov-action#1823</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.4.2..v5.4.3\">https://github.com/codecov/codecov-action/compare/v5.4.2..v5.4.3</a></p>\n<h2>v5.4.2</h2>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/codecov/codecov-action/commit/57e3a136b779b570ffcdbf80b3bdc90e7fab3de2\"><code>57e3a13</code></a>\nTh/6.0.0 (<a\nhref=\"https://redirect.github.com/codecov/codecov-action/issues/1928\">#1928</a>)</li>\n<li><a\nhref=\"https://github.com/codecov/codecov-action/commit/f67d33dda8a42b51c42a8318a1f66468119e898b\"><code>f67d33d</code></a>\nRevert &quot;Revert &quot;build(deps): bump actions/github-script from\n7.0.1 to 8.0.0&quot;&quot;...</li>\n<li>See full diff in <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5...v6\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=codecov/codecov-action&package-manager=github_actions&previous-version=5&new-version=6)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\n\n\n</details>",
+          "timestamp": "2026-03-28T15:59:42-04:00",
+          "tree_id": "1661d01f72907081cbd3429bc5930bb773860210",
+          "url": "https://github.com/zeroae/zae-limiter/commit/6878b6db1be7d462fd0107481ee07801ad641370"
+        },
+        "date": 1774728283393,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 268.13439455773636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001338751880928387",
+            "extra": "mean: 3.7294730564104253 msec\nrounds: 195"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 218.44619428089337,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015381426407135276",
+            "extra": "mean: 4.577786320754713 msec\nrounds: 212"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 130.91599908453526,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005593146711595336",
+            "extra": "mean: 7.638485799999728 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 1106.8236726343175,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000028213467299442176",
+            "extra": "mean: 903.4862776470351 usec\nrounds: 850"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 261.8105699363827,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00030395847234034355",
+            "extra": "mean: 3.819555490991024 msec\nrounds: 222"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 267.88138027544346,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001560223853100045",
+            "extra": "mean: 3.732995548148105 msec\nrounds: 270"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 120.82334485556976,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009391894403041782",
+            "extra": "mean: 8.276546235294044 msec\nrounds: 136"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 267.81982979332076,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013366832219389",
+            "extra": "mean: 3.733853466980806 msec\nrounds: 212"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 216.72736746134407,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001867960039760183",
+            "extra": "mean: 4.614091942857019 msec\nrounds: 210"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 132.84595258404923,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002769890690000931",
+            "extra": "mean: 7.52751574698761 msec\nrounds: 166"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 269.180794629439,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012073389052630826",
+            "extra": "mean: 3.7149752878047075 msec\nrounds: 205"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 218.63308231533873,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014825967006417047",
+            "extra": "mean: 4.573873219047796 msec\nrounds: 210"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1104.346573397479,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000019285205507726412",
+            "extra": "mean: 905.5128381695786 usec\nrounds: 896"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 238.72818310121278,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006824488581541562",
+            "extra": "mean: 4.188864452489187 msec\nrounds: 221"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 269.1318828162023,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014287227221140665",
+            "extra": "mean: 3.715650444443731 msec\nrounds: 225"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 132.49457553961838,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004219581991705839",
+            "extra": "mean: 7.547478799997975 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 134.44799885195326,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017739429285622336",
+            "extra": "mean: 7.437819889763811 msec\nrounds: 127"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 269.7335824182633,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011852287949765621",
+            "extra": "mean: 3.70736187550183 msec\nrounds: 249"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 244.74252146012955,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004097923189969382",
+            "extra": "mean: 4.085926687500062 msec\nrounds: 144"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 104.5931635235738,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0215303246416115",
+            "extra": "mean: 9.560854326531716 msec\nrounds: 98"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 25.82617593322106,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003092693746371987",
+            "extra": "mean: 38.72040532000199 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 26.852245115590616,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024949373851956976",
+            "extra": "mean: 37.24083389285734 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 120.59752013473488,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016796642791241508",
+            "extra": "mean: 8.292044470589216 msec\nrounds: 85"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 104.52346071885043,
+            "unit": "iter/sec",
+            "range": "stddev: 0.023511575776690493",
+            "extra": "mean: 9.567230104347795 msec\nrounds: 115"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 125.74813230499379,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015882256532334622",
+            "extra": "mean: 7.952404394958057 msec\nrounds: 119"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 172.1885425156652,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012459416699535237",
+            "extra": "mean: 5.807587342282213 msec\nrounds: 149"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 133.2710447355072,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015647124449387283",
+            "extra": "mean: 7.503505371212652 msec\nrounds: 132"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 135.77818428557455,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002024786080768276",
+            "extra": "mean: 7.3649534000009655 msec\nrounds: 130"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 207.3877096834268,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007107485434952788",
+            "extra": "mean: 4.821886511628293 msec\nrounds: 172"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 246.51817232354657,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012369660915776507",
+            "extra": "mean: 4.056496081301198 msec\nrounds: 246"
           }
         ]
       }
