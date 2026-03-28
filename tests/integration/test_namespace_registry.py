@@ -14,7 +14,11 @@ To run:
 import pytest
 
 from zae_limiter import schema
-from zae_limiter.exceptions import EntityNotFoundError
+from zae_limiter.exceptions import (
+    EntityNotFoundError,
+    NamespaceStateError,
+    ValidationError,
+)
 from zae_limiter.repository import Repository
 
 pytestmark = pytest.mark.integration
@@ -82,7 +86,7 @@ class TestRegisterNamespace:
     @pytest.mark.asyncio
     async def test_register_rejects_reserved(self, localstack_repo):
         """Cannot register the reserved namespace '_'."""
-        with pytest.raises(ValueError, match="reserved"):
+        with pytest.raises(ValidationError, match="reserved"):
             await localstack_repo.register_namespace("_")
 
 
@@ -215,7 +219,7 @@ class TestRecoverNamespace:
     async def test_recover_rejects_active(self, localstack_repo):
         """recover_namespace() raises ValueError for active namespace."""
         ns_id = await localstack_repo.register_namespace("ns-active-recover")
-        with pytest.raises(ValueError, match="already active"):
+        with pytest.raises(NamespaceStateError, match="already active"):
             await localstack_repo.recover_namespace(ns_id)
 
     @pytest.mark.asyncio
@@ -225,7 +229,7 @@ class TestRecoverNamespace:
         await localstack_repo.delete_namespace("ns-collision")
         await localstack_repo.register_namespace("ns-collision")
 
-        with pytest.raises(ValueError, match="re-registered"):
+        with pytest.raises(NamespaceStateError, match="re-registered"):
             await localstack_repo.recover_namespace(ns_id)
 
 
@@ -264,7 +268,7 @@ class TestPurgeNamespace:
     async def test_purge_rejects_active(self, localstack_repo):
         """purge_namespace() raises ValueError for active namespace."""
         ns_id = await localstack_repo.register_namespace("ns-purge-active")
-        with pytest.raises(ValueError, match="Cannot purge active"):
+        with pytest.raises(NamespaceStateError, match="Cannot purge active"):
             await localstack_repo.purge_namespace(ns_id)
 
     @pytest.mark.asyncio

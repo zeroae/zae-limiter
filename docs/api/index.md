@@ -190,6 +190,7 @@ from zae_limiter import (
 
     # Exceptions - Rate Limit
     RateLimitExceeded,
+    LeaseExpiredError,
 
     # Exceptions - Entity
     EntityNotFoundError,
@@ -197,10 +198,11 @@ from zae_limiter import (
 
     # Exceptions - Infrastructure
     RateLimiterUnavailable,
-    StackCreationError,
+    StackOperationError,
     StackAlreadyExistsError,
     InfrastructureNotFoundError,
     NamespaceNotFoundError,
+    NamespaceStateError,
 
     # Exceptions - Version
     VersionMismatchError,

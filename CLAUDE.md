@@ -306,7 +306,7 @@ Cascade classes create child entities under a shared parent and set `cascade=Tru
 src/zae_limiter/
 ├── __init__.py        # Public API exports
 ├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
-├── exceptions.py      # RateLimitExceeded, RateLimiterUnavailable, StackCreationError, VersionError, ValidationError, EntityNotFoundError, InfrastructureNotFoundError, NamespaceNotFoundError
+├── exceptions.py      # RateLimitExceeded, LeaseExpiredError, RateLimiterUnavailable, StackOperationError, StackAlreadyExistsError, InfrastructureNotFoundError, NamespaceNotFoundError, NamespaceStateError, EntityNotFoundError, EntityExistsError, VersionError, ValidationError
 ├── naming.py          # Resource name validation (ZAEL- prefix retained for legacy discovery)
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders (namespace-prefixed)

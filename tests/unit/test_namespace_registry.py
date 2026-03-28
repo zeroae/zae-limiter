@@ -6,7 +6,11 @@ import pytest
 
 from tests.unit.conftest import _setup_moto_table
 from zae_limiter import schema
-from zae_limiter.exceptions import EntityNotFoundError
+from zae_limiter.exceptions import (
+    EntityNotFoundError,
+    NamespaceStateError,
+    ValidationError,
+)
 from zae_limiter.repository import Repository
 
 
@@ -87,8 +91,8 @@ class TestRegisterNamespace:
 
     @pytest.mark.asyncio
     async def test_register_namespace_rejects_reserved(self, repo):
-        """register_namespace('_') raises ValueError."""
-        with pytest.raises(ValueError, match="reserved"):
+        """register_namespace('_') raises ValidationError."""
+        with pytest.raises(ValidationError, match="reserved"):
             await repo.register_namespace("_")
 
     @pytest.mark.asyncio
@@ -125,8 +129,8 @@ class TestRegisterNamespaces:
 
     @pytest.mark.asyncio
     async def test_register_namespaces_rejects_reserved(self, repo):
-        """register_namespaces() raises ValueError if any name is reserved."""
-        with pytest.raises(ValueError, match="reserved"):
+        """register_namespaces() raises ValidationError if any name is reserved."""
+        with pytest.raises(ValidationError, match="reserved"):
             await repo.register_namespaces(["valid-ns", "_"])
 
 
@@ -245,8 +249,8 @@ class TestDeleteNamespace:
 
     @pytest.mark.asyncio
     async def test_delete_namespace_rejects_reserved(self, repo):
-        """delete_namespace('_') raises ValueError."""
-        with pytest.raises(ValueError, match="reserved"):
+        """delete_namespace('_') raises ValidationError."""
+        with pytest.raises(ValidationError, match="reserved"):
             await repo.delete_namespace("_")
 
     @pytest.mark.asyncio
@@ -314,7 +318,7 @@ class TestRecoverNamespace:
             ExpressionAttributeValues={":purging": {"S": "purging"}},
         )
 
-        with pytest.raises(ValueError, match="purge is in progress"):
+        with pytest.raises(NamespaceStateError, match="purge is in progress"):
             await repo.recover_namespace(ns_id)
 
     @pytest.mark.asyncio
@@ -322,7 +326,7 @@ class TestRecoverNamespace:
         """recover_namespace() raises ValueError when namespace is active."""
         ns_id = await repo.register_namespace("ns-active-recover")
 
-        with pytest.raises(ValueError, match="already active"):
+        with pytest.raises(NamespaceStateError, match="already active"):
             await repo.recover_namespace(ns_id)
 
     @pytest.mark.asyncio
@@ -335,7 +339,7 @@ class TestRecoverNamespace:
         await repo.register_namespace("ns-collision")
 
         # Original ID recovery should fail — forward record already taken
-        with pytest.raises(ValueError, match="re-registered"):
+        with pytest.raises(NamespaceStateError, match="re-registered"):
             await repo.recover_namespace(ns_id)
 
 
@@ -372,9 +376,9 @@ class TestPurgeNamespace:
 
     @pytest.mark.asyncio
     async def test_purge_namespace_rejects_active(self, repo):
-        """purge_namespace() raises ValueError for active namespace."""
+        """purge_namespace() raises NamespaceStateError for active namespace."""
         ns_id = await repo.register_namespace("ns-purge-active")
-        with pytest.raises(ValueError, match="Cannot purge active"):
+        with pytest.raises(NamespaceStateError, match="Cannot purge active"):
             await repo.purge_namespace(ns_id)
 
     @pytest.mark.asyncio
@@ -525,7 +529,7 @@ class TestRecoverNamespaceReserved:
             },
         )
 
-        with pytest.raises(ValueError, match="reserved"):
+        with pytest.raises(ValidationError, match="reserved"):
             await repo.recover_namespace(fake_ns_id)
 
 

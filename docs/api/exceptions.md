@@ -7,16 +7,18 @@ Exception types raised by zae-limiter.
 ```
 ZAELimiterError (base)
 ├── RateLimitError
-│   └── RateLimitExceeded
+│   ├── RateLimitExceeded
+│   └── LeaseExpiredError
 ├── EntityError
 │   ├── EntityNotFoundError
 │   └── EntityExistsError
 ├── InfrastructureError
 │   ├── RateLimiterUnavailable
-│   ├── StackCreationError
-│   │   └── StackAlreadyExistsError
+│   ├── StackOperationError
+│   ├── StackAlreadyExistsError
 │   ├── InfrastructureNotFoundError
-│   └── NamespaceNotFoundError
+│   ├── NamespaceNotFoundError
+│   └── NamespaceStateError
 ├── VersionError
 │   ├── VersionMismatchError
 │   └── IncompatibleSchemaError
@@ -42,6 +44,12 @@ ZAELimiterError (base)
       members_order: source
       heading_level: 3
 
+::: zae_limiter.exceptions.LeaseExpiredError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
 ## Entity Exceptions
 
 ::: zae_limiter.exceptions.EntityNotFoundError
@@ -65,7 +73,7 @@ ZAELimiterError (base)
       members_order: source
       heading_level: 3
 
-::: zae_limiter.exceptions.StackCreationError
+::: zae_limiter.exceptions.StackOperationError
     options:
       show_root_heading: true
       show_source: false
@@ -85,6 +93,12 @@ ZAELimiterError (base)
       heading_level: 3
 
 ::: zae_limiter.exceptions.NamespaceNotFoundError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: zae_limiter.exceptions.NamespaceStateError
     options:
       show_root_heading: true
       show_source: false

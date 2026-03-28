@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .bucket import calculate_available, calculate_retry_after, force_consume, try_consume
-from .exceptions import RateLimitExceeded
+from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
 from .schema import calculate_bucket_ttl_seconds
 
@@ -82,7 +82,7 @@ class Lease:
             **amounts: Mapping of limit_name -> amount to consume
         """
         if self._committed or self._rolled_back:
-            raise RuntimeError("Lease is no longer active")
+            raise LeaseExpiredError()
 
         now_ms = int(time.time() * 1000)
         statuses: list[LimitStatus] = []
@@ -155,7 +155,7 @@ class Lease:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
         """
         if self._committed or self._rolled_back:
-            raise RuntimeError("Lease is no longer active")
+            raise LeaseExpiredError()
 
         now_ms = int(time.time() * 1000)
 

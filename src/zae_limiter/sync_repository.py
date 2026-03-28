@@ -18,7 +18,7 @@ from ulid import ULID
 
 from . import schema
 from .config_cache import CacheStats as CacheStats
-from .exceptions import EntityExistsError
+from .exceptions import EntityExistsError, NamespaceStateError, ValidationError
 from .limiter import OnUnavailable as OnUnavailable
 from .models import (
     AuditAction,
@@ -440,7 +440,7 @@ class SyncRepository:
         deletion to complete. No-op if stack doesn't exist.
 
         Raises:
-            StackCreationError: If deletion fails.
+            StackOperationError: If deletion fails.
         """
         from .infra.sync_stack_manager import SyncStackManager
 
@@ -459,7 +459,7 @@ class SyncRepository:
         No-op if stack_options was not provided.
 
         Raises:
-            StackCreationError: If CloudFormation stack creation fails
+            StackOperationError: If CloudFormation stack creation fails
         """
         import warnings
 
@@ -495,7 +495,7 @@ class SyncRepository:
                 If None, uses the stack_options passed to the constructor.
 
         Raises:
-            StackCreationError: If CloudFormation stack creation fails
+            StackOperationError: If CloudFormation stack creation fails
         """
         import warnings
 
@@ -618,12 +618,10 @@ class SyncRepository:
             The namespace_id (either newly created or existing).
 
         Raises:
-            ValueError: If namespace is the reserved namespace ``"_"``.
+            ValidationError: If namespace is the reserved namespace ``"_"``.
         """
         if namespace == schema.RESERVED_NAMESPACE:
-            raise ValueError(
-                f"Namespace name {schema.RESERVED_NAMESPACE!r} is reserved for system use"
-            )
+            raise ValidationError("namespace", namespace, "reserved for system use")
         return self._register_namespace(namespace)
 
     def register_namespaces(self, namespaces: list[str]) -> dict[str, str]:
@@ -638,13 +636,11 @@ class SyncRepository:
             Mapping of ``{name: namespace_id}`` for all namespaces.
 
         Raises:
-            ValueError: If any namespace is the reserved namespace ``"_"``.
+            ValidationError: If any namespace is the reserved namespace ``"_"``.
         """
         for ns in namespaces:
             if ns == schema.RESERVED_NAMESPACE:
-                raise ValueError(
-                    f"Namespace name {schema.RESERVED_NAMESPACE!r} is reserved for system use"
-                )
+                raise ValidationError("namespace", ns, "reserved for system use")
         ids = self._run_in_executor(
             *[lambda ns=ns: self._register_namespace(ns) for ns in namespaces]
         )
@@ -727,12 +723,10 @@ class SyncRepository:
             namespace: Namespace name to delete.
 
         Raises:
-            ValueError: If namespace is the reserved namespace ``"_"``.
+            ValidationError: If namespace is the reserved namespace ``"_"``.
         """
         if namespace == schema.RESERVED_NAMESPACE:
-            raise ValueError(
-                f"Namespace name {schema.RESERVED_NAMESPACE!r} is reserved for system use"
-            )
+            raise ValidationError("namespace", namespace, "reserved for system use")
         client = self._get_client()
         pk = schema.pk_system(schema.RESERVED_NAMESPACE)
         response = client.get_item(
@@ -771,8 +765,8 @@ class SyncRepository:
 
         Raises:
             EntityNotFoundError: If the reverse record does not exist.
-            ValueError: If the reverse record has ``status="purging"``
-                or ``status="active"``.
+            ValidationError: If the namespace name is reserved.
+            NamespaceStateError: If the namespace is active or being purged.
         """
         from .exceptions import EntityNotFoundError
 
@@ -788,15 +782,19 @@ class SyncRepository:
         status = item.get("status", {}).get("S", "")
         namespace_name: str = item["namespace_name"]["S"]
         if namespace_name == schema.RESERVED_NAMESPACE:
-            raise ValueError(
-                f"Namespace name {schema.RESERVED_NAMESPACE!r} is reserved for system use"
-            )
+            raise ValidationError("namespace", namespace_name, "reserved for system use")
         if status == "purging":
-            raise ValueError(
-                f"Cannot recover namespace '{namespace_name}' — purge is in progress and is terminal"
+            raise NamespaceStateError(
+                f"Cannot recover namespace '{namespace_name}' — purge is in progress and is terminal",
+                namespace_name=namespace_name,
+                state=status,
             )
         if status == "active":
-            raise ValueError(f"Namespace '{namespace_name}' is already active (not deleted)")
+            raise NamespaceStateError(
+                f"Namespace '{namespace_name}' is already active (not deleted)",
+                namespace_name=namespace_name,
+                state=status,
+            )
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         created_at = item.get("created_at", {}).get("S", now)
         try:
@@ -815,8 +813,10 @@ class SyncRepository:
                 ConditionExpression="attribute_not_exists(PK)",
             )
         except client.exceptions.ConditionalCheckFailedException:
-            raise ValueError(
-                f"Cannot recover namespace '{namespace_name}' — the name has been re-registered by another caller"
+            raise NamespaceStateError(
+                f"Cannot recover namespace '{namespace_name}' — the name has been re-registered by another caller",
+                namespace_name=namespace_name,
+                state="re-registered",
             ) from None
         client.update_item(
             TableName=self.table_name,
@@ -881,7 +881,7 @@ class SyncRepository:
             namespace_id: Opaque namespace ID to purge.
 
         Raises:
-            ValueError: If the namespace is ``"active"`` (cannot purge
+            NamespaceStateError: If the namespace is ``"active"`` (cannot purge
                 an active namespace).
         """
         client = self._get_client()
@@ -895,8 +895,11 @@ class SyncRepository:
             return
         status = item.get("status", {}).get("S", "")
         if status == "active":
-            raise ValueError(
-                f"Cannot purge active namespace '{item['namespace_name']['S']}'. Delete it first with delete_namespace()."
+            ns_name = item["namespace_name"]["S"]
+            raise NamespaceStateError(
+                f"Cannot purge active namespace '{ns_name}'. Delete it first with delete_namespace().",
+                namespace_name=ns_name,
+                state=status,
             )
         if status != "purging":
             client.update_item(
