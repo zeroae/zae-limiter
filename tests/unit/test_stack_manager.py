@@ -6,7 +6,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import StackOptions
-from zae_limiter.exceptions import StackAlreadyExistsError, StackCreationError
+from zae_limiter.exceptions import StackAlreadyExistsError, StackOperationError
 from zae_limiter.infra.stack_manager import StackManager
 
 
@@ -422,7 +422,7 @@ class TestCreateStackErrors:
 
     @pytest.mark.asyncio
     async def test_raises_creation_error_on_client_error(self) -> None:
-        """create_stack raises StackCreationError on other ClientErrors."""
+        """create_stack raises StackOperationError on other ClientErrors."""
         with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = AsyncMock(
@@ -441,14 +441,14 @@ class TestCreateStackErrors:
 
             manager = StackManager(stack_name="test", region="us-east-1")
 
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 await manager.create_stack()
 
             assert "Need IAM" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_raises_on_waiter_failure(self) -> None:
-        """create_stack raises StackCreationError when waiter fails."""
+        """create_stack raises StackOperationError when waiter fails."""
         with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = AsyncMock(
@@ -469,7 +469,7 @@ class TestCreateStackErrors:
 
             manager = StackManager(stack_name="test", region="us-east-1")
 
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 await manager.create_stack(wait=True)
 
             assert "Waiter timeout" in str(exc_info.value)
@@ -522,7 +522,7 @@ class TestDeleteStack:
 
     @pytest.mark.asyncio
     async def test_raises_on_other_errors(self) -> None:
-        """delete_stack raises StackCreationError on other errors."""
+        """delete_stack raises StackOperationError on other errors."""
         with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
             mock_client = MagicMock()
             mock_client.delete_stack = AsyncMock(
@@ -535,7 +535,7 @@ class TestDeleteStack:
 
             manager = StackManager(stack_name="test", region="us-east-1")
 
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 await manager.delete_stack("test-stack")
 
             assert "Not authorized" in str(exc_info.value)
@@ -592,7 +592,7 @@ class TestDeployLambdaCode:
         ):
             manager = StackManager(stack_name="test", region="us-east-1")
 
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 await manager.deploy_lambda_code()
 
             assert "Build failed" in str(exc_info.value)
@@ -650,7 +650,7 @@ class TestDeployProvisionerCode:
         ):
             manager = StackManager(stack_name="test", region="us-east-1")
 
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 await manager.deploy_provisioner_code()
 
             assert "Build failed" in str(exc_info.value)
@@ -729,7 +729,7 @@ class TestDeployProvisionerCode:
 
             manager = StackManager(stack_name="test", region="us-east-1")
 
-            with pytest.raises(StackCreationError, match="provisioner update failed"):
+            with pytest.raises(StackOperationError, match="provisioner update failed"):
                 await manager.deploy_provisioner_code()
 
     @pytest.mark.asyncio
@@ -765,7 +765,7 @@ class TestDeployProvisionerCode:
 
             manager = StackManager(stack_name="test", region="us-east-1")
 
-            with pytest.raises(StackCreationError, match="provisioner to be active failed"):
+            with pytest.raises(StackOperationError, match="provisioner to be active failed"):
                 await manager.deploy_provisioner_code()
 
     @pytest.mark.asyncio
@@ -801,7 +801,7 @@ class TestDeployProvisionerCode:
 
             manager = StackManager(stack_name="test", region="us-east-1")
 
-            with pytest.raises(StackCreationError, match="ResourceNotFoundException"):
+            with pytest.raises(StackOperationError, match="ResourceNotFoundException"):
                 await manager.deploy_provisioner_code()
 
 

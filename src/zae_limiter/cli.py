@@ -3471,6 +3471,8 @@ def namespace_register(
     """
 
     async def _register() -> None:
+        from .exceptions import NamespaceStateError, ValidationError
+
         repo = await _connect(name, region, endpoint_url)
         try:
             if len(namespaces) == 1:
@@ -3481,7 +3483,7 @@ def namespace_register(
                 click.echo(f"Registered {len(result)} namespace(s):")
                 for ns_name, ns_id in result.items():
                     click.echo(f"  {ns_name}: {ns_id}")
-        except ValueError as e:
+        except (ValidationError, NamespaceStateError) as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
         except Exception as e:
@@ -3676,11 +3678,13 @@ def namespace_delete(
         )
 
     async def _delete() -> None:
+        from .exceptions import ValidationError
+
         repo = await _connect(name, region, endpoint_url)
         try:
             await repo.delete_namespace(namespace_name)
             click.echo(f"Namespace '{namespace_name}' deleted (data orphaned, recoverable).")
-        except ValueError as e:
+        except ValidationError as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
         except Exception as e:
@@ -3734,7 +3738,7 @@ def namespace_recover(
         zae-limiter namespace recover aB3x_9Qw --name my-app
         ```
     """
-    from .exceptions import EntityNotFoundError
+    from .exceptions import EntityNotFoundError, NamespaceStateError, ValidationError
 
     async def _recover() -> None:
         repo = await _connect(name, region, endpoint_url)
@@ -3744,7 +3748,7 @@ def namespace_recover(
         except EntityNotFoundError:
             click.echo(f"Error: Namespace ID '{namespace_id}' not found.", err=True)
             sys.exit(1)
-        except ValueError as e:
+        except (ValidationError, NamespaceStateError) as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
         except Exception as e:
@@ -3879,11 +3883,13 @@ def namespace_purge(
         )
 
     async def _purge() -> None:
+        from .exceptions import NamespaceStateError
+
         repo = await _connect(name, region, endpoint_url)
         try:
             await repo.purge_namespace(namespace_id)
             click.echo(f"Purged namespace '{namespace_id}'. All data permanently deleted.")
-        except ValueError as e:
+        except NamespaceStateError as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
         except Exception as e:

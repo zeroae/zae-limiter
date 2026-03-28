@@ -18,7 +18,11 @@ from zae_limiter import (
     RateLimitExceeded,
     ValidationError,
 )
-from zae_limiter.exceptions import InvalidIdentifierError, InvalidNameError
+from zae_limiter.exceptions import (
+    InvalidIdentifierError,
+    InvalidNameError,
+    LeaseExpiredError,
+)
 from zae_limiter.infra.discovery import InfrastructureDiscovery
 from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
@@ -273,7 +277,7 @@ class TestLeaseEdgeCases:
     """Tests for Lease edge cases (committed/rolled-back state, zero amounts)."""
 
     async def test_consume_after_commit_raises(self, limiter):
-        """consume() on a committed lease raises RuntimeError."""
+        """consume() on a committed lease raises LeaseExpiredError."""
         limits = [Limit.per_minute("tpm", 10_000)]
 
         async with limiter.acquire(
@@ -284,11 +288,11 @@ class TestLeaseEdgeCases:
         ) as lease:
             pass  # commit happens on exit
 
-        with pytest.raises(RuntimeError, match="no longer active"):
+        with pytest.raises(LeaseExpiredError):
             await lease.consume(tpm=50)
 
     async def test_adjust_after_commit_raises(self, limiter):
-        """adjust() on a committed lease raises RuntimeError."""
+        """adjust() on a committed lease raises LeaseExpiredError."""
         limits = [Limit.per_minute("tpm", 10_000)]
 
         async with limiter.acquire(
@@ -299,7 +303,7 @@ class TestLeaseEdgeCases:
         ) as lease:
             pass
 
-        with pytest.raises(RuntimeError, match="no longer active"):
+        with pytest.raises(LeaseExpiredError):
             await lease.adjust(tpm=50)
 
     async def test_consume_zero_amount_is_noop(self, limiter):

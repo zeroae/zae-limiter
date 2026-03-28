@@ -9,7 +9,7 @@ from typing import Any, cast
 import aioboto3
 from botocore.exceptions import ClientError
 
-from ..exceptions import StackAlreadyExistsError, StackCreationError
+from ..exceptions import StackAlreadyExistsError, StackOperationError
 from ..models import StackOptions
 from ..naming import normalize_stack_name
 from .lambda_builder import build_lambda_package
@@ -91,7 +91,7 @@ class StackManager:
             template_data = files("zae_limiter.infra").joinpath("cfn_template.yaml").read_text()
             return template_data
         except Exception as e:
-            raise StackCreationError(
+            raise StackOperationError(
                 stack_name="unknown",
                 reason=f"Failed to load CloudFormation template: {e}",
             ) from e
@@ -346,7 +346,7 @@ class StackManager:
             Dict with stack_id, stack_name, and status
 
         Raises:
-            StackCreationError: If stack creation fails
+            StackOperationError: If stack creation fails
             StackAlreadyExistsError: If stack already exists
         """
         # Use the normalized stack name from constructor
@@ -365,7 +365,7 @@ class StackManager:
                 try:
                     await waiter.wait(StackName=stack_name)
                 except Exception as e:
-                    raise StackCreationError(
+                    raise StackOperationError(
                         stack_name=stack_name,
                         reason=f"Waiting for existing stack failed: {e}",
                     ) from e
@@ -414,7 +414,7 @@ class StackManager:
                 except Exception as e:
                     # Fetch stack events for debugging
                     events = await self._get_stack_events(client, stack_name)
-                    raise StackCreationError(
+                    raise StackOperationError(
                         stack_name=stack_name,
                         reason=f"Stack creation failed: {e}",
                         events=events,
@@ -438,13 +438,10 @@ class StackManager:
                     except Exception:
                         logger.debug("Best effort wait for existing stack failed", exc_info=True)
 
-                raise StackAlreadyExistsError(
-                    stack_name=stack_name,
-                    reason="Stack already exists",
-                )
+                raise StackAlreadyExistsError(stack_name=stack_name)
 
             # Other error
-            raise StackCreationError(
+            raise StackOperationError(
                 stack_name=stack_name,
                 reason=f"CloudFormation API error: {e.response['Error']['Message']}",
             ) from e
@@ -458,7 +455,7 @@ class StackManager:
             wait: Wait for stack to be DELETE_COMPLETE
 
         Raises:
-            StackCreationError: If deletion fails
+            StackOperationError: If deletion fails
         """
         client = await self._get_client()
 
@@ -476,7 +473,7 @@ class StackManager:
             if error_code == "ValidationError" and "does not exist" in str(e):
                 return
 
-            raise StackCreationError(
+            raise StackOperationError(
                 stack_name=stack_name,
                 reason=f"Stack deletion failed: {e.response['Error']['Message']}",
             ) from e
@@ -534,7 +531,7 @@ class StackManager:
             Dict with function_arn, code_sha256, and status
 
         Raises:
-            StackCreationError: If Lambda deployment fails
+            StackOperationError: If Lambda deployment fails
         """
         function_name = function_name or f"{self.table_name}-aggregator"
 
@@ -542,7 +539,7 @@ class StackManager:
         try:
             zip_bytes = build_lambda_package()
         except Exception as e:
-            raise StackCreationError(
+            raise StackOperationError(
                 stack_name=self.stack_name,
                 reason=f"Failed to build Lambda package: {e}",
             ) from e
@@ -572,7 +569,7 @@ class StackManager:
                     try:
                         await waiter.wait(FunctionName=function_name)
                     except Exception as e:
-                        raise StackCreationError(
+                        raise StackOperationError(
                             stack_name=self.stack_name,
                             reason=f"Waiting for Lambda update failed: {e}",
                         ) from e
@@ -584,7 +581,7 @@ class StackManager:
                     try:
                         await active_waiter.wait(FunctionName=function_name)
                     except Exception as e:
-                        raise StackCreationError(
+                        raise StackOperationError(
                             stack_name=self.stack_name,
                             reason=f"Waiting for Lambda to be active failed: {e}",
                         ) from e
@@ -611,7 +608,7 @@ class StackManager:
                 error_code = e.response["Error"]["Code"]
                 error_msg = e.response["Error"]["Message"]
 
-                raise StackCreationError(
+                raise StackOperationError(
                     stack_name=self.stack_name,
                     reason=f"Lambda deployment failed ({error_code}): {error_msg}",
                 ) from e
@@ -643,14 +640,14 @@ class StackManager:
             Dict with function_arn, code_sha256, and status
 
         Raises:
-            StackCreationError: If Lambda deployment fails
+            StackOperationError: If Lambda deployment fails
         """
         function_name = function_name or f"{self.table_name}-limits-provisioner"
 
         try:
             zip_bytes = build_provisioner_package()
         except Exception as e:
-            raise StackCreationError(
+            raise StackOperationError(
                 stack_name=self.stack_name,
                 reason=f"Failed to build provisioner package: {e}",
             ) from e
@@ -677,7 +674,7 @@ class StackManager:
                     try:
                         await waiter.wait(FunctionName=function_name)
                     except Exception as e:
-                        raise StackCreationError(
+                        raise StackOperationError(
                             stack_name=self.stack_name,
                             reason=f"Waiting for provisioner update failed: {e}",
                         ) from e
@@ -687,7 +684,7 @@ class StackManager:
                     try:
                         await active_waiter.wait(FunctionName=function_name)
                     except Exception as e:
-                        raise StackCreationError(
+                        raise StackOperationError(
                             stack_name=self.stack_name,
                             reason=(f"Waiting for provisioner to be active failed: {e}"),
                         ) from e
@@ -713,7 +710,7 @@ class StackManager:
                 error_code = e.response["Error"]["Code"]
                 error_msg = e.response["Error"]["Message"]
 
-                raise StackCreationError(
+                raise StackOperationError(
                     stack_name=self.stack_name,
                     reason=(f"Provisioner deployment failed ({error_code}): {error_msg}"),
                 ) from e

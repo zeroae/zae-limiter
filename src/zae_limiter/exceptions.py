@@ -148,6 +148,13 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
         return str(int(self.retry_after_seconds) + 1)  # round up
 
 
+class LeaseExpiredError(RateLimitError):
+    """Raised when a lease operation is attempted after the lease has exited."""
+
+    def __init__(self) -> None:
+        super().__init__("Lease is no longer active")
+
+
 class RateLimiterUnavailable(InfrastructureError):  # noqa: N818
     """
     Raised when DynamoDB is unavailable and on_unavailable=OnUnavailable.BLOCK.
@@ -174,8 +181,6 @@ class RateLimiterUnavailable(InfrastructureError):  # noqa: N818
     ) -> None:
         self.cause = cause
         self.stack_name = stack_name
-        # For backwards compatibility, table_name is same as stack_name
-        self.table_name = stack_name
         self.entity_id = entity_id
         self.resource = resource
         super().__init__(self._format_message(message))
@@ -220,8 +225,8 @@ class EntityExistsError(EntityError):
 # ---------------------------------------------------------------------------
 
 
-class StackCreationError(InfrastructureError):
-    """Raised when CloudFormation stack creation fails."""
+class StackOperationError(InfrastructureError):
+    """Raised when a CloudFormation stack operation fails."""
 
     def __init__(
         self, stack_name: str, reason: str, events: list[dict[str, Any]] | None = None
@@ -229,13 +234,15 @@ class StackCreationError(InfrastructureError):
         self.stack_name = stack_name
         self.reason = reason
         self.events = events or []
-        super().__init__(f"Stack {stack_name} creation failed: {reason}")
+        super().__init__(f"Stack '{stack_name}' operation failed: {reason}")
 
 
-class StackAlreadyExistsError(StackCreationError):
-    """Raised when stack already exists (informational)."""
+class StackAlreadyExistsError(InfrastructureError):
+    """Raised when a stack already exists."""
 
-    pass
+    def __init__(self, stack_name: str) -> None:
+        self.stack_name = stack_name
+        super().__init__(f"Stack '{stack_name}' already exists")
 
 
 class InfrastructureNotFoundError(InfrastructureError):
@@ -248,8 +255,6 @@ class InfrastructureNotFoundError(InfrastructureError):
 
     def __init__(self, stack_name: str) -> None:
         self.stack_name = stack_name
-        # Stack name and table name are always identical
-        self.table_name = stack_name
         msg = f"Infrastructure not found for stack '{stack_name}'"
         msg += ". Run 'zae-limiter deploy' or use stack_options=StackOptions()."
         super().__init__(msg)
@@ -263,6 +268,23 @@ class NamespaceNotFoundError(InfrastructureError):
         super().__init__(
             f"Namespace '{namespace_name}' not found. Register it first or check for typos."
         )
+
+
+class NamespaceStateError(InfrastructureError):
+    """Raised when a namespace operation is invalid for the current state.
+
+    Examples: recovering an active namespace, purging an active namespace,
+    recovering a namespace whose name was re-registered.
+
+    Attributes:
+        namespace_name: The namespace name (if known).
+        state: The current state that caused the conflict (e.g. "active", "purging").
+    """
+
+    def __init__(self, message: str, *, namespace_name: str = "", state: str = "") -> None:
+        self.namespace_name = namespace_name
+        self.state = state
+        super().__init__(message)
 
 
 # ---------------------------------------------------------------------------

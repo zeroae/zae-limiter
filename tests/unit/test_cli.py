@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from zae_limiter.cli import cli
+from zae_limiter.exceptions import NamespaceStateError, ValidationError
 
 
 @pytest.fixture
@@ -5041,11 +5042,13 @@ class TestNamespaceCommands:
         mock_repo.close.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
-    def test_namespace_register_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test namespace register handles ValueError (e.g., duplicate namespace)."""
+    def test_namespace_register_reserved_error(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test namespace register handles ValidationError for reserved namespace."""
         mock_repo = Mock()
         mock_repo.register_namespace = AsyncMock(
-            side_effect=ValueError("Namespace 'tenant-alpha' already exists")
+            side_effect=ValidationError("namespace", "_", "reserved for system use")
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
@@ -5054,7 +5057,7 @@ class TestNamespaceCommands:
         result = runner.invoke(cli, ["namespace", "register", "tenant-alpha"])
 
         assert result.exit_code == 1
-        assert "Namespace 'tenant-alpha' already exists" in result.output
+        assert "reserved for system use" in result.output
         mock_repo.close.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
@@ -5303,11 +5306,13 @@ class TestNamespaceCommands:
         assert "Aborted" in result.output
 
     @patch("zae_limiter.repository.Repository")
-    def test_namespace_delete_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test namespace delete handles ValueError (e.g., namespace not found)."""
+    def test_namespace_delete_reserved_error(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Test namespace delete handles ValidationError for reserved namespace."""
         mock_repo = Mock()
         mock_repo.delete_namespace = AsyncMock(
-            side_effect=ValueError("Namespace 'tenant-alpha' not found")
+            side_effect=ValidationError("namespace", "_", "reserved for system use")
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
@@ -5316,7 +5321,7 @@ class TestNamespaceCommands:
         result = runner.invoke(cli, ["namespace", "delete", "tenant-alpha", "--yes"])
 
         assert result.exit_code == 1
-        assert "Namespace 'tenant-alpha' not found" in result.output
+        assert "reserved for system use" in result.output
         mock_repo.close.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
@@ -5390,10 +5395,14 @@ class TestNamespaceCommands:
         mock_repo.close.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
-    def test_namespace_recover_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test namespace recover handles ValueError (e.g., already active)."""
+    def test_namespace_recover_state_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace recover handles NamespaceStateError (e.g., already active)."""
         mock_repo = Mock()
-        mock_repo.recover_namespace = AsyncMock(side_effect=ValueError("Namespace is not deleted"))
+        mock_repo.recover_namespace = AsyncMock(
+            side_effect=NamespaceStateError(
+                "Namespace is not deleted", namespace_name="test", state="active"
+            )
+        )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         mock_repo_class.open = AsyncMock(return_value=mock_repo)
@@ -5564,11 +5573,13 @@ class TestNamespaceCommands:
         assert "Aborted" in result.output
 
     @patch("zae_limiter.repository.Repository")
-    def test_namespace_purge_value_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test namespace purge handles ValueError (e.g., namespace still active)."""
+    def test_namespace_purge_state_error(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        """Test namespace purge handles NamespaceStateError (e.g., namespace still active)."""
         mock_repo = Mock()
         mock_repo.purge_namespace = AsyncMock(
-            side_effect=ValueError("Cannot purge active namespace")
+            side_effect=NamespaceStateError(
+                "Cannot purge active namespace", namespace_name="test", state="active"
+            )
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo

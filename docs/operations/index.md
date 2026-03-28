@@ -98,7 +98,7 @@ flowchart LR
 | `EntityNotFoundError` | Entity doesn't exist | [Rate Limits](rate-limits/) |
 | `VersionMismatchError` | Client/Lambda version mismatch | [Version](version/) |
 | `IncompatibleSchemaError` | Major version difference | [Version](version/) |
-| `StackCreationError` | CloudFormation failed | [Recovery](recovery/) |
+| `StackOperationError` | CloudFormation failed | [Recovery](recovery/) |
 
 ## Related Documentation
 

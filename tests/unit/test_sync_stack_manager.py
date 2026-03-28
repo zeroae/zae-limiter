@@ -12,7 +12,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import StackOptions
-from zae_limiter.exceptions import StackAlreadyExistsError, StackCreationError
+from zae_limiter.exceptions import StackAlreadyExistsError, StackOperationError
 from zae_limiter.infra.sync_stack_manager import SyncStackManager
 
 
@@ -373,7 +373,7 @@ class TestCreateStackErrors:
                 manager.create_stack()
 
     def test_raises_creation_error_on_client_error(self) -> None:
-        """create_stack raises StackCreationError on other ClientErrors."""
+        """create_stack raises StackOperationError on other ClientErrors."""
         with patch.object(
             SyncStackManager, "_get_client", new_callable=MagicMock
         ) as mock_get_client:
@@ -392,12 +392,12 @@ class TestCreateStackErrors:
             )
             mock_get_client.return_value = mock_client
             manager = SyncStackManager(stack_name="test", region="us-east-1")
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 manager.create_stack()
             assert "Need IAM" in str(exc_info.value)
 
     def test_raises_on_waiter_failure(self) -> None:
-        """create_stack raises StackCreationError when waiter fails."""
+        """create_stack raises StackOperationError when waiter fails."""
         with patch.object(
             SyncStackManager, "_get_client", new_callable=MagicMock
         ) as mock_get_client:
@@ -415,7 +415,7 @@ class TestCreateStackErrors:
             mock_client.describe_stack_events = MagicMock(return_value={"StackEvents": []})
             mock_get_client.return_value = mock_client
             manager = SyncStackManager(stack_name="test", region="us-east-1")
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 manager.create_stack(wait=True)
             assert "Waiter timeout" in str(exc_info.value)
 
@@ -456,7 +456,7 @@ class TestDeleteStack:
             manager.delete_stack("non-existent")
 
     def test_raises_on_other_errors(self) -> None:
-        """delete_stack raises StackCreationError on other errors."""
+        """delete_stack raises StackOperationError on other errors."""
         with patch.object(
             SyncStackManager, "_get_client", new_callable=MagicMock
         ) as mock_get_client:
@@ -468,7 +468,7 @@ class TestDeleteStack:
             )
             mock_get_client.return_value = mock_client
             manager = SyncStackManager(stack_name="test", region="us-east-1")
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 manager.delete_stack("test-stack")
             assert "Not authorized" in str(exc_info.value)
 
@@ -512,7 +512,7 @@ class TestDeployLambdaCode:
             side_effect=Exception("Build failed"),
         ):
             manager = SyncStackManager(stack_name="test", region="us-east-1")
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 manager.deploy_lambda_code()
             assert "Build failed" in str(exc_info.value)
 
@@ -558,7 +558,7 @@ class TestDeployProvisionerCode:
             side_effect=Exception("Build failed"),
         ):
             manager = SyncStackManager(stack_name="test", region="us-east-1")
-            with pytest.raises(StackCreationError) as exc_info:
+            with pytest.raises(StackOperationError) as exc_info:
                 manager.deploy_provisioner_code()
             assert "Build failed" in str(exc_info.value)
 
@@ -616,7 +616,7 @@ class TestDeployProvisionerCode:
             mock_session.client.return_value = mock_lambda
             mock_session_class.return_value = mock_session
             manager = SyncStackManager(stack_name="test", region="us-east-1")
-            with pytest.raises(StackCreationError, match="provisioner update failed"):
+            with pytest.raises(StackOperationError, match="provisioner update failed"):
                 manager.deploy_provisioner_code()
 
     def test_raises_on_active_waiter_failure(self) -> None:
@@ -644,7 +644,7 @@ class TestDeployProvisionerCode:
             mock_session.client.return_value = mock_lambda
             mock_session_class.return_value = mock_session
             manager = SyncStackManager(stack_name="test", region="us-east-1")
-            with pytest.raises(StackCreationError, match="provisioner to be active failed"):
+            with pytest.raises(StackOperationError, match="provisioner to be active failed"):
                 manager.deploy_provisioner_code()
 
     def test_raises_on_client_error(self) -> None:
@@ -672,7 +672,7 @@ class TestDeployProvisionerCode:
             mock_session.client.return_value = mock_lambda
             mock_session_class.return_value = mock_session
             manager = SyncStackManager(stack_name="test", region="us-east-1")
-            with pytest.raises(StackCreationError, match="ResourceNotFoundException"):
+            with pytest.raises(StackOperationError, match="ResourceNotFoundException"):
                 manager.deploy_provisioner_code()
 
 

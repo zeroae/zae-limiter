@@ -9,11 +9,17 @@ from zae_limiter.exceptions import (
     IncompatibleSchemaError,
     InfrastructureError,
     InfrastructureNotFoundError,
+    InvalidIdentifierError,
+    InvalidNameError,
+    LeaseExpiredError,
+    NamespaceNotFoundError,
+    NamespaceStateError,
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
     StackAlreadyExistsError,
-    StackCreationError,
+    StackOperationError,
+    ValidationError,
     VersionError,
     VersionMismatchError,
     ZAELimiterError,
@@ -187,7 +193,7 @@ class TestRateLimiterUnavailable:
         exc = RateLimiterUnavailable("DynamoDB timeout")
         assert str(exc) == "DynamoDB timeout"
         assert exc.cause is None
-        assert exc.table_name is None
+        assert exc.stack_name is None
         assert exc.entity_id is None
         assert exc.resource is None
 
@@ -209,7 +215,6 @@ class TestRateLimiterUnavailable:
             resource="gpt-4",
         )
         assert exc.stack_name == "rate-limits"
-        assert exc.table_name == "rate-limits"  # Backwards compatibility
         assert exc.entity_id == "entity-1"
         assert exc.resource == "gpt-4"
         msg = str(exc)
@@ -224,7 +229,6 @@ class TestRateLimiterUnavailable:
             stack_name="my-table",
         )
         assert exc.stack_name == "my-table"
-        assert exc.table_name == "my-table"  # Backwards compatibility
         assert exc.entity_id is None
         assert exc.resource is None
         assert "stack=my-table" in str(exc)
@@ -280,13 +284,13 @@ class TestEntityExistsError:
         assert isinstance(exc, ZAELimiterError)
 
 
-class TestStackCreationError:
-    """Tests for StackCreationError."""
+class TestStackOperationError:
+    """Tests for StackOperationError."""
 
     def test_attributes_stored(self) -> None:
         """All attributes are stored correctly."""
         events = [{"event": "CREATE_FAILED"}]
-        exc = StackCreationError("my-stack", "timeout", events=events)
+        exc = StackOperationError("my-stack", "timeout", events=events)
 
         assert exc.stack_name == "my-stack"
         assert exc.reason == "timeout"
@@ -294,19 +298,19 @@ class TestStackCreationError:
 
     def test_events_default_empty(self) -> None:
         """Events defaults to empty list."""
-        exc = StackCreationError("stack", "reason")
+        exc = StackOperationError("stack", "reason")
         assert exc.events == []
 
     def test_message_format(self) -> None:
         """Message includes stack name and reason."""
-        exc = StackCreationError("test-stack", "permission denied")
+        exc = StackOperationError("test-stack", "permission denied")
         msg = str(exc)
         assert "test-stack" in msg
         assert "permission denied" in msg
 
     def test_inherits_from_infrastructure_error(self) -> None:
-        """StackCreationError is an InfrastructureError."""
-        exc = StackCreationError("test-stack", "test reason")
+        """StackOperationError is an InfrastructureError."""
+        exc = StackOperationError("test-stack", "test reason")
         assert isinstance(exc, InfrastructureError)
         assert isinstance(exc, ZAELimiterError)
 
@@ -314,11 +318,22 @@ class TestStackCreationError:
 class TestStackAlreadyExistsError:
     """Tests for StackAlreadyExistsError."""
 
-    def test_inherits_from_stack_creation_error(self) -> None:
-        """StackAlreadyExistsError extends StackCreationError."""
-        exc = StackAlreadyExistsError("existing-stack", "already exists")
-        assert isinstance(exc, StackCreationError)
+    def test_attributes_stored(self) -> None:
+        """StackAlreadyExistsError stores stack_name."""
+        exc = StackAlreadyExistsError("existing-stack")
         assert exc.stack_name == "existing-stack"
+
+    def test_message_format(self) -> None:
+        """Message includes stack name."""
+        exc = StackAlreadyExistsError("my-stack")
+        assert "my-stack" in str(exc)
+        assert "already exists" in str(exc)
+
+    def test_inherits_from_infrastructure_error(self) -> None:
+        """StackAlreadyExistsError is a direct InfrastructureError subclass."""
+        exc = StackAlreadyExistsError("existing-stack")
+        assert isinstance(exc, InfrastructureError)
+        assert not isinstance(exc, StackOperationError)
 
 
 class TestVersionMismatchError:
@@ -430,8 +445,6 @@ class TestInfrastructureNotFoundError:
         exc = InfrastructureNotFoundError(stack_name="rate-limits")
 
         assert exc.stack_name == "rate-limits"
-        # table_name is same as stack_name for backwards compatibility
-        assert exc.table_name == "rate-limits"
 
     def test_message_format(self) -> None:
         """Message includes stack name and deploy hint."""
@@ -446,6 +459,130 @@ class TestInfrastructureNotFoundError:
         exc = InfrastructureNotFoundError("my-table")
         assert isinstance(exc, InfrastructureError)
         assert isinstance(exc, ZAELimiterError)
+
+
+class TestLeaseExpiredError:
+    """Tests for LeaseExpiredError."""
+
+    def test_message(self) -> None:
+        """Message is fixed."""
+        exc = LeaseExpiredError()
+        assert str(exc) == "Lease is no longer active"
+
+    def test_inherits_from_rate_limit_error(self) -> None:
+        """LeaseExpiredError is a RateLimitError."""
+        exc = LeaseExpiredError()
+        assert isinstance(exc, RateLimitError)
+        assert isinstance(exc, ZAELimiterError)
+
+
+class TestNamespaceNotFoundError:
+    """Tests for NamespaceNotFoundError."""
+
+    def test_attributes_stored(self) -> None:
+        """namespace_name is stored."""
+        exc = NamespaceNotFoundError("tenant-a")
+        assert exc.namespace_name == "tenant-a"
+
+    def test_message_format(self) -> None:
+        """Message includes namespace name."""
+        exc = NamespaceNotFoundError("missing-ns")
+        assert "missing-ns" in str(exc)
+
+    def test_inherits_from_infrastructure_error(self) -> None:
+        """NamespaceNotFoundError is an InfrastructureError."""
+        exc = NamespaceNotFoundError("test")
+        assert isinstance(exc, InfrastructureError)
+
+
+class TestNamespaceStateError:
+    """Tests for NamespaceStateError."""
+
+    def test_attributes_stored(self) -> None:
+        """All attributes are stored."""
+        exc = NamespaceStateError("Namespace is active", namespace_name="tenant-a", state="active")
+        assert exc.namespace_name == "tenant-a"
+        assert exc.state == "active"
+        assert str(exc) == "Namespace is active"
+
+    def test_defaults(self) -> None:
+        """namespace_name and state default to empty string."""
+        exc = NamespaceStateError("some error")
+        assert exc.namespace_name == ""
+        assert exc.state == ""
+
+    def test_inherits_from_infrastructure_error(self) -> None:
+        """NamespaceStateError is an InfrastructureError."""
+        exc = NamespaceStateError("test")
+        assert isinstance(exc, InfrastructureError)
+
+
+class TestValidationError:
+    """Tests for ValidationError hierarchy."""
+
+    def test_inherits_from_base(self) -> None:
+        """ValidationError is a ZAELimiterError."""
+        exc = ValidationError("field", "value", "reason")
+        assert isinstance(exc, ZAELimiterError)
+
+    def test_invalid_identifier_error(self) -> None:
+        """InvalidIdentifierError is a ValidationError."""
+        exc = InvalidIdentifierError("entity_id", "my_name", "contains underscore")
+        assert isinstance(exc, ValidationError)
+
+    def test_invalid_name_error(self) -> None:
+        """InvalidNameError is a ValidationError."""
+        exc = InvalidNameError("limit_name", "bad name", "too short")
+        assert isinstance(exc, ValidationError)
+
+
+class TestExceptionHierarchy:
+    """Tests for the full exception hierarchy using isinstance checks."""
+
+    def test_all_exceptions_inherit_from_base(self) -> None:
+        """Every library exception is a ZAELimiterError."""
+        assert issubclass(RateLimitError, ZAELimiterError)
+        assert issubclass(InfrastructureError, ZAELimiterError)
+        assert issubclass(EntityError, ZAELimiterError)
+        assert issubclass(VersionError, ZAELimiterError)
+        assert issubclass(ValidationError, ZAELimiterError)
+
+    def test_rate_limit_subtree(self) -> None:
+        """RateLimitError subtree."""
+        assert issubclass(RateLimitExceeded, RateLimitError)
+        assert issubclass(LeaseExpiredError, RateLimitError)
+
+    def test_infrastructure_subtree(self) -> None:
+        """InfrastructureError subtree."""
+        assert issubclass(RateLimiterUnavailable, InfrastructureError)
+        assert issubclass(StackOperationError, InfrastructureError)
+        assert issubclass(StackAlreadyExistsError, InfrastructureError)
+        assert issubclass(InfrastructureNotFoundError, InfrastructureError)
+        assert issubclass(NamespaceNotFoundError, InfrastructureError)
+        assert issubclass(NamespaceStateError, InfrastructureError)
+
+    def test_stack_already_exists_not_under_stack_operation(self) -> None:
+        """StackAlreadyExistsError is NOT a StackOperationError."""
+        assert not issubclass(StackAlreadyExistsError, StackOperationError)
+
+    def test_entity_subtree(self) -> None:
+        """EntityError subtree."""
+        assert issubclass(EntityNotFoundError, EntityError)
+        assert issubclass(EntityExistsError, EntityError)
+
+    def test_version_subtree(self) -> None:
+        """VersionError subtree."""
+        assert issubclass(VersionMismatchError, VersionError)
+        assert issubclass(IncompatibleSchemaError, VersionError)
+
+    def test_validation_subtree(self) -> None:
+        """ValidationError subtree."""
+        assert issubclass(InvalidIdentifierError, ValidationError)
+        assert issubclass(InvalidNameError, ValidationError)
+
+    def test_rate_limit_error_does_not_catch_unavailable(self) -> None:
+        """RateLimiterUnavailable is NOT caught by except RateLimitError."""
+        assert not issubclass(RateLimiterUnavailable, RateLimitError)
 
 
 class TestLimitStatusDeficit:
