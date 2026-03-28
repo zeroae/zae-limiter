@@ -33,7 +33,7 @@ class RateLimitError(ZAELimiterError):
     Base exception for rate limit-related errors.
 
     This includes errors raised when rate limits are exceeded or when
-    the rate limiter service is unavailable.
+    a lease operation is attempted after the lease has exited.
     """
 
     pass
