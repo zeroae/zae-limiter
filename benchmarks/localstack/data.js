@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774727323443,
+  "lastUpdate": 1774728210855,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -13265,6 +13265,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.005521493771782071",
             "extra": "mean: 1.0840027281999993 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "patrick@zero-ae.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6878b6db1be7d462fd0107481ee07801ad641370",
+          "message": "build(deps): bump codecov/codecov-action from 5 to 6 (#420)\n\nBumps\n[codecov/codecov-action](https://github.com/codecov/codecov-action) from\n5 to 6.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/codecov/codecov-action/releases\">codecov/codecov-action's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v6.0.0</h2>\n<h2>⚠️ This version introduces support for node24 which make cause\nbreaking changes for systems that do not currently support node24.\n⚠️</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>Revert &quot;Revert &quot;build(deps): bump actions/github-script\nfrom 7.0.1 to 8.0.0&quot;&quot; by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1929\">codecov/codecov-action#1929</a></li>\n<li>Th/6.0.0 by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1928\">codecov/codecov-action#1928</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.4...v6.0.0\">https://github.com/codecov/codecov-action/compare/v5.5.4...v6.0.0</a></p>\n<h2>v5.5.4</h2>\n<p>This is a mirror of <code>v5.5.2</code>. <code>v6</code> will be\nreleased which requires <code>node24</code></p>\n<h2>What's Changed</h2>\n<ul>\n<li>Revert &quot;build(deps): bump actions/github-script from 7.0.1 to\n8.0.0&quot; by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1926\">codecov/codecov-action#1926</a></li>\n<li>chore(release): 5.5.4 by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1927\">codecov/codecov-action#1927</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.3...v5.5.4\">https://github.com/codecov/codecov-action/compare/v5.5.3...v5.5.4</a></p>\n<h2>v5.5.3</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>build(deps): bump actions/github-script from 7.0.1 to 8.0.0 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1874\">codecov/codecov-action#1874</a></li>\n<li>chore(release): bump to 5.5.3 by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1922\">codecov/codecov-action#1922</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.2...v5.5.3\">https://github.com/codecov/codecov-action/compare/v5.5.2...v5.5.3</a></p>\n<h2>v5.5.2</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>check gpg only when skip-validation = false by <a\nhref=\"https://github.com/maxweng-sentry\"><code>@​maxweng-sentry</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1894\">codecov/codecov-action#1894</a></li>\n<li>chore: <code>disable_search</code> alignment by <a\nhref=\"https://github.com/freemanzMrojo\"><code>@​freemanzMrojo</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1881\">codecov/codecov-action#1881</a></li>\n<li>chore(release): 5.5.2 by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1902\">codecov/codecov-action#1902</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li><a\nhref=\"https://github.com/maxweng-sentry\"><code>@​maxweng-sentry</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1894\">codecov/codecov-action#1894</a></li>\n<li><a\nhref=\"https://github.com/freemanzMrojo\"><code>@​freemanzMrojo</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1881\">codecov/codecov-action#1881</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.1...v5.5.2\">https://github.com/codecov/codecov-action/compare/v5.5.1...v5.5.2</a></p>\n<h2>v5.5.1</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>build(deps): bump ossf/scorecard-action from 2.4.1 to 2.4.2 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1833\">codecov/codecov-action#1833</a></li>\n<li>build(deps): bump github/codeql-action from 3.28.18 to 3.29.9 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1861\">codecov/codecov-action#1861</a></li>\n<li>Document a <code>codecov-cli</code> version reference example by <a\nhref=\"https://github.com/webknjaz\"><code>@​webknjaz</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1774\">codecov/codecov-action#1774</a></li>\n<li>docs: fix typo in README by <a\nhref=\"https://github.com/datalater\"><code>@​datalater</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1866\">codecov/codecov-action#1866</a></li>\n<li>fix: update to use local app/ dir by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1872\">codecov/codecov-action#1872</a></li>\n<li>build(deps): bump github/codeql-action from 3.29.9 to 3.29.11 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1867\">codecov/codecov-action#1867</a></li>\n<li>build(deps): bump actions/checkout from 4.2.2 to 5.0.0 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a>[bot]\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1868\">codecov/codecov-action#1868</a></li>\n<li>fix: overwrite pr number on fork by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1871\">codecov/codecov-action#1871</a></li>\n</ul>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/codecov/codecov-action/blob/main/CHANGELOG.md\">codecov/codecov-action's\nchangelog</a>.</em></p>\n<blockquote>\n<h2>v5.5.2</h2>\n<h3>What's Changed</h3>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.1..v5.5.2\">https://github.com/codecov/codecov-action/compare/v5.5.1..v5.5.2</a></p>\n<h2>v5.5.1</h2>\n<h3>What's Changed</h3>\n<ul>\n<li>fix: overwrite pr number on fork by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1871\">codecov/codecov-action#1871</a></li>\n<li>build(deps): bump actions/checkout from 4.2.2 to 5.0.0 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1868\">codecov/codecov-action#1868</a></li>\n<li>build(deps): bump github/codeql-action from 3.29.9 to 3.29.11 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1867\">codecov/codecov-action#1867</a></li>\n<li>fix: update to use local app/ dir by <a\nhref=\"https://github.com/thomasrockhu-codecov\"><code>@​thomasrockhu-codecov</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1872\">codecov/codecov-action#1872</a></li>\n<li>docs: fix typo in README by <a\nhref=\"https://github.com/datalater\"><code>@​datalater</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1866\">codecov/codecov-action#1866</a></li>\n<li>Document a <code>codecov-cli</code> version reference example by <a\nhref=\"https://github.com/webknjaz\"><code>@​webknjaz</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1774\">codecov/codecov-action#1774</a></li>\n<li>build(deps): bump github/codeql-action from 3.28.18 to 3.29.9 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1861\">codecov/codecov-action#1861</a></li>\n<li>build(deps): bump ossf/scorecard-action from 2.4.1 to 2.4.2 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1833\">codecov/codecov-action#1833</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.5.0..v5.5.1\">https://github.com/codecov/codecov-action/compare/v5.5.0..v5.5.1</a></p>\n<h2>v5.5.0</h2>\n<h3>What's Changed</h3>\n<ul>\n<li>feat: upgrade wrapper to 0.2.4 by <a\nhref=\"https://github.com/jviall\"><code>@​jviall</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1864\">codecov/codecov-action#1864</a></li>\n<li>Pin actions/github-script by Git SHA by <a\nhref=\"https://github.com/martincostello\"><code>@​martincostello</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1859\">codecov/codecov-action#1859</a></li>\n<li>fix: check reqs exist by <a\nhref=\"https://github.com/joseph-sentry\"><code>@​joseph-sentry</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1835\">codecov/codecov-action#1835</a></li>\n<li>fix: Typo in README by <a\nhref=\"https://github.com/spalmurray\"><code>@​spalmurray</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1838\">codecov/codecov-action#1838</a></li>\n<li>docs: Refine OIDC docs by <a\nhref=\"https://github.com/spalmurray\"><code>@​spalmurray</code></a> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1837\">codecov/codecov-action#1837</a></li>\n<li>build(deps): bump github/codeql-action from 3.28.17 to 3.28.18 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1829\">codecov/codecov-action#1829</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.4.3..v5.5.0\">https://github.com/codecov/codecov-action/compare/v5.4.3..v5.5.0</a></p>\n<h2>v5.4.3</h2>\n<h3>What's Changed</h3>\n<ul>\n<li>build(deps): bump github/codeql-action from 3.28.13 to 3.28.17 by\n<code>@​app/dependabot</code> in <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1822\">codecov/codecov-action#1822</a></li>\n<li>fix: OIDC on forks by <a\nhref=\"https://github.com/joseph-sentry\"><code>@​joseph-sentry</code></a>\nin <a\nhref=\"https://redirect.github.com/codecov/codecov-action/pull/1823\">codecov/codecov-action#1823</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5.4.2..v5.4.3\">https://github.com/codecov/codecov-action/compare/v5.4.2..v5.4.3</a></p>\n<h2>v5.4.2</h2>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/codecov/codecov-action/commit/57e3a136b779b570ffcdbf80b3bdc90e7fab3de2\"><code>57e3a13</code></a>\nTh/6.0.0 (<a\nhref=\"https://redirect.github.com/codecov/codecov-action/issues/1928\">#1928</a>)</li>\n<li><a\nhref=\"https://github.com/codecov/codecov-action/commit/f67d33dda8a42b51c42a8318a1f66468119e898b\"><code>f67d33d</code></a>\nRevert &quot;Revert &quot;build(deps): bump actions/github-script from\n7.0.1 to 8.0.0&quot;&quot;...</li>\n<li>See full diff in <a\nhref=\"https://github.com/codecov/codecov-action/compare/v5...v6\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=codecov/codecov-action&package-manager=github_actions&previous-version=5&new-version=6)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\n\n\n</details>",
+          "timestamp": "2026-03-28T15:59:42-04:00",
+          "tree_id": "1661d01f72907081cbd3429bc5930bb773860210",
+          "url": "https://github.com/zeroae/zae-limiter/commit/6878b6db1be7d462fd0107481ee07801ad641370"
+        },
+        "date": 1774728210063,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 26.378458327443884,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008267276713534354",
+            "extra": "mean: 37.909721166669165 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.30916501999235,
+            "unit": "iter/sec",
+            "range": "stddev: 0.014695737758094496",
+            "extra": "mean: 54.617455187501385 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 45.33126322075036,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016711518125178402",
+            "extra": "mean: 22.059830875003072 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 40.14981137522346,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003787668314267664",
+            "extra": "mean: 24.906717260871176 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 18.876082478313364,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0066424801580756655",
+            "extra": "mean: 52.977094222219826 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 205.98744536258752,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006156020168088865",
+            "extra": "mean: 4.854664798817031 msec\nrounds: 169"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.16527739924088,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005658295558274733",
+            "extra": "mean: 38.21858964999976 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 20.82707157508857,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05056400908217248",
+            "extra": "mean: 48.01443142856954 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.782955379757077,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005270109494980481",
+            "extra": "mean: 37.33717903125111 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.131232998897183,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006581935441611208",
+            "extra": "mean: 38.2683817500002 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 29.026206222242383,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005017345985088672",
+            "extra": "mean: 34.45162596666572 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.09916563811745,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0061538766583738936",
+            "extra": "mean: 39.84196185714341 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.292369143996808,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005117708434339871",
+            "extra": "mean: 33.01161408823565 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9342872963868516,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0018895961032997838",
+            "extra": "mean: 516.9862831999922 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9333236925698543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0021511124309264358",
+            "extra": "mean: 517.2439585999996 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9426714984327542,
+            "unit": "iter/sec",
+            "range": "stddev: 0.016429186579225565",
+            "extra": "mean: 1.0608149303999936 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9269146907158895,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006017384597913195",
+            "extra": "mean: 1.0788479349999989 sec\nrounds: 5"
           }
         ]
       }
