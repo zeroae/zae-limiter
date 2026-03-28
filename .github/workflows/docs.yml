@@ -55,7 +55,7 @@ jobs:
         run: uv run pytest tests/doctest/test_docs_run.py -v -p no:xdist -o "addopts=" --cov=zae_limiter --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: coverage.xml
           flags: doctest
@@ -64,7 +64,7 @@ jobs:
 
       - name: Upload test results to Codecov
         if: "!cancelled()"
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: junit.xml
           flags: doctest

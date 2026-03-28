@@ -72,7 +72,7 @@ jobs:
       - name: Run gevent unit tests (xdist disabled)
         run: uv run pytest tests/unit/ -m "gevent" -n 0 --cov=zae_limiter --cov-report=xml --cov-append --junitxml=junit-gevent.xml -o junit_family=legacy
       - name: Upload coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         if: matrix.python-version == '3.12'
         with:
           files: coverage.xml
@@ -81,7 +81,7 @@ jobs:
           fail_ci_if_error: false
       - name: Upload test results to Codecov
         if: "!cancelled() && matrix.python-version == '3.12'"
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: junit.xml,junit-gevent.xml
           flags: unit
@@ -134,7 +134,7 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:4566
       - name: Upload integration coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         if: matrix.python-version == '3.12'
         with:
           files: coverage.xml
@@ -143,7 +143,7 @@ jobs:
           fail_ci_if_error: false
       - name: Upload integration test results to Codecov
         if: "!cancelled() && matrix.python-version == '3.12'"
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: junit.xml
           flags: integration
@@ -190,7 +190,7 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:4566
       - name: Upload E2E coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         if: matrix.python-version == '3.12'
         with:
           files: coverage.xml
@@ -199,7 +199,7 @@ jobs:
           fail_ci_if_error: false
       - name: Upload E2E test results to Codecov
         if: "!cancelled() && matrix.python-version == '3.12'"
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: junit.xml
           flags: e2e
