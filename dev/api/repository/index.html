@@ -6345,7 +6345,7 @@ deletion to complete. No-op if stack doesn't exist.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><a class="autorefs autorefs-internal" title="            StackCreationError (zae_limiter.exceptions.StackCreationError)" href="../exceptions/#zae_limiter.exceptions.StackCreationError">StackCreationError</a></code>
+                  <code><a class="autorefs autorefs-internal" title="            StackOperationError (zae_limiter.exceptions.StackOperationError)" href="../exceptions/#zae_limiter.exceptions.StackOperationError">StackOperationError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -6397,7 +6397,7 @@ No-op if stack_options was not provided.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><a class="autorefs autorefs-internal" title="            StackCreationError (zae_limiter.exceptions.StackCreationError)" href="../exceptions/#zae_limiter.exceptions.StackCreationError">StackCreationError</a></code>
+                  <code><a class="autorefs autorefs-internal" title="            StackOperationError (zae_limiter.exceptions.StackOperationError)" href="../exceptions/#zae_limiter.exceptions.StackOperationError">StackOperationError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -6484,7 +6484,7 @@ If None, uses the stack_options passed to the constructor.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><a class="autorefs autorefs-internal" title="            StackCreationError (zae_limiter.exceptions.StackCreationError)" href="../exceptions/#zae_limiter.exceptions.StackCreationError">StackCreationError</a></code>
+                  <code><a class="autorefs autorefs-internal" title="            StackOperationError (zae_limiter.exceptions.StackOperationError)" href="../exceptions/#zae_limiter.exceptions.StackOperationError">StackOperationError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -6587,7 +6587,7 @@ Idempotent: returns existing ID if namespace already registered.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="ValueError">ValueError</span></code>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -6689,7 +6689,7 @@ Idempotent: returns existing ID if namespace already registered.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="ValueError">ValueError</span></code>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -6908,7 +6908,7 @@ orphaned under the namespace's random ID prefix.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="ValueError">ValueError</span></code>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -7021,12 +7021,21 @@ the forward record, and marks the reverse record as active.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="ValueError">ValueError</span></code>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If the reverse record has <code>status="purging"</code>
-or <code>status="active"</code>.</p>
+                <p>If the namespace name is reserved.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            NamespaceStateError (zae_limiter.exceptions.NamespaceStateError)" href="../exceptions/#zae_limiter.exceptions.NamespaceStateError">NamespaceStateError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the namespace is active or being purged.</p>
               </div>
             </td>
           </tr>
@@ -7153,7 +7162,7 @@ batches, then removes the reverse record.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="ValueError">ValueError</span></code>
+                  <code><a class="autorefs autorefs-internal" title="            NamespaceStateError (zae_limiter.exceptions.NamespaceStateError)" href="../exceptions/#zae_limiter.exceptions.NamespaceStateError">NamespaceStateError</a></code>
             </td>
             <td>
               <div class="doc-md-description">
