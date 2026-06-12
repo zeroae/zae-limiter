@@ -1,11 +1,11 @@
-# ADR-124: S3-Based Cross-Region Sync Exchange
+# ADR-127: S3-Based Cross-Region Sync Exchange
 
 **Status:** Proposed
 **Date:** 2026-02-14
 
 ## Context
 
-With independent DynamoDB tables per region (ADR-123), a sync mechanism must exchange
+With independent DynamoDB tables per region (ADR-126), a sync mechanism must exchange
 consumption data between regions. The exchange payload is a snapshot of all active
 entities' bucket states: `total_consumed_milli`, `tokens_milli`, and `capacity_milli`
 per entity, resource, and limit.

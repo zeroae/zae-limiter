@@ -1,11 +1,11 @@
-# ADR-126: Trigger-Based Sync Config Writes
+# ADR-129: Trigger-Based Sync Config Writes
 
 **Status:** Proposed
 **Date:** 2026-02-14
 
 ## Context
 
-With quota enforcement via entity config overrides (ADR-125), the sync Lambda writes
+With quota enforcement via entity config overrides (ADR-128), the sync Lambda writes
 a `set_limits()` call for every active (entity, resource) pair each cycle. At 2,000
 active entities with 10 resources and a 10-second sync window, this produces 20,000
 WCU per cycle — ~$486/month. Most of these writes are wasted: 80% of entities are well
@@ -28,7 +28,7 @@ The sync Lambda must only write entity config overrides when one of two triggers
    pattern has shifted significantly.
 
 All other entities must be skipped (no config write). Trigger evaluation must be
-computed from S3 snapshot data (ADR-124) without additional DynamoDB reads.
+computed from S3 snapshot data (ADR-127) without additional DynamoDB reads.
 
 ## Consequences
 

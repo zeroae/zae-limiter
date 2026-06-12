@@ -1,11 +1,11 @@
-# ADR-127: Per-Region Sync Lambda
+# ADR-130: Per-Region Sync Lambda
 
 **Status:** Proposed
 **Date:** 2026-02-14
 
 ## Context
 
-Cross-region sync (ADR-123, ADR-124) requires a Lambda function that reads consumption
+Cross-region sync (ADR-126, ADR-127) requires a Lambda function that reads consumption
 snapshots, computes quota allocations, and writes config overrides. Two topologies were
 evaluated:
 
@@ -24,8 +24,8 @@ region independently computes the same allocation. No distributed consensus is n
 
 Each region must run its own sync Lambda, triggered by EventBridge on a fixed schedule
 (configurable sync window). Each Lambda must read its local bucket states, write its
-snapshot to S3 (ADR-124), read all remote snapshots from S3, compute quotas using a
-deterministic allocation function, and write triggered config overrides (ADR-126) to
+snapshot to S3 (ADR-127), read all remote snapshots from S3, compute quotas using a
+deterministic allocation function, and write triggered config overrides (ADR-129) to
 its local DynamoDB table only. No Lambda may write to a remote region's DynamoDB table.
 
 ## Consequences

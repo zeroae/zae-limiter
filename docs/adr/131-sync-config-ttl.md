@@ -1,4 +1,4 @@
-# ADR-128: TTL on Sync-Written Entity Config Records
+# ADR-131: TTL on Sync-Written Entity Config Records
 
 **Status:** Proposed
 **Date:** 2026-02-14
@@ -6,13 +6,13 @@
 ## Context
 
 The sync Lambda enforces regional quotas by writing entity-level config overrides via
-`set_limits()` (ADR-125). Per ADR-119, buckets using entity custom limits persist
+`set_limits()` (ADR-128). Per ADR-119, buckets using entity custom limits persist
 indefinitely (no TTL), while buckets using resource/system defaults have TTL and
 auto-expire.
 
 When the sync Lambda writes an entity config, the bucket transitions from
 "default-limit" (has TTL) to "custom-limit" (no TTL). If the entity later goes idle
-and the sync Lambda stops writing configs (no trigger fires per ADR-126), both the
+and the sync Lambda stops writing configs (no trigger fires per ADR-129), both the
 config record and its bucket persist indefinitely. For high-churn entity populations
 (anonymous users, ephemeral API keys), this causes unbounded storage growth.
 

@@ -1,11 +1,11 @@
-# ADR-125: Quota Enforcement via Entity Config Overrides
+# ADR-128: Quota Enforcement via Entity Config Overrides
 
 **Status:** Proposed
 **Date:** 2026-02-14
 
 ## Context
 
-With independent tables per region (ADR-123) and S3-based sync (ADR-124), each region's
+With independent tables per region (ADR-126) and S3-based sync (ADR-127), each region's
 sync Lambda computes a regional quota for each entity. This quota must be enforced by
 the rate limiter's hot path without modifying the acquire flow.
 
@@ -42,7 +42,7 @@ the sole mechanism for quota enforcement.
 - Token drain lag: if current tokens exceed the new reduced capacity, the entity can
   consume excess tokens until they drain naturally (bounded by consumption rate)
 - Config writes are the dominant sync cost (~$40/month at 2,000 active entities with
-  trigger-based filtering per ADR-126)
+  trigger-based filtering per ADR-129)
 - Config cache TTL (default 60s) delays quota enforcement after a config write; the
   sync Lambda and application use separate Repository instances
 

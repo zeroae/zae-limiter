@@ -1,4 +1,4 @@
-# ADR-123: Multi-Region via Independent Regional Tables
+# ADR-126: Multi-Region via Independent Regional Tables
 
 **Status:** Proposed
 **Date:** 2026-02-14
@@ -25,7 +25,7 @@ its own partition key prefix, so records in different namespaces never collide.
 
 Multi-region must use **independent DynamoDB tables per region**, one per deployed stack.
 Each region must use a dedicated namespace for its rate-limiting data. Cross-region
-coordination must be handled by a periodic sync mechanism (see ADR-124, ADR-127), not by
+coordination must be handled by a periodic sync mechanism (see ADR-127, ADR-130), not by
 DynamoDB replication. Global Tables must not be used for the rate-limiting table.
 
 ## Consequences
@@ -38,7 +38,7 @@ DynamoDB replication. Global Tables must not be used for the rate-limiting table
 
 **Negative:**
 - No automatic data replication; regional data is lost if a region fails permanently
-- Cross-region coordination requires a new sync component (ADR-124, ADR-127)
+- Cross-region coordination requires a new sync component (ADR-127, ADR-130)
 - Rate limiter state is ephemeral; region loss causes temporary over-admission until
   sync catches up, bounded by one sync window
 

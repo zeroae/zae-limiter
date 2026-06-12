@@ -1,4 +1,4 @@
-# ADR-129: Sync Config Ownership via TTL Presence
+# ADR-132: Sync Config Ownership via TTL Presence
 
 **Status:** Proposed
 **Date:** 2026-02-14
@@ -10,7 +10,7 @@ DynamoDB item (`PK=ENTITY#{id}, SK=#CONFIG#{resource}`) via `set_limits()`. With
 an ownership mechanism, the sync Lambda overwrites operator-set limits on its next
 cycle, and operators overwrite sync-computed quotas on manual updates.
 
-The sync Lambda writes configs with a TTL attribute (ADR-128). Operator-written configs
+The sync Lambda writes configs with a TTL attribute (ADR-131). Operator-written configs
 have no TTL (they persist indefinitely per ADR-119). This difference in TTL presence
 is a natural discriminator for config ownership.
 
@@ -30,7 +30,7 @@ that entity for all subsequent cycles.
 
 To return an entity to sync-managed quotas, the operator must delete the entity config
 via `delete_limits()`. The sync Lambda will then recreate it with TTL on the next
-triggered cycle (ADR-126).
+triggered cycle (ADR-129).
 
 ## Consequences
 
@@ -53,7 +53,7 @@ triggered cycle (ADR-126).
 ### Explicit `origin` attribute ("sync" vs "operator") on config records
 Rejected because: adds a new attribute that must be threaded through all config read/write
 paths, requires migration for existing records, and provides no benefit over the TTL
-presence check that ADR-128 already establishes.
+presence check that ADR-131 already establishes.
 
 ### Sync Lambda always wins (overwrite operator configs)
 Rejected because: operators set entity limits for business reasons (premium tiers, custom
