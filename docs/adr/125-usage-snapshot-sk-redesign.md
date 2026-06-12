@@ -1,4 +1,4 @@
-# ADR-121: Usage Snapshot Sort Key Redesign with Rollup Resources
+# ADR-125: Usage Snapshot Sort Key Redesign with Rollup Resources
 
 **Status:** Proposed
 **Date:** 2026-02-02
