@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774728210855,
+  "lastUpdate": 1781230972549,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -13408,6 +13408,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.006017384597913195",
             "extra": "mean: 1.0788479349999989 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1277a70a0fa9f2b57b50c6f4997e1d8f5b2a6b22",
+          "message": "📝 docs(adr): ADR consistency cleanup — numbering, nav, format, cross-refs (#422)\n\n## Summary\n\nThis PR collects four commits of ADR consistency cleanup on `main`:\n\n1. **Resolve the duplicate ADR-121** — two Accepted ADRs both claimed\nnumber 121. Native-sync keeps 121 (earlier file, referenced externally\nby CLAUDE.md); the IAM policy-rename ADR is renumbered `121 → 124` (next\nfree number after `123-local-secondary-indexes`). Structural collision\nfix only — no decision content changed, consistent with the ADR\nimmutability rule.\n2. **Normalize ADR-121 (native-sync) status header** — it used a `##\nStatus` heading with the value on a separate line; normalized to the\n`**Status:**` / `**Date:**` inline format mandated by ADR-000 (Date\n`2026-02-02`, from the file's creation commit).\n3. **Add ADRs 114-124 to the mkdocs navigation** — the nav previously\nstopped at ADR-113, leaving 114-124 unreachable from the docs site.\nAdded thematic groups covering 114-124 and reflecting the corrected\nnumbering.\n4. **Resolve cross-ADR consistency issues** surfaced by `/adr\nconsistency`:\n- **ADR-107**: annotate its partial supersession by ADR-117. Two\nAccepted ADRs asserted opposite IAM defaults (roles-by-default vs\npolicies-by-default); flag it in the status line and add a Decision note\npointing to ADR-117 (current default) and ADR-124 (policy rename) so the\nreversed default is unambiguous.\n- **ADR-100**: this Proposed index still presented superseded\nsub-decisions (102→118, 103→122) as authoritative and used the\npre-composite `#LIMIT#` schema. Mark the superseded rows and show the\ncurrent composite `#CONFIG` keys.\n- **ADR-013**: accept it. It was Proposed yet already superseded ADR-012\n— an invalid state. Its decision is complete and already operationalized\nas `.claude/rules/docs-parity.md`, so finalize the status.\n\nThis is the **main-branch half of a coordinated cleanup**. The other\nhalves renumber ADRs on open PRs so the whole sequence is\ncollision-free:\n\n- **#304**: `121 → 125`\n- **#393**: `123-129 → 126-132` (plus the same inherited `121 → 124`\nfix)\n\nTogether these yield a collision-free ADR sequence **121-132**.\n\n## Test plan\n\n- [ ] `ls docs/adr/12*.md` shows no duplicate ADR numbers\n- [ ] `grep -rn \"121-policy-rename\" docs/` returns no stale references\n- [ ] ADR-124 header reads `# ADR-124: Rename IAM Policies for Clarity`\n- [ ] ADR-121 header uses the `**Status:**` / `**Date:**` inline format\n- [ ] `mkdocs build` reaches ADRs 114-124 from the nav\n- [ ] ADR-107 status line notes the partial supersession by ADR-117\n- [ ] ADR-100 marks the 102→118 / 103→122 superseded rows and shows\n`#CONFIG` keys\n- [ ] ADR-013 status reads Accepted\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-06-11T22:19:15-04:00",
+          "tree_id": "b0558df4c859ba1f77bb731bdaef11b7c55f7090",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1277a70a0fa9f2b57b50c6f4997e1d8f5b2a6b22"
+        },
+        "date": 1781230971821,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 28.261398663363888,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007473620253362297",
+            "extra": "mean: 35.38395292856933 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.94619119402238,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010913351939176376",
+            "extra": "mean: 55.722130071426285 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 41.61139237175817,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004395338221300227",
+            "extra": "mean: 24.031880285714838 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 37.478937530469864,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004750277911597605",
+            "extra": "mean: 26.681652839998833 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.629694817525973,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00851805482734921",
+            "extra": "mean: 46.23273737499645 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 188.2221735060661,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009136063412574173",
+            "extra": "mean: 5.312870324323248 msec\nrounds: 111"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 27.53182362600158,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004956432041025181",
+            "extra": "mean: 36.32160417646948 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 29.3784534843057,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004507321197810405",
+            "extra": "mean: 34.038551434785745 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 25.953841727493185,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004858324504510212",
+            "extra": "mean: 38.52994136666439 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.95233043122925,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006675805767489581",
+            "extra": "mean: 37.10254304545464 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.427387330726027,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006130653965032979",
+            "extra": "mean: 35.17734459259082 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.351326881841022,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009117454290139316",
+            "extra": "mean: 39.44566707142627 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 33.01986143608592,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031760279928269002",
+            "extra": "mean: 30.284803040001407 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9280900974877175,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005455180072900082",
+            "extra": "mean: 518.6479621999979 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.931181461809941,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014171882865639323",
+            "extra": "mean: 517.8177295999831 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9484260225510546,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004361756402117692",
+            "extra": "mean: 1.0543784926000057 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9210969036410545,
+            "unit": "iter/sec",
+            "range": "stddev: 0.018759302018223425",
+            "extra": "mean: 1.0856621014000212 sec\nrounds: 5"
           }
         ]
       }
