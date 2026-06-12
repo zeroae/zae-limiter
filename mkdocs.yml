@@ -170,3 +170,19 @@ nav:
           - ADR-111 Flatten All Records: adr/111-flatten-all-records.md
           - ADR-112 Cascade Per Entity: adr/112-cascade-per-entity.md
           - ADR-113 Lambda Packaging: adr/113-lambda-packaging.md
+      - Composite Items (v0.8.0):
+          - ADR-114 Composite Bucket Items: adr/114-composite-bucket-items.md
+          - ADR-115 ADD-Based Writes: adr/115-add-based-writes-lazy-refill.md
+      - IAM Resources (v0.9.0):
+          - ADR-116 IAM Role Naming: adr/116-iam-role-naming.md
+          - ADR-117 Managed Policies by Default: adr/117-managed-policies-by-default.md
+          - ADR-124 Rename IAM Policies: adr/124-policy-rename-clarity.md
+      - Config Hierarchy & TTL (v0.8.0+):
+          - ADR-118 Four-Level Config Hierarchy: adr/118-four-level-config-hierarchy.md
+          - ADR-119 Bucket TTL Strategy: adr/119-bucket-ttl-strategy.md
+          - ADR-120 Bucket Param Sync: adr/120-bucket-param-sync.md
+      - Sync & Repository (v0.9.0+):
+          - ADR-121 Native Sync (Unasync): adr/121-native-sync-unasync.md
+          - ADR-122 Resolve Limits on Repository: adr/122-resolve-limits-on-repository.md
+      - Pre-1.0 Hardening (v0.10.0+):
+          - ADR-123 Local Secondary Indexes: adr/123-local-secondary-indexes.md
