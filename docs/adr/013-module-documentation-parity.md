@@ -1,6 +1,6 @@
 # ADR-013: Bidirectional Source-Documentation Parity
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-19
 **Supersedes:** ADR-012
 

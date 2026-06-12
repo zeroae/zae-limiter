@@ -1,6 +1,6 @@
 # ADR-107: IAM Roles for Application Access
 
-**Status:** Accepted
+**Status:** Accepted (IAM defaults partially superseded by [ADR-117](117-managed-policies-by-default.md))
 **Date:** 2026-01-19
 **Issue:** [#132](https://github.com/zeroae/zae-limiter/issues/132)
 
@@ -13,6 +13,8 @@ The CloudFormation stack currently only creates the Lambda execution role for th
 ## Decision
 
 The CloudFormation stack creates three optional IAM roles (AppRole, AdminRole, ReadOnlyRole) with least-privilege DynamoDB permissions, enabled by default and controlled via `--no-iam-roles` flag or `StackOptions.create_iam_roles=False`.
+
+> **Partially superseded by [ADR-117](117-managed-policies-by-default.md):** managed *policies* are now created by default and IAM *roles* are opt-in (`create_iam_roles=True` / `--create-iam-roles`). The "enabled by default / `--no-iam-roles`" default above no longer reflects current behavior. The three-tier app/admin/read-only access model is retained; [ADR-124](124-policy-rename-clarity.md) later renamed the policies to AcquireOnly/FullAccess/ReadOnly.
 
 ## Consequences
 
