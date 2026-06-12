@@ -1,4 +1,4 @@
-# ADR-121: Rename IAM Policies for Clarity
+# ADR-124: Rename IAM Policies for Clarity
 
 **Status:** Accepted
 **Date:** 2026-02-02
