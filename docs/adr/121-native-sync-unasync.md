@@ -1,8 +1,7 @@
 # ADR-121: Native Sync Implementation via Unasync Pattern
 
-## Status
-
-Accepted
+**Status:** Accepted
+**Date:** 2026-02-02
 
 ## Context
 
