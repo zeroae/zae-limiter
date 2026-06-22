@@ -3795,6 +3795,7 @@ name = "zae-limiter"
 source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
+    { name = "aiobotocore" },
     { name = "aws-lambda-builders" },
     { name = "boto3" },
     { name = "click" },
@@ -3855,6 +3856,7 @@ plot = [
 [package.metadata]
 requires-dist = [
     { name = "aioboto3", specifier = ">=12.0.0" },
+    { name = "aiobotocore", specifier = ">=2.13.0" },
     { name = "asciichartpy", marker = "extra == 'plot'", specifier = ">=1.5.25" },
     { name = "aws-cdk-lib", marker = "extra == 'cdk'", specifier = ">=2.0.0" },
     { name = "aws-lambda-builders", specifier = ">=1.40.0" },
