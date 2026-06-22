@@ -539,7 +539,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
 
         aiobotocore uses `async with session.create_client(...) as client:` but
         boto3 clients don't support context manager protocol. Detect
-        `.client()` calls and convert to simple assignment.
+        `.client()` / `.create_client()` calls and convert to simple assignment.
         """
         # Check if this is a single-item `async with x.client(...) as var:`
         if len(node.items) == 1:
@@ -1003,6 +1003,8 @@ class TestAsyncToSyncTransformer(AsyncToSyncTransformer):
         """Rewrite module paths and module names in string constants (e.g., patch targets)."""
         node = super().visit_Constant(node)
         if isinstance(node.value, str):
+            # These loops assume non-overlapping rewrite domains; if a future
+            # token in one map is a substring of another's, ordering matters.
             for old_path, new_path in TEST_IMPORT_PATH_REWRITES.items():
                 node.value = node.value.replace(old_path, new_path)
             # Also rewrite module names (from IMPORT_MODULE_REWRITES) in patch targets
