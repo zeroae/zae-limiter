@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Generate sync versions of async modules using AST transformation.
 
-This script transforms async code (aioboto3) to sync code (boto3) by:
+This script transforms async code (aiobotocore) to sync code (boto3) by:
 - Removing async/await keywords
 - Renaming classes (RateLimiter -> SyncRateLimiter)
-- Rewriting imports (aioboto3 -> boto3)
+- Rewriting imports (aiobotocore -> boto3)
 - Converting asyncio.gather() to self._run_in_executor() with configurable parallel_mode
 - Injecting parallel_mode parameter and executor methods into SyncRepository
 
@@ -62,10 +62,8 @@ CLASS_RENAMES = {
     "InfrastructureDiscovery": "SyncInfrastructureDiscovery",
 }
 
-# Import module rewrites (also used for Name references like aioboto3.Session)
-IMPORT_MODULE_REWRITES = {
-    "aioboto3": "boto3",
-}
+# Import module rewrites (also used for Name references like module.Session)
+IMPORT_MODULE_REWRITES: dict[str, str] = {}
 
 # Method name rewrites for context manager calls
 METHOD_NAME_REWRITES = {
@@ -504,7 +502,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                 node,
             )
 
-        # Handle boto3/aioboto3 client context manager pattern:
+        # Handle boto3/aiobotocore client context manager pattern:
         # session.client("dynamodb", ...)__aenter__() -> session.client("dynamodb", ...)
         # After __aenter__ -> __enter__ rewrite, we get .__enter__() which we need to remove
         # for boto3 sync clients (they're not context managers)
@@ -539,7 +537,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
     def visit_AsyncWith(self, node: ast.AsyncWith) -> ast.AST:  # noqa: N802
         """Convert async with to with, or unwrap boto3 client creation.
 
-        aioboto3 uses `async with session.client(...) as client:` but
+        aiobotocore uses `async with session.create_client(...) as client:` but
         boto3 clients don't support context manager protocol. Detect
         `.client()` calls and convert to simple assignment.
         """
@@ -817,7 +815,7 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             node.id = CLASS_RENAMES[node.id]
         if node.id in TYPE_REWRITES:
             node.id = TYPE_REWRITES[node.id]
-        # Also rewrite module names (e.g., aioboto3 -> boto3)
+        # Also rewrite module names (e.g., from IMPORT_MODULE_REWRITES)
         if node.id in IMPORT_MODULE_REWRITES:
             node.id = IMPORT_MODULE_REWRITES[node.id]
         # Rewrite decorator names (e.g., asynccontextmanager -> contextmanager)
@@ -1007,7 +1005,7 @@ class TestAsyncToSyncTransformer(AsyncToSyncTransformer):
         if isinstance(node.value, str):
             for old_path, new_path in TEST_IMPORT_PATH_REWRITES.items():
                 node.value = node.value.replace(old_path, new_path)
-            # Also rewrite module names (aioboto3 -> boto3) in patch targets
+            # Also rewrite module names (from IMPORT_MODULE_REWRITES) in patch targets
             for old_mod, new_mod in IMPORT_MODULE_REWRITES.items():
                 node.value = node.value.replace(old_mod, new_mod)
             # Rewrite aiobotocore get_session patch targets -> boto3.Session

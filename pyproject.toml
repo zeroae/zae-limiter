@@ -23,7 +23,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "aioboto3>=12.0.0",
     "aiobotocore>=2.13.0",
     "aws-lambda-builders>=1.40.0",
     "boto3>=1.34.0",
@@ -148,8 +147,6 @@ exclude = ["tests/"]
 [[tool.mypy.overrides]]
 module = [
     "aws_lambda_builders.*",
-    "aioboto3",
-    "aioboto3.*",
     "aiobotocore",
     "aiobotocore.*",
     "ulid",

@@ -88,7 +88,7 @@ class TestGetRuntimeRequirements:
 
         reqs = _get_runtime_requirements()
         dep_names = [r.split(">=")[0].split(">")[0].split("==")[0] for r in reqs]
-        for pkg in ("aioboto3", "boto3", "click", "pip", "python-ulid"):
+        for pkg in ("aiobotocore", "boto3", "click", "pip", "python-ulid"):
             assert pkg not in dep_names, f"{pkg} should not be in [lambda] extra deps"
 
     def test_includes_lambda_extra(self) -> None:
@@ -238,7 +238,7 @@ class TestBuildLambdaPackage:
         assert "aws-lambda-powertools" in reqs_content
         # Core deps should NOT be in requirements.txt
         reqs_lines = reqs_content.strip().splitlines()
-        assert not any(line.startswith("aioboto3") for line in reqs_lines)
+        assert not any(line.startswith("aiobotocore") for line in reqs_lines)
         assert not any(line.startswith("boto3") for line in reqs_lines)
         assert not any(line.startswith("click") for line in reqs_lines)
 

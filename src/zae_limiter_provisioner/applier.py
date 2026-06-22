@@ -1,7 +1,7 @@
 """Applies limit changes to DynamoDB.
 
 Uses boto3 (sync) directly, like the aggregator. This module runs inside
-Lambda where aioboto3 is not available.
+Lambda where aiobotocore is not available.
 """
 
 from __future__ import annotations

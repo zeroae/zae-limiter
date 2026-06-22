@@ -47,7 +47,7 @@ class TestBuildLambdaPackageIntegration:
             assert len(powertools_files) > 0, "aws-lambda-powertools not found in zip"
 
     def test_zip_does_not_contain_core_deps(self) -> None:
-        """Built zip does NOT include core deps (aioboto3, aiohttp, click, etc.)."""
+        """Built zip does NOT include core deps (aiobotocore, aiohttp, click, etc.)."""
         from zae_limiter.infra.lambda_builder import build_lambda_package
 
         zip_bytes = build_lambda_package()
@@ -56,8 +56,8 @@ class TestBuildLambdaPackageIntegration:
             files = set(zf.namelist())
 
             # These should NOT be in the zip
-            aioboto3_files = [f for f in files if f.startswith("aioboto3/")]
-            assert len(aioboto3_files) == 0, "aioboto3 should not be in zip"
+            aiobotocore_files = [f for f in files if f.startswith("aiobotocore/")]
+            assert len(aiobotocore_files) == 0, "aiobotocore should not be in zip"
 
             aiohttp_files = [f for f in files if f.startswith("aiohttp/")]
             assert len(aiohttp_files) == 0, "aiohttp should not be in zip"
