@@ -1601,7 +1601,7 @@ class TestRepositoryAuditLogging:
         mock_sts_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client.return_value = mock_sts_client
+        mock_session.create_client.return_value = mock_sts_client
 
         with patch.object(repo, "_session", mock_session):
             arn = await repo._get_caller_identity_arn()
