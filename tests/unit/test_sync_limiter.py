@@ -2398,29 +2398,29 @@ class TestRateLimiterListDeployed:
 
     def test_get_client_caches_client(self):
         """_get_client caches the client for subsequent calls."""
-        with patch("zae_limiter.infra.sync_discovery.boto3") as mock_aioboto3:
+        with patch("zae_limiter.infra.sync_discovery.boto3.Session") as mock_get_session:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock()
             mock_session.client.return_value = mock_client
-            mock_aioboto3.Session.return_value = mock_session
+            mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery(region="us-east-1")
             client1 = discovery._get_client()
             client2 = discovery._get_client()
             assert client1 is client2
-            mock_aioboto3.Session.assert_called_once()
+            mock_get_session.assert_called_once()
             discovery.close()
 
     def test_get_client_passes_region_and_endpoint(self):
         """_get_client passes region and endpoint_url to boto3."""
-        with patch("zae_limiter.infra.sync_discovery.boto3") as mock_aioboto3:
+        with patch("zae_limiter.infra.sync_discovery.boto3.Session") as mock_get_session:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock()
             mock_session.client.return_value = mock_client
-            mock_aioboto3.Session.return_value = mock_session
+            mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery(
                 region="eu-west-1", endpoint_url="http://localhost:4566"
             )
@@ -2432,13 +2432,13 @@ class TestRateLimiterListDeployed:
 
     def test_get_client_without_region_or_endpoint(self):
         """_get_client works without region or endpoint_url."""
-        with patch("zae_limiter.infra.sync_discovery.boto3") as mock_aioboto3:
+        with patch("zae_limiter.infra.sync_discovery.boto3.Session") as mock_get_session:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock()
             mock_session.client.return_value = mock_client
-            mock_aioboto3.Session.return_value = mock_session
+            mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery()
             discovery._get_client()
             mock_session.client.assert_called_once_with("cloudformation")
