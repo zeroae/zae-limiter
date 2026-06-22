@@ -687,6 +687,10 @@ uv run mkdocs serve --livereload --dirty
 
 Use **Mermaid** for all diagrams (MkDocs Material has built-in support).
 
+### Planning Artifacts
+
+Store superpowers artifacts (brainstorming design specs and writing-plans implementation plans) under `docs/plans/`, named `<YYYY-MM-DD>-<topic>-design.md` / `<YYYY-MM-DD>-<topic>-plan.md`. This overrides the skill default of `docs/superpowers/specs/`.
+
 ### Docs Structure
 
 Documentation is organized by **audience** with 4 top-level sections:
