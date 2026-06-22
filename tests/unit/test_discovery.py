@@ -56,7 +56,7 @@ class TestDiscoverViaTaggingAPI:
         mock_tagging_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client = MagicMock(return_value=mock_tagging_client)
+        mock_session.create_client = MagicMock(return_value=mock_tagging_client)
 
         with patch.object(
             InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
@@ -116,7 +116,7 @@ class TestDiscoverViaTaggingAPI:
         mock_tagging_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client = MagicMock(return_value=mock_tagging_client)
+        mock_session.create_client = MagicMock(return_value=mock_tagging_client)
 
         with patch.object(
             InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
@@ -147,7 +147,7 @@ class TestDiscoverViaTaggingAPI:
         mock_tagging_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client = MagicMock(return_value=mock_tagging_client)
+        mock_session.create_client = MagicMock(return_value=mock_tagging_client)
 
         discovery = InfrastructureDiscovery(region="us-east-1")
         discovery._session = mock_session
@@ -165,7 +165,7 @@ class TestDiscoverViaTaggingAPI:
         mock_tagging_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client = MagicMock(return_value=mock_tagging_client)
+        mock_session.create_client = MagicMock(return_value=mock_tagging_client)
 
         discovery = InfrastructureDiscovery(region="us-east-1")
         discovery._session = mock_session
@@ -211,7 +211,7 @@ class TestDiscoverViaTaggingAPI:
         mock_tagging_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client = MagicMock(return_value=mock_tagging_client)
+        mock_session.create_client = MagicMock(return_value=mock_tagging_client)
 
         with patch.object(
             InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
@@ -558,7 +558,7 @@ class TestDiscoverViaTaggingAPIPagination:
         mock_tagging_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client = MagicMock(return_value=mock_tagging_client)
+        mock_session.create_client = MagicMock(return_value=mock_tagging_client)
 
         with patch.object(
             InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
@@ -598,7 +598,7 @@ class TestDiscoverViaTaggingAPIPagination:
         mock_tagging_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client = MagicMock(return_value=mock_tagging_client)
+        mock_session.create_client = MagicMock(return_value=mock_tagging_client)
 
         with patch.object(
             InfrastructureDiscovery, "_get_client", new_callable=AsyncMock
@@ -623,7 +623,7 @@ class TestDiscoverViaTaggingAPIPagination:
         mock_tagging_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client = MagicMock(return_value=mock_tagging_client)
+        mock_session.create_client = MagicMock(return_value=mock_tagging_client)
 
         discovery = InfrastructureDiscovery(
             region="us-east-1", endpoint_url="http://localhost:4566"
@@ -633,7 +633,7 @@ class TestDiscoverViaTaggingAPIPagination:
         await discovery._discover_via_tagging_api()
 
         # Verify endpoint_url was passed
-        mock_session.client.assert_called_once_with(
+        mock_session.create_client.assert_called_once_with(
             "resourcegroupstaggingapi",
             region_name="us-east-1",
             endpoint_url="http://localhost:4566",
