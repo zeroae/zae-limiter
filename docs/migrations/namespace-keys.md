@@ -177,7 +177,7 @@ import argparse
 import asyncio
 import logging
 
-import aioboto3
+from aiobotocore.session import get_session
 
 from zae_limiter import schema
 
@@ -403,8 +403,8 @@ async def migrate(
     delete: bool = False,
 ) -> None:
     """Run the namespace key migration."""
-    session = aioboto3.Session()
-    async with session.client(
+    session = get_session()
+    async with session.create_client(
         "dynamodb", region_name=region, endpoint_url=endpoint_url
     ) as client:
         table_name = name
