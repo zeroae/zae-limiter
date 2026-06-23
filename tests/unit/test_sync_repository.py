@@ -1171,6 +1171,30 @@ class TestRepositoryAuditLogging:
         assert repo._caller_identity_fetched is True
         assert repo._caller_identity_arn is None
 
+    def test_get_caller_identity_creates_session_when_missing(self, repo):
+        """When no session exists yet, the STS path creates one via boto3.Session()."""
+        from unittest.mock import MagicMock, patch
+
+        repo._session = None
+        repo._caller_identity_fetched = False
+        repo._caller_identity_arn = None
+        mock_sts_client = MagicMock()
+        mock_sts_client.get_caller_identity.return_value = {
+            "Arn": "arn:aws:iam::123456789012:user/test"
+        }
+        mock_sts_client.__enter__ = MagicMock(return_value=mock_sts_client)
+        mock_sts_client.__exit__ = MagicMock(return_value=None)
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_sts_client
+        with patch(
+            "zae_limiter.sync_repository.boto3.Session", return_value=mock_session
+        ) as mock_get_session:
+            arn = repo._get_caller_identity_arn()
+        assert arn == "arn:aws:iam::123456789012:user/test"
+        mock_get_session.assert_called_once()
+        assert mock_session.client.call_args.args[0] == "sts"
+        assert repo._caller_identity_fetched is True
+
     def test_get_audit_retention_days_from_stack_options(self, repo):
         """Should return audit_retention_days from stack_options if available."""
         from zae_limiter.models import StackOptions

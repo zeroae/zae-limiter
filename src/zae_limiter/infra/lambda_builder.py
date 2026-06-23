@@ -8,7 +8,7 @@ artifact.  This ensures:
 
 1. Cross-platform builds work (macOS/Windows host → Linux Lambda)
 2. The deployed code matches what's installed locally (dev versions work)
-3. The Lambda zip is small (~1-2 MB) — no aioboto3, aiohttp, click, etc.
+3. The Lambda zip is small (~1-2 MB) — no aiobotocore, aiohttp, click, etc.
 """
 
 import importlib.metadata
@@ -24,7 +24,7 @@ def _get_runtime_requirements() -> list[str]:
     """Read ``[lambda]`` extra dependencies from installed zae-limiter metadata.
 
     Only returns the ``lambda`` extra dependencies (e.g. aws-lambda-powertools).
-    Core dependencies like aioboto3, boto3, click are *not* needed inside the
+    Core dependencies like aiobotocore, boto3, click are *not* needed inside the
     Lambda because the aggregator only uses boto3 (provided by the runtime)
     and aws-lambda-powertools.
 
@@ -57,7 +57,7 @@ def build_lambda_package() -> bytes:
     - ``zae_limiter/exceptions.py`` (exceptions used by models.py)
 
     The full ``zae_limiter`` package is *not* included (it depends on
-    aioboto3 which is not needed by the aggregator).
+    aiobotocore which is not needed by the aggregator).
 
     Returns:
         Zip file contents as bytes
@@ -133,7 +133,7 @@ def build_lambda_package() -> bytes:
 
         dest_zae_limiter.mkdir(parents=True, exist_ok=True)
 
-        # Empty __init__.py — avoids importing aioboto3 when resolving
+        # Empty __init__.py — avoids importing aiobotocore when resolving
         # `from zae_limiter.schema import ...`
         (dest_zae_limiter / "__init__.py").write_text("")
 

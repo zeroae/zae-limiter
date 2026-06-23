@@ -6,7 +6,7 @@ import time
 from importlib.resources import files
 from typing import Any, cast
 
-import aioboto3
+from aiobotocore.session import AioSession, get_session
 from botocore.exceptions import ClientError
 
 from ..exceptions import StackAlreadyExistsError, StackOperationError
@@ -62,7 +62,7 @@ class StackManager:
         self.table_name = self.stack_name
         self.region = region
         self.endpoint_url = endpoint_url
-        self._session: aioboto3.Session | None = None
+        self._session: AioSession | None = None
         self._client: Any = None
 
     async def _get_client(self) -> Any:
@@ -71,7 +71,7 @@ class StackManager:
             return self._client
 
         if self._session is None:
-            self._session = aioboto3.Session()
+            self._session = get_session()
 
         kwargs: dict[str, Any] = {}
         if self.region:
@@ -81,7 +81,7 @@ class StackManager:
 
         # Type checker doesn't know _session is not None after the check above
         session = self._session
-        self._client = await session.client("cloudformation", **kwargs).__aenter__()
+        self._client = await session.create_client("cloudformation", **kwargs).__aenter__()
         return self._client
 
     def _load_template(self) -> str:
@@ -546,7 +546,7 @@ class StackManager:
 
         # Get Lambda client
         if self._session is None:
-            self._session = aioboto3.Session()
+            self._session = get_session()
 
         kwargs: dict[str, Any] = {}
         if self.region:
@@ -555,7 +555,7 @@ class StackManager:
             kwargs["endpoint_url"] = self.endpoint_url
 
         session = self._session
-        async with session.client("lambda", **kwargs) as lambda_client:
+        async with session.create_client("lambda", **kwargs) as lambda_client:
             try:
                 # Update function code
                 response = await lambda_client.update_function_code(
@@ -653,7 +653,7 @@ class StackManager:
             ) from e
 
         if self._session is None:
-            self._session = aioboto3.Session()
+            self._session = get_session()
 
         kwargs: dict[str, Any] = {}
         if self.region:
@@ -662,7 +662,7 @@ class StackManager:
             kwargs["endpoint_url"] = self.endpoint_url
 
         session = self._session
-        async with session.client("lambda", **kwargs) as lambda_client:
+        async with session.create_client("lambda", **kwargs) as lambda_client:
             try:
                 response = await lambda_client.update_function_code(
                     FunctionName=function_name,
@@ -742,7 +742,7 @@ class StackManager:
             True if ESM is ready, False if timeout or no ESM found
         """
         if self._session is None:
-            self._session = aioboto3.Session()
+            self._session = get_session()
 
         kwargs: dict[str, Any] = {}
         if self.region:
@@ -754,7 +754,7 @@ class StackManager:
         enabled_at: float | None = None
         interval = 5.0
 
-        async with self._session.client("lambda", **kwargs) as lambda_client:
+        async with self._session.create_client("lambda", **kwargs) as lambda_client:
             while time.time() - start_time < max_seconds:
                 try:
                     response = await lambda_client.list_event_source_mappings(
