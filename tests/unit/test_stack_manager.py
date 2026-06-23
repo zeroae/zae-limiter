@@ -552,7 +552,7 @@ class TestDeployLambdaCode:
                 "zae_limiter.infra.stack_manager.build_lambda_package",
                 return_value=b"fake-zip",
             ),
-            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+            patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class,
         ):
             # Setup mock Lambda client
             mock_lambda = MagicMock()
@@ -573,7 +573,7 @@ class TestDeployLambdaCode:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -609,7 +609,7 @@ class TestDeployProvisionerCode:
                 "zae_limiter.infra.stack_manager.build_provisioner_package",
                 return_value=b"fake-zip",
             ),
-            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+            patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class,
         ):
             mock_lambda = MagicMock()
             mock_lambda.update_function_code = AsyncMock(
@@ -628,7 +628,7 @@ class TestDeployProvisionerCode:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -663,7 +663,7 @@ class TestDeployProvisionerCode:
                 "zae_limiter.infra.stack_manager.build_provisioner_package",
                 return_value=b"fake-zip",
             ),
-            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+            patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class,
         ):
             mock_lambda = MagicMock()
             mock_lambda.update_function_code = AsyncMock(
@@ -682,7 +682,7 @@ class TestDeployProvisionerCode:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(
@@ -692,7 +692,7 @@ class TestDeployProvisionerCode:
             )
             await manager.deploy_provisioner_code()
 
-            mock_session.client.assert_called_once_with(
+            mock_session.create_client.assert_called_once_with(
                 "lambda",
                 region_name="us-east-1",
                 endpoint_url="http://localhost:4566",
@@ -706,7 +706,7 @@ class TestDeployProvisionerCode:
                 "zae_limiter.infra.stack_manager.build_provisioner_package",
                 return_value=b"fake-zip",
             ),
-            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+            patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class,
         ):
             mock_lambda = MagicMock()
             mock_lambda.update_function_code = AsyncMock(
@@ -724,7 +724,7 @@ class TestDeployProvisionerCode:
             mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -740,7 +740,7 @@ class TestDeployProvisionerCode:
                 "zae_limiter.infra.stack_manager.build_provisioner_package",
                 return_value=b"fake-zip",
             ),
-            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+            patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class,
         ):
             mock_lambda = MagicMock()
             mock_lambda.update_function_code = AsyncMock(
@@ -760,7 +760,7 @@ class TestDeployProvisionerCode:
             mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -776,7 +776,7 @@ class TestDeployProvisionerCode:
                 "zae_limiter.infra.stack_manager.build_provisioner_package",
                 return_value=b"fake-zip",
             ),
-            patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class,
+            patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class,
         ):
             mock_lambda = MagicMock()
             mock_lambda.update_function_code = AsyncMock(
@@ -796,7 +796,7 @@ class TestDeployProvisionerCode:
             mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1178,7 +1178,7 @@ class TestWaitForEsmReady:
     @pytest.mark.asyncio
     async def test_returns_true_when_esm_enabled_and_stabilized(self) -> None:
         """wait_for_esm_ready returns True when ESM enabled with OK result."""
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(
                 return_value={
@@ -1196,7 +1196,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1210,7 +1210,7 @@ class TestWaitForEsmReady:
     @pytest.mark.asyncio
     async def test_returns_true_when_esm_enabled_no_records_processed(self) -> None:
         """wait_for_esm_ready returns True when ESM has polled but found no records."""
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(
                 return_value={
@@ -1228,7 +1228,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1241,7 +1241,7 @@ class TestWaitForEsmReady:
     @pytest.mark.asyncio
     async def test_returns_false_when_esm_disabled(self) -> None:
         """wait_for_esm_ready returns False when ESM is Disabled."""
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(
                 return_value={
@@ -1259,7 +1259,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1270,7 +1270,7 @@ class TestWaitForEsmReady:
     @pytest.mark.asyncio
     async def test_returns_false_when_esm_disabling(self) -> None:
         """wait_for_esm_ready returns False when ESM is Disabling."""
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(
                 return_value={
@@ -1288,7 +1288,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1299,7 +1299,7 @@ class TestWaitForEsmReady:
     @pytest.mark.asyncio
     async def test_returns_false_on_timeout(self) -> None:
         """wait_for_esm_ready returns False when ESM never becomes ready."""
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             # ESM stays in Creating state
             mock_lambda.list_event_source_mappings = AsyncMock(
@@ -1318,7 +1318,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1330,7 +1330,7 @@ class TestWaitForEsmReady:
     @pytest.mark.asyncio
     async def test_returns_false_when_no_esm_found(self) -> None:
         """wait_for_esm_ready returns False when no ESM mappings exist."""
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(
                 return_value={"EventSourceMappings": []}
@@ -1341,7 +1341,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1352,7 +1352,7 @@ class TestWaitForEsmReady:
     @pytest.mark.asyncio
     async def test_handles_api_exception(self) -> None:
         """wait_for_esm_ready handles API exceptions gracefully."""
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(side_effect=Exception("API error"))
 
@@ -1361,7 +1361,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1399,7 +1399,7 @@ class TestWaitForEsmReady:
                     ]
                 }
 
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(side_effect=mock_list_esm)
 
@@ -1408,7 +1408,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1422,7 +1422,7 @@ class TestWaitForEsmReady:
     @pytest.mark.asyncio
     async def test_uses_endpoint_url_when_provided(self) -> None:
         """wait_for_esm_ready passes endpoint_url to Lambda client."""
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(
                 return_value={
@@ -1435,7 +1435,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(
@@ -1448,7 +1448,7 @@ class TestWaitForEsmReady:
             )
 
             # Verify endpoint_url was passed to client
-            mock_session.client.assert_called_with(
+            mock_session.create_client.assert_called_with(
                 "lambda",
                 region_name="us-east-1",
                 endpoint_url="http://localhost:4566",
@@ -1469,7 +1469,7 @@ class TestWaitForEsmReady:
             else:
                 return {"EventSourceMappings": [{"State": "Enabled", "LastProcessingResult": "OK"}]}
 
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(side_effect=mock_list_esm)
 
@@ -1478,7 +1478,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
@@ -1505,7 +1505,7 @@ class TestWaitForEsmReady:
             else:
                 return {"EventSourceMappings": [{"State": "Enabled", "LastProcessingResult": "OK"}]}
 
-        with patch("zae_limiter.infra.stack_manager.aioboto3.Session") as mock_session_class:
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
             mock_lambda.list_event_source_mappings = AsyncMock(side_effect=mock_list_esm)
 
@@ -1514,7 +1514,7 @@ class TestWaitForEsmReady:
             mock_client_cm.__aexit__ = AsyncMock()
 
             mock_session = MagicMock()
-            mock_session.client.return_value = mock_client_cm
+            mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")

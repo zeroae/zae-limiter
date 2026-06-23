@@ -3205,13 +3205,13 @@ class TestRateLimiterListDeployed:
     @pytest.mark.asyncio
     async def test_get_client_caches_client(self):
         """_get_client caches the client for subsequent calls."""
-        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+        with patch("zae_limiter.infra.discovery.get_session") as mock_get_session:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock()
-            mock_session.client.return_value = mock_client
-            mock_aioboto3.Session.return_value = mock_session
+            mock_session.create_client.return_value = mock_client
+            mock_get_session.return_value = mock_session
 
             discovery = InfrastructureDiscovery(region="us-east-1")
 
@@ -3222,7 +3222,7 @@ class TestRateLimiterListDeployed:
 
             assert client1 is client2
             # Session should only be created once
-            mock_aioboto3.Session.assert_called_once()
+            mock_get_session.assert_called_once()
 
             # Clean up
             await discovery.close()
@@ -3230,13 +3230,13 @@ class TestRateLimiterListDeployed:
     @pytest.mark.asyncio
     async def test_get_client_passes_region_and_endpoint(self):
         """_get_client passes region and endpoint_url to boto3."""
-        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+        with patch("zae_limiter.infra.discovery.get_session") as mock_get_session:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock()
-            mock_session.client.return_value = mock_client
-            mock_aioboto3.Session.return_value = mock_session
+            mock_session.create_client.return_value = mock_client
+            mock_get_session.return_value = mock_session
 
             discovery = InfrastructureDiscovery(
                 region="eu-west-1", endpoint_url="http://localhost:4566"
@@ -3245,7 +3245,7 @@ class TestRateLimiterListDeployed:
             await discovery._get_client()
 
             # Check session.client was called with correct kwargs
-            mock_session.client.assert_called_once_with(
+            mock_session.create_client.assert_called_once_with(
                 "cloudformation",
                 region_name="eu-west-1",
                 endpoint_url="http://localhost:4566",
@@ -3256,20 +3256,20 @@ class TestRateLimiterListDeployed:
     @pytest.mark.asyncio
     async def test_get_client_without_region_or_endpoint(self):
         """_get_client works without region or endpoint_url."""
-        with patch("zae_limiter.infra.discovery.aioboto3") as mock_aioboto3:
+        with patch("zae_limiter.infra.discovery.get_session") as mock_get_session:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock()
-            mock_session.client.return_value = mock_client
-            mock_aioboto3.Session.return_value = mock_session
+            mock_session.create_client.return_value = mock_client
+            mock_get_session.return_value = mock_session
 
             discovery = InfrastructureDiscovery()
 
             await discovery._get_client()
 
             # Should be called with just "cloudformation" and no kwargs
-            mock_session.client.assert_called_once_with("cloudformation")
+            mock_session.create_client.assert_called_once_with("cloudformation")
 
             await discovery.close()
 

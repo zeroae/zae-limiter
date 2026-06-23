@@ -7,7 +7,7 @@ import time
 import warnings
 from typing import TYPE_CHECKING, Any, cast
 
-import aioboto3
+from aiobotocore.session import AioSession, get_session
 from botocore.exceptions import ClientError
 from ulid import ULID
 
@@ -99,7 +99,7 @@ class Repository:
         self._namespace_name = "default"
         self._bucket_ttl_refill_multiplier = 7
         self._stack_options = stack_options
-        self._session: aioboto3.Session | None = None
+        self._session: AioSession | None = None
         self._client: Any = None
         self._caller_identity_arn: str | None = None
         self._caller_identity_fetched = False
@@ -293,8 +293,8 @@ class Repository:
     async def _get_client(self) -> Any:
         """Get or create the DynamoDB client."""
         if self._client is None:
-            self._session = aioboto3.Session()
-            self._client = await self._session.client(
+            self._session = get_session()
+            self._client = await self._session.create_client(
                 "dynamodb",
                 region_name=self.region,
                 endpoint_url=self.endpoint_url,
@@ -432,9 +432,9 @@ class Repository:
         self._caller_identity_fetched = True
         try:
             if self._session is None:
-                self._session = aioboto3.Session()
+                self._session = get_session()
 
-            async with self._session.client(
+            async with self._session.create_client(
                 "sts",
                 region_name=self.region,
                 endpoint_url=self.endpoint_url,

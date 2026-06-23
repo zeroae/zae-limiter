@@ -7,7 +7,7 @@ separate from the single-stack lifecycle management in StackManager.
 import logging
 from typing import Any
 
-import aioboto3
+from aiobotocore.session import AioSession, get_session
 
 from ..models import LimiterInfo
 from ..naming import PREFIX
@@ -56,7 +56,7 @@ class InfrastructureDiscovery:
         """
         self.region = region
         self.endpoint_url = endpoint_url
-        self._session: aioboto3.Session | None = None
+        self._session: AioSession | None = None
         self._client: Any = None
 
     async def _get_client(self) -> Any:
@@ -65,7 +65,7 @@ class InfrastructureDiscovery:
             return self._client
 
         if self._session is None:
-            self._session = aioboto3.Session()
+            self._session = get_session()
 
         kwargs: dict[str, Any] = {}
         if self.region:
@@ -74,7 +74,7 @@ class InfrastructureDiscovery:
             kwargs["endpoint_url"] = self.endpoint_url
 
         session = self._session
-        self._client = await session.client("cloudformation", **kwargs).__aenter__()
+        self._client = await session.create_client("cloudformation", **kwargs).__aenter__()
         return self._client
 
     async def list_limiters(self, stack_type: str | None = None) -> list[LimiterInfo]:
@@ -134,7 +134,7 @@ class InfrastructureDiscovery:
             List of LimiterInfo objects discovered via tags.
         """
         if self._session is None:
-            self._session = aioboto3.Session()
+            self._session = get_session()
 
         kwargs: dict[str, Any] = {}
         if self.region:
@@ -144,7 +144,9 @@ class InfrastructureDiscovery:
 
         try:
             session = self._session
-            async with session.client("resourcegroupstaggingapi", **kwargs) as tagging_client:
+            async with session.create_client(
+                "resourcegroupstaggingapi", **kwargs
+            ) as tagging_client:
                 limiters: list[LimiterInfo] = []
                 pagination_token: str = ""
 

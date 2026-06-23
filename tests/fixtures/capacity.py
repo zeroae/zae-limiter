@@ -166,7 +166,7 @@ def capacity_counter(sync_limiter: Any) -> Generator[CapacityCounter, None, None
             assert capacity_counter.get_item == 1
 
     Note: This fixture only works with moto-based tests, not LocalStack.
-    The counter tracks calls at the aioboto3 client level.
+    The counter tracks calls at the boto3 (sync) client level.
 
     The sync_limiter fixture must be used before this fixture to ensure
     the DynamoDB client is created and cached.

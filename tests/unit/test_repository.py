@@ -1601,7 +1601,7 @@ class TestRepositoryAuditLogging:
         mock_sts_client.__aexit__ = AsyncMock(return_value=None)
 
         mock_session = MagicMock()
-        mock_session.client.return_value = mock_sts_client
+        mock_session.create_client.return_value = mock_sts_client
 
         with patch.object(repo, "_session", mock_session):
             arn = await repo._get_caller_identity_arn()
@@ -1611,6 +1611,37 @@ class TestRepositoryAuditLogging:
         # Should be cached
         assert repo._caller_identity_fetched is True
         assert repo._caller_identity_arn is None
+
+    @pytest.mark.asyncio
+    async def test_get_caller_identity_creates_session_when_missing(self, repo):
+        """When no session exists yet, the STS path creates one via get_session()."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        # Force the session-creation branch (no cached session/identity)
+        repo._session = None
+        repo._caller_identity_fetched = False
+        repo._caller_identity_arn = None
+
+        mock_sts_client = AsyncMock()
+        mock_sts_client.get_caller_identity.return_value = {
+            "Arn": "arn:aws:iam::123456789012:user/test"
+        }
+        mock_sts_client.__aenter__ = AsyncMock(return_value=mock_sts_client)
+        mock_sts_client.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.create_client.return_value = mock_sts_client
+
+        with patch(
+            "zae_limiter.repository.get_session", return_value=mock_session
+        ) as mock_get_session:
+            arn = await repo._get_caller_identity_arn()
+
+        # Session was created and the ARN resolved
+        assert arn == "arn:aws:iam::123456789012:user/test"
+        mock_get_session.assert_called_once()
+        assert mock_session.create_client.call_args.args[0] == "sts"
+        assert repo._caller_identity_fetched is True
 
     @pytest.mark.asyncio
     async def test_get_audit_retention_days_from_stack_options(self, repo):
