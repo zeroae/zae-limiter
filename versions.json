@@ -2,16 +2,20 @@
   {
     "version": "dev",
     "title": "dev",
+    "aliases": []
+  },
+  {
+    "version": "0.10.3",
+    "title": "0.10.3",
     "aliases": [
+      "0.10",
       "latest"
     ]
   },
   {
     "version": "0.10.2",
     "title": "0.10.2",
-    "aliases": [
-      "0.10"
-    ]
+    "aliases": []
   },
   {
     "version": "0.10.1",
