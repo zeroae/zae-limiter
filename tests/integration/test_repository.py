@@ -339,6 +339,54 @@ class TestRepositoryBatchGetBuckets:
         assert result == {}
 
     @pytest.mark.asyncio
+    async def test_batch_get_entity_and_buckets_returns_existing_buckets(self, test_repo):
+        """The acquire slow-path read must return buckets that exist (real DynamoDB).
+
+        Regression for #428: batch_get_entity_and_buckets() classified response
+        items with the stale "#BUCKET#" SK prefix, but buckets use SK=#STATE since
+        the per-shard migration (GHSA-76rv-2r9v-c5m6), so every bucket was dropped.
+        The sibling batch_get_buckets() (tested above) had no such filter, which is
+        why this gap survived. This exercises a real BatchGetItem response.
+        """
+        await test_repo.create_entity("bge-entity")
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)]
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("bge-entity", "gpt-4", limit, now_ms) for limit in limits]
+        await test_repo.transact_write(
+            [test_repo.build_composite_create("bge-entity", "gpt-4", states, now_ms)]
+        )
+
+        entity, buckets = await test_repo.batch_get_entity_and_buckets(
+            "bge-entity", [("bge-entity", "gpt-4")]
+        )
+
+        assert entity is not None
+        assert ("bge-entity", "gpt-4", "rpm") in buckets
+        assert ("bge-entity", "gpt-4", "tpm") in buckets
+
+    @pytest.mark.asyncio
+    async def test_batch_get_entity_and_buckets_finds_bucket_without_meta(self, test_repo):
+        """Buckets must be returned even when the entity has no #META record.
+
+        Real-world trigger: acquire() without a prior create_entity() writes a
+        bucket but no META record. The slow-path read must still find the bucket
+        (entity is None, bucket dict populated). Regression for #428.
+        """
+        limits = [Limit.per_minute("rpm", 100)]
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("bge-bare", "gpt-4", limit, now_ms) for limit in limits]
+        await test_repo.transact_write(
+            [test_repo.build_composite_create("bge-bare", "gpt-4", states, now_ms)]
+        )
+
+        entity, buckets = await test_repo.batch_get_entity_and_buckets(
+            "bge-bare", [("bge-bare", "gpt-4")]
+        )
+
+        assert entity is None
+        assert ("bge-bare", "gpt-4", "rpm") in buckets
+
+    @pytest.mark.asyncio
     async def test_batch_get_buckets_deduplication(self, test_repo):
         """Should deduplicate duplicate keys in the request."""
         # Create entity and composite bucket
