@@ -216,6 +216,54 @@ class TestRateLimiterAcquire:
             assert lease.consumed == {"rpm": 1}
 
 
+class TestRateLimiterRefillRecovery:
+    """Wait-then-acquire: an exhausted bucket recovers after enough time passes.
+
+    Regression for the stale slow-path bucket discriminator (buckets moved to
+    SK=#STATE in the per-shard migration, but batch_get_entity_and_buckets still
+    filtered on the old "#BUCKET#" prefix). With buckets silently dropped, the
+    refill-recovery fallback treated existing buckets as new and the conditional
+    write failed with a bogus retry_after=0.0 instead of refilling.
+    """
+
+    async def test_acquire_succeeds_after_refill_wait(self, limiter):
+        """Exhaust a bucket, wait for refill, and acquire again (speculative on)."""
+        # 100 tokens, refills the full bucket every second.
+        limits = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=1)]
+
+        # Drain the bucket completely.
+        async with limiter.acquire("key-1", "gpt-4", limits=limits, consume={"rpm": 100}):
+            pass
+
+        # Immediately exhausted: rejection must report a real wait, not 0.0.
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire("key-1", "gpt-4", limits=limits, consume={"rpm": 100}):
+                pass
+        assert exc_info.value.retry_after_seconds > 0
+
+        # After refilling, the same acquire must succeed.
+        await asyncio.sleep(1.1)
+        async with limiter.acquire("key-1", "gpt-4", limits=limits, consume={"rpm": 50}) as lease:
+            assert lease.consumed == {"rpm": 50}
+
+    async def test_acquire_succeeds_after_refill_wait_non_speculative(self, limiter):
+        """Same recovery on the pure slow path (speculative writes disabled)."""
+        slow = RateLimiter(repository=limiter._repository, speculative_writes=False)
+        limits = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=1)]
+
+        async with slow.acquire("key-2", "gpt-4", limits=limits, consume={"rpm": 100}):
+            pass
+
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with slow.acquire("key-2", "gpt-4", limits=limits, consume={"rpm": 100}):
+                pass
+        assert exc_info.value.retry_after_seconds > 0
+
+        await asyncio.sleep(1.1)
+        async with slow.acquire("key-2", "gpt-4", limits=limits, consume={"rpm": 50}) as lease:
+            assert lease.consumed == {"rpm": 50}
+
+
 class TestRateLimiterLease:
     """Tests for Lease functionality."""
 

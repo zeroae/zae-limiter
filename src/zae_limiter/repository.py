@@ -449,6 +449,13 @@ class Repository:
 
     def _now_ms(self) -> int:
         """Current time in milliseconds."""
+        # TODO(clock-seam): _now_ms() is not the single source of truth for time.
+        # limiter.py and lease.py compute now via inline `int(time.time() * 1000)`
+        # instead of routing through here, so a single acquire() reads the clock
+        # from multiple places and `_now_ms` cannot be monkeypatched to control
+        # time in tests. Make `_now_ms()` the injectable clock seam: add it to
+        # RepositoryProtocol and route limiter.py/lease.py through
+        # `self._repository._now_ms()` (regenerating all sync twins).
         return int(time.time() * 1000)
 
     # -------------------------------------------------------------------------
@@ -1653,7 +1660,7 @@ class Repository:
                 sk = item.get("SK", {}).get("S", "")
                 if sk == schema.sk_meta():
                     entity = self._deserialize_entity(item)
-                elif sk.startswith(schema.SK_BUCKET):
+                elif sk == schema.sk_state():
                     for bucket in self._deserialize_composite_bucket(item):
                         key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                         buckets[key] = bucket

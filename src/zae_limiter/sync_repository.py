@@ -1365,7 +1365,7 @@ class SyncRepository:
                 sk = item.get("SK", {}).get("S", "")
                 if sk == schema.sk_meta():
                     entity = self._deserialize_entity(item)
-                elif sk.startswith(schema.SK_BUCKET):
+                elif sk == schema.sk_state():
                     for bucket in self._deserialize_composite_bucket(item):
                         key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                         buckets[key] = bucket
