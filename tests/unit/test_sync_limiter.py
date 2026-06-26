@@ -163,6 +163,44 @@ class TestRateLimiterAcquire:
             assert lease.consumed == {"rpm": 1}
 
 
+class TestRateLimiterRefillRecovery:
+    """Wait-then-acquire: an exhausted bucket recovers after enough time passes.
+
+    Regression for the stale slow-path bucket discriminator (buckets moved to
+    SK=#STATE in the per-shard migration, but batch_get_entity_and_buckets still
+    filtered on the old "#BUCKET#" prefix). With buckets silently dropped, the
+    refill-recovery fallback treated existing buckets as new and the conditional
+    write failed with a bogus retry_after=0.0 instead of refilling.
+    """
+
+    def test_acquire_succeeds_after_refill_wait(self, sync_limiter):
+        """Exhaust a bucket, wait for refill, and acquire again (speculative on)."""
+        limits = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=1)]
+        with sync_limiter.acquire("key-1", "gpt-4", limits=limits, consume={"rpm": 100}):
+            pass
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with sync_limiter.acquire("key-1", "gpt-4", limits=limits, consume={"rpm": 100}):
+                pass
+        assert exc_info.value.retry_after_seconds > 0
+        time.sleep(1.1)
+        with sync_limiter.acquire("key-1", "gpt-4", limits=limits, consume={"rpm": 50}) as lease:
+            assert lease.consumed == {"rpm": 50}
+
+    def test_acquire_succeeds_after_refill_wait_non_speculative(self, sync_limiter):
+        """Same recovery on the pure slow path (speculative writes disabled)."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        limits = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=1)]
+        with slow.acquire("key-2", "gpt-4", limits=limits, consume={"rpm": 100}):
+            pass
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            with slow.acquire("key-2", "gpt-4", limits=limits, consume={"rpm": 100}):
+                pass
+        assert exc_info.value.retry_after_seconds > 0
+        time.sleep(1.1)
+        with slow.acquire("key-2", "gpt-4", limits=limits, consume={"rpm": 50}) as lease:
+            assert lease.consumed == {"rpm": 50}
+
+
 class TestRateLimiterLease:
     """Tests for SyncLease functionality."""
 

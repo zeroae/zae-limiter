@@ -267,6 +267,37 @@ class TestRepositoryBucketOperations:
         result = repo.batch_get_buckets([])
         assert result == {}
 
+    def test_batch_get_entity_and_buckets_returns_existing_buckets(self, repo_with_buckets):
+        """The acquire slow-path read must return buckets that exist.
+
+        Regression for the stale bucket discriminator: buckets use SK=#STATE
+        since the per-shard migration (GHSA-76rv), but the response filter still
+        checked the pre-shard SK_BUCKET prefix ("#BUCKET#"), silently dropping
+        every bucket. That made the slow path treat existing buckets as new.
+        """
+        entity, buckets = repo_with_buckets.batch_get_entity_and_buckets(
+            "entity-1", [("entity-1", "gpt-4")]
+        )
+        assert entity is not None
+        assert ("entity-1", "gpt-4", "rpm") in buckets
+        assert ("entity-1", "gpt-4", "tpm") in buckets
+
+    def test_batch_get_entity_and_buckets_finds_bucket_without_meta(self, repo):
+        """Buckets must be returned even when the entity has no #META record.
+
+        This is the real-world trigger: acquire() on an entity that was never
+        registered via create_entity() creates a bucket but no META record.
+        The slow-path read still must find the bucket (entity is None, but the
+        bucket dict is populated).
+        """
+        limits = [Limit.per_minute("rpm", 100)]
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("bare-1", "gpt-4", limit, now_ms) for limit in limits]
+        repo.transact_write([repo.build_composite_create("bare-1", "gpt-4", states, now_ms)])
+        entity, buckets = repo.batch_get_entity_and_buckets("bare-1", [("bare-1", "gpt-4")])
+        assert entity is None
+        assert ("bare-1", "gpt-4", "rpm") in buckets
+
     def test_batch_get_configs_empty_keys(self, repo):
         """batch_get_configs should return empty dict for empty keys list."""
         result = repo.batch_get_configs([])

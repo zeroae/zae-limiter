@@ -915,6 +915,40 @@ class TestE2ELocalStackErrorHandling:
         # Consumed 15 tokens with capacity 10, so at least -3 after some refill
         assert available["rpm"] <= -3, "Bucket should still be significantly negative"
 
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_acquire_recovers_after_refill_wait(self, e2e_limiter_minimal):
+        """An exhausted bucket recovers after enough time passes (regression #428).
+
+        Runs on the no-aggregator stack so the client refill-recovery slow path is
+        what's exercised. On the aggregator stack the Lambda refills the bucket
+        out-of-band and the client path never runs -- which is exactly why this bug
+        (acquire raising RateLimitExceeded with retry_after=0.0 instead of
+        refilling) reached production in v0.10.1 undetected.
+        """
+        # 100 tokens, refills the full bucket every second.
+        limits = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=1)]
+
+        # Drain the bucket completely.
+        async with e2e_limiter_minimal.acquire(
+            entity_id="recover-user", resource="api", limits=limits, consume={"rpm": 100}
+        ):
+            pass
+
+        # Immediately exhausted: the rejection must report a real wait, not 0.0.
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with e2e_limiter_minimal.acquire(
+                entity_id="recover-user", resource="api", limits=limits, consume={"rpm": 100}
+            ):
+                pass
+        assert exc_info.value.retry_after_seconds > 0
+
+        # After refilling, the same acquire must succeed (slow-path refill recovery).
+        await asyncio.sleep(1.1)
+        async with e2e_limiter_minimal.acquire(
+            entity_id="recover-user", resource="api", limits=limits, consume={"rpm": 50}
+        ) as lease:
+            assert lease.consumed == {"rpm": 50}
+
 
 class TestE2ECloudFormationStackVariations:
     """E2E tests for CloudFormation stack deployment variations."""
