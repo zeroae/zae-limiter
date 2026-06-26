@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from zae_limiter import Limit
+from zae_limiter import Limit, RateLimitExceeded
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.integration]
 
@@ -656,3 +656,53 @@ class TestLambdaColdStartBenchmarks:
             time.sleep(0.5)  # Final wait for processing
 
         benchmark(operation)
+
+
+class TestLocalStackRefillRecoveryStress:
+    """E2E stress test for client-side refill recovery (regression for #428).
+
+    Repeatedly drives the acquire() slow-path refill-recovery against LocalStack:
+    exhaust -> brief real wait -> re-acquire succeeds. Before the fix this raised
+    RateLimitExceeded(retry_after=0.0) once the bucket was drained, because
+    batch_get_entity_and_buckets() dropped the existing bucket (stale "#BUCKET#"
+    SK filter vs SK=#STATE, GHSA-76rv-2r9v-c5m6) and the slow path treated it as new.
+
+    Uses sync_localstack_limiter (the no-aggregator minimal stack) on purpose: the
+    aggregator would refill buckets out-of-band and mask the client path that broke.
+
+    This is a correctness/stress test, not a micro-benchmark -- it does not use the
+    `benchmark` fixture, so it is skipped under `--benchmark-only` but runs on a
+    normal `pytest tests/benchmark/test_localstack.py` invocation.
+    """
+
+    def test_refill_recovery_stress_loop(self, sync_localstack_limiter):
+        """Exhaust -> wait -> recover, repeated over many entities."""
+        # 100 tokens, refills the full bucket every second.
+        limits = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=1)]
+
+        iterations = 5
+        for i in range(iterations):
+            entity_id = f"ls-recover-{i}"
+
+            # Drain the bucket completely.
+            with sync_localstack_limiter.acquire(
+                entity_id=entity_id, resource="api", limits=limits, consume={"rpm": 100}
+            ):
+                pass
+
+            # Exhausted: rejection must report a real wait, not the buggy 0.0.
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with sync_localstack_limiter.acquire(
+                    entity_id=entity_id, resource="api", limits=limits, consume={"rpm": 100}
+                ):
+                    pass
+            assert exc_info.value.retry_after_seconds > 0, (
+                f"iteration {i}: rejection should report a real retry_after"
+            )
+
+            # Wait for partial refill, then recover via the slow path.
+            time.sleep(0.8)
+            with sync_localstack_limiter.acquire(
+                entity_id=entity_id, resource="api", limits=limits, consume={"rpm": 50}
+            ) as lease:
+                assert lease.consumed == {"rpm": 50}, f"iteration {i}: recovery acquire failed"
