@@ -173,15 +173,11 @@
          <lastmod>2026-06-26</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/121-policy-rename-clarity/</loc>
+         <lastmod>2026-06-26</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/adr/122-resolve-limits-on-repository/</loc>
-         <lastmod>2026-06-26</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/adr/123-local-secondary-indexes/</loc>
-         <lastmod>2026-06-26</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/adr/124-policy-rename-clarity/</loc>
          <lastmod>2026-06-26</lastmod>
     </url>
     <url>
@@ -334,14 +330,6 @@
     </url>
     <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-21-pre-shard-buckets-implementation/</loc>
-         <lastmod>2026-06-26</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-06-22-aiobotocore-migration-design/</loc>
-         <lastmod>2026-06-26</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-06-22-aiobotocore-migration-plan/</loc>
          <lastmod>2026-06-26</lastmod>
     </url>
 </urlset>
