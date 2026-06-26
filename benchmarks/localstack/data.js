@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782243651378,
+  "lastUpdate": 1782443135237,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -13694,6 +13694,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.037654349351273465",
             "extra": "mean: 1.1046679651999967 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ced59de08fc227d9de9826671d83f4b79b52180f",
+          "message": "🐛 fix(repository): restore slow-path bucket read dropped by shard migration (#429)\n\n## Summary\n\nFixes a latent bug in `Repository.batch_get_entity_and_buckets()` (the\n`acquire()` slow-path / refill-recovery read) that silently dropped\nevery bucket from the `BatchGetItem` response.\n\n- **Bug:** The method classified response items with\n`sk.startswith(schema.SK_BUCKET)` (`\"#BUCKET#\"`). Since the per-shard\npartition-key migration\n([GHSA-76rv-2r9v-c5m6](https://github.com/zeroae/zae-limiter/security/advisories/GHSA-76rv-2r9v-c5m6)),\nbucket state records use `SK == \"#STATE\"` (`sk_state()`), so the filter\nnever matched and every bucket was discarded. The slow path then treated\nexisting buckets as new, the conditional write failed, and `acquire()`\nraised `RateLimitExceeded` with `retry_after=0.0` instead of refilling.\n- **Effect:** wait-then-acquire refill recovery was broken. With\n`speculative_writes=True` it breaks the refill fallback (masked in\nproduction only when the aggregator Lambda refills out-of-band); with\n`speculative_writes=False` or `--no-aggregator` it is fully broken.\n- **When it broke:** latent since v0.7.0 (commit `663b687`, where the\nrobust `else` branch was narrowed to `elif sk.startswith(SK_BUCKET)`);\nactivated in v0.10.1 (commit `94a129a`, \"migrate bucket items to\nper-shard partition keys\") which changed the bucket SK to `\"#STATE\"` but\nmissed this one response-classification filter. The sibling\n`batch_get_buckets()` has no such filter, which is why cascade/parent\nreads and `get_buckets()` still worked. Still present on `main`\n(v0.10.2).\n- **Fix:** one line in `batch_get_entity_and_buckets` — `elif\nsk.startswith(schema.SK_BUCKET):` → `elif sk == schema.sk_state():`\n(async source `repository.py`; regenerated into `sync_repository.py`).\n- **Also:** added a `TODO(clock-seam)` at `Repository._now_ms()` noting\nthat `limiter.py`/`lease.py` use inline `int(time.time() * 1000)`\ninstead of routing through `_now_ms()`, so it is not the single\ninjectable clock; follow-up to put `_now_ms()` on `RepositoryProtocol`\nand route both through it.\n\n## Test plan\n\nAdded regression tests the suite lacked (verified RED before the fix,\nGREEN after):\n\n- [x] `tests/unit/test_repository.py`:\n`test_batch_get_entity_and_buckets_returns_existing_buckets`,\n`test_batch_get_entity_and_buckets_finds_bucket_without_meta` (the\nno-`#META` real-world trigger)\n- [x] `tests/unit/test_limiter.py`: `TestRateLimiterRefillRecovery` —\nexhaust → wait → acquire succeeds, on both speculative and\nnon-speculative paths; asserts the rejection reports a real\n`retry_after` (catches the `retry_after=0.0` symptom)\n- [x] Sync twins regenerated (`test_sync_repository.py`,\n`test_sync_limiter.py`)\n- [x] New tests: 8 passed (async + sync); full unit suite: 2623 passed\n- [x] `mypy` clean; `ruff check`/`format` clean; sync-generation drift:\nnone; pre-push patch coverage: 100%\n\nFixes #428\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-06-25T23:00:42-04:00",
+          "tree_id": "1b209189234ba53deaed46d69aa9d0e386f15aab",
+          "url": "https://github.com/zeroae/zae-limiter/commit/ced59de08fc227d9de9826671d83f4b79b52180f"
+        },
+        "date": 1782443134519,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 27.537088280020782,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009380541325994324",
+            "extra": "mean: 36.314660062499726 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.33715128103964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0063981658273506055",
+            "extra": "mean: 54.534097727272716 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 36.94807274903726,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009241104706713663",
+            "extra": "mean: 27.065011124999927 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 41.461660729041625,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003805199712269704",
+            "extra": "mean: 24.118667280000068 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 20.44530035524811,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010180578456123754",
+            "extra": "mean: 48.910995809524 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 208.93884283461657,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010597432713015398",
+            "extra": "mean: 4.786089491227536 msec\nrounds: 114"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.00801510963996,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006713212908333301",
+            "extra": "mean: 38.44968544444387 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 22.247070514603923,
+            "unit": "iter/sec",
+            "range": "stddev: 0.042390497809700646",
+            "extra": "mean: 44.94973840908885 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.248829328775184,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005196690812103353",
+            "extra": "mean: 36.69882430303105 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.467208105923902,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005008672571615332",
+            "extra": "mean: 37.78260238095078 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.722081601017997,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005978223188506065",
+            "extra": "mean: 34.81641803999878 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.04016606334412,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008955943739066167",
+            "extra": "mean: 38.40221285714713 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 32.363626762147724,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003596593916540754",
+            "extra": "mean: 30.898885571427773 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9337075061225406,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002147046593927805",
+            "extra": "mean: 517.1412929999917 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9363759898685613,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016658967800170696",
+            "extra": "mean: 516.428630200005 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9516413325681831,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0027000291179765266",
+            "extra": "mean: 1.0508160646000022 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.929964976851261,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034346566749664472",
+            "extra": "mean: 1.0753093125999953 sec\nrounds: 5"
           }
         ]
       }
