@@ -1,0 +1,4040 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Rate limiting library backed by DynamoDB using the token bucket algorithm">
+      
+      
+        <meta name="author" content="ZeroAE">
+      
+      
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/plans/2026-06-22-aiobotocore-migration-plan/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/zae-limiter.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>aioboto3 → aiobotocore Migration Implementation Plan - zae-limiter</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#aioboto3-aiobotocore-migration-implementation-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="zae-limiter" class="md-header__button md-logo" aria-label="zae-limiter" data-md-component="logo">
+      
+  <img src="../../assets/zae-limiter-icon-white.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            zae-limiter
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              aioboto3 → aiobotocore Migration Implementation Plan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/zeroae/zae-limiter" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/zae-limiter
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="zae-limiter" class="md-nav__button md-logo" aria-label="zae-limiter" data-md-component="logo">
+      
+  <img src="../../assets/zae-limiter-icon-white.svg" alt="logo">
+
+    </a>
+    zae-limiter
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/zeroae/zae-limiter" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    zeroae/zae-limiter
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/token-bucket/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Token Bucket Algorithm
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/basic-usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Basic Usage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/config-hierarchy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Hierarchy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/hierarchical/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchical Limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/llm-integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLM Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/usage-snapshots/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage Snapshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/unavailability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Unavailability Handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../infra/deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../infra/production/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Production
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../infra/cloudformation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CloudFormation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Migrations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Framework
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/namespace-keys/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Namespace Keys (v0.10.0)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../infra/auditing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Auditing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/limiter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    RateLimiter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/repository/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Repository
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/exceptions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Exceptions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/localstack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LocalStack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADRs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    ADRs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/000-adr-format-standard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR Format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Foundational (v0.1.0-v0.4.0)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Foundational (v0.1.0-v0.4.0)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/001-single-table-dynamodb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-001 Single-Table DynamoDB
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/002-integer-arithmetic-millitokens/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-002 Integer Arithmetic
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/003-cloudformation-infrastructure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-003 CloudFormation Infra
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/004-declarative-stack-options/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-004 StackOptions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/005-exception-hierarchy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-005 Exception Hierarchy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/006-flat-schema-snapshots/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-006 Flat Schema Snapshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/007-input-validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-007 Input Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/008-security-audit-logging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-008 Audit Logging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/009-version-migration-system/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-009 Version Migration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/010-total-consumed-counter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-010 Consumed Counter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/011-api-cli-parity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-011 API/CLI Parity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/012-cloudformation-docs-parity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-012 CloudFormation Docs Parity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/013-module-documentation-parity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-013 Module Documentation Parity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Centralized Config (v0.5.0)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Centralized Config (v0.5.0)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/100-centralized-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-100 Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/101-flat-schema-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-101 Flat Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/102-config-hierarchy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-102 Config Hierarchy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/103-config-caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-103 Config Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/104-stored-limits-default/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-104 Stored Limits Default
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/105-eventual-consistency/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-105 Eventual Consistency
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/106-audit-entity-ids-for-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-106 Audit Entity IDs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/107-iam-roles-for-application-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-107 IAM Roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_4" id="__nav_6_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Repository Protocol (v0.5.0)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Repository Protocol (v0.5.0)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/108-repository-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-108 Repository Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/109-backend-capability-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-109 Backend Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/110-deprecation-constructor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-110 Deprecation Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_5" id="__nav_6_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema & Infra (v0.6.0+)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Schema & Infra (v0.6.0+)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/111-flatten-all-records/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-111 Flatten All Records
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/112-cascade-per-entity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-112 Cascade Per Entity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/113-lambda-packaging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-113 Lambda Packaging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composite Items (v0.8.0)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Composite Items (v0.8.0)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/114-composite-bucket-items/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-114 Composite Bucket Items
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/115-add-based-writes-lazy-refill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-115 ADD-Based Writes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_7" id="__nav_6_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    IAM Resources (v0.9.0)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    IAM Resources (v0.9.0)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/116-iam-role-naming/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-116 IAM Role Naming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/117-managed-policies-by-default/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-117 Managed Policies by Default
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/124-policy-rename-clarity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-124 Rename IAM Policies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_8" id="__nav_6_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Hierarchy & TTL (v0.8.0+)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Config Hierarchy & TTL (v0.8.0+)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/118-four-level-config-hierarchy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-118 Four-Level Config Hierarchy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/119-bucket-ttl-strategy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-119 Bucket TTL Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/120-bucket-param-sync/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-120 Bucket Param Sync
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_9" id="__nav_6_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sync & Repository (v0.9.0+)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sync & Repository (v0.9.0+)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/121-native-sync-unasync/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-121 Native Sync (Unasync)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/122-resolve-limits-on-repository/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-122 Resolve Limits on Repository
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_10" id="__nav_6_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pre-1.0 Hardening (v0.10.0+)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Pre-1.0 Hardening (v0.10.0+)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/123-local-secondary-indexes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-123 Local Secondary Indexes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#global-constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global Constraints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Structure
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="File Structure">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#task-1-add-aiobotocore-dependency-keep-aioboto3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 1: Add aiobotocore dependency (keep aioboto3)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-2-teach-the-sync-transformer-about-aiobotocore-additive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 2: Teach the sync transformer about aiobotocore (additive)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-3-migrate-repositorypy-no-async-test-patches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 3: Migrate repository.py (no async-test patches)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-4-migrate-infrastack_managerpy-its-async-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 4: Migrate infra/stack_manager.py + its async tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-5-migrate-infradiscoverypy-its-async-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 5: Migrate infra/discovery.py + its async tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-6-remove-aioboto3-and-finalize-configcomments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 6: Remove aioboto3 and finalize config/comments
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#task-7-integration-e2e-verification-against-localstack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task 7: Integration &amp; E2E verification against LocalStack
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#post-plan-issue-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Post-Plan: Issue &amp; PR
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#self-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-Review
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+  
+  
+                  
+
+
+  
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/plans/2026-06-22-aiobotocore-migration-plan.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="aioboto3-aiobotocore-migration-implementation-plan">aioboto3 → aiobotocore Migration Implementation Plan<a class="headerlink" href="#aioboto3-aiobotocore-migration-implementation-plan" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (<code>- [ ]</code>) syntax for tracking.</p>
+</blockquote>
+<p><strong>Goal:</strong> Replace the unmaintained <code>aioboto3</code> dependency with direct <code>aiobotocore</code> client calls across the async code paths, with no behavioral change.</p>
+<p><strong>Architecture:</strong> The async data/infra paths use only the low-level client API (<code>session.client("dynamodb")</code> with typed attribute values). aiobotocore offers the same client API via <code>get_session().create_client(...)</code>. The migration is a near-mechanical call-site swap plus three additive rules in the async→sync AST transformer (<code>scripts/generate_sync.py</code>) so the generated <code>boto3</code> sync code stays identical. Generated sync files are never hand-edited — they are regenerated and the diff is the acceptance test.</p>
+<p><strong>Tech Stack:</strong> Python 3.11/3.12, <code>aiobotocore</code>, <code>botocore</code>, <code>boto3</code> (sync/Lambda), <code>moto</code> (unit mocks), LocalStack (integration/e2e), <code>hatch run generate-sync</code> (AST codegen), <code>uv</code>, <code>ruff</code>, <code>mypy</code>, <code>pytest</code>.</p>
+<p><strong>Reference spec:</strong> <code>docs/plans/2026-06-22-aiobotocore-migration-design.md</code></p>
+<h2 id="global-constraints">Global Constraints<a class="headerlink" href="#global-constraints" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Branch:</strong> all work on <code>refactor/aiobotocore-migration</code> (already created). No direct commits to <code>main</code>.</li>
+<li><strong><code>aiobotocore</code> version floor:</strong> choose a floor whose pinned <code>botocore</code> is compatible with the existing <code>boto3&gt;=1.34.0</code>; start with <code>aiobotocore&gt;=2.13.0</code> and confirm with <code>uv pip list</code> that the resolved <code>botocore</code> matches the one <code>boto3</code> resolves. Keep <code>boto3&gt;=1.34.0</code>.</li>
+<li><strong>Generated files are never hand-edited.</strong> Files matching <code>sync_*.py</code> and <code>tests/unit/test_sync_*.py</code> are produced by <code>hatch run generate-sync</code>. Edit the async source + the transformer, then regenerate.</li>
+<li><strong><code>generate-sync</code> must stay idempotent.</strong> After each task that regenerates, running <code>hatch run generate-sync</code> twice produces no diff, and the regenerated files are committed.</li>
+<li><strong>Transformer rules are additive until the final cleanup task</strong> — keep the existing <code>aioboto3 → boto3</code> rule in place while both libraries coexist, so regeneration never breaks mid-migration.</li>
+<li><strong>Production sync output must remain functionally identical.</strong> The only acceptable diff in generated <code>src/.../sync_*.py</code> after migration is import-ordering normalization by ruff/isort. The session-construction and client-creation lines must be byte-identical to pre-migration.</li>
+<li><strong>No lint suppression.</strong> Do not add <code># noqa</code>, <code># type: ignore</code>, or config ignores without explicit approval (<code>.claude/rules/lint-rules.md</code>).</li>
+<li><strong>Commit conventions:</strong> gitmoji + Conventional Commits (<code>.claude/rules/commits.md</code>). End every commit body with:
+  <code>Co-Authored-By: Claude Opus 4.8 (1M context) &lt;noreply@anthropic.com&gt;</code></li>
+<li><strong>Per-commit green gate:</strong> every commit must pass <code>pre-commit run --all-files</code> (ruff, ruff-format, mypy on <code>src/</code>, cfn-lint, the "Verify generated sync code is up-to-date" hook).</li>
+</ul>
+<hr />
+<h2 id="file-structure">File Structure<a class="headerlink" href="#file-structure" title="Permanent link">&para;</a></h2>
+<p><strong>Production source (async — hand-edited):</strong>
+- <code>src/zae_limiter/repository.py</code> — DynamoDB + STS clients (2 session creations)
+- <code>src/zae_limiter/infra/stack_manager.py</code> — CloudFormation + Lambda clients (4 session creations)
+- <code>src/zae_limiter/infra/discovery.py</code> — CloudFormation + resourcegroupstaggingapi (2 session creations)</p>
+<p><strong>Codegen (hand-edited):</strong>
+- <code>scripts/generate_sync.py</code> — AST transformer; gains 5 additive aiobotocore rules, loses the <code>aioboto3</code> rule at cleanup.</p>
+<p><strong>Generated (regenerated, never hand-edited):</strong>
+- <code>src/zae_limiter/sync_repository.py</code>, <code>src/zae_limiter/infra/sync_stack_manager.py</code>, <code>src/zae_limiter/infra/sync_discovery.py</code>
+- <code>tests/unit/test_sync_limiter.py</code>, <code>tests/unit/test_sync_stack_manager.py</code></p>
+<p><strong>Tests (async — hand-edited):</strong>
+- <code>tests/unit/test_stack_manager.py</code> — 20 <code>aioboto3</code> refs, 22 <code>mock_session.client</code> sites
+- <code>tests/unit/test_limiter.py</code> — 3 discovery tests (7 <code>aioboto3</code> refs)
+- <code>tests/integration/test_lambda_builder.py</code>, <code>tests/unit/test_lambda_builder.py</code> — zip-content assertions</p>
+<p><strong>Config &amp; cosmetics:</strong>
+- <code>pyproject.toml</code> — deps + mypy overrides
+- <code>src/zae_limiter/infra/lambda_builder.py</code>, <code>src/zae_limiter_provisioner/applier.py</code>, <code>tests/fixtures/capacity.py</code> — comment text only</p>
+<p><strong>No change needed:</strong> <code>tests/fixtures/moto.py</code> (already patches <code>aiobotocore</code>), <code>tests/doctest/conftest.py</code>, <code>test_repository.py</code> (moto-based), aggregator/provisioner runtime code (pure sync <code>boto3</code>).</p>
+<hr />
+<h3 id="task-1-add-aiobotocore-dependency-keep-aioboto3">Task 1: Add aiobotocore dependency (keep aioboto3)<a class="headerlink" href="#task-1-add-aiobotocore-dependency-keep-aioboto3" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Modify: <code>pyproject.toml</code> (dependencies list ~line 26; mypy overrides ~line 148-154)</p>
+<p><strong>Interfaces:</strong>
+- Produces: <code>aiobotocore</code> importable in the env; <code>types-aiobotocore</code> already present (dev dep, line 53). <code>aioboto3</code> stays installed so the tree remains green.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Add aiobotocore alongside aioboto3 in runtime deps</strong></li>
+</ul>
+<p>In <code>pyproject.toml</code>, change the <code>dependencies</code> block so it reads:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">dependencies</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span><span class="s2">&quot;aioboto3&gt;=12.0.0&quot;</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="s2">&quot;aiobotocore&gt;=2.13.0&quot;</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="s2">&quot;aws-lambda-builders&gt;=1.40.0&quot;</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="s2">&quot;boto3&gt;=1.34.0&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="s2">&quot;click&gt;=8.0.0&quot;</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="s2">&quot;pip&quot;</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="s2">&quot;python-ulid&gt;=3.0.0&quot;</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="s2">&quot;pyyaml&gt;=6.0&quot;</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="s2">&quot;questionary&gt;=2.0&quot;</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">]</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Add aiobotocore to the mypy ignore-missing-imports override (temporarily, alongside aioboto3)</strong></li>
+</ul>
+<p>In the <code>[[tool.mypy.overrides]]</code> block, change the <code>module</code> list to include both:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[[tool.mypy.overrides]]</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">module</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="s2">&quot;aws_lambda_builders.*&quot;</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="s2">&quot;aioboto3&quot;</span><span class="p">,</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="s2">&quot;aioboto3.*&quot;</span><span class="p">,</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="s2">&quot;aiobotocore&quot;</span><span class="p">,</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="s2">&quot;aiobotocore.*&quot;</span><span class="p">,</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="s2">&quot;ulid&quot;</span><span class="p">,</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="s2">&quot;zae_limiter._version&quot;</span><span class="p">,</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="p">]</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="n">ignore_missing_imports</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Resolve the env and verify import + botocore compatibility</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--all-extras
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import aiobotocore.session; from aiobotocore.session import get_session, AioSession; print(&#39;ok&#39;, aiobotocore.__version__)&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import botocore, boto3; print(&#39;botocore&#39;, botocore.__version__)&quot;</span>
+</span></code></pre></div>
+Expected: prints <code>ok &lt;version&gt;</code> and a <code>botocore</code> version (confirm it's the same one both <code>boto3</code> and <code>aiobotocore</code> resolved — no resolver conflict).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Confirm the tree is still green</strong></li>
+</ul>
+<p>Run: <code>uv run pytest tests/unit/ -q</code>
+Expected: PASS (no source changed yet; both libs available).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>git<span class="w"> </span>add<span class="w"> </span>pyproject.toml<span class="w"> </span>uv.lock
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="s">⬆️ deps(repository): add aiobotocore alongside aioboto3</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="s">First step of the aioboto3 → aiobotocore migration. Both libraries</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="s">coexist until all async call sites are moved over.</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="s">Co-Authored-By: Claude Opus 4.8 (1M context) &lt;noreply@anthropic.com&gt;</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="s">EOF</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="k">)</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+<hr />
+<h3 id="task-2-teach-the-sync-transformer-about-aiobotocore-additive">Task 2: Teach the sync transformer about aiobotocore (additive)<a class="headerlink" href="#task-2-teach-the-sync-transformer-about-aiobotocore-additive" title="Permanent link">&para;</a></h3>
+<p>Add aiobotocore handling to <code>scripts/generate_sync.py</code> while the async source still uses aioboto3. Because no async source uses <code>aiobotocore.session</code>, <code>get_session</code>, <code>AioSession</code>, or <code>create_client</code> yet, these rules are no-ops and regeneration must produce <strong>zero diff</strong>.</p>
+<p><strong>Files:</strong>
+- Modify: <code>scripts/generate_sync.py</code></p>
+<p><strong>Interfaces:</strong>
+- Produces (transformer guarantees, relied on by Tasks 3-5):
+  - <code>from aiobotocore.session import &lt;names&gt;</code> → <code>import boto3</code>
+  - bare name <code>get_session</code> → <code>boto3.Session</code> (so <code>get_session()</code> → <code>boto3.Session()</code>)
+  - type name <code>AioSession</code> → <code>boto3.Session</code>
+  - method/attr <code>create_client</code> → <code>client</code>
+  - <code>async with x.create_client(...) as v:</code> unwraps like <code>.client(...)</code> does
+  - test patch-target strings containing <code>get_session</code> → <code>boto3.Session</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Add the <code>create_client → client</code> method rewrite</strong></li>
+</ul>
+<p>In <code>scripts/generate_sync.py</code>, extend <code>METHOD_NAME_REWRITES</code> (currently ~line 71):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Method name rewrites for context manager calls</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">METHOD_NAME_REWRITES</span> <span class="o">=</span> <span class="p">{</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="s2">&quot;__aenter__&quot;</span><span class="p">:</span> <span class="s2">&quot;__enter__&quot;</span><span class="p">,</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="s2">&quot;__aexit__&quot;</span><span class="p">:</span> <span class="s2">&quot;__exit__&quot;</span><span class="p">,</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="c1"># aiobotocore&#39;s session.create_client(...) -&gt; boto3&#39;s session.client(...)</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="s2">&quot;create_client&quot;</span><span class="p">:</span> <span class="s2">&quot;client&quot;</span><span class="p">,</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="p">}</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Add the <code>get_session</code> name rewrite</strong></li>
+</ul>
+<p>Extend <code>IMPORT_NAME_REWRITES</code> (currently ~line 100) with one entry:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>    <span class="c1"># Decorator rewrites</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="s2">&quot;asynccontextmanager&quot;</span><span class="p">:</span> <span class="s2">&quot;contextmanager&quot;</span><span class="p">,</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="c1"># aiobotocore&#39;s get_session() -&gt; boto3.Session()</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="s2">&quot;get_session&quot;</span><span class="p">:</span> <span class="s2">&quot;boto3.Session&quot;</span><span class="p">,</span>
+</span></code></pre></div>
+<p>(<code>visit_Name</code> consults <code>IMPORT_NAME_REWRITES</code>, so the call <code>get_session()</code> becomes <code>boto3.Session()</code>.)</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Add the <code>AioSession</code> type rewrite</strong></li>
+</ul>
+<p>Extend <code>TYPE_REWRITES</code> (currently ~line 113):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Type annotation rewrites</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">TYPE_REWRITES</span> <span class="o">=</span> <span class="p">{</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="s2">&quot;AsyncIterator&quot;</span><span class="p">:</span> <span class="s2">&quot;Iterator&quot;</span><span class="p">,</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="s2">&quot;AsyncContextManager&quot;</span><span class="p">:</span> <span class="s2">&quot;ContextManager&quot;</span><span class="p">,</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="s2">&quot;AsyncGenerator&quot;</span><span class="p">:</span> <span class="s2">&quot;Generator&quot;</span><span class="p">,</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="c1"># aiobotocore&#39;s AioSession type -&gt; boto3.Session</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="s2">&quot;AioSession&quot;</span><span class="p">:</span> <span class="s2">&quot;boto3.Session&quot;</span><span class="p">,</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="p">}</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Add the test patch-target string rewrite map</strong></li>
+</ul>
+<p>Near the other test-rewrite maps (search for <code>TEST_IMPORT_PATH_REWRITES</code>), add:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Patch-target string rewrites for generated sync tests.</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="c1"># Async tests patch &quot;&lt;module&gt;.get_session&quot;; sync tests patch</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># &quot;&lt;module&gt;.boto3.Session&quot;.</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">TEST_PATCH_TARGET_REWRITES</span> <span class="o">=</span> <span class="p">{</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    <span class="s2">&quot;get_session&quot;</span><span class="p">:</span> <span class="s2">&quot;boto3.Session&quot;</span><span class="p">,</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="p">}</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Special-case the <code>from aiobotocore.session import ...</code> statement → <code>import boto3</code></strong></li>
+</ul>
+<p>In the base transformer's <code>visit_ImportFrom</code> (search for <code>def visit_ImportFrom</code> inside the production transformer class, ~line 759), add this as the first statement in the method body, before the <code>if node.module:</code> block:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>        <span class="c1"># aiobotocore session import collapses to a plain boto3 import in sync</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">module</span> <span class="o">==</span> <span class="s2">&quot;aiobotocore.session&quot;</span><span class="p">:</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>            <span class="k">return</span> <span class="n">ast</span><span class="o">.</span><span class="n">copy_location</span><span class="p">(</span><span class="n">ast</span><span class="o">.</span><span class="n">Import</span><span class="p">(</span><span class="n">names</span><span class="o">=</span><span class="p">[</span><span class="n">ast</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;boto3&quot;</span><span class="p">)]),</span> <span class="n">node</span><span class="p">)</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 6: Make the <code>async with</code> unwrap match <code>create_client</code></strong></li>
+</ul>
+<p>In <code>visit_AsyncWith</code> (~line 538-543), widen the attribute match. Change:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>                <span class="nb">isinstance</span><span class="p">(</span><span class="n">ctx_expr</span><span class="p">,</span> <span class="n">ast</span><span class="o">.</span><span class="n">Call</span><span class="p">)</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>                <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ctx_expr</span><span class="o">.</span><span class="n">func</span><span class="p">,</span> <span class="n">ast</span><span class="o">.</span><span class="n">Attribute</span><span class="p">)</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>                <span class="ow">and</span> <span class="n">ctx_expr</span><span class="o">.</span><span class="n">func</span><span class="o">.</span><span class="n">attr</span> <span class="o">==</span> <span class="s2">&quot;client&quot;</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>                <span class="ow">and</span> <span class="n">item</span><span class="o">.</span><span class="n">optional_vars</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+</span></code></pre></div>
+<p>to:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>                <span class="nb">isinstance</span><span class="p">(</span><span class="n">ctx_expr</span><span class="p">,</span> <span class="n">ast</span><span class="o">.</span><span class="n">Call</span><span class="p">)</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>                <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ctx_expr</span><span class="o">.</span><span class="n">func</span><span class="p">,</span> <span class="n">ast</span><span class="o">.</span><span class="n">Attribute</span><span class="p">)</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>                <span class="ow">and</span> <span class="n">ctx_expr</span><span class="o">.</span><span class="n">func</span><span class="o">.</span><span class="n">attr</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;client&quot;</span><span class="p">,</span> <span class="s2">&quot;create_client&quot;</span><span class="p">)</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>                <span class="ow">and</span> <span class="n">item</span><span class="o">.</span><span class="n">optional_vars</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 7: Make the <code>.__enter__()</code> removal match <code>create_client</code> (defensive)</strong></li>
+</ul>
+<p>In <code>visit_Call</code> (~line 498-504), change:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>            <span class="ow">and</span> <span class="n">node</span><span class="o">.</span><span class="n">func</span><span class="o">.</span><span class="n">value</span><span class="o">.</span><span class="n">func</span><span class="o">.</span><span class="n">attr</span> <span class="o">==</span> <span class="s2">&quot;client&quot;</span>
+</span></code></pre></div>
+<p>to:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>            <span class="ow">and</span> <span class="n">node</span><span class="o">.</span><span class="n">func</span><span class="o">.</span><span class="n">value</span><span class="o">.</span><span class="n">func</span><span class="o">.</span><span class="n">attr</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;client&quot;</span><span class="p">,</span> <span class="s2">&quot;create_client&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 8: Apply the test patch-target rewrite in the test transformer's <code>visit_Constant</code></strong></li>
+</ul>
+<p>In the <strong>test</strong> transformer class's <code>visit_Constant</code> (search for the second <code>def visit_Constant</code>, ~line 988, which already loops over <code>TEST_IMPORT_PATH_REWRITES</code> and <code>IMPORT_MODULE_REWRITES</code>), add a loop for the new map after the existing ones:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>            <span class="k">for</span> <span class="n">old_path</span><span class="p">,</span> <span class="n">new_path</span> <span class="ow">in</span> <span class="n">TEST_IMPORT_PATH_REWRITES</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>                <span class="n">node</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">value</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">old_path</span><span class="p">,</span> <span class="n">new_path</span><span class="p">)</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>            <span class="c1"># Also rewrite module names (aioboto3 -&gt; boto3) in patch targets</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>            <span class="k">for</span> <span class="n">old_mod</span><span class="p">,</span> <span class="n">new_mod</span> <span class="ow">in</span> <span class="n">IMPORT_MODULE_REWRITES</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>                <span class="n">node</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">value</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">old_mod</span><span class="p">,</span> <span class="n">new_mod</span><span class="p">)</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>            <span class="c1"># Rewrite aiobotocore get_session patch targets -&gt; boto3.Session</span>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>            <span class="k">for</span> <span class="n">old_t</span><span class="p">,</span> <span class="n">new_t</span> <span class="ow">in</span> <span class="n">TEST_PATCH_TARGET_REWRITES</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>                <span class="n">node</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">value</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">old_t</span><span class="p">,</span> <span class="n">new_t</span><span class="p">)</span>
+</span></code></pre></div>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 9: Regenerate and prove zero drift</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>hatch<span class="w"> </span>run<span class="w"> </span>generate-sync
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>git<span class="w"> </span>diff<span class="w"> </span>--stat
+</span></code></pre></div>
+Expected: <strong>no files changed</strong> (async source still uses aioboto3; new rules are no-ops). If anything changed, a rule is firing prematurely — fix it before continuing.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 10: Run unit tests + the sync-up-to-date hook</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/unit/<span class="w"> </span>-q
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>pre-commit<span class="w"> </span>run<span class="w"> </span>--all-files
+</span></code></pre></div>
+Expected: PASS / all hooks pass.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 11: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>git<span class="w"> </span>add<span class="w"> </span>scripts/generate_sync.py
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="s">🔨 build(ci): teach sync transformer to map aiobotocore → boto3</span>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="s">Additive rules: from aiobotocore.session import → import boto3,</span>
+</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="s">get_session() → boto3.Session(), AioSession → boto3.Session,</span>
+</span><span id="__span-16-7"><a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="s">create_client → client, and the matching async-with unwrap plus test</span>
+</span><span id="__span-16-8"><a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="s">patch-target rewrite. No-ops until async source adopts aiobotocore, so</span>
+</span><span id="__span-16-9"><a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="s">regeneration produces zero drift.</span>
+</span><span id="__span-16-10"><a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>
+</span><span id="__span-16-11"><a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="s">Co-Authored-By: Claude Opus 4.8 (1M context) &lt;noreply@anthropic.com&gt;</span>
+</span><span id="__span-16-12"><a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="s">EOF</span>
+</span><span id="__span-16-13"><a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="k">)</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+<hr />
+<h3 id="task-3-migrate-repositorypy-no-async-test-patches">Task 3: Migrate <code>repository.py</code> (no async-test patches)<a class="headerlink" href="#task-3-migrate-repositorypy-no-async-test-patches" title="Permanent link">&para;</a></h3>
+<p><code>repository.py</code> has no tests that patch <code>aioboto3</code> (repository tests use moto). After this edit, regenerated <code>sync_repository.py</code> must be functionally identical.</p>
+<p><strong>Files:</strong>
+- Modify: <code>src/zae_limiter/repository.py</code> (import line 10; annotation line 102; session creation lines 296 &amp; 435; <code>.client(</code> calls lines 297 &amp; 437)
+- Regenerate: <code>src/zae_limiter/sync_repository.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Swap the import</strong></li>
+</ul>
+<p>Change line 10 from:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">aioboto3</span>
+</span></code></pre></div>
+to:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">aiobotocore.session</span><span class="w"> </span><span class="kn">import</span> <span class="n">AioSession</span><span class="p">,</span> <span class="n">get_session</span>
+</span></code></pre></div></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Swap the session type annotation</strong></li>
+</ul>
+<p>Change line ~102 from:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="p">:</span> <span class="n">aioboto3</span><span class="o">.</span><span class="n">Session</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span></code></pre></div>
+to:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="p">:</span> <span class="n">AioSession</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span></code></pre></div></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Swap the DynamoDB client creation (<code>_get_client</code>)</strong></li>
+</ul>
+<p>Change the block at ~line 295-301 from:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="o">=</span> <span class="n">aioboto3</span><span class="o">.</span><span class="n">Session</span><span class="p">()</span>
+</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="o">.</span><span class="n">client</span><span class="p">(</span>
+</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>                <span class="s2">&quot;dynamodb&quot;</span><span class="p">,</span>
+</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>                <span class="n">region_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">region</span><span class="p">,</span>
+</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>                <span class="n">endpoint_url</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">endpoint_url</span><span class="p">,</span>
+</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>            <span class="p">)</span><span class="o">.</span><span class="fm">__aenter__</span><span class="p">()</span>
+</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span>
+</span></code></pre></div>
+to:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="o">=</span> <span class="n">get_session</span><span class="p">()</span>
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="o">.</span><span class="n">create_client</span><span class="p">(</span>
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a>                <span class="s2">&quot;dynamodb&quot;</span><span class="p">,</span>
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>                <span class="n">region_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">region</span><span class="p">,</span>
+</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>                <span class="n">endpoint_url</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">endpoint_url</span><span class="p">,</span>
+</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a>            <span class="p">)</span><span class="o">.</span><span class="fm">__aenter__</span><span class="p">()</span>
+</span><span id="__span-22-8"><a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span>
+</span></code></pre></div></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Swap the STS client creation (<code>_get_caller_identity_arn</code>)</strong></li>
+</ul>
+<p>Change the block at ~line 434-441 from:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="o">=</span> <span class="n">aioboto3</span><span class="o">.</span><span class="n">Session</span><span class="p">()</span>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a>            <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="o">.</span><span class="n">client</span><span class="p">(</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>                <span class="s2">&quot;sts&quot;</span><span class="p">,</span>
+</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a>                <span class="n">region_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">region</span><span class="p">,</span>
+</span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a>                <span class="n">endpoint_url</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">endpoint_url</span><span class="p">,</span>
+</span><span id="__span-23-8"><a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a>            <span class="p">)</span> <span class="k">as</span> <span class="n">sts_client</span><span class="p">:</span>
+</span></code></pre></div>
+to:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>                <span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="o">=</span> <span class="n">get_session</span><span class="p">()</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a>
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a>            <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="o">.</span><span class="n">create_client</span><span class="p">(</span>
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a>                <span class="s2">&quot;sts&quot;</span><span class="p">,</span>
+</span><span id="__span-24-6"><a id="__codelineno-24-6" name="__codelineno-24-6" href="#__codelineno-24-6"></a>                <span class="n">region_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">region</span><span class="p">,</span>
+</span><span id="__span-24-7"><a id="__codelineno-24-7" name="__codelineno-24-7" href="#__codelineno-24-7"></a>                <span class="n">endpoint_url</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">endpoint_url</span><span class="p">,</span>
+</span><span id="__span-24-8"><a id="__codelineno-24-8" name="__codelineno-24-8" href="#__codelineno-24-8"></a>            <span class="p">)</span> <span class="k">as</span> <span class="n">sts_client</span><span class="p">:</span>
+</span></code></pre></div></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Regenerate and verify the generated sync diff is empty (modulo import order)</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>hatch<span class="w"> </span>run<span class="w"> </span>generate-sync
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>git<span class="w"> </span>diff<span class="w"> </span>--<span class="w"> </span>src/zae_limiter/sync_repository.py
+</span></code></pre></div>
+Expected: no diff, <strong>or</strong> at most a one-line ruff/isort reordering of the <code>import boto3</code> line. The lines <code>self._session = boto3.Session()</code>, <code>self._session.client("dynamodb", ...)</code>, and <code>sts_client = self._session.client("sts", ...)</code> must be byte-identical to before. If any other line differs, fix the transformer rule, do not hand-edit the generated file.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 6: Run repository + limiter unit tests (moto path exercises aiobotocore)</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/unit/test_repository.py<span class="w"> </span>tests/unit/test_sync_repository.py<span class="w"> </span>tests/unit/test_limiter.py<span class="w"> </span>tests/unit/test_sync_limiter.py<span class="w"> </span>-q
+</span></code></pre></div>
+Expected: PASS. (These run against moto, which <code>tests/fixtures/moto.py</code> already patches for aiobotocore.)</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 7: Type-check src</strong></li>
+</ul>
+<p>Run: <code>uv run mypy src/zae_limiter</code>
+Expected: Success (types-aiobotocore provides <code>AioSession</code> / <code>create_client</code> types).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 8: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>git<span class="w"> </span>add<span class="w"> </span>src/zae_limiter/repository.py<span class="w"> </span>src/zae_limiter/sync_repository.py
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="s">♻️ refactor(repository): create DynamoDB/STS clients via aiobotocore</span>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="s">Use aiobotocore.session.get_session().create_client(...) instead of</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="s">aioboto3.Session().client(...). Generated sync_repository.py is</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="s">unchanged (transformer maps it back to boto3).</span>
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a>
+</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="s">Co-Authored-By: Claude Opus 4.8 (1M context) &lt;noreply@anthropic.com&gt;</span>
+</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a><span class="s">EOF</span>
+</span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11" href="#__codelineno-27-11"></a><span class="k">)</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+<hr />
+<h3 id="task-4-migrate-infrastack_managerpy-its-async-tests">Task 4: Migrate <code>infra/stack_manager.py</code> + its async tests<a class="headerlink" href="#task-4-migrate-infrastack_managerpy-its-async-tests" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Modify: <code>src/zae_limiter/infra/stack_manager.py</code> (import line 9; annotation line 65; session creations lines 74, 549, 656, 745; <code>.client(</code> calls lines 84, 558, 665, 757)
+- Modify: <code>tests/unit/test_stack_manager.py</code> (20 <code>aioboto3</code> refs, 22 <code>mock_session.client</code> sites)
+- Regenerate: <code>src/zae_limiter/infra/sync_stack_manager.py</code>, <code>tests/unit/test_sync_stack_manager.py</code></p>
+<p><strong>Interfaces:</strong>
+- Consumes: transformer rules from Task 2.
+- Produces: async tests patch <code>zae_limiter.infra.stack_manager.get_session</code> (alias kept as <code>mock_session_class</code>) and wire <code>mock_session.create_client.return_value</code> / <code>mock_session_class.return_value</code>.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Swap the import</strong></li>
+</ul>
+<p>Change line 9 from <code>import aioboto3</code> to:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">aiobotocore.session</span><span class="w"> </span><span class="kn">import</span> <span class="n">AioSession</span><span class="p">,</span> <span class="n">get_session</span>
+</span></code></pre></div>
+Keep <code>from botocore.exceptions import ClientError</code> (line 10) unchanged.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Swap the annotation</strong></li>
+</ul>
+<p>Change line ~65 <code>self._session: aioboto3.Session | None = None</code> →
+<div class="language-python highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="p">:</span> <span class="n">AioSession</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span></code></pre></div></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Swap all four <code>aioboto3.Session()</code> → <code>get_session()</code></strong></li>
+</ul>
+<p>There are four occurrences (<code>_get_client</code> ~line 74, and three Lambda-deploy paths ~lines 549, 656, 745). Replace each:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="o">=</span> <span class="n">aioboto3</span><span class="o">.</span><span class="n">Session</span><span class="p">()</span>
+</span></code></pre></div>
+with:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="o">=</span> <span class="n">get_session</span><span class="p">()</span>
+</span></code></pre></div>
+Run to confirm all four are gone:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>grep<span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;aioboto3&quot;</span><span class="w"> </span>src/zae_limiter/infra/stack_manager.py
+</span></code></pre></div>
+Expected: no output.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Swap all four <code>session.client(</code> → <code>session.create_client(</code></strong></li>
+</ul>
+<p>The four client-creation call sites:
+- <code>_get_client</code>: <code>self._client = await session.client("cloudformation", **kwargs).__aenter__()</code> → <code>...await session.create_client("cloudformation", **kwargs).__aenter__()</code>
+- the three <code>async with session.client("lambda", **kwargs) as lambda_client:</code> (and any <code>self._session.client(...)</code>) → <code>async with session.create_client("lambda", **kwargs) as lambda_client:</code></p>
+<p>Confirm:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>grep<span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;\.client(&quot;</span><span class="w"> </span>src/zae_limiter/infra/stack_manager.py
+</span></code></pre></div>
+Expected: no output (all are now <code>.create_client(</code>).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Update async test patch targets</strong></li>
+</ul>
+<p>In <code>tests/unit/test_stack_manager.py</code>, replace every patch target. Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>sed<span class="w"> </span>-i<span class="w"> </span><span class="s1">&#39;s/zae_limiter\.infra\.stack_manager\.aioboto3\.Session/zae_limiter.infra.stack_manager.get_session/g&#39;</span><span class="w"> </span>tests/unit/test_stack_manager.py
+</span></code></pre></div>
+Then verify none remain:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>grep<span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;aioboto3&quot;</span><span class="w"> </span>tests/unit/test_stack_manager.py
+</span></code></pre></div>
+Expected: no output.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 6: Update async test mock wiring (<code>.client</code> → <code>.create_client</code>)</strong></li>
+</ul>
+<p>The mocks set up the production-called method, which is now <code>create_client</code>. Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>sed<span class="w"> </span>-i<span class="w"> </span><span class="s1">&#39;s/mock_session\.client/mock_session.create_client/g&#39;</span><span class="w"> </span>tests/unit/test_stack_manager.py
+</span></code></pre></div>
+This updates both <code>mock_session.create_client.return_value = ...</code> and <code>mock_session.create_client.assert_called_once_with(...)</code> sites. Verify the count moved over:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>grep<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;mock_session.create_client&quot;</span><span class="w"> </span>tests/unit/test_stack_manager.py<span class="w">   </span><span class="c1"># expect 22</span>
+</span><span id="__span-37-2"><a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a>grep<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;mock_session.client&quot;</span><span class="w"> </span>tests/unit/test_stack_manager.py<span class="w">          </span><span class="c1"># expect 0</span>
+</span></code></pre></div></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 7: Run the async stack-manager tests directly</strong></li>
+</ul>
+<p>Run: <code>uv run pytest tests/unit/test_stack_manager.py -q</code>
+Expected: PASS. (Production now calls <code>get_session().create_client(...)</code>; the patched <code>get_session</code> returns <code>mock_session_class.return_value</code>, whose <code>.create_client(...)</code> returns the context-manager mock.)</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 8: Regenerate and verify</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>hatch<span class="w"> </span>run<span class="w"> </span>generate-sync
+</span><span id="__span-38-2"><a id="__codelineno-38-2" name="__codelineno-38-2" href="#__codelineno-38-2"></a>git<span class="w"> </span>diff<span class="w"> </span>--<span class="w"> </span>src/zae_limiter/infra/sync_stack_manager.py
+</span></code></pre></div>
+Expected: <code>sync_stack_manager.py</code> unchanged except possibly the <code>import boto3</code> ordering line. The <code>boto3.Session()</code> and <code>session.client("...", **kwargs)</code> lines must be byte-identical.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 9: Run the generated sync stack-manager tests</strong></li>
+</ul>
+<p>Run: <code>uv run pytest tests/unit/test_sync_stack_manager.py -q</code>
+Expected: PASS. If a regenerated patch target or mock line is wrong, fix the transformer rule (Task 2) and regenerate — do not hand-edit the generated test.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 10: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a>git<span class="w"> </span>add<span class="w"> </span>src/zae_limiter/infra/stack_manager.py<span class="w"> </span>src/zae_limiter/infra/sync_stack_manager.py<span class="w"> </span>tests/unit/test_stack_manager.py<span class="w"> </span>tests/unit/test_sync_stack_manager.py
+</span><span id="__span-39-2"><a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+</span><span id="__span-39-3"><a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a><span class="s">♻️ refactor(infra): create CFN/Lambda clients via aiobotocore</span>
+</span><span id="__span-39-4"><a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>
+</span><span id="__span-39-5"><a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a><span class="s">Migrate StackManager off aioboto3 to aiobotocore get_session()/</span>
+</span><span id="__span-39-6"><a id="__codelineno-39-6" name="__codelineno-39-6" href="#__codelineno-39-6"></a><span class="s">create_client(); update async tests to patch get_session and wire</span>
+</span><span id="__span-39-7"><a id="__codelineno-39-7" name="__codelineno-39-7" href="#__codelineno-39-7"></a><span class="s">create_client mocks. Generated sync code is unchanged.</span>
+</span><span id="__span-39-8"><a id="__codelineno-39-8" name="__codelineno-39-8" href="#__codelineno-39-8"></a>
+</span><span id="__span-39-9"><a id="__codelineno-39-9" name="__codelineno-39-9" href="#__codelineno-39-9"></a><span class="s">Co-Authored-By: Claude Opus 4.8 (1M context) &lt;noreply@anthropic.com&gt;</span>
+</span><span id="__span-39-10"><a id="__codelineno-39-10" name="__codelineno-39-10" href="#__codelineno-39-10"></a><span class="s">EOF</span>
+</span><span id="__span-39-11"><a id="__codelineno-39-11" name="__codelineno-39-11" href="#__codelineno-39-11"></a><span class="k">)</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+<hr />
+<h3 id="task-5-migrate-infradiscoverypy-its-async-tests">Task 5: Migrate <code>infra/discovery.py</code> + its async tests<a class="headerlink" href="#task-5-migrate-infradiscoverypy-its-async-tests" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong>
+- Modify: <code>src/zae_limiter/infra/discovery.py</code> (import line 10; annotation line 59; session creations lines 68 &amp; 137; <code>.client(</code> calls lines 77 &amp; 147)
+- Modify: <code>tests/unit/test_limiter.py</code> (3 discovery tests, ~lines 3209-3278)
+- Regenerate: <code>src/zae_limiter/infra/sync_discovery.py</code>, <code>tests/unit/test_sync_limiter.py</code></p>
+<ul class="task-list">
+<li class="task-list-item">
+<p><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Swap import, annotation, sessions, and client calls in <code>discovery.py</code></strong></p>
+</li>
+<li>
+<p>Line 10: <code>import aioboto3</code> → <code>from aiobotocore.session import AioSession, get_session</code></p>
+</li>
+<li>Line ~59: <code>self._session: aioboto3.Session | None = None</code> → <code>self._session: AioSession | None = None</code></li>
+<li>Lines ~68 and ~137: <code>self._session = aioboto3.Session()</code> → <code>self._session = get_session()</code></li>
+<li>Line ~77: <code>self._client = await session.client("cloudformation", **kwargs).__aenter__()</code> → <code>... await session.create_client("cloudformation", **kwargs).__aenter__()</code></li>
+<li>Line ~147: <code>async with session.client("resourcegroupstaggingapi", **kwargs) as tagging_client:</code> → <code>async with session.create_client("resourcegroupstaggingapi", **kwargs) as tagging_client:</code></li>
+</ul>
+<p>Verify:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>grep<span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;aioboto3\|\.client(&quot;</span><span class="w"> </span>src/zae_limiter/infra/discovery.py
+</span></code></pre></div>
+Expected: no output.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Rewrite the three discovery tests in <code>test_limiter.py</code></strong></li>
+</ul>
+<p>These patch the whole module today. Replace each of the three blocks (at ~3212, ~3237, ~3263). The pattern transformation, applied to all three:</p>
+<p>Replace:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-41-1"><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a>        <span class="k">with</span> <span class="n">patch</span><span class="p">(</span><span class="s2">&quot;zae_limiter.infra.discovery.aioboto3&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">mock_aioboto3</span><span class="p">:</span>
+</span><span id="__span-41-2"><a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a>            <span class="n">mock_session</span> <span class="o">=</span> <span class="n">MagicMock</span><span class="p">()</span>
+</span><span id="__span-41-3"><a id="__codelineno-41-3" name="__codelineno-41-3" href="#__codelineno-41-3"></a>            <span class="n">mock_client</span> <span class="o">=</span> <span class="n">MagicMock</span><span class="p">()</span>
+</span><span id="__span-41-4"><a id="__codelineno-41-4" name="__codelineno-41-4" href="#__codelineno-41-4"></a>            <span class="n">mock_client</span><span class="o">.</span><span class="fm">__aenter__</span> <span class="o">=</span> <span class="n">AsyncMock</span><span class="p">(</span><span class="n">return_value</span><span class="o">=</span><span class="n">mock_client</span><span class="p">)</span>
+</span><span id="__span-41-5"><a id="__codelineno-41-5" name="__codelineno-41-5" href="#__codelineno-41-5"></a>            <span class="n">mock_client</span><span class="o">.</span><span class="fm">__aexit__</span> <span class="o">=</span> <span class="n">AsyncMock</span><span class="p">()</span>
+</span><span id="__span-41-6"><a id="__codelineno-41-6" name="__codelineno-41-6" href="#__codelineno-41-6"></a>            <span class="n">mock_session</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">return_value</span> <span class="o">=</span> <span class="n">mock_client</span>
+</span><span id="__span-41-7"><a id="__codelineno-41-7" name="__codelineno-41-7" href="#__codelineno-41-7"></a>            <span class="n">mock_aioboto3</span><span class="o">.</span><span class="n">Session</span><span class="o">.</span><span class="n">return_value</span> <span class="o">=</span> <span class="n">mock_session</span>
+</span></code></pre></div>
+with:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-42-1"><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>        <span class="k">with</span> <span class="n">patch</span><span class="p">(</span><span class="s2">&quot;zae_limiter.infra.discovery.get_session&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">mock_get_session</span><span class="p">:</span>
+</span><span id="__span-42-2"><a id="__codelineno-42-2" name="__codelineno-42-2" href="#__codelineno-42-2"></a>            <span class="n">mock_session</span> <span class="o">=</span> <span class="n">MagicMock</span><span class="p">()</span>
+</span><span id="__span-42-3"><a id="__codelineno-42-3" name="__codelineno-42-3" href="#__codelineno-42-3"></a>            <span class="n">mock_client</span> <span class="o">=</span> <span class="n">MagicMock</span><span class="p">()</span>
+</span><span id="__span-42-4"><a id="__codelineno-42-4" name="__codelineno-42-4" href="#__codelineno-42-4"></a>            <span class="n">mock_client</span><span class="o">.</span><span class="fm">__aenter__</span> <span class="o">=</span> <span class="n">AsyncMock</span><span class="p">(</span><span class="n">return_value</span><span class="o">=</span><span class="n">mock_client</span><span class="p">)</span>
+</span><span id="__span-42-5"><a id="__codelineno-42-5" name="__codelineno-42-5" href="#__codelineno-42-5"></a>            <span class="n">mock_client</span><span class="o">.</span><span class="fm">__aexit__</span> <span class="o">=</span> <span class="n">AsyncMock</span><span class="p">()</span>
+</span><span id="__span-42-6"><a id="__codelineno-42-6" name="__codelineno-42-6" href="#__codelineno-42-6"></a>            <span class="n">mock_session</span><span class="o">.</span><span class="n">create_client</span><span class="o">.</span><span class="n">return_value</span> <span class="o">=</span> <span class="n">mock_client</span>
+</span><span id="__span-42-7"><a id="__codelineno-42-7" name="__codelineno-42-7" href="#__codelineno-42-7"></a>            <span class="n">mock_get_session</span><span class="o">.</span><span class="n">return_value</span> <span class="o">=</span> <span class="n">mock_session</span>
+</span></code></pre></div></p>
+<p>And update the two assertion sites:
+- <code>mock_aioboto3.Session.assert_called_once()</code> (in <code>test_get_client_caches_client</code>) → <code>mock_get_session.assert_called_once()</code>
+- <code>mock_session.client.assert_called_once_with(...)</code> (two sites, in <code>test_get_client_passes_region_and_endpoint</code> and <code>test_get_client_without_region_or_endpoint</code>) → <code>mock_session.create_client.assert_called_once_with(...)</code></p>
+<p>Verify no stragglers:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-43-1"><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a>grep<span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;aioboto3\|mock_session\.client&quot;</span><span class="w"> </span>tests/unit/test_limiter.py
+</span></code></pre></div>
+Expected: no output.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run the affected async tests</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-44-1"><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/unit/test_limiter.py<span class="w"> </span>-k<span class="w"> </span><span class="s2">&quot;get_client&quot;</span><span class="w"> </span>-q
+</span></code></pre></div>
+Expected: PASS (3 tests).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Regenerate and verify production sync</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-45-1"><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>hatch<span class="w"> </span>run<span class="w"> </span>generate-sync
+</span><span id="__span-45-2"><a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>git<span class="w"> </span>diff<span class="w"> </span>--<span class="w"> </span>src/zae_limiter/infra/sync_discovery.py
+</span></code></pre></div>
+Expected: unchanged except possible <code>import boto3</code> ordering. <code>boto3.Session()</code> and <code>session.client(...)</code> lines byte-identical.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Run the generated sync tests</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-46-1"><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/unit/test_sync_limiter.py<span class="w"> </span>-k<span class="w"> </span><span class="s2">&quot;get_client&quot;</span><span class="w"> </span>-q
+</span><span id="__span-46-2"><a id="__codelineno-46-2" name="__codelineno-46-2" href="#__codelineno-46-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/unit/test_sync_limiter.py<span class="w"> </span>-q
+</span></code></pre></div>
+Expected: PASS. The regenerated sync test should patch <code>zae_limiter.infra.sync_discovery.boto3.Session</code> and use <code>mock_session.client...</code> (via the transformer). If wrong, fix the Task 2 rules and regenerate.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 6: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a>git<span class="w"> </span>add<span class="w"> </span>src/zae_limiter/infra/discovery.py<span class="w"> </span>src/zae_limiter/infra/sync_discovery.py<span class="w"> </span>tests/unit/test_limiter.py<span class="w"> </span>tests/unit/test_sync_limiter.py
+</span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+</span><span id="__span-47-3"><a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a><span class="s">♻️ refactor(infra): create discovery clients via aiobotocore</span>
+</span><span id="__span-47-4"><a id="__codelineno-47-4" name="__codelineno-47-4" href="#__codelineno-47-4"></a>
+</span><span id="__span-47-5"><a id="__codelineno-47-5" name="__codelineno-47-5" href="#__codelineno-47-5"></a><span class="s">Migrate InfrastructureDiscovery off aioboto3; update the three</span>
+</span><span id="__span-47-6"><a id="__codelineno-47-6" name="__codelineno-47-6" href="#__codelineno-47-6"></a><span class="s">_get_client tests to patch get_session and wire create_client mocks.</span>
+</span><span id="__span-47-7"><a id="__codelineno-47-7" name="__codelineno-47-7" href="#__codelineno-47-7"></a><span class="s">Generated sync code is unchanged.</span>
+</span><span id="__span-47-8"><a id="__codelineno-47-8" name="__codelineno-47-8" href="#__codelineno-47-8"></a>
+</span><span id="__span-47-9"><a id="__codelineno-47-9" name="__codelineno-47-9" href="#__codelineno-47-9"></a><span class="s">Co-Authored-By: Claude Opus 4.8 (1M context) &lt;noreply@anthropic.com&gt;</span>
+</span><span id="__span-47-10"><a id="__codelineno-47-10" name="__codelineno-47-10" href="#__codelineno-47-10"></a><span class="s">EOF</span>
+</span><span id="__span-47-11"><a id="__codelineno-47-11" name="__codelineno-47-11" href="#__codelineno-47-11"></a><span class="k">)</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+<hr />
+<h3 id="task-6-remove-aioboto3-and-finalize-configcomments">Task 6: Remove aioboto3 and finalize config/comments<a class="headerlink" href="#task-6-remove-aioboto3-and-finalize-configcomments" title="Permanent link">&para;</a></h3>
+<p>No async source references <code>aioboto3</code> now. Remove the dependency, the transformer's aioboto3 rule, the mypy override, update the zip-content tests, and fix stale comments.</p>
+<p><strong>Files:</strong>
+- Modify: <code>pyproject.toml</code>, <code>scripts/generate_sync.py</code>, <code>tests/integration/test_lambda_builder.py</code>, <code>tests/unit/test_lambda_builder.py</code>, <code>src/zae_limiter/infra/lambda_builder.py</code>, <code>src/zae_limiter_provisioner/applier.py</code>, <code>tests/fixtures/capacity.py</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Confirm no remaining aioboto3 imports/usages in source</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>grep<span class="w"> </span>-rn<span class="w"> </span><span class="s2">&quot;import aioboto3\|aioboto3\.Session&quot;</span><span class="w"> </span>src/<span class="w"> </span>tests/
+</span></code></pre></div>
+Expected: no output (only comment text may remain, handled below).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Drop <code>aioboto3</code> from runtime deps</strong></li>
+</ul>
+<p>In <code>pyproject.toml</code>, remove the <code>"aioboto3&gt;=12.0.0",</code> line so only <code>"aiobotocore&gt;=2.13.0",</code> remains.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Drop <code>aioboto3</code> from the mypy override</strong></li>
+</ul>
+<p>In the <code>[[tool.mypy.overrides]]</code> <code>module</code> list, remove the <code>"aioboto3",</code> and <code>"aioboto3.*",</code> entries, leaving <code>"aiobotocore"</code> / <code>"aiobotocore.*"</code>.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Remove the aioboto3 rule from the transformer</strong></li>
+</ul>
+<p>In <code>scripts/generate_sync.py</code>, change <code>IMPORT_MODULE_REWRITES</code> (~line 66) from:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-49-1"><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a><span class="n">IMPORT_MODULE_REWRITES</span> <span class="o">=</span> <span class="p">{</span>
+</span><span id="__span-49-2"><a id="__codelineno-49-2" name="__codelineno-49-2" href="#__codelineno-49-2"></a>    <span class="s2">&quot;aioboto3&quot;</span><span class="p">:</span> <span class="s2">&quot;boto3&quot;</span><span class="p">,</span>
+</span><span id="__span-49-3"><a id="__codelineno-49-3" name="__codelineno-49-3" href="#__codelineno-49-3"></a><span class="p">}</span>
+</span></code></pre></div>
+to:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-50-1"><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a><span class="n">IMPORT_MODULE_REWRITES</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+</span></code></pre></div>
+Also update the module docstring at the top (lines ~4-7) replacing "aioboto3" mentions with "aiobotocore" (e.g., "transforms async code (aiobotocore) to sync code (boto3)" and "Rewriting imports (aiobotocore -&gt; boto3)"). Update the inline comments at ~line 65 and ~line 494/529 that name aioboto3.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Update the Lambda zip-content tests</strong></li>
+</ul>
+<p>In <code>tests/integration/test_lambda_builder.py</code> (~line 50-60), change the docstring and the assertion to target aiobotocore:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-51-1"><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Built zip does NOT include core deps (aiobotocore, aiohttp, click, etc.).&quot;&quot;&quot;</span>
+</span></code></pre></div>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-52-1"><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>            <span class="n">aiobotocore_files</span> <span class="o">=</span> <span class="p">[</span><span class="n">f</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="n">files</span> <span class="k">if</span> <span class="n">f</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;aiobotocore/&quot;</span><span class="p">)]</span>
+</span><span id="__span-52-2"><a id="__codelineno-52-2" name="__codelineno-52-2" href="#__codelineno-52-2"></a>            <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">aiobotocore_files</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;aiobotocore should not be in zip&quot;</span>
+</span></code></pre></div></p>
+<p>In <code>tests/unit/test_lambda_builder.py</code>:
+- Line ~91: change the tuple <code>("aioboto3", "boto3", "click", "pip", "python-ulid")</code> to <code>("aiobotocore", "boto3", "click", "pip", "python-ulid")</code>.
+- Line ~241: change <code>assert not any(line.startswith("aioboto3") for line in reqs_lines)</code> to <code>assert not any(line.startswith("aiobotocore") for line in reqs_lines)</code>.</p>
+<ul class="task-list">
+<li class="task-list-item">
+<p><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 6: Fix stale comments (cosmetic, no behavior change)</strong></p>
+</li>
+<li>
+<p><code>src/zae_limiter/infra/lambda_builder.py</code> lines ~11, ~27, ~60, ~136: replace "aioboto3" with "aiobotocore" in the comment text.</p>
+</li>
+<li><code>src/zae_limiter_provisioner/applier.py</code> line ~4: "Lambda where aioboto3 is not available." → "Lambda where aiobotocore is not available."</li>
+<li>
+<p><code>tests/fixtures/capacity.py</code> line ~169: "tracks calls at the aioboto3 client level." → "...at the aiobotocore client level."</p>
+</li>
+<li class="task-list-item">
+<p><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 7: Re-sync env, regenerate, prove idempotency</strong></p>
+</li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-53-1"><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--all-extras
+</span><span id="__span-53-2"><a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a>hatch<span class="w"> </span>run<span class="w"> </span>generate-sync
+</span><span id="__span-53-3"><a id="__codelineno-53-3" name="__codelineno-53-3" href="#__codelineno-53-3"></a>git<span class="w"> </span>diff<span class="w"> </span>--stat<span class="w"> </span>--<span class="w"> </span><span class="s1">&#39;src/**/sync_*.py&#39;</span><span class="w"> </span><span class="s1">&#39;tests/unit/test_sync_*.py&#39;</span>
+</span></code></pre></div>
+Expected: no generated-file changes from this task (the aioboto3 rule was already unused). Confirm <code>aioboto3</code> is gone from the env:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-54-1"><a id="__codelineno-54-1" name="__codelineno-54-1" href="#__codelineno-54-1"></a>uv<span class="w"> </span>pip<span class="w"> </span>list<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>aioboto3<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;aioboto3 removed&quot;</span>
+</span></code></pre></div>
+Expected: <code>aioboto3 removed</code>.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 8: Full gate</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-55-1"><a id="__codelineno-55-1" name="__codelineno-55-1" href="#__codelineno-55-1"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/unit/<span class="w"> </span>-q
+</span><span id="__span-55-2"><a id="__codelineno-55-2" name="__codelineno-55-2" href="#__codelineno-55-2"></a>uv<span class="w"> </span>run<span class="w"> </span>mypy<span class="w"> </span>src/zae_limiter
+</span><span id="__span-55-3"><a id="__codelineno-55-3" name="__codelineno-55-3" href="#__codelineno-55-3"></a>pre-commit<span class="w"> </span>run<span class="w"> </span>--all-files
+</span></code></pre></div>
+Expected: all PASS / all hooks pass.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 9: Commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-56-1"><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a>git<span class="w"> </span>add<span class="w"> </span>-A
+</span><span id="__span-56-2"><a id="__codelineno-56-2" name="__codelineno-56-2" href="#__codelineno-56-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+</span><span id="__span-56-3"><a id="__codelineno-56-3" name="__codelineno-56-3" href="#__codelineno-56-3"></a><span class="s">🔥 deps(repository): drop unmaintained aioboto3</span>
+</span><span id="__span-56-4"><a id="__codelineno-56-4" name="__codelineno-56-4" href="#__codelineno-56-4"></a>
+</span><span id="__span-56-5"><a id="__codelineno-56-5" name="__codelineno-56-5" href="#__codelineno-56-5"></a><span class="s">Remove the aioboto3 runtime dep, mypy override, and transformer rule now</span>
+</span><span id="__span-56-6"><a id="__codelineno-56-6" name="__codelineno-56-6" href="#__codelineno-56-6"></a><span class="s">that all async clients use aiobotocore. Update Lambda zip-content tests</span>
+</span><span id="__span-56-7"><a id="__codelineno-56-7" name="__codelineno-56-7" href="#__codelineno-56-7"></a><span class="s">to assert aiobotocore is excluded, and refresh stale comments.</span>
+</span><span id="__span-56-8"><a id="__codelineno-56-8" name="__codelineno-56-8" href="#__codelineno-56-8"></a>
+</span><span id="__span-56-9"><a id="__codelineno-56-9" name="__codelineno-56-9" href="#__codelineno-56-9"></a><span class="s">Co-Authored-By: Claude Opus 4.8 (1M context) &lt;noreply@anthropic.com&gt;</span>
+</span><span id="__span-56-10"><a id="__codelineno-56-10" name="__codelineno-56-10" href="#__codelineno-56-10"></a><span class="s">EOF</span>
+</span><span id="__span-56-11"><a id="__codelineno-56-11" name="__codelineno-56-11" href="#__codelineno-56-11"></a><span class="k">)</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+<hr />
+<h3 id="task-7-integration-e2e-verification-against-localstack">Task 7: Integration &amp; E2E verification against LocalStack<a class="headerlink" href="#task-7-integration-e2e-verification-against-localstack" title="Permanent link">&para;</a></h3>
+<p>No code changes expected — this validates the real async client path (DynamoDB transactions, GSI queries, CloudFormation, Lambda deploy) against LocalStack. If something fails, fix in the relevant prior task's file and re-run.</p>
+<p><strong>Files:</strong>
+- None (verification). Any fix lands in the owning module + regenerate.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Start LocalStack</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-57-1"><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>zae-limiter<span class="w"> </span><span class="nb">local</span><span class="w"> </span>up
+</span><span id="__span-57-2"><a id="__codelineno-57-2" name="__codelineno-57-2" href="#__codelineno-57-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_ENDPOINT_URL</span><span class="o">=</span>http://localhost:4566
+</span><span id="__span-57-3"><a id="__codelineno-57-3" name="__codelineno-57-3" href="#__codelineno-57-3"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_ACCESS_KEY_ID</span><span class="o">=</span><span class="nb">test</span>
+</span><span id="__span-57-4"><a id="__codelineno-57-4" name="__codelineno-57-4" href="#__codelineno-57-4"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_SECRET_ACCESS_KEY</span><span class="o">=</span><span class="nb">test</span>
+</span><span id="__span-57-5"><a id="__codelineno-57-5" name="__codelineno-57-5" href="#__codelineno-57-5"></a><span class="nb">export</span><span class="w"> </span><span class="nv">AWS_DEFAULT_REGION</span><span class="o">=</span>us-east-1
+</span></code></pre></div>
+Expected: container healthy (<code>zae-limiter local status</code>).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run integration tests (repository operations, transactions, GSI, optimistic locking)</strong></li>
+</ul>
+<p>Run: <code>uv run pytest tests/integration/ -m integration -q</code>
+Expected: PASS.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run the LocalStack e2e workflow tests (CLI, hierarchical limits, aggregator, stack lifecycle)</strong></li>
+</ul>
+<p>Run: <code>uv run pytest tests/e2e/test_localstack.py -q</code>
+Expected: PASS.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Run the lambda-builder integration test (zip excludes aiobotocore)</strong></li>
+</ul>
+<p>Run: <code>uv run pytest tests/integration/test_lambda_builder.py -q</code>
+Expected: PASS.</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Tear down</strong></li>
+</ul>
+<p>Run: <code>zae-limiter local down</code></p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 6: Final branch sanity</strong></li>
+</ul>
+<p>Run:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-58-1"><a id="__codelineno-58-1" name="__codelineno-58-1" href="#__codelineno-58-1"></a>grep<span class="w"> </span>-rn<span class="w"> </span><span class="s2">&quot;aioboto3&quot;</span><span class="w"> </span>src/<span class="w"> </span>tests/<span class="w"> </span>pyproject.toml<span class="w"> </span>scripts/<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-v<span class="w"> </span><span class="s2">&quot;\.md:&quot;</span>
+</span></code></pre></div>
+Expected: no output (no <code>aioboto3</code> anywhere in code/config).</p>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 7: (If any fix was needed) commit</strong></li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-59-1"><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a>git<span class="w"> </span>add<span class="w"> </span>-A
+</span><span id="__span-59-2"><a id="__codelineno-59-2" name="__codelineno-59-2" href="#__codelineno-59-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+</span><span id="__span-59-3"><a id="__codelineno-59-3" name="__codelineno-59-3" href="#__codelineno-59-3"></a><span class="s">✅ test(repository): verify aiobotocore path on LocalStack</span>
+</span><span id="__span-59-4"><a id="__codelineno-59-4" name="__codelineno-59-4" href="#__codelineno-59-4"></a>
+</span><span id="__span-59-5"><a id="__codelineno-59-5" name="__codelineno-59-5" href="#__codelineno-59-5"></a><span class="s">Co-Authored-By: Claude Opus 4.8 (1M context) &lt;noreply@anthropic.com&gt;</span>
+</span><span id="__span-59-6"><a id="__codelineno-59-6" name="__codelineno-59-6" href="#__codelineno-59-6"></a><span class="s">EOF</span>
+</span><span id="__span-59-7"><a id="__codelineno-59-7" name="__codelineno-59-7" href="#__codelineno-59-7"></a><span class="k">)</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+<hr />
+<h2 id="post-plan-issue-pr">Post-Plan: Issue &amp; PR<a class="headerlink" href="#post-plan-issue-pr" title="Permanent link">&para;</a></h2>
+<p>After Task 7, per project rules (<code>.claude/rules/issue-skill.md</code>, <code>.claude/rules/pull-request-workflow.md</code>):
+- Open the tracking issue via the <code>/issue</code> skill (area <code>area/repository</code> + <code>area/infra</code>; "drop unmaintained aioboto3 in favor of aiobotocore").
+- Open a draft PR via the <code>/pr</code> skill referencing the issue, with a test plan covering unit + LocalStack integration/e2e.</p>
+<hr />
+<h2 id="self-review">Self-Review<a class="headerlink" href="#self-review" title="Permanent link">&para;</a></h2>
+<p><strong>Spec coverage:</strong>
+- Scope (3 async files, transformer, deps, tests) → Tasks 1-6. ✓
+- Mechanical call-site change → Tasks 3-5. ✓
+- Transformer 3-rule table (import / get_session / create_client) → Task 2 (implemented as 5 additive edits + 2 unwrap-condition widenings). ✓
+- Deps &amp; typing (aiobotocore floor, mypy override, types-aiobotocore already present) → Tasks 1 &amp; 6. ✓
+- Tests (patch targets, mock wiring, lambda zip assertions) → Tasks 4, 5, 6. ✓
+- Verification gates (generate-sync idempotent, pre-commit, mypy, pytest, LocalStack) → embedded per task + Task 7. ✓
+- Process (issue + PR, no ADR) → Post-Plan section. ✓
+- Risk "hidden resource-API usage" → confirmed none during planning (grep showed only <code>.client(</code>). ✓</p>
+<p><strong>Placeholder scan:</strong> No TBD/TODO; every code/sed/command step is concrete. The <code>...</code> inside code blocks denote unchanged surrounding kwargs already present in the file, not omissions.</p>
+<p><strong>Type/name consistency:</strong> <code>get_session</code>, <code>AioSession</code>, <code>create_client</code>, <code>boto3.Session</code>, <code>IMPORT_NAME_REWRITES</code>, <code>TYPE_REWRITES</code>, <code>METHOD_NAME_REWRITES</code>, <code>TEST_PATCH_TARGET_REWRITES</code>, <code>TEST_IMPORT_PATH_REWRITES</code>, <code>IMPORT_MODULE_REWRITES</code>, <code>visit_ImportFrom</code>, <code>visit_AsyncWith</code>, <code>visit_Call</code>, <code>visit_Constant</code> are used consistently across tasks and match the symbols in <code>scripts/generate_sync.py</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/zeroae/zae-limiter" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/zae-limiter/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -12,13 +12,9 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/guide/hierarchical/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/plans/2026-06-22-aiobotocore-migration-design/">
       
       
-        <link rel="prev" href="../config-hierarchy/">
-      
-      
-        <link rel="next" href="../llm-integration/">
       
       
         
@@ -29,7 +25,7 @@
     
     
       
-        <title>Hierarchical Limits - zae-limiter</title>
+        <title>Design: Replace aioboto3 with aiobotocore - zae-limiter</title>
       
     
     
@@ -84,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#hierarchical-limits" class="md-skip">
+        <a href="#design-replace-aioboto3-with-aiobotocore" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +119,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Hierarchical Limits
+              Design: Replace aioboto3 with aiobotocore
             
           </span>
         </div>
@@ -294,20 +290,18 @@
       
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
         
           
           <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
@@ -328,7 +322,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -374,7 +368,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../token-bucket/" class="md-nav__link">
+      <a href="../../guide/token-bucket/" class="md-nav__link">
         
   
   
@@ -402,7 +396,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../basic-usage/" class="md-nav__link">
+      <a href="../../guide/basic-usage/" class="md-nav__link">
         
   
   
@@ -430,7 +424,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../config-hierarchy/" class="md-nav__link">
+      <a href="../../guide/config-hierarchy/" class="md-nav__link">
         
   
   
@@ -455,37 +449,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Hierarchical Limits
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../guide/hierarchical/" class="md-nav__link">
         
   
   
@@ -501,170 +468,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#creating-a-hierarchy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Creating a Hierarchy
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cascade-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cascade Mode
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#different-limits-per-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Different Limits Per Level
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#understanding-cascade-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Understanding Cascade Behavior
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Understanding Cascade Behavior">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#without-cascade" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Without Cascade
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#with-cascade" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        With Cascade
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#error-handling-with-hierarchies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Error Handling with Hierarchies
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#use-cases" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Use Cases
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Use Cases">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#multi-tenant-saas" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Multi-Tenant SaaS
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#api-key-management" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        API Key Management
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#limitations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Limitations
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next Steps
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -677,7 +480,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../llm-integration/" class="md-nav__link">
+      <a href="../../guide/llm-integration/" class="md-nav__link">
         
   
   
@@ -705,7 +508,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../usage-snapshots/" class="md-nav__link">
+      <a href="../../guide/usage-snapshots/" class="md-nav__link">
         
   
   
@@ -733,7 +536,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../unavailability/" class="md-nav__link">
+      <a href="../../guide/unavailability/" class="md-nav__link">
         
   
   
@@ -3289,10 +3092,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#creating-a-hierarchy" class="md-nav__link">
+  <a href="#problem-rationale" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Creating a Hierarchy
+        Problem &amp; Rationale
       
     </span>
   </a>
@@ -3300,44 +3103,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cascade-mode" class="md-nav__link">
+  <a href="#scope" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Cascade Mode
+        Scope
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#different-limits-per-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Different Limits Per Level
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#understanding-cascade-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Understanding Cascade Behavior
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Understanding Cascade Behavior">
+    <nav class="md-nav" aria-label="Scope">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#without-cascade" class="md-nav__link">
+  <a href="#in-scope-the-only-modules-importing-aioboto3" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Without Cascade
+        In scope — the only modules importing aioboto3
       
     </span>
   </a>
@@ -3345,10 +3126,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#with-cascade" class="md-nav__link">
+  <a href="#out-of-scope-already-pure-boto3-sync" class="md-nav__link">
     <span class="md-ellipsis">
       
-        With Cascade
+        Out of scope — already pure boto3 (sync)
       
     </span>
   </a>
@@ -3361,10 +3142,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#error-handling-with-hierarchies" class="md-nav__link">
+  <a href="#approach-decision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Error Handling with Hierarchies
+        Approach Decision
       
     </span>
   </a>
@@ -3372,22 +3153,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#use-cases" class="md-nav__link">
+  <a href="#detailed-design" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Use Cases
+        Detailed Design
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Use Cases">
+    <nav class="md-nav" aria-label="Detailed Design">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi-tenant-saas" class="md-nav__link">
+  <a href="#1-call-site-change-async-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Multi-Tenant SaaS
+        1. Call-site change (async source)
       
     </span>
   </a>
@@ -3395,10 +3176,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#api-key-management" class="md-nav__link">
+  <a href="#2-sync-generator-transformer-scriptsgenerate_syncpy-highest-risk" class="md-nav__link">
     <span class="md-ellipsis">
       
-        API Key Management
+        2. Sync-generator transformer (scripts/generate_sync.py) — highest risk
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-dependencies-typing-pyprojecttoml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Dependencies &amp; typing (pyproject.toml)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Tests
       
     </span>
   </a>
@@ -3411,10 +3214,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#limitations" class="md-nav__link">
+  <a href="#verification-gates-run-in-order" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Limitations
+        Verification Gates (run in order)
       
     </span>
   </a>
@@ -3422,10 +3225,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
+  <a href="#risks-mitigations" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Next Steps
+        Risks &amp; Mitigations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of Scope / Non-Goals
       
     </span>
   </a>
@@ -3451,7 +3265,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/guide/hierarchical.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/plans/2026-06-22-aiobotocore-migration-design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -3459,202 +3273,213 @@
   
 
 
-<h1 id="hierarchical-limits">Hierarchical Limits<a class="headerlink" href="#hierarchical-limits" title="Permanent link">&para;</a></h1>
-<p>zae-limiter supports two-level hierarchies for rate limiting, enabling patterns like:</p>
+<h1 id="design-replace-aioboto3-with-aiobotocore">Design: Replace aioboto3 with aiobotocore<a class="headerlink" href="#design-replace-aioboto3-with-aiobotocore" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-06-22
+<strong>Status:</strong> Approved (design)
+<strong>Topic:</strong> Drop the unmaintained <code>aioboto3</code> dependency in favor of calling <code>aiobotocore</code> directly.</p>
+<h2 id="problem-rationale">Problem &amp; Rationale<a class="headerlink" href="#problem-rationale" title="Permanent link">&para;</a></h2>
+<p><code>aioboto3</code> is effectively unmaintained. It is a thin wrapper over <code>aiobotocore</code>
+(the actively-maintained async layer that wraps <code>botocore</code>); its main value-add
+over <code>aiobotocore</code> is the high-level <strong>resource</strong> API (<code>session.resource(...)</code>,
+<code>Table</code> objects with automatic type marshalling).</p>
+<p>The zae-limiter async data path uses <strong>only the low-level client API</strong>
+(<code>session.client("dynamodb")</code> with explicitly-typed attribute values such as
+<code>{"S": ...}</code> / <code>{"N": ...}</code>). It never uses the resource API. Therefore dropping
+<code>aioboto3</code> and creating clients directly from an <code>aiobotocore</code> session costs us
+nothing functionally, removes an unmaintained dependency, and brings us one layer
+closer to <code>botocore</code>.</p>
+<h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
+<h3 id="in-scope-the-only-modules-importing-aioboto3">In scope — the only modules importing <code>aioboto3</code><a class="headerlink" href="#in-scope-the-only-modules-importing-aioboto3" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>AWS clients created</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/zae_limiter/repository.py</code></td>
+<td><code>dynamodb</code>, <code>sts</code></td>
+</tr>
+<tr>
+<td><code>src/zae_limiter/infra/discovery.py</code></td>
+<td><code>cloudformation</code>, <code>resourcegroupstaggingapi</code></td>
+</tr>
+<tr>
+<td><code>src/zae_limiter/infra/stack_manager.py</code></td>
+<td><code>cloudformation</code>, <code>lambda</code></td>
+</tr>
+<tr>
+<td><code>scripts/generate_sync.py</code></td>
+<td>AST transformer (async → sync codegen)</td>
+</tr>
+<tr>
+<td><code>pyproject.toml</code></td>
+<td>runtime deps + mypy overrides</td>
+</tr>
+<tr>
+<td>Tests patching <code>aioboto3.Session</code></td>
+<td><code>tests/unit/test_limiter.py</code>, <code>tests/unit/test_stack_manager.py</code>, and generated <code>tests/unit/test_sync_*.py</code> (~40 patch sites)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="out-of-scope-already-pure-boto3-sync">Out of scope — already pure <code>boto3</code> (sync)<a class="headerlink" href="#out-of-scope-already-pure-boto3-sync" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong>Project → API Keys</strong>: Limit total project usage while also limiting individual keys</li>
-<li><strong>Organization → Users</strong>: Organization-wide limits with per-user quotas</li>
-<li><strong>Tenant → Services</strong>: Multi-tenant limits with service-level controls</li>
+<li><code>src/zae_limiter_aggregator/</code> (Lambda aggregator)</li>
+<li><code>src/zae_limiter_provisioner/</code> (Lambda provisioner)</li>
+<li><code>src/zae_limiter/loadtest/</code></li>
+<li><code>src/zae_limiter/limits_cli.py</code></li>
+<li>All generated <code>sync_*.py</code> files (regenerated from async source, never hand-edited)</li>
 </ul>
-<h2 id="creating-a-hierarchy">Creating a Hierarchy<a class="headerlink" href="#creating-a-hierarchy" title="Permanent link">&para;</a></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Create parent entity (project)</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Production Project&quot;</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># Create child entities (API keys) with cascade enabled</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Web Application Key&quot;</span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Enforce parent limits on every acquire</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-xyz&quot;</span><span class="p">,</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Mobile App Key&quot;</span><span class="p">,</span>
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="p">)</span>
+<p>The aggregator's <code>boto3.resource("dynamodb")</code> usage is sync-only and out of scope.</p>
+<h2 id="approach-decision">Approach Decision<a class="headerlink" href="#approach-decision" title="Permanent link">&para;</a></h2>
+<p><strong>Chosen: direct call-site replacement</strong> (not an internal factory/abstraction
+module). The code already uses the low-level client uniformly, so the change is
+faithful to "use aiobotocore directly" and keeps the diff minimal. The cost —
+adapting the sync-gen transformer and the ~40 test patch targets to the new call
+shape — is accepted.</p>
+<p><strong>Process decision:</strong> open a tracking GitHub issue (via <code>/issue</code>); <strong>no ADR</strong>
+(treated as a maintenance/dependency change). Implement on branch
+<code>refactor/aiobotocore-migration</code>; open a draft PR (via <code>/pr</code>) referencing the issue.</p>
+<h2 id="detailed-design">Detailed Design<a class="headerlink" href="#detailed-design" title="Permanent link">&para;</a></h2>
+<h3 id="1-call-site-change-async-source">1. Call-site change (async source)<a class="headerlink" href="#1-call-site-change-async-source" title="Permanent link">&para;</a></h3>
+<p>Two substitutions; the <code>await</code>, <code>.__aenter__()</code>, <code>async with</code>, and <code>__aexit__</code>
+lifecycle are unchanged because <code>aioboto3</code> delegates the client path straight to
+<code>aiobotocore</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># before</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">aioboto3</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="o">=</span> <span class="n">aioboto3</span><span class="o">.</span><span class="n">Session</span><span class="p">()</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="o">.</span><span class="n">client</span><span class="p">(</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="s2">&quot;dynamodb&quot;</span><span class="p">,</span> <span class="n">region_name</span><span class="o">=...</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=...</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span><span class="o">.</span><span class="fm">__aenter__</span><span class="p">()</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># after</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="kn">from</span><span class="w"> </span><span class="nn">aiobotocore.session</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_session</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="bp">self</span><span class="o">.</span><span class="n">_session</span> <span class="o">=</span> <span class="n">get_session</span><span class="p">()</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_session</span><span class="o">.</span><span class="n">create_client</span><span class="p">(</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="s2">&quot;dynamodb&quot;</span><span class="p">,</span> <span class="n">region_name</span><span class="o">=...</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=...</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span><span class="o">.</span><span class="fm">__aenter__</span><span class="p">()</span>
 </span></code></pre></div>
-<div class="admonition warning">
-<p class="admonition-title">Same-Namespace Constraint</p>
-<p>Parent and child entities must belong to the same namespace. Cross-namespace hierarchies are not supported. If you use multiple namespaces, create separate entity hierarchies within each namespace.</p>
-</div>
-<h2 id="cascade-mode">Cascade Mode<a class="headerlink" href="#cascade-mode" title="Permanent link">&para;</a></h2>
-<p>Create entities with <code>cascade=True</code> to apply rate limits to both the child and parent on every <code>acquire()</code> call:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Cascade is set once at entity creation</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># All acquire() calls will also check parent</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">)</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="c1"># acquire() automatically cascades to parent — no flag needed</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">),</span>  <span class="c1"># Per-key limit</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>    <span class="p">],</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>    <span class="k">await</span> <span class="n">call_api</span><span class="p">()</span>
-</span></code></pre></div>
-<div class="admonition note">
-<p class="admonition-title">Performance Impact</p>
-<p>Cascade mode adds overhead: +1 GetEntity + parent bucket operations. Only enable when hierarchical enforcement is needed. See <a href="../../performance/#cascade-optimization">Batch Operation Patterns</a> for optimization strategies.</p>
-</div>
-<div class="admonition tip">
-<p class="admonition-title">Speculative Writes with Cascade</p>
-<p>With <code>speculative_writes=True</code>, the first cascade acquire completes in 2 sequential round trips (0 RCU, 2 WCU). After the first acquire populates the entity metadata cache, subsequent cascade acquires issue child and parent writes <strong>in parallel</strong> -- completing in just 1 round trip (0 RCU, 2 WCU) with the same cost but lower latency. If the parent needs refill, a deferred compensation optimization avoids unnecessary child compensation by attempting a parent-only slow path first. See <a href="../../performance/#8-speculative-writes">Speculative Writes</a> for details.</p>
-</div>
-<p><strong>What happens:</strong></p>
+<ul>
+<li><code>close()</code> (<code>await self._client.__aexit__(None, None, None)</code>) needs <strong>no change</strong>:
+  the object returned by <code>__aenter__()</code> supports <code>__aexit__</code> in both libraries.</li>
+<li><code>async with self._session.client(...) as c:</code> becomes
+  <code>async with self._session.create_client(...) as c:</code>.</li>
+<li>Credential/region/endpoint resolution is identical (same <code>botocore</code> underneath).
+  <code>get_session()</code> takes no args; all config flows through <code>create_client(...)</code>
+  exactly as it flowed through <code>aioboto3</code>'s <code>.client(...)</code> today.</li>
+</ul>
+<h3 id="2-sync-generator-transformer-scriptsgenerate_syncpy-highest-risk">2. Sync-generator transformer (<code>scripts/generate_sync.py</code>) — highest risk<a class="headerlink" href="#2-sync-generator-transformer-scriptsgenerate_syncpy-highest-risk" title="Permanent link">&para;</a></h3>
+<p>The transformer currently rewrites <code>aioboto3 → boto3</code> and unwraps
+<code>async with session.client(...)</code>. Direct replacement requires three new/updated
+rules so generated sync remains idiomatic <code>boto3</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Async (aiobotocore)</th>
+<th>Generated sync (boto3)</th>
+<th>Transformer rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>from aiobotocore.session import get_session</code></td>
+<td><code>import boto3</code></td>
+<td>import rewrite (handle the <code>from … import</code> form)</td>
+</tr>
+<tr>
+<td><code>get_session()</code></td>
+<td><code>boto3.Session()</code></td>
+<td>call rewrite (Name <code>get_session()</code> → <code>boto3.Session()</code>)</td>
+</tr>
+<tr>
+<td><code>.create_client(...)</code></td>
+<td><code>.client(...)</code></td>
+<td>attribute rename <code>create_client → client</code>, applied <strong>before</strong> the existing <code>.client</code> context-manager unwrap so that logic continues to fire unchanged</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>IMPORT_MODULE_REWRITES = {"aioboto3": "boto3"}</code> entry is replaced by the
+above rules.</p>
+<p><strong>Verification of the transformer:</strong> regenerate the full sync tree and diff
+against the current generated files. The generated <code>sync_repository.py</code>,
+<code>sync_discovery.py</code>, <code>sync_stack_manager.py</code>, etc. must come out <strong>functionally
+identical to today</strong> — only the async source changed, so the sync output should
+be unchanged modulo the session-construction lines (<code>boto3.Session()</code> /
+<code>.client(...)</code>), which must match the current output exactly. This is the primary
+checkpoint.</p>
+<h3 id="3-dependencies-typing-pyprojecttoml">3. Dependencies &amp; typing (<code>pyproject.toml</code>)<a class="headerlink" href="#3-dependencies-typing-pyprojecttoml" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Runtime: replace <code>aioboto3&gt;=12.0.0</code> with <code>aiobotocore</code> at a floor whose
+  pinned <code>botocore</code> range is compatible with the existing <code>boto3&gt;=1.34.0</code>
+  (e.g. <code>aiobotocore&gt;=2.13.0</code>); the exact floor is confirmed at implementation
+  time by resolving the env and checking the installed <code>botocore</code> matches.
+  Keep <code>boto3&gt;=1.34.0</code> (used by sync code, aggregator, provisioner, loadtest).</li>
+<li>Typing: <code>types-aiobotocore[dynamodb,s3]</code> is <strong>already</strong> a dev dependency — no
+  change needed there.</li>
+<li>mypy overrides: replace the <code>aioboto3</code> / <code>aioboto3.*</code> <code>ignore_missing_imports</code>
+  entries. First attempt: remove them entirely (since <code>types-aiobotocore</code> is
+  installed and ships types). If the base <code>aiobotocore</code> / <code>aiobotocore.session</code>
+  import still errors under mypy, add <code>aiobotocore</code> / <code>aiobotocore.*</code> overrides
+  instead.</li>
+</ul>
+<h3 id="4-tests">4. Tests<a class="headerlink" href="#4-tests" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Replace <code>patch("….aioboto3.Session")</code> with a patch of the new seam in each
+  module — e.g. <code>patch("zae_limiter.repository.get_session")</code>,
+  <code>patch("zae_limiter.infra.stack_manager.get_session")</code> — returning a mock
+  session whose <code>.create_client(...)</code> returns the mock client (mirroring how the
+  current mocks wire <code>.client(...)</code>).</li>
+<li>The Lambda-packaging tests that assert <code>aioboto3/</code> is absent from the built zip
+  (<code>tests/integration/test_lambda_builder.py</code>, <code>tests/unit/test_lambda_builder.py</code>)
+  update to assert <code>aiobotocore/</code> is absent (the aggregator zip should contain
+  neither).</li>
+<li>Generated <code>tests/unit/test_sync_*.py</code> are <strong>regenerated</strong>, not hand-edited; the
+  async test sources (<code>test_limiter.py</code>, <code>test_stack_manager.py</code>) are the source
+  of truth and must be updated so their sync counterparts regenerate correctly.</li>
+</ul>
+<h2 id="verification-gates-run-in-order">Verification Gates (run in order)<a class="headerlink" href="#verification-gates-run-in-order" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Check if <code>key-abc</code> has capacity (10k tpm)</li>
-<li>Check if <code>project-1</code> has capacity (uses same limits)</li>
-<li>If both pass, consume from both atomically</li>
-<li>If either fails, reject with details about which limit was exceeded</li>
+<li><code>hatch run generate-sync</code> — clean regeneration, <strong>no drift</strong> vs committed sync files (beyond intended session-line changes).</li>
+<li><code>pre-commit run --all-files</code> — includes the "generated code up-to-date" hook, ruff, and cfn-lint.</li>
+<li><code>uv run mypy src/zae_limiter</code> — type check passes.</li>
+<li><code>uv run pytest tests/unit/</code> — unit suite (incl. regenerated <code>test_sync_*</code>).</li>
+<li>Integration / e2e against LocalStack (<code>zae-limiter local up</code>; <code>pytest -m integration</code>, <code>-m e2e</code>).</li>
 </ol>
-<h2 id="different-limits-per-level">Different Limits Per Level<a class="headerlink" href="#different-limits-per-level" title="Permanent link">&para;</a></h2>
-<p>Set different limits for parents and children:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Set project-level limits (higher)</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>  <span class="c1"># 100k for entire project</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="p">],</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">)</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="c1"># Set key-level limits (lower)</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">),</span>   <span class="c1"># 10k per key</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="p">],</span>
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="p">)</span>
-</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>
-</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="c1"># acquire() auto-cascades because key-abc was created with cascade=True</span>
-</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>    <span class="n">limits</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>  <span class="c1"># Auto-resolves from stored config</span>
-</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>    <span class="k">await</span> <span class="n">call_api</span><span class="p">()</span>
-</span></code></pre></div>
-<h2 id="understanding-cascade-behavior">Understanding Cascade Behavior<a class="headerlink" href="#understanding-cascade-behavior" title="Permanent link">&para;</a></h2>
-<h3 id="without-cascade">Without Cascade<a class="headerlink" href="#without-cascade" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Entity created without cascade (default)</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">)</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Only checks/consumes from key-abc</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="o">...</span>
-</span></code></pre></div>
-<h3 id="with-cascade">With Cascade<a class="headerlink" href="#with-cascade" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Entity created with cascade enabled</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;project-1&quot;</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Checks/consumes from BOTH key-abc AND project-1</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>    <span class="o">...</span>
-</span></code></pre></div>
-<h2 id="error-handling-with-hierarchies">Error Handling with Hierarchies<a class="headerlink" href="#error-handling-with-hierarchies" title="Permanent link">&para;</a></h2>
-<p>When an entity has cascade enabled, <code>RateLimitExceeded</code> includes statuses for all entities:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">try</span><span class="p">:</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-abc&quot;</span><span class="p">,</span>  <span class="c1"># Has cascade=True from create_entity()</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="p">):</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="k">pass</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="k">for</span> <span class="n">status</span> <span class="ow">in</span> <span class="n">e</span><span class="o">.</span><span class="n">statuses</span><span class="p">:</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Entity: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">entity_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Limit: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">limit_name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Available: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">available</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Exceeded: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">exceeded</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<h2 id="use-cases">Use Cases<a class="headerlink" href="#use-cases" title="Permanent link">&para;</a></h2>
-<h3 id="multi-tenant-saas">Multi-Tenant SaaS<a class="headerlink" href="#multi-tenant-saas" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Tenant has 1M tokens/day</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;tenant-acme&quot;</span><span class="p">,</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_day</span><span class="p">(</span><span class="s2">&quot;tpd&quot;</span><span class="p">,</span> <span class="mi">1_000_000</span><span class="p">)],</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="p">)</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># Create user under tenant with cascade enabled</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;tenant-acme&quot;</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="c1"># Each user gets 100k tokens/day</span>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_day</span><span class="p">(</span><span class="s2">&quot;tpd&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">)],</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="p">)</span>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="c1"># Rate limit user — auto-cascades to tenant</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="c1"># limits=None auto-resolves from stored config</span>
-</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;user-123&quot;</span><span class="p">,</span>
-</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>    <span class="n">limits</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;tpm&quot;</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>    <span class="o">...</span>
-</span></code></pre></div>
-<h3 id="api-key-management">API Key Management<a class="headerlink" href="#api-key-management" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Project limit: 10k RPM</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;project-prod&quot;</span><span class="p">,</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Production key: 5k RPM (half of project)</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-prod&quot;</span><span class="p">,</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">5_000</span><span class="p">)],</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="p">)</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="c1"># Staging key: 1k RPM</span>
-</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;key-staging&quot;</span><span class="p">,</span>
-</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1_000</span><span class="p">)],</span>
-</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="p">)</span>
-</span></code></pre></div>
-<h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
+<h2 id="risks-mitigations">Risks &amp; Mitigations<a class="headerlink" href="#risks-mitigations" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Transformer produces non-idiomatic or broken sync code</td>
+<td>Diff regenerated sync against current output; treat any non-session-line diff as a bug. Checkpoint before proceeding.</td>
+</tr>
+<tr>
+<td>Hidden resource-API usage</td>
+<td>Confirmed via grep: only <code>session.client(...)</code> is used in async code; no <code>session.resource(...)</code> / <code>Table(...)</code>.</td>
+</tr>
+<tr>
+<td>Subtle credential/endpoint behavior change</td>
+<td>Same <code>botocore</code> resolution path; LocalStack e2e exercises <code>endpoint_url</code>, real-AWS e2e exercises default credential chain.</td>
+</tr>
+<tr>
+<td>mypy regressions from stub differences</td>
+<td><code>types-aiobotocore</code> already installed; gate #3 catches issues.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="out-of-scope-non-goals">Out of Scope / Non-Goals<a class="headerlink" href="#out-of-scope-non-goals" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Two levels only</strong>: Parent → Child (no grandparents)</li>
-<li><strong>Single parent</strong>: Each entity can have at most one parent</li>
-<li><strong>Cascade is per-entity</strong>: Set <code>cascade=True</code> on <code>create_entity()</code> to enable; it applies to all <code>acquire()</code> calls for that entity</li>
-</ul>
-<h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="../llm-integration/">LLM Integration</a> - Token estimation patterns</li>
-<li><a href="../unavailability/">Unavailability Handling</a> - Handling service outages</li>
-<li><a href="../../api/limiter/">API Reference</a> - Complete API documentation</li>
+<li>No migration to the resource API or any change to the DynamoDB
+  serialization/marshalling code.</li>
+<li>No changes to sync <code>boto3</code> usage in the aggregator, provisioner, loadtest, or CLI.</li>
+<li>No ADR (per process decision above).</li>
 </ul>
 
 
@@ -3687,44 +3512,6 @@
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../config-hierarchy/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Configuration Hierarchy">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                Configuration Hierarchy
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../llm-integration/" class="md-footer__link md-footer__link--next" aria-label="Next: LLM Integration">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                LLM Integration
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">
