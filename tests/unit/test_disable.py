@@ -204,6 +204,48 @@ class TestFanout:
 
         assert await disable_repo.disable_entity("user-1", resource="gpt-4") == 1
 
+    async def test_unscoped_disable_entity_skips_resource_with_override(
+        self, disable_limiter, disable_repo
+    ):
+        # user-1 has an explicit carve-out on gpt-4 (disabled=False) that
+        # outranks the entity's `_default_` in resolve_disabled's walk.
+        # claude-3 has no resource-specific override, so it inherits
+        # whatever the entity `_default_` directive says.
+        await disable_repo.set_system_defaults([Limit.per_minute("rpm", 100)])
+        await disable_repo.set_limits(
+            "user-1", [Limit.per_minute("rpm", 100)], resource="gpt-4", disabled=False
+        )
+        for res in ("gpt-4", "claude-3"):
+            async with disable_limiter.acquire("user-1", res, {"rpm": 1}):
+                pass
+
+        # Unscoped disable_entity applies the entity `_default_` directive;
+        # only claude-3's bucket (no override) should be stamped.
+        assert await disable_repo.disable_entity("user-1") == 1
+
+        gpt4_pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "gpt-4", 0)
+        claude_pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "claude-3", 0)
+        client = await disable_repo._get_client()
+
+        gpt4_item = await client.get_item(
+            TableName=disable_repo.table_name,
+            Key={"PK": {"S": gpt4_pk}, "SK": {"S": schema.sk_state()}},
+        )
+        assert schema.BUCKET_FIELD_DISABLED not in gpt4_item.get("Item", {})
+
+        claude_item = await client.get_item(
+            TableName=disable_repo.table_name,
+            Key={"PK": {"S": claude_pk}, "SK": {"S": schema.sk_state()}},
+        )
+        assert claude_item["Item"][schema.BUCKET_FIELD_DISABLED] == {"BOOL": True}
+
+        # resolve_disabled must still agree with what got stamped.
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, "entity")
+        assert await disable_repo.resolve_disabled("user-1", "claude-3") == (
+            True,
+            "entity_default",
+        )
+
 
 @pytest.mark.asyncio
 class TestResourceDisableWithoutPriorConfig:

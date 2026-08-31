@@ -4566,14 +4566,38 @@ class Repository:
     async def _fanout_entity(self, entity_id: str, resource: str | None, disabled: bool) -> int:
         """Stamp every bucket for an entity (optionally scoped to one resource).
 
+        When unscoped (`resource is None`), this is applying the entity's
+        `_default_` directive across every resource the entity has a bucket
+        for. A resource-specific override for this same entity (its own
+        `set_limits(..., resource=<res>, disabled=...)`, or the resource's
+        own `disabled` config) can outrank that `_default_` in
+        `resolve_disabled`'s walk, exactly as an entity's own override
+        outranks a resource-level fan-out in `_fanout_resource`. Each
+        discovered bucket's own resource is therefore re-resolved and
+        buckets whose effective value disagrees with the directive being
+        applied are left alone (ADR-125). When scoped to one resource, the
+        caller's directive is unambiguous for every discovered bucket, so
+        this check is skipped and all buckets are stamped unconditionally.
+
         Returns:
             Number of bucket items stamped.
         """
         stamped: set[str] = set()
+        effective_by_resource: dict[str, bool] = {}
+
         for _pass in range(2):
             for pk in await self._discover_entity_bucket_pks(entity_id, resource):
                 if pk in stamped:
                     continue
+                if resource is None:
+                    _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                    if bucket_resource not in effective_by_resource:
+                        effective, _level = await self.resolve_disabled(entity_id, bucket_resource)
+                        effective_by_resource[bucket_resource] = effective
+                    if effective_by_resource[bucket_resource] != disabled:
+                        # This resource has its own override that outranks
+                        # the entity-default directive being applied here.
+                        continue
                 await self._stamp_bucket_disabled(pk, disabled)
                 stamped.add(pk)
         return len(stamped)
