@@ -67,6 +67,13 @@ BUCKET_FIELD_RP = "rp"  # refill period (ms)
 BUCKET_FIELD_TC = "tc"  # total consumed counter (millitokens)
 BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 
+# Disable flag (ADR-125). Tri-state on config items: absent = inherit,
+# True/False = explicit. On bucket items the attribute is present only
+# when the bucket is effectively disabled, so the speculative guard can
+# stay `attribute_not_exists(disabled)`.
+CONFIG_FIELD_DISABLED = "disabled"
+BUCKET_FIELD_DISABLED = "disabled"
+
 # Infrastructure limit: DynamoDB partition write capacity ceiling (GHSA-76rv)
 # Auto-injected on every bucket to track per-partition write pressure.
 # When exhausted, the client doubles shard_count to spread writes.
@@ -81,6 +88,34 @@ LIMIT_ATTR_PREFIX = "l_"
 LIMIT_FIELD_CP = "cp"  # capacity (ceiling)
 LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
+
+
+def encode_disabled(value: bool | None) -> dict[str, Any] | None:
+    """Encode a tri-state disabled value as a DynamoDB attribute.
+
+    Args:
+        value: True, False, or None (meaning "inherit from the level above").
+
+    Returns:
+        A DynamoDB BOOL attribute, or None when the value is "inherit"
+        (the caller should omit the attribute entirely).
+    """
+    if value is None:
+        return None
+    return {"BOOL": value}
+
+
+def decode_disabled(item: dict[str, Any]) -> bool | None:
+    """Decode the tri-state disabled attribute from a DynamoDB item.
+
+    Returns:
+        True or False when explicitly set, None when the attribute is
+        absent (meaning "inherit from the level above").
+    """
+    attr = item.get(CONFIG_FIELD_DISABLED)
+    if not attr:
+        return None
+    return bool(attr.get("BOOL", False))
 
 
 def bucket_attr(limit_name: str, field: str) -> str:
