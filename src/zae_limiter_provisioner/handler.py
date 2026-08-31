@@ -205,9 +205,16 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
     if "Resources" in properties:
         resources = {}
         for resource_name, cfn_resource in properties["Resources"].items():
-            resources[resource_name] = {
+            resource_entry: dict[str, Any] = {
                 "limits": _cfn_limits_to_manifest(cfn_resource.get("Limits", {}))
             }
+            # Tri-state: only set "disabled" when "Disabled" is present in the CFN
+            # properties. An explicit False must survive (it's the carve-out value);
+            # an absent key must NOT be coerced to False, or every apply would
+            # re-enable anything the operator previously disabled out-of-band.
+            if "Disabled" in cfn_resource:
+                resource_entry["disabled"] = cfn_resource["Disabled"]
+            resources[resource_name] = resource_entry
         manifest["resources"] = resources
 
     if "Entities" in properties:
@@ -215,9 +222,12 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
         for entity_id, cfn_entity in properties["Entities"].items():
             entity_resources = {}
             for resource_name, cfn_res in cfn_entity.get("Resources", {}).items():
-                entity_resources[resource_name] = {
+                entity_resource_entry: dict[str, Any] = {
                     "limits": _cfn_limits_to_manifest(cfn_res.get("Limits", {}))
                 }
+                if "Disabled" in cfn_res:
+                    entity_resource_entry["disabled"] = cfn_res["Disabled"]
+                entity_resources[resource_name] = entity_resource_entry
             entities[entity_id] = {"resources": entity_resources}
         manifest["entities"] = entities
 

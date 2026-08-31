@@ -2,7 +2,75 @@
 
 from unittest.mock import MagicMock, patch
 
-from zae_limiter_provisioner.handler import on_event
+from zae_limiter_provisioner.handler import _cfn_properties_to_manifest, on_event
+
+
+class TestCfnPropertiesToManifestDisabled:
+    """Tests for the `Disabled` CFN property -> manifest `disabled` tri-state carry-through.
+
+    A silent drop here is the worst failure mode for a kill switch: the operator's
+    template update succeeds but nothing gets disabled. These tests pin the fix.
+    """
+
+    def test_resource_disabled_true_carried_through(self):
+        manifest = _cfn_properties_to_manifest(
+            {
+                "Namespace": "test-ns",
+                "Resources": {"gpt-4": {"Disabled": True, "Limits": {"rpm": {"Capacity": 1000}}}},
+            }
+        )
+        assert manifest["resources"]["gpt-4"]["disabled"] is True
+
+    def test_resource_disabled_absent_omitted(self):
+        """No `Disabled` key in CFN properties means "inherit" — must not appear at all."""
+        manifest = _cfn_properties_to_manifest(
+            {
+                "Namespace": "test-ns",
+                "Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": 1000}}}},
+            }
+        )
+        assert "disabled" not in manifest["resources"]["gpt-4"]
+
+    def test_entity_resource_disabled_false_carried_through(self):
+        """False is the carve-out value — it must round-trip, not be coerced or dropped."""
+        manifest = _cfn_properties_to_manifest(
+            {
+                "Namespace": "test-ns",
+                "Entities": {
+                    "vip-1": {
+                        "Resources": {
+                            "gpt-4": {
+                                "Disabled": False,
+                                "Limits": {"rpm": {"Capacity": 1000}},
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        entity_decl = manifest["entities"]["vip-1"]["resources"]["gpt-4"]
+        assert entity_decl["disabled"] is False
+
+    def test_entity_resource_disabled_absent_omitted(self):
+        manifest = _cfn_properties_to_manifest(
+            {
+                "Namespace": "test-ns",
+                "Entities": {
+                    "vip-1": {"Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": 1000}}}}}
+                },
+            }
+        )
+        assert "disabled" not in manifest["entities"]["vip-1"]["resources"]["gpt-4"]
+
+    def test_system_disabled_never_carried_through(self):
+        """System-level disable is out of scope (ADR-125) — no such CFN property exists to carry."""
+        manifest = _cfn_properties_to_manifest(
+            {
+                "Namespace": "test-ns",
+                "System": {"Limits": {"rpm": {"Capacity": 1000}}},
+            }
+        )
+        assert "disabled" not in manifest["system"]
 
 
 @patch("zae_limiter_provisioner.handler.urllib.request.urlopen")
@@ -222,9 +290,14 @@ class TestProvisionerHandler:
     def test_cfn_create_with_disabled_resource_fans_out(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
     ):
-        """CFN Create with a disabled resource also triggers fan-out."""
+        """CFN Create with a disabled resource also triggers fan-out.
+
+        `_cfn_properties_to_manifest` now carries the `Disabled` CFN property
+        through to the manifest's `disabled` key, so this end-to-end path must
+        fan out exactly like the CLI/YAML path does.
+        """
         mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
-        mock_client.query.return_value = {"Items": []}
+        mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]}
 
         event = {
             "RequestType": "Create",
@@ -242,9 +315,39 @@ class TestProvisionerHandler:
         }
         result = on_event(event, MagicMock())
         assert result["status"] == "applied"
-        # CFN properties -> manifest conversion doesn't carry "Disabled" through
-        # (out of scope for this task), so no fan-out query should occur.
+
+        mock_client.query.assert_called_once()
+        query_kwargs = mock_client.query.call_args.kwargs
+        assert query_kwargs["IndexName"] == "GSI2"
+        assert query_kwargs["ExpressionAttributeValues"][":pk"] == {"S": "ns123/RESOURCE#gpt-4"}
+        mock_client.update_item.assert_called_once()
+        update_expr = mock_client.update_item.call_args.kwargs["UpdateExpression"]
+        assert update_expr == "SET #disabled = :true"
+
+    def test_cfn_create_with_disabled_false_absent_key_skips_fanout(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """CFN Create with no `Disabled` property never touches bucket items (tri-state)."""
+        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+
+        event = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": "test-table",
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                "Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": 1000}}}},
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+        result = on_event(event, MagicMock())
+        assert result["status"] == "applied"
         mock_client.query.assert_not_called()
+        mock_client.update_item.assert_not_called()
 
     def test_cfn_update_event(self, mock_handler_boto3, mock_applier_boto3, mock_urlopen):
         """CloudFormation Update event diffs against previous state."""
