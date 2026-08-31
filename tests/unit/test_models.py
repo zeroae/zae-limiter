@@ -779,6 +779,19 @@ class TestInputValidation:
 
         validate_resource("openai/")  # Should not raise
 
+    def test_resource_name_allows_colon(self):
+        """Test resource names with colons are accepted (issue #434)."""
+        from zae_limiter.models import validate_resource
+
+        valid_names = [
+            "llama3:8b",
+            "mistral:7b-instruct",
+            "anthropic.claude-v2:1",
+            "openai/gpt-4:latest",  # colon combined with slash grouping
+        ]
+        for name in valid_names:
+            validate_resource(name)  # Should not raise
+
     def test_resource_name_rejects_leading_slash(self):
         """Test resource name starting with / is rejected (must start with letter)."""
         from zae_limiter.models import validate_resource
