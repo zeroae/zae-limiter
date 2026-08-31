@@ -480,6 +480,7 @@ class SyncRepository:
             manager.create_stack(stack_options=self._stack_options)
             if self._stack_options.enable_aggregator:
                 manager.deploy_lambda_code()
+            manager.deploy_provisioner_code()
         self._write_audit_retention_config()
 
     def create_stack(self, stack_options: StackOptions | None = None) -> None:
@@ -1029,6 +1030,7 @@ class SyncRepository:
 
         with SyncStackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             manager.deploy_lambda_code()
+            manager.deploy_provisioner_code()
             self.set_version_record(
                 schema_version=get_schema_version(),
                 lambda_version=__version__,

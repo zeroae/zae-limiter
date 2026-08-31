@@ -474,7 +474,28 @@ def deploy(
                         )
                         sys.exit(1)
 
-                # Step 3: Initialize version record in DynamoDB
+                # Step 3: Deploy provisioner Lambda code (always created)
+                if wait:
+                    click.echo()
+                    click.echo("Deploying provisioner Lambda function code...")
+
+                    try:
+                        provisioner_result = await manager.deploy_provisioner_code(wait=True)
+
+                        if provisioner_result.get("status") == "deployed":
+                            size_kb = provisioner_result.get("size_bytes", 0) / 1024
+                            click.echo(f"✓ Provisioner code deployed ({size_kb:.1f} KB)")
+                            click.echo(f"  Function ARN: {provisioner_result['function_arn']}")
+                    except Exception as e:
+                        click.echo(f"⚠️  Provisioner deployment failed: {e}", err=True)
+                        click.echo(
+                            "  Stack was created successfully, but provisioner code "
+                            "needs manual deployment.",
+                            err=True,
+                        )
+                        sys.exit(1)
+
+                # Step 4: Initialize version record in DynamoDB
                 if wait:
                     from . import __version__
                     from .repository import Repository
@@ -494,18 +515,17 @@ def deploy(
                     )
                     click.echo(f"✓ Version record initialized (schema {get_schema_version()})")
 
-                    # Step 4: Register "default" namespace
+                    # Step 5: Register "default" namespace
                     await repo.register_namespace("default")
                     click.echo("✓ Default namespace registered")
 
                 if not wait:
                     click.echo()
                     click.echo("Stack creation initiated. Use 'status' command to check progress.")
-                    if stack_options.enable_aggregator:
-                        click.echo(
-                            "Note: Lambda code will not be deployed until stack is ready. "
-                            "Run 'zae-limiter deploy' again with --wait to deploy Lambda."
-                        )
+                    click.echo(
+                        "Note: Lambda code will not be deployed until stack is ready. "
+                        "Run 'zae-limiter deploy' again with --wait to deploy Lambda."
+                    )
 
             except Exception as e:
                 click.echo(f"✗ Deployment failed: {e}", err=True)
@@ -1382,7 +1402,7 @@ def upgrade(
 
             async with StackManager(name, region, endpoint_url) as manager:
                 # Step 1: Update Lambda code
-                click.echo("[1/3] Deploying Lambda code...")
+                click.echo("[1/4] Deploying Lambda code...")
                 try:
                     result = await manager.deploy_lambda_code(wait=True)
 
@@ -1394,8 +1414,21 @@ def upgrade(
                     click.echo(f"✗ Lambda deployment failed: {e}", err=True)
                     sys.exit(1)
 
-                # Step 2: Ensure discovery tags
-                click.echo("[2/3] Ensuring discovery tags...")
+                # Step 2: Update provisioner Lambda code
+                click.echo("[2/4] Deploying provisioner code...")
+                try:
+                    provisioner_result = await manager.deploy_provisioner_code(wait=True)
+
+                    if provisioner_result.get("status") == "deployed":
+                        size_kb = provisioner_result.get("size_bytes", 0) / 1024
+                        click.echo(f"      Provisioner code deployed ({size_kb:.1f} KB)")
+
+                except Exception as e:
+                    click.echo(f"✗ Provisioner deployment failed: {e}", err=True)
+                    sys.exit(1)
+
+                # Step 3: Ensure discovery tags
+                click.echo("[3/4] Ensuring discovery tags...")
                 try:
                     tags_added = await manager.ensure_tags()
                     if tags_added:
@@ -1406,8 +1439,8 @@ def upgrade(
                     click.echo(f"⚠️  Tag update failed: {e}", err=True)
                     # Non-fatal — continue with upgrade
 
-                # Step 3: Update version record
-                click.echo("[3/3] Updating version record...")
+                # Step 4: Update version record
+                click.echo("[4/4] Updating version record...")
                 await repo.set_version_record(
                     schema_version=get_schema_version(),
                     lambda_version=__version__,
