@@ -23,9 +23,10 @@ IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-:@]*$")
 # Used for limit names (rpm, tpm)
 NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.\-]*$")
 
-# Resources: letter start, then alphanumeric + _ - . /
-# Allows provider/model grouping (openai/gpt-4, anthropic/claude-3)
-RESOURCE_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.\-/]*$")
+# Resources: letter start, then alphanumeric + _ - . / :
+# Allows provider/model grouping (openai/gpt-4, anthropic/claude-3) and
+# colon-separated tags (llama3:8b, anthropic.claude-v2:1)
+RESOURCE_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.\-/:]*$")
 
 # The '#' character is used as a key delimiter in DynamoDB and must be forbidden
 FORBIDDEN_CHAR = "#"
@@ -110,7 +111,8 @@ def validate_resource(value: str, field_name: str = "resource") -> None:
     """
     Validate a resource name.
 
-    Resource names allow "/" for provider/model grouping (e.g., openai/gpt-4).
+    Resource names allow "/" for provider/model grouping (e.g., openai/gpt-4)
+    and ":" for tag/version suffixes (e.g., llama3:8b, anthropic.claude-v2:1).
 
     Args:
         value: The resource name to validate
@@ -135,7 +137,7 @@ def validate_resource(value: str, field_name: str = "resource") -> None:
             field_name,
             value,
             "must start with a letter and contain only alphanumeric, "
-            "underscore, hyphen, dot, or slash characters",
+            "underscore, hyphen, dot, slash, or colon characters",
         )
 
 

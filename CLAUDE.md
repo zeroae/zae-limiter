@@ -571,14 +571,16 @@ Resource names (used in `acquire()`, `set_resource_defaults()`, etc.) have diffe
 | Hyphen `-` | ✅ |
 | Dot `.` | ✅ |
 | Slash `/` | ✅ (for provider/model grouping) |
+| Colon `:` | ✅ (for tag/version suffixes) |
 | Hash `#` | ❌ (DynamoDB delimiter) |
 
 **Valid resource names:**
 - `api`, `gpt-4`, `gpt-3.5-turbo`
 - `openai/gpt-4`, `anthropic/claude-3` (provider/model grouping)
 - `anthropic/claude-3/opus` (nested paths)
+- `llama3:8b`, `anthropic.claude-v2:1` (colon-separated tags, e.g. Ollama/Bedrock model IDs)
 
-**Note:** Limit names (e.g., `rpm`, `tpm`) do NOT allow slashes.
+**Note:** Limit names (e.g., `rpm`, `tpm`) do NOT allow slashes or colons.
 
 ### Hot Partition Risk Mitigation (Issue #116)
 
