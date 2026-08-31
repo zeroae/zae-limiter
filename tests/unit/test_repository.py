@@ -2582,6 +2582,7 @@ class TestEntityConfigRegistry:
             "CancellationReasons": [{"Code": "ValidationError"}],  # Not ConditionalCheckFailed
         }
         mock_client = AsyncMock()
+        mock_client.get_item = AsyncMock(return_value={})
         mock_client.transact_write_items = AsyncMock(
             side_effect=ClientError(error_response, "TransactWriteItems")
         )
@@ -2604,6 +2605,7 @@ class TestEntityConfigRegistry:
         # Mock the client to raise a different error type
         error_response = {"Error": {"Code": "InternalServerError"}}
         mock_client = AsyncMock()
+        mock_client.get_item = AsyncMock(return_value={})
         mock_client.transact_write_items = AsyncMock(
             side_effect=ClientError(error_response, "TransactWriteItems")
         )

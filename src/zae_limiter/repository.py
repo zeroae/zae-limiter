@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Sentinel meaning "keep whatever `disabled` value is already stored" (ADR-125).
+#: Distinct from None, which explicitly means "inherit from the level above".
+_PRESERVE_DISABLED: Any = object()
+
 
 class Repository:
     """Async DynamoDB repository for rate limiter data.
@@ -2512,6 +2516,8 @@ class Repository:
         limits: list[Limit],
         resource: str = schema.DEFAULT_RESOURCE,
         principal: str | None = None,
+        *,
+        disabled: bool | None = _PRESERVE_DISABLED,
     ) -> None:
         """
         Store limit configs for an entity (composite format, ADR-114).
@@ -2525,8 +2531,16 @@ class Repository:
             limits: List of Limit configurations to store
             resource: Resource name (defaults to "_default_")
             principal: Caller identity for audit logging
+            disabled: Tri-state disabled flag. Defaults to preserving whatever
+                value is already stored (this is a full-replace PutItem, so an
+                explicit value must be passed to change it; see ADR-125).
         """
         client = await self._get_client()
+
+        # Full-replace PutItem would drop `disabled`; preserve it unless the
+        # caller passed an explicit value (ADR-125).
+        if disabled is _PRESERVE_DISABLED:
+            disabled = await self.get_entity_disabled(entity_id, resource)
 
         # Build composite config item with all limits
         item: dict[str, Any] = {
@@ -2545,6 +2559,10 @@ class Repository:
 
         # Add l_* attributes for each limit
         self._serialize_composite_limits(limits, item)
+
+        disabled_attr = schema.encode_disabled(disabled)
+        if disabled_attr is not None:
+            item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
 
         # Use transaction to atomically create config + increment registry (issue #288)
         # This prevents race conditions where concurrent creates both increment
@@ -2805,6 +2823,26 @@ class Repository:
 
         return self._deserialize_composite_limits(item)
 
+    async def get_entity_disabled(self, entity_id: str, resource: str) -> bool | None:
+        """Read the tri-state disabled flag from an entity config item.
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+            ConsistentRead=False,
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        return schema.decode_disabled(item)
+
     async def delete_limits(
         self,
         entity_id: str,
@@ -2981,6 +3019,8 @@ class Repository:
         resource: str,
         limits: list[Limit],
         principal: str | None = None,
+        *,
+        disabled: bool | None = _PRESERVE_DISABLED,
     ) -> None:
         """
         Store default limit configs for a resource (composite format, ADR-114).
@@ -2992,9 +3032,17 @@ class Repository:
             resource: Resource name
             limits: List of Limit configurations to store
             principal: Caller identity for audit logging
+            disabled: Tri-state disabled flag. Defaults to preserving whatever
+                value is already stored (this is a full-replace PutItem, so an
+                explicit value must be passed to change it; see ADR-125).
         """
         validate_resource(resource)
         client = await self._get_client()
+
+        # Full-replace PutItem would drop `disabled`; preserve it unless the
+        # caller passed an explicit value (ADR-125).
+        if disabled is _PRESERVE_DISABLED:
+            disabled = await self.get_resource_disabled(resource)
 
         # Build composite config item with all limits
         item: dict[str, Any] = {
@@ -3009,6 +3057,10 @@ class Repository:
 
         # Add l_* attributes for each limit
         self._serialize_composite_limits(limits, item)
+
+        disabled_attr = schema.encode_disabled(disabled)
+        if disabled_attr is not None:
+            item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
 
         # Single PutItem replaces any existing config for this resource
         await client.put_item(TableName=self.table_name, Item=item)
@@ -3068,6 +3120,27 @@ class Repository:
             return []
 
         return self._deserialize_composite_limits(item)
+
+    async def get_resource_disabled(self, resource: str) -> bool | None:
+        """Read the tri-state disabled flag from a resource config item.
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        validate_resource(resource)
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+                "SK": {"S": schema.sk_config()},
+            },
+            ConsistentRead=False,
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        return schema.decode_disabled(item)
 
     async def delete_resource_defaults(
         self,

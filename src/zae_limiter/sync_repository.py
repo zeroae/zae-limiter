@@ -41,6 +41,7 @@ from .sync_repository_protocol import SpeculativeFailureReason, SpeculativeResul
 if TYPE_CHECKING:
     from .sync_repository_builder import SyncRepositoryBuilder
 logger = logging.getLogger(__name__)
+_PRESERVE_DISABLED: Any = object()
 
 
 class SyncRepository:
@@ -2066,6 +2067,8 @@ class SyncRepository:
         limits: list[Limit],
         resource: str = schema.DEFAULT_RESOURCE,
         principal: str | None = None,
+        *,
+        disabled: bool | None = _PRESERVE_DISABLED,
     ) -> None:
         """
         Store limit configs for an entity (composite format, ADR-114).
@@ -2079,8 +2082,13 @@ class SyncRepository:
             limits: List of Limit configurations to store
             resource: Resource name (defaults to "_default_")
             principal: Caller identity for audit logging
+            disabled: Tri-state disabled flag. Defaults to preserving whatever
+                value is already stored (this is a full-replace PutItem, so an
+                explicit value must be passed to change it; see ADR-125).
         """
         client = self._get_client()
+        if disabled is _PRESERVE_DISABLED:
+            disabled = self.get_entity_disabled(entity_id, resource)
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
@@ -2093,6 +2101,9 @@ class SyncRepository:
             "GSI4SK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
         }
         self._serialize_composite_limits(limits, item)
+        disabled_attr = schema.encode_disabled(disabled)
+        if disabled_attr is not None:
+            item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
         try:
             client.transact_write_items(
                 TransactItems=[
@@ -2305,6 +2316,26 @@ class SyncRepository:
             return []
         return self._deserialize_composite_limits(item)
 
+    def get_entity_disabled(self, entity_id: str, resource: str) -> bool | None:
+        """Read the tri-state disabled flag from an entity config item.
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        client = self._get_client()
+        response = client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+            ConsistentRead=False,
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        return schema.decode_disabled(item)
+
     def delete_limits(
         self, entity_id: str, resource: str = schema.DEFAULT_RESOURCE, principal: str | None = None
     ) -> None:
@@ -2441,7 +2472,12 @@ class SyncRepository:
         return sorted(resources)
 
     def set_resource_defaults(
-        self, resource: str, limits: list[Limit], principal: str | None = None
+        self,
+        resource: str,
+        limits: list[Limit],
+        principal: str | None = None,
+        *,
+        disabled: bool | None = _PRESERVE_DISABLED,
     ) -> None:
         """
         Store default limit configs for a resource (composite format, ADR-114).
@@ -2453,9 +2489,14 @@ class SyncRepository:
             resource: Resource name
             limits: List of Limit configurations to store
             principal: Caller identity for audit logging
+            disabled: Tri-state disabled flag. Defaults to preserving whatever
+                value is already stored (this is a full-replace PutItem, so an
+                explicit value must be passed to change it; see ADR-125).
         """
         validate_resource(resource)
         client = self._get_client()
+        if disabled is _PRESERVE_DISABLED:
+            disabled = self.get_resource_disabled(resource)
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
             "SK": {"S": schema.sk_config()},
@@ -2465,6 +2506,9 @@ class SyncRepository:
             "GSI4SK": {"S": schema.pk_resource(self._namespace_id, resource)},
         }
         self._serialize_composite_limits(limits, item)
+        disabled_attr = schema.encode_disabled(disabled)
+        if disabled_attr is not None:
+            item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
         client.put_item(TableName=self.table_name, Item=item)
         client.update_item(
             TableName=self.table_name,
@@ -2507,6 +2551,27 @@ class SyncRepository:
         if not item:
             return []
         return self._deserialize_composite_limits(item)
+
+    def get_resource_disabled(self, resource: str) -> bool | None:
+        """Read the tri-state disabled flag from a resource config item.
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        validate_resource(resource)
+        client = self._get_client()
+        response = client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+                "SK": {"S": schema.sk_config()},
+            },
+            ConsistentRead=False,
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        return schema.decode_disabled(item)
 
     def delete_resource_defaults(self, resource: str, principal: str | None = None) -> None:
         """
