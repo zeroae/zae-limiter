@@ -4,6 +4,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import RateLimiter, schema
+from zae_limiter.exceptions import RateLimitError, ResourceDisabled
 from zae_limiter.models import Limit
 from zae_limiter.repository import Repository
 
@@ -306,9 +307,11 @@ class TestClearDisabledRevertsToInherited:
     async def test_clear_resource_disabled_reverts_buckets_to_inherited_value(
         self, disable_limiter, disable_repo
     ):
-        await disable_repo.set_resource_defaults(
-            "gpt-4", [Limit.per_minute("rpm", 100)], disabled=True
-        )
+        # The bucket must be created while the resource is still enabled
+        # (Task 7 enforcement blocks acquire() on an already-disabled
+        # resource); disable_resource() below both flips the config to
+        # disabled=True and stamps the now-existing bucket.
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
         async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
             pass
         await disable_repo.disable_resource("gpt-4")
@@ -516,3 +519,146 @@ class TestDiscoverBucketPksPagination:
 
         pks = await disable_repo._discover_resource_bucket_pks("gpt-4")
         assert len(pks) == 1
+
+
+@pytest.mark.asyncio
+class TestEnforcement:
+    async def test_fast_path_raises_resource_disabled(self, disable_limiter, disable_repo):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        # First acquire creates the bucket while still enabled.
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        await disable_repo.disable_resource("gpt-4")
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+        assert exc_info.value.resource == "gpt-4"
+        assert exc_info.value.entity_id == "user-1"
+
+    async def test_slow_path_raises_before_creating_a_bucket(self, disable_limiter, disable_repo):
+        # No bucket exists, so the fast-path guard cannot fire.
+        await disable_repo.set_resource_defaults(
+            "gpt-4", [Limit.per_minute("rpm", 100)], disabled=True
+        )
+        with pytest.raises(ResourceDisabled):
+            async with disable_limiter.acquire("brand-new", "gpt-4", {"rpm": 1}):
+                pass
+        assert await disable_repo.get_buckets("brand-new") == []
+
+    async def test_disabled_is_not_a_rate_limit_error(self, disable_limiter, disable_repo):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        await disable_repo.disable_resource("gpt-4")
+
+        # Callers catching RateLimitError must NOT swallow a disabled resource.
+        with pytest.raises(ResourceDisabled):
+            try:
+                async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+            except RateLimitError:
+                pytest.fail("ResourceDisabled must not be caught as RateLimitError")
+
+    async def test_entity_override_still_admitted_after_resource_disable(
+        self, disable_limiter, disable_repo
+    ):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        await disable_repo.set_limits(
+            "vip-1", [Limit.per_minute("rpm", 100)], resource="gpt-4", disabled=False
+        )
+        for entity in ("user-1", "vip-1"):
+            async with disable_limiter.acquire(entity, "gpt-4", {"rpm": 1}):
+                pass
+        await disable_repo.disable_resource("gpt-4")
+
+        # The carve-out keeps working...
+        async with disable_limiter.acquire("vip-1", "gpt-4", {"rpm": 1}):
+            pass
+        # ...while everyone else is blocked.
+        with pytest.raises(ResourceDisabled):
+            async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
+    async def test_enable_restores_access(self, disable_limiter, disable_repo):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        await disable_repo.disable_resource("gpt-4")
+        with pytest.raises(ResourceDisabled):
+            async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
+        await disable_repo.enable_resource("gpt-4")
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+
+    async def test_on_unavailable_allow_does_not_swallow_disabled(self, disable_repo):
+        await disable_repo.set_system_defaults(
+            [Limit.per_minute("rpm", 100)], on_unavailable="allow"
+        )
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        limiter = RateLimiter(repository=disable_repo)
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        await disable_repo.disable_resource("gpt-4")
+
+        # `allow` covers infrastructure unavailability, not policy decisions.
+        with pytest.raises(ResourceDisabled):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
+    async def test_cascade_parent_disabled_compensates_child_and_raises(
+        self, disable_limiter, disable_repo
+    ):
+        # Covers the DISABLED branch of _handle_nested_parent_failure: the
+        # child's speculatively consumed tokens must be returned before the
+        # exception propagates.
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        await disable_repo.create_entity("parent-1")
+        await disable_repo.create_entity("child-1", parent_id="parent-1", cascade=True)
+
+        # First acquire populates the entity cache (cascade=True, parent_id),
+        # so the second acquire below takes the parallel child+parent
+        # speculative path and can hit _handle_nested_parent_failure.
+        async with disable_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        # Disable only the parent's bucket; the child stays enabled.
+        assert await disable_repo.disable_entity("parent-1", resource="gpt-4") == 1
+
+        tk_before = {
+            b.limit_name: b.tokens_milli for b in await disable_repo.get_buckets("child-1")
+        }
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with disable_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+                pass
+        assert exc_info.value.entity_id == "parent-1"
+        assert exc_info.value.resource == "gpt-4"
+        assert exc_info.value.level == "bucket"
+
+        # The child's tokens from this failed attempt must have been
+        # compensated (returned) rather than left consumed.
+        tk_after = {b.limit_name: b.tokens_milli for b in await disable_repo.get_buckets("child-1")}
+        assert tk_after == tk_before
+
+    async def test_slow_path_parent_disabled_raises_before_creating_buckets(
+        self, disable_limiter, disable_repo
+    ):
+        # Covers the parent slow-path gate in _do_acquire: a brand-new cascade
+        # entity whose parent is disabled must be rejected before either the
+        # child or the parent bucket is created.
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        await disable_repo.create_entity("parent-2")
+        await disable_repo.create_entity("child-2", parent_id="parent-2", cascade=True)
+        await disable_repo.disable_entity("parent-2")
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with disable_limiter.acquire("child-2", "gpt-4", {"rpm": 1}):
+                pass
+        assert exc_info.value.entity_id == "parent-2"
+        assert exc_info.value.level == "entity_default"
+
+        assert await disable_repo.get_buckets("child-2") == []
+        assert await disable_repo.get_buckets("parent-2") == []

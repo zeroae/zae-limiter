@@ -31,13 +31,16 @@ class SpeculativeFailureReason(Enum):
     """Classifies why a speculative write failed (GHSA-76rv).
 
     Used by the limiter to decide the recovery path without
-    inspecting individual BucketState token values.
+    inspecting individual BucketState token values. DISABLED means the bucket
+    is stamped disabled (ADR-125); the limiter must raise ResourceDisabled
+    rather than retry or reshard.
     """
 
     APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
     WCU_EXHAUSTED = "wcu_exhausted"
     BOTH_EXHAUSTED = "both_exhausted"
     BUCKET_MISSING = "bucket_missing"
+    DISABLED = "disabled"
 
 
 @dataclass

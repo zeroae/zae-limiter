@@ -2377,6 +2377,12 @@ class Repository:
         attr_values[":now_epoch"] = {"N": str(now_epoch)}
         condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
 
+        # Reject buckets stamped as disabled (ADR-125). The attribute is present
+        # only when the bucket is effectively disabled, so this costs nothing on
+        # the enabled path.
+        attr_names["#disabled"] = schema.BUCKET_FIELD_DISABLED
+        condition_parts.append("attribute_not_exists(#disabled)")
+
         condition_expr = " AND ".join(condition_parts)
 
         try:
@@ -2417,6 +2423,17 @@ class Repository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+
+                    # Disabled wins over every other classification: retrying on
+                    # another shard or doubling shards cannot help (ADR-125).
+                    if old_item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
+                        return SpeculativeResult(
+                            success=False,
+                            old_buckets=old_buckets,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
+                            failure_reason=SpeculativeFailureReason.DISABLED,
+                        )
 
                     # Classify failure reason (GHSA-76rv)
                     wcu_exhausted = any(

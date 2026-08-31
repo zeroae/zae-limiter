@@ -1942,6 +1942,8 @@ class SyncRepository:
         attr_names["#ttl"] = "ttl"
         attr_values[":now_epoch"] = {"N": str(now_epoch)}
         condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
+        attr_names["#disabled"] = schema.BUCKET_FIELD_DISABLED
+        condition_parts.append("attribute_not_exists(#disabled)")
         condition_expr = " AND ".join(condition_parts)
         try:
             response = client.update_item(
@@ -1978,6 +1980,14 @@ class SyncRepository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    if old_item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
+                        return SpeculativeResult(
+                            success=False,
+                            old_buckets=old_buckets,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
+                            failure_reason=SpeculativeFailureReason.DISABLED,
+                        )
                     wcu_exhausted = any(
                         b.limit_name == schema.WCU_LIMIT_NAME and b.tokens_milli < 1000
                         for b in old_buckets
