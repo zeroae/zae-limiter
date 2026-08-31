@@ -700,6 +700,9 @@ class SyncRateLimiter:
                         )
                     )
             else:
+                if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
+                    self._compensate_child(entity_id, resource, consume)
+                    raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
                 if parent_result.old_buckets is None:
                     self._compensate_child(entity_id, resource, consume)
                     return None

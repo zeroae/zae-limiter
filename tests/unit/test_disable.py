@@ -662,3 +662,55 @@ class TestEnforcement:
 
         assert await disable_repo.get_buckets("child-2") == []
         assert await disable_repo.get_buckets("parent-2") == []
+
+    async def test_cache_miss_cascade_parent_disabled_compensates_child_and_raises(
+        self, disable_limiter, disable_repo
+    ):
+        # Regression test: the "cache miss cascade" sequential path in
+        # _try_speculative_acquire (the `elif result.cascade and
+        # result.parent_id:` branch) must guard against a disabled parent
+        # the same way the cache-hit parallel path
+        # (_handle_nested_parent_failure) already does. Without the guard,
+        # `would_refill_satisfy` sees the parent's tokens still intact (a
+        # disabled bucket isn't drained) and falls through to
+        # `_try_parent_only_acquire`, which has no disabled check of its own
+        # and would silently admit the request.
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        await disable_repo.create_entity("parent-3")
+        await disable_repo.create_entity("child-3", parent_id="parent-3", cascade=True)
+
+        # Seed both buckets via a *separate* Repository instance sharing the
+        # same moto-backed table, so disable_repo's own entity cache stays
+        # cold for "child-3". That cold cache is what forces the sequential
+        # cache-miss path below instead of the parallel cache-hit path.
+        seed_repo = Repository(
+            name="test-disable", region="us-east-1", _skip_deprecation_warning=True
+        )
+        seed_limiter = RateLimiter(repository=seed_repo)
+        async with seed_limiter:
+            async with seed_limiter.acquire("child-3", "gpt-4", {"rpm": 1}):
+                pass
+        await seed_repo.close()
+
+        # Confirm disable_repo's cache never saw "child-3" — the precondition
+        # for taking the cache-miss branch.
+        assert (disable_repo._namespace_id, "child-3") not in disable_repo._entity_cache
+
+        # Disable only the parent's bucket; the child stays enabled.
+        assert await disable_repo.disable_entity("parent-3", resource="gpt-4") == 1
+
+        tk_before = {
+            b.limit_name: b.tokens_milli for b in await disable_repo.get_buckets("child-3")
+        }
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with disable_limiter.acquire("child-3", "gpt-4", {"rpm": 1}):
+                pass
+        assert exc_info.value.entity_id == "parent-3"
+        assert exc_info.value.resource == "gpt-4"
+        assert exc_info.value.level == "bucket"
+
+        # The child's tokens from this failed attempt must have been
+        # compensated (returned) rather than left consumed.
+        tk_after = {b.limit_name: b.tokens_milli for b in await disable_repo.get_buckets("child-3")}
+        assert tk_after == tk_before

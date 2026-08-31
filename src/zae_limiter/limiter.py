@@ -829,6 +829,14 @@ class RateLimiter:
                         )
                     )
             else:
+                # Disabled wins over every other classification: no refill
+                # reasoning or slow-path fallback can help (ADR-125). The
+                # child's speculatively consumed tokens must be returned
+                # before the exception propagates.
+                if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
+                    await self._compensate_child(entity_id, resource, consume)
+                    raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
+
                 if parent_result.old_buckets is None:
                     await self._compensate_child(entity_id, resource, consume)
                     return None
