@@ -55,6 +55,7 @@ from .exceptions import (
     RateLimitError,
     RateLimiterUnavailable,
     RateLimitExceeded,
+    ResourceDisabled,
     StackAlreadyExistsError,
     StackOperationError,
     ValidationError,
@@ -166,4 +167,6 @@ __all__ = [
     "ValidationError",
     "InvalidIdentifierError",
     "InvalidNameError",
+    # Exceptions - Configuration State
+    "ResourceDisabled",
 ]

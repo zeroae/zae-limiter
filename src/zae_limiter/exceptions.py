@@ -402,3 +402,37 @@ class InvalidNameError(ValidationError):
     """
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Configuration State Exceptions
+# ---------------------------------------------------------------------------
+
+
+class ResourceDisabled(ZAELimiterError):  # noqa: N818
+    """
+    Raised when a resource is disabled for the requesting entity.
+
+    This is a configuration state, not a throttling signal: it does not
+    inherit from RateLimitError and carries no retry hint, because retrying
+    will not help. Map it to 403, not 429.
+
+    The resolved value comes from the first level that sets ``disabled``
+    explicitly, walking entity -> entity default -> resource (ADR-125).
+
+    Attributes:
+        entity_id: Entity that attempted the acquire
+        resource: Resource that is disabled
+        level: Config level that decided it ("entity", "entity_default",
+            "resource", or "bucket" when the decision came from the
+            denormalized bucket attribute on the fast path)
+    """
+
+    def __init__(self, entity_id: str, resource: str, level: str) -> None:
+        self.entity_id = entity_id
+        self.resource = resource
+        self.level = level
+        super().__init__(
+            f"Resource '{resource}' is disabled for entity '{entity_id}' "
+            f"(disabled at {level} level)"
+        )

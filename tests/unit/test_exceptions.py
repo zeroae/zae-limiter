@@ -629,3 +629,38 @@ class TestLimitStatusDeficit:
             retry_after_seconds=10.0,
         )
         assert status.deficit == 15  # 5 - (-10) = 15
+
+
+class TestResourceDisabled:
+    def test_attributes(self):
+        from zae_limiter.exceptions import ResourceDisabled
+
+        exc = ResourceDisabled(entity_id="user-1", resource="gpt-4", level="resource")
+        assert exc.entity_id == "user-1"
+        assert exc.resource == "gpt-4"
+        assert exc.level == "resource"
+
+    def test_message_names_entity_and_resource(self):
+        from zae_limiter.exceptions import ResourceDisabled
+
+        exc = ResourceDisabled(entity_id="user-1", resource="gpt-4", level="resource")
+        assert "user-1" in str(exc)
+        assert "gpt-4" in str(exc)
+
+    def test_is_zae_limiter_error_but_not_rate_limit_error(self):
+        from zae_limiter.exceptions import (
+            RateLimitError,
+            ResourceDisabled,
+            ZAELimiterError,
+        )
+
+        exc = ResourceDisabled(entity_id="user-1", resource="gpt-4", level="entity")
+        assert isinstance(exc, ZAELimiterError)
+        # A disabled resource is not a throttling signal.
+        assert not isinstance(exc, RateLimitError)
+
+    def test_exported_from_package_root(self):
+        import zae_limiter
+
+        assert hasattr(zae_limiter, "ResourceDisabled")
+        assert "ResourceDisabled" in zae_limiter.__all__

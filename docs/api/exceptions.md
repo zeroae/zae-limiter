@@ -22,9 +22,10 @@ ZAELimiterError (base)
 ├── VersionError
 │   ├── VersionMismatchError
 │   └── IncompatibleSchemaError
-└── ValidationError
-    ├── InvalidIdentifierError
-    └── InvalidNameError
+├── ValidationError
+│   ├── InvalidIdentifierError
+│   └── InvalidNameError
+└── ResourceDisabled
 ```
 
 ## Base Exception
@@ -137,6 +138,12 @@ ZAELimiterError (base)
       show_root_heading: true
       show_source: false
       heading_level: 3
+
+## Configuration State Exceptions
+
+### ResourceDisabled
+
+::: zae_limiter.ResourceDisabled
 
 ## Exception Handling Examples
 
