@@ -89,3 +89,60 @@ class TestConfigDisabledPersistence:
         # A caller that knows nothing about `disabled` must not re-enable it.
         await disable_repo.set_limits("user-3", [Limit.per_minute("rpm", 20)], resource="gpt-4")
         assert await disable_repo.get_entity_disabled("user-3", "gpt-4") is True
+
+
+@pytest.mark.asyncio
+class TestResolveDisabled:
+    async def test_nothing_set_resolves_false(self, disable_repo):
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, None)
+
+    async def test_resource_disabled_applies_to_entity(self, disable_repo):
+        await disable_repo.set_resource_defaults(
+            "gpt-4", [Limit.per_minute("rpm", 100)], disabled=True
+        )
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (True, "resource")
+
+    async def test_entity_false_overrides_resource_true(self, disable_repo):
+        await disable_repo.set_resource_defaults(
+            "gpt-4", [Limit.per_minute("rpm", 100)], disabled=True
+        )
+        await disable_repo.set_limits(
+            "vip-1", [Limit.per_minute("rpm", 10)], resource="gpt-4", disabled=False
+        )
+        # The whole point of the feature: a carve-out for one entity.
+        assert await disable_repo.resolve_disabled("vip-1", "gpt-4") == (False, "entity")
+        # Other entities stay disabled.
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (True, "resource")
+
+    async def test_entity_true_overrides_resource_unset(self, disable_repo):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        await disable_repo.set_limits(
+            "bad-1", [Limit.per_minute("rpm", 10)], resource="gpt-4", disabled=True
+        )
+        assert await disable_repo.resolve_disabled("bad-1", "gpt-4") == (True, "entity")
+
+    async def test_entity_default_disables_all_resources_for_entity(self, disable_repo):
+        await disable_repo.set_limits(
+            "banned-1", [Limit.per_minute("rpm", 10)], resource="_default_", disabled=True
+        )
+        assert await disable_repo.resolve_disabled("banned-1", "gpt-4") == (
+            True,
+            "entity_default",
+        )
+
+    async def test_resource_specific_entity_beats_entity_default(self, disable_repo):
+        await disable_repo.set_limits(
+            "user-1", [Limit.per_minute("rpm", 10)], resource="_default_", disabled=True
+        )
+        await disable_repo.set_limits(
+            "user-1", [Limit.per_minute("rpm", 10)], resource="gpt-4", disabled=False
+        )
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, "entity")
+
+    async def test_disabled_resolves_independently_of_limits(self, disable_repo):
+        # The resource sets `disabled` but the entity supplies the limits.
+        # The limits walk stops at "entity"; the disabled walk must still
+        # reach "resource".
+        await disable_repo.set_resource_defaults("gpt-4", [], disabled=True)
+        await disable_repo.set_limits("user-1", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (True, "resource")

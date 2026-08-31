@@ -4366,6 +4366,66 @@ class Repository:
             logger.warning("DynamoDB unavailable, defaulting on_unavailable=block")
             return "block"
 
+    async def resolve_disabled(
+        self,
+        entity_id: str,
+        resource: str,
+    ) -> tuple[bool, str | None]:
+        """Resolve the effective disabled state for an entity+resource (ADR-125).
+
+        Walks entity(resource) -> entity(_default_) -> resource and returns the
+        first level that sets `disabled` explicitly. This walk is independent of
+        the limits walk in resolve_limits(): a level that sets `disabled` but
+        defines no limits still decides the outcome, which is what lets an
+        entity-level `disabled: false` re-admit one entity to a disabled resource.
+
+        Deliberately uncached — see ADR-125. Called only on the slow path and by
+        the eager fan-out, never on the speculative fast path.
+
+        Args:
+            entity_id: Entity to resolve for
+            resource: Resource being accessed
+
+        Returns:
+            (effective_disabled, deciding_level) where deciding_level is
+            "entity", "entity_default", "resource", or None if nothing set it.
+        """
+        ns = self._namespace_id
+        levels: list[tuple[str, str, str]] = [
+            ("entity", schema.pk_entity(ns, entity_id), schema.sk_config(resource)),
+        ]
+        if resource != schema.DEFAULT_RESOURCE:
+            levels.append(
+                (
+                    "entity_default",
+                    schema.pk_entity(ns, entity_id),
+                    schema.sk_config(schema.DEFAULT_RESOURCE),
+                )
+            )
+        levels.append(("resource", schema.pk_resource(ns, resource), schema.sk_config()))
+
+        client = await self._get_client()
+        response = await client.batch_get_item(
+            RequestItems={
+                self.table_name: {
+                    "Keys": [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels],
+                    "ConsistentRead": False,
+                }
+            }
+        )
+        items = response.get("Responses", {}).get(self.table_name, [])
+        by_key = {(i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", "")): i for i in items}
+
+        for level, pk, sk in levels:
+            item = by_key.get((pk, sk))
+            if item is None:
+                continue
+            value = schema.decode_disabled(item)
+            if value is not None:
+                return value, level
+
+        return False, None
+
     async def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""
         await self._config_cache.invalidate_async()

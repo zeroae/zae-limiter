@@ -981,6 +981,14 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def resolve_disabled(
+        self,
+        entity_id: str,
+        resource: str,
+    ) -> "tuple[bool, str | None]":
+        """Resolve the effective disabled state for an entity+resource (ADR-125)."""
+        ...
+
     async def resolve_on_unavailable(self) -> "OnUnavailableAction":
         """
         Resolve on_unavailable from system config, with caching fallback.
