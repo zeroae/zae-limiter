@@ -133,6 +133,119 @@ class TestProvisionerHandler:
         delete_actions = [c for c in result["changes"] if c["action"] == "delete"]
         assert len(delete_actions) == 2
 
+    def test_apply_with_disabled_resource_fans_out(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """A resource-level `disabled` key in the manifest triggers bucket fan-out."""
+        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+        mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]}
+
+        event = {
+            "action": "apply",
+            "table_name": "test-table",
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}}},
+            },
+        }
+        result = on_event(event, MagicMock())
+        assert result["status"] == "applied"
+
+        # GSI2 query for the resource fan-out, plus a stamp UpdateItem call.
+        mock_client.query.assert_called()
+        query_kwargs = mock_client.query.call_args.kwargs
+        assert query_kwargs["IndexName"] == "GSI2"
+        assert query_kwargs["ExpressionAttributeValues"][":pk"] == {"S": "ns123/RESOURCE#gpt-4"}
+        mock_client.update_item.assert_called_once()
+        assert mock_client.update_item.call_args.kwargs["Key"]["PK"] == {
+            "S": "ns123/BUCKET#user-1#gpt-4#0"
+        }
+
+    def test_apply_without_disabled_key_skips_fanout(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """A manifest with no `disabled` key never touches bucket items."""
+        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+
+        event = {
+            "action": "apply",
+            "table_name": "test-table",
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+            },
+        }
+        on_event(event, MagicMock())
+
+        mock_client.query.assert_not_called()
+        mock_client.update_item.assert_not_called()
+
+    def test_apply_disabled_resource_and_entity_fans_out_resource_first(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """Resource-level fan-out runs before entity-level, so a carve-out wins (ADR-125)."""
+        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+        # Both fan-out queries return the same single discovered bucket so we
+        # can inspect update_item call ordering directly.
+        mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}}]}
+
+        event = {
+            "action": "apply",
+            "table_name": "test-table",
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}}},
+                "entities": {
+                    "vip-1": {
+                        "resources": {
+                            "gpt-4": {
+                                "disabled": False,
+                                "limits": {"rpm": {"capacity": 1000}},
+                            }
+                        }
+                    }
+                },
+            },
+        }
+        on_event(event, MagicMock())
+
+        # Two stamp calls: resource-level SET first, entity-level REMOVE last.
+        assert mock_client.update_item.call_count == 2
+        first_expr = mock_client.update_item.call_args_list[0].kwargs["UpdateExpression"]
+        second_expr = mock_client.update_item.call_args_list[1].kwargs["UpdateExpression"]
+        assert first_expr == "SET #disabled = :true"
+        assert second_expr == "REMOVE #disabled"
+
+    def test_cfn_create_with_disabled_resource_fans_out(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """CFN Create with a disabled resource also triggers fan-out."""
+        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+        mock_client.query.return_value = {"Items": []}
+
+        event = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": "test-table",
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                "Resources": {"gpt-4": {"Disabled": True, "Limits": {"rpm": {"Capacity": 1000}}}},
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+        result = on_event(event, MagicMock())
+        assert result["status"] == "applied"
+        # CFN properties -> manifest conversion doesn't carry "Disabled" through
+        # (out of scope for this task), so no fan-out query should occur.
+        mock_client.query.assert_not_called()
+
     def test_cfn_update_event(self, mock_handler_boto3, mock_applier_boto3, mock_urlopen):
         """CloudFormation Update event diffs against previous state."""
         self._setup_client(

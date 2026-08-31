@@ -20,7 +20,8 @@ import boto3
 from zae_limiter.schema import RESERVED_NAMESPACE, pk_system, sk_namespace, sk_provisioner
 
 from .applier import apply_changes
-from .differ import compute_diff
+from .differ import Change, compute_diff
+from .fanout import fanout_entity, fanout_resource
 from .manifest import LimitsManifest
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # Apply
     result = apply_changes(changes, table_name, namespace_id)
+    _fanout_disabled_changes(table_name, namespace_id, changes)
 
     # Update provisioner state
     manifest_hash = hashlib.sha256(
@@ -132,6 +134,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     changes = compute_diff(manifest, previous)
 
     result = apply_changes(changes, table_name, namespace_id)
+    _fanout_disabled_changes(table_name, namespace_id, changes)
 
     manifest_hash = hashlib.sha256(
         json.dumps(manifest.to_dict(), sort_keys=True).encode()
@@ -151,6 +154,36 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "deleted": result.deleted,
         "errors": result.errors,
     }
+
+
+def _fanout_disabled_changes(
+    table_name: str,
+    namespace_id: str,
+    changes: list[Change],
+) -> None:
+    """Eagerly stamp bucket items for any change that sets `disabled` (ADR-125).
+
+    Resource-level changes are applied before entity-level ones so that an
+    entity-level carve-out re-stamps its own buckets last and wins — see
+    ``fanout.py``'s module docstring for why the fan-out is order-dependent.
+    Deletes never carry a `disabled` key (Change.data is None for deletes),
+    so removing a managed item never touches bucket stamps; that mirrors
+    delete_resource_defaults()/delete_limits() on the async Repository, which
+    are likewise decoupled from disable_resource()/disable_entity().
+    """
+    candidates = [c for c in changes if c.data and "disabled" in c.data]
+    if not candidates:
+        return
+
+    client = boto3.client("dynamodb")
+    for change in sorted(candidates, key=lambda c: 0 if c.level == "resource" else 1):
+        data = change.data or {}
+        disabled = bool(data["disabled"])
+        if change.level == "resource" and change.target:
+            fanout_resource(client, table_name, namespace_id, change.target, disabled)
+        elif change.level == "entity" and change.target:
+            entity_id, resource = change.target.split("/", 1)
+            fanout_entity(client, table_name, namespace_id, entity_id, resource, disabled)
 
 
 def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
