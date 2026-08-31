@@ -4426,6 +4426,384 @@ class Repository:
 
         return False, None
 
+    async def _stamp_bucket_disabled(self, pk: str, disabled: bool) -> None:
+        """Set or remove the `disabled` attribute on one bucket item (ADR-125).
+
+        The attribute is present only when the bucket is effectively disabled,
+        which keeps the speculative guard as a cheap attribute_not_exists check.
+
+        Args:
+            pk: Full bucket partition key (already namespace- and shard-qualified)
+            disabled: True to stamp the bucket, False to clear the stamp
+        """
+        client = await self._get_client()
+        kwargs: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+            "ExpressionAttributeNames": {"#disabled": schema.BUCKET_FIELD_DISABLED},
+            # Never resurrect a bucket that TTL or a delete removed.
+            "ConditionExpression": "attribute_exists(PK)",
+        }
+        if disabled:
+            kwargs["UpdateExpression"] = "SET #disabled = :true"
+            kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
+        else:
+            kwargs["UpdateExpression"] = "REMOVE #disabled"
+
+        try:
+            await client.update_item(**kwargs)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            # Bucket vanished between discovery and stamp — nothing to disable.
+
+    async def _discover_resource_bucket_pks(self, resource: str) -> list[tuple[str, str]]:
+        """Find every bucket PK for a resource, across entities and shards.
+
+        Uses GSI2 (GSI2PK={ns}/RESOURCE#{name}, GSI2SK begins_with BUCKET#),
+        the same access pattern used for resource capacity aggregation.
+
+        Returns:
+            List of (bucket_pk, entity_id) tuples.
+        """
+        client = await self._get_client()
+        results: list[tuple[str, str]] = []
+        start_key: dict[str, Any] | None = None
+
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI2_NAME,
+                "KeyConditionExpression": "GSI2PK = :pk AND begins_with(GSI2SK, :sk)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
+                    ":sk": {"S": "BUCKET#"},
+                },
+            }
+            if start_key:
+                params["ExclusiveStartKey"] = start_key
+            response = await client.query(**params)
+            for item in response.get("Items", []):
+                pk = item.get("PK", {}).get("S", "")
+                if not pk:
+                    continue
+                _ns, entity_id, _res, _shard = schema.parse_bucket_pk(pk)
+                results.append((pk, entity_id))
+            start_key = response.get("LastEvaluatedKey")
+            if not start_key:
+                break
+
+        return results
+
+    async def _discover_entity_bucket_pks(self, entity_id: str, resource: str | None) -> list[str]:
+        """Find every bucket PK for an entity, optionally scoped to one resource.
+
+        Uses GSI3 (GSI3PK={ns}/ENTITY#{id}, GSI3SK begins_with BUCKET#{resource}#),
+        the KEYS_ONLY discovery index added for GHSA-76rv.
+
+        Returns:
+            List of bucket PKs.
+        """
+        client = await self._get_client()
+        pks: list[str] = []
+        start_key: dict[str, Any] | None = None
+        sk_prefix = f"BUCKET#{resource}#" if resource else "BUCKET#"
+
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI3_NAME,
+                "KeyConditionExpression": "GSI3PK = :pk AND begins_with(GSI3SK, :sk)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)},
+                    ":sk": {"S": sk_prefix},
+                },
+            }
+            if start_key:
+                params["ExclusiveStartKey"] = start_key
+            response = await client.query(**params)
+            for item in response.get("Items", []):
+                pk = item.get("PK", {}).get("S", "")
+                if pk:
+                    pks.append(pk)
+            start_key = response.get("LastEvaluatedKey")
+            if not start_key:
+                break
+
+        return pks
+
+    async def _fanout_resource(self, resource: str, disabled: bool) -> int:
+        """Stamp every bucket for a resource, honoring per-entity overrides.
+
+        An entity whose own config resolves to a different value than the
+        resource-level one is skipped — that is what makes an entity-level
+        `disabled: false` a carve-out from a disabled resource (ADR-125).
+
+        Runs the discovery query twice: the second pass catches buckets created
+        by an acquire that was already in flight during the first pass.
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        stamped: set[str] = set()
+        effective_by_entity: dict[str, bool] = {}
+
+        for _pass in range(2):
+            for pk, entity_id in await self._discover_resource_bucket_pks(resource):
+                if pk in stamped:
+                    continue
+                if entity_id not in effective_by_entity:
+                    effective, _level = await self.resolve_disabled(entity_id, resource)
+                    effective_by_entity[entity_id] = effective
+                if effective_by_entity[entity_id] != disabled:
+                    # This entity overrides the resource-level value; leave it alone.
+                    continue
+                await self._stamp_bucket_disabled(pk, disabled)
+                stamped.add(pk)
+
+        return len(stamped)
+
+    async def _fanout_entity(self, entity_id: str, resource: str | None, disabled: bool) -> int:
+        """Stamp every bucket for an entity (optionally scoped to one resource).
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        stamped: set[str] = set()
+        for _pass in range(2):
+            for pk in await self._discover_entity_bucket_pks(entity_id, resource):
+                if pk in stamped:
+                    continue
+                await self._stamp_bucket_disabled(pk, disabled)
+                stamped.add(pk)
+        return len(stamped)
+
+    async def disable_resource(self, resource: str, principal: str | None = None) -> int:
+        """Disable a resource for all entities without an explicit override (ADR-125).
+
+        Writes config first, then eagerly stamps every existing bucket so the
+        change takes effect on the speculative fast path immediately.
+
+        Args:
+            resource: Resource to disable
+            principal: Caller identity for audit logging
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        return await self._set_resource_disabled(resource, True, principal)
+
+    async def enable_resource(self, resource: str, principal: str | None = None) -> int:
+        """Explicitly enable a resource (stores `disabled: false`).
+
+        Returns:
+            Number of bucket items unstamped.
+        """
+        return await self._set_resource_disabled(resource, False, principal)
+
+    async def clear_resource_disabled(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's explicit disabled value, reverting to inherit.
+
+        Returns:
+            Number of bucket items unstamped.
+        """
+        return await self._set_resource_disabled(resource, None, principal)
+
+    async def _set_resource_disabled(
+        self, resource: str, value: bool | None, principal: str | None
+    ) -> int:
+        """Write the resource-level `disabled` config, then fan out to buckets.
+
+        The config write is an UPSERT (no `ConditionExpression`) when setting an
+        explicit value, mirroring `set_resource_defaults`'s attributes exactly
+        (`resource`, `GSI4PK`, `GSI4SK`) via `if_not_exists` so a resource with no
+        prior config item — the common case when running purely on system
+        defaults — can still be disabled. Clearing back to "inherit" only makes
+        sense against an item that already exists, so that branch keeps the
+        `attribute_exists(PK)` guard and treats a missing item as a no-op rather
+        than fabricating a stub with a bare REMOVE (ADR-125).
+        """
+        validate_resource(resource)
+        client = await self._get_client()
+
+        # 1. Write config first, so any acquire starting from now resolves the
+        #    new value on the slow path.
+        key = {
+            "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+            "SK": {"S": schema.sk_config()},
+        }
+        if value is None:
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression="REMOVE #disabled",
+                    ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+                    ConditionExpression="attribute_exists(PK)",
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                # No config item to clear — already effectively "inherit".
+        else:
+            # Upsert: create a minimal config item if none exists yet, mirroring
+            # set_resource_defaults's attributes so the item is well-formed even
+            # with no limits of its own (falls through to system defaults).
+            await client.update_item(
+                TableName=self.table_name,
+                Key=key,
+                UpdateExpression=(
+                    "SET #disabled = :v,"
+                    " #resource = if_not_exists(#resource, :res),"
+                    " GSI4PK = if_not_exists(GSI4PK, :gsi4pk),"
+                    " GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
+                ),
+                ExpressionAttributeNames={
+                    "#disabled": schema.CONFIG_FIELD_DISABLED,
+                    "#resource": "resource",
+                },
+                ExpressionAttributeValues={
+                    ":v": {"BOOL": value},
+                    ":res": {"S": resource},
+                    ":gsi4pk": {"S": self._namespace_id},
+                    ":gsi4sk": {"S": schema.pk_resource(self._namespace_id, resource)},
+                },
+            )
+
+        await self.invalidate_config_cache()
+
+        # 2. Fan out to existing buckets. For a clear, the effective value is
+        #    whatever the resource now inherits, which with no system-level
+        #    disable is always False.
+        count = await self._fanout_resource(resource, disabled=bool(value))
+
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
+            details={"disabled": value, "buckets_stamped": count},
+        )
+        return count
+
+    async def disable_entity(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Disable an entity, for one resource or across all of them (ADR-125).
+
+        Args:
+            entity_id: Entity to disable
+            resource: Resource to scope to. None targets the entity's
+                `_default_` config, disabling it for every resource.
+            principal: Caller identity for audit logging
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        return await self._set_entity_disabled(entity_id, resource, True, principal)
+
+    async def enable_entity(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Explicitly enable an entity, overriding a disabled resource.
+
+        Returns:
+            Number of bucket items unstamped.
+        """
+        return await self._set_entity_disabled(entity_id, resource, False, principal)
+
+    async def clear_entity_disabled(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Remove the entity's explicit disabled value, reverting to inherit.
+
+        Returns:
+            Number of bucket items restamped to match the inherited value.
+        """
+        return await self._set_entity_disabled(entity_id, resource, None, principal)
+
+    async def _set_entity_disabled(
+        self,
+        entity_id: str,
+        resource: str | None,
+        value: bool | None,
+        principal: str | None,
+    ) -> int:
+        target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
+        client = await self._get_client()
+
+        key = {
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(target_resource)},
+        }
+        if value is None:
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression="REMOVE #disabled",
+                    ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+                    ConditionExpression="attribute_exists(PK)",
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                # No config item to clear — already effectively "inherit".
+        else:
+            # The entity may have no config item yet — create a minimal one so
+            # the override is durable even with no entity-level limits.
+            await client.update_item(
+                TableName=self.table_name,
+                Key=key,
+                UpdateExpression=(
+                    "SET #disabled = :v,"
+                    " entity_id = if_not_exists(entity_id, :eid),"
+                    " #resource = if_not_exists(#resource, :res),"
+                    " GSI4PK = if_not_exists(GSI4PK, :ns),"
+                    " GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
+                ),
+                ExpressionAttributeNames={
+                    "#disabled": schema.CONFIG_FIELD_DISABLED,
+                    "#resource": "resource",
+                },
+                ExpressionAttributeValues={
+                    ":v": {"BOOL": value},
+                    ":eid": {"S": entity_id},
+                    ":res": {"S": target_resource},
+                    ":ns": {"S": self._namespace_id},
+                    ":gsi4sk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                },
+            )
+
+        self._config_cache.evict_entity(entity_id, target_resource)
+
+        # For an explicit value the effective state is that value. For a clear,
+        # recompute what the entity now inherits.
+        if value is None:
+            effective, _level = await self.resolve_disabled(entity_id, target_resource)
+        else:
+            effective = value
+
+        count = await self._fanout_entity(entity_id, resource, disabled=effective)
+
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=entity_id,
+            principal=principal,
+            resource=target_resource,
+            details={"disabled": value, "buckets_stamped": count},
+        )
+        return count
+
     async def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""
         await self._config_cache.invalidate_async()

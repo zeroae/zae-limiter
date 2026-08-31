@@ -872,6 +872,36 @@ class SyncRepositoryProtocol(Protocol):
         """Resolve the effective disabled state for an entity+resource (ADR-125)."""
         ...
 
+    def disable_resource(self, resource: str, principal: str | None = None) -> int:
+        """Disable a resource for all entities without an explicit override (ADR-125)."""
+        ...
+
+    def enable_resource(self, resource: str, principal: str | None = None) -> int:
+        """Explicitly enable a resource (stores `disabled: false`)."""
+        ...
+
+    def clear_resource_disabled(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's explicit disabled value, reverting to inherit."""
+        ...
+
+    def disable_entity(
+        self, entity_id: str, resource: str | None = None, principal: str | None = None
+    ) -> int:
+        """Disable an entity, for one resource or across all of them (ADR-125)."""
+        ...
+
+    def enable_entity(
+        self, entity_id: str, resource: str | None = None, principal: str | None = None
+    ) -> int:
+        """Explicitly enable an entity, overriding a disabled resource."""
+        ...
+
+    def clear_entity_disabled(
+        self, entity_id: str, resource: str | None = None, principal: str | None = None
+    ) -> int:
+        """Remove the entity's explicit disabled value, reverting to inherit."""
+        ...
+
     def resolve_on_unavailable(self) -> "OnUnavailableAction":
         """
         Resolve on_unavailable from system config, with caching fallback.
