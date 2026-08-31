@@ -110,6 +110,13 @@ class TestCLI:
                 "size_bytes": 30000,
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -145,6 +152,76 @@ class TestCLI:
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
+    def test_deploy_provisioner_deployment_failure(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command exits non-zero when provisioner deployment fails."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+                "stack_name": "rate-limits",
+            }
+        )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:test",
+                "code_sha256": "abc123def456",
+                "size_bytes": 30000,
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            side_effect=Exception("Provisioner package build failed")
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(cli, ["deploy"])
+
+        assert result.exit_code == 1
+        assert "Provisioner deployment failed" in result.output
+        assert "needs manual deployment" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_no_wait_skips_lambda_deployment(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy --no-wait skips Lambda deployment and prints a follow-up note."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_IN_PROGRESS",
+                "stack_id": "test-stack-id",
+                "stack_name": "rate-limits",
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        result = runner.invoke(cli, ["deploy", "--no-wait"])
+
+        assert result.exit_code == 0
+        assert "Stack creation initiated" in result.output
+        assert "Lambda code will not be deployed until stack is ready" in result.output
+        mock_instance.deploy_lambda_code.assert_not_called()
+        mock_instance.deploy_provisioner_code.assert_not_called()
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
     def test_deploy_custom_parameters(
         self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
     ) -> None:
@@ -156,6 +233,13 @@ class TestCLI:
             return_value={
                 "status": "CREATE_COMPLETE",
                 "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
             }
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -202,6 +286,13 @@ class TestCLI:
                 "stack_id": "test-stack-id",
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -242,6 +333,13 @@ class TestCLI:
             return_value={
                 "status": "CREATE_COMPLETE",
                 "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
             }
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -294,6 +392,13 @@ class TestCLI:
                 "size_bytes": 30000,
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -341,6 +446,13 @@ class TestCLI:
                 "stack_id": "test-stack-id",
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -382,6 +494,13 @@ class TestCLI:
             return_value={
                 "status": "CREATE_COMPLETE",
                 "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
             }
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -429,6 +548,13 @@ class TestCLI:
                 "stack_id": "test-stack-id",
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -474,6 +600,13 @@ class TestCLI:
             return_value={
                 "status": "CREATE_COMPLETE",
                 "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
             }
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -601,6 +734,13 @@ class TestCLI:
                 "size_bytes": 40000,
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -653,6 +793,13 @@ class TestCLI:
                 "size_bytes": 30000,
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -703,6 +850,13 @@ class TestCLI:
                 "size_bytes": 30000,
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -740,6 +894,13 @@ class TestCLI:
             return_value={
                 "status": "CREATE_COMPLETE",
                 "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
             }
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -785,6 +946,13 @@ class TestCLI:
                 "size_bytes": 30000,
             }
         )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
         mock_stack_manager.return_value = mock_instance
@@ -826,6 +994,13 @@ class TestCLI:
                 "function_arn": "arn:aws:lambda:us-east-1:123456789:function:test",
                 "code_sha256": "abc123def456ghi789",
                 "size_bytes": 30000,
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
             }
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -1348,6 +1523,13 @@ class TestUpgradeEnsureTags:
         mock_manager.deploy_lambda_code = AsyncMock(
             return_value={"status": "deployed", "size_bytes": 30000}
         )
+        mock_manager.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_manager.ensure_tags = AsyncMock(return_value=True)
         mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
         mock_manager.__aexit__ = AsyncMock(return_value=None)
@@ -1386,6 +1568,13 @@ class TestUpgradeEnsureTags:
         mock_manager.deploy_lambda_code = AsyncMock(
             return_value={"status": "deployed", "size_bytes": 30000}
         )
+        mock_manager.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_manager.ensure_tags = AsyncMock(return_value=False)
         mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
         mock_manager.__aexit__ = AsyncMock(return_value=None)
@@ -1423,6 +1612,13 @@ class TestUpgradeEnsureTags:
         mock_manager.deploy_lambda_code = AsyncMock(
             return_value={"status": "deployed", "size_bytes": 30000}
         )
+        mock_manager.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
         mock_manager.ensure_tags = AsyncMock(side_effect=Exception("Access denied"))
         mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
         mock_manager.__aexit__ = AsyncMock(return_value=None)
@@ -1436,6 +1632,45 @@ class TestUpgradeEnsureTags:
         assert result.exit_code == 0
         assert "Tag update failed" in result.output
         assert "Upgrade complete" in result.output
+
+    @patch("zae_limiter.__version__", "1.1.0")
+    @patch("zae_limiter.cli.StackManager")
+    @patch("zae_limiter.repository.Repository")
+    def test_upgrade_provisioner_deployment_failure(
+        self, mock_repo_class: Mock, mock_stack_manager: Mock, runner: CliRunner
+    ) -> None:
+        """Upgrade command exits non-zero when provisioner deployment fails."""
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(
+            return_value={
+                "schema_version": "1.0.0",
+                "lambda_version": "1.0.0",
+                "client_min_version": "0.0.0",
+            }
+        )
+        mock_repo.set_version_record = AsyncMock()
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        mock_manager = Mock()
+        mock_manager.deploy_lambda_code = AsyncMock(
+            return_value={"status": "deployed", "size_bytes": 30000}
+        )
+        mock_manager.deploy_provisioner_code = AsyncMock(
+            side_effect=Exception("Provisioner package build failed")
+        )
+        mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+        mock_manager.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_manager
+
+        result = runner.invoke(
+            cli,
+            ["upgrade", "--name", "test-app", "--force"],
+        )
+
+        assert result.exit_code == 1
+        assert "Provisioner deployment failed" in result.output
 
 
 class TestLambdaExport:

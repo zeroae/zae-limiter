@@ -629,7 +629,8 @@ class TestVersionManagementCodePaths:
 
     @pytest.mark.asyncio
     async def test_perform_lambda_update(self, mock_dynamodb):
-        """_perform_lambda_update calls StackManager.deploy_lambda_code."""
+        """_perform_lambda_update calls StackManager.deploy_lambda_code and
+        deploy_provisioner_code."""
         repo = await _create_table("test-lambda-update")
         try:
             mock_manager = AsyncMock()
@@ -642,10 +643,42 @@ class TestVersionManagementCodePaths:
             ):
                 await repo._perform_lambda_update()
                 mock_manager.deploy_lambda_code.assert_called_once()
+                mock_manager.deploy_provisioner_code.assert_called_once()
 
             # Verify version record was updated
             version = await repo.get_version_record()
             assert version is not None
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_infrastructure_internal_deploys_provisioner_code(self, mock_dynamodb):
+        """_ensure_infrastructure_internal always deploys provisioner Lambda code,
+        even when the aggregator is disabled (issue #433)."""
+        repo = Repository(
+            name="test-provisioner-deploy",
+            region="us-east-1",
+            stack_options=StackOptions(enable_aggregator=False),
+            _skip_deprecation_warning=True,
+        )
+        try:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=False)
+
+            with (
+                patch(
+                    "zae_limiter.infra.stack_manager.StackManager",
+                    return_value=mock_manager,
+                ),
+                patch.object(repo, "_write_audit_retention_config", new_callable=AsyncMock),
+            ):
+                await repo._ensure_infrastructure_internal()
+
+                mock_manager.create_stack.assert_called_once()
+                mock_manager.deploy_provisioner_code.assert_called_once()
+                # Aggregator is disabled, so its Lambda code must not be deployed
+                mock_manager.deploy_lambda_code.assert_not_called()
         finally:
             await repo.close()
 
