@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782443135237,
+  "lastUpdate": 1788174680748,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -13837,6 +13837,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0034346566749664472",
             "extra": "mean: 1.0753093125999953 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mrohr@users.noreply.github.com",
+            "name": "Matt Rohr",
+            "username": "mrohr"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ccc2e88e1b8f3b19e67bfb6475a5fa0aab4681eb",
+          "message": "✨ feat(models): support colon character in resource names (#437)\n\n## Summary\n- Extend `RESOURCE_PATTERN` in `src/zae_limiter/models.py` to allow the\n`:` character alongside existing alphanumeric, `_`, `-`, `.`, `/`\ncharacters\n- Update `validate_resource()`'s error message to mention colon as an\nallowed character\n- Update `CLAUDE.md`'s \"Rate Limiting Resource Names\" table and examples\nto document colon support\n- Add unit test coverage for colon-containing resource names (Ollama\ntags, Bedrock version suffixes, colon combined with slash grouping)\n\nThis enables real-world model/resource identifiers that use colons as\nseparators (e.g. Ollama tags like `llama3:8b`, Bedrock version suffixes\nlike `anthropic.claude-v2:1`). `#` remains the only forbidden character\nsince it's the reserved DynamoDB key delimiter, and no `schema.py` key\nbuilder splits resource names on `:`.\n\n## Test plan\n- [x] `validate_resource(\"llama3:8b\")` does not raise\n- [x] `validate_resource(\"anthropic.claude-v2:1\")` does not raise\n- [x] `validate_resource(\"openai/gpt-4:latest\")` does not raise\n- [x] `validate_resource(\"#invalid\")` still raises `InvalidNameError`\n- [x] `uv run pytest tests/unit/test_models.py` passes with no\nregressions (152 passed)\n\nCloses #434\n\n🤖 Generated with [Claude Code](https://claude.ai/code)",
+          "timestamp": "2026-08-31T07:07:10-04:00",
+          "tree_id": "4aa45156be1d7c6dc57e1f32af9dc6a06402afcb",
+          "url": "https://github.com/zeroae/zae-limiter/commit/ccc2e88e1b8f3b19e67bfb6475a5fa0aab4681eb"
+        },
+        "date": 1788174679165,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.717292908631794,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010305773188000897",
+            "extra": "mean: 44.01932941666805 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 14.99790078132179,
+            "unit": "iter/sec",
+            "range": "stddev: 0.014766051053690757",
+            "extra": "mean: 66.675997833336 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 33.53606863487333,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004226938024091513",
+            "extra": "mean: 29.818641263160004 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.79285651832875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005088202218189579",
+            "extra": "mean: 30.494446235297467 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 20.322724825059666,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008712071301971016",
+            "extra": "mean: 49.20600011111276 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 147.15576748314967,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011568678604148193",
+            "extra": "mean: 6.795520264705266 msec\nrounds: 102"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.532514816990723,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034916149620435014",
+            "extra": "mean: 40.762229533330206 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.227572226730047,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006248721165001751",
+            "extra": "mean: 41.275287125001725 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 23.569473712310963,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0072561155447380616",
+            "extra": "mean: 42.42776110345109 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 22.085279573695008,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010600788769298573",
+            "extra": "mean: 45.27902835294258 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 23.745690587549497,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0071538841636079615",
+            "extra": "mean: 42.112904499999125 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 22.254363268883623,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0036299644685316803",
+            "extra": "mean: 44.935008380950386 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 25.808868183265233,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0065317112140956405",
+            "extra": "mean: 38.746371708326656 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.919598840330148,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024245111787336827",
+            "extra": "mean: 520.9421775999886 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9274704213954932,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0019362563282763953",
+            "extra": "mean: 518.8147060000006 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.930577402423954,
+            "unit": "iter/sec",
+            "range": "stddev: 0.021740976497862278",
+            "extra": "mean: 1.074601637000012 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9151979568330094,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005566802089474843",
+            "extra": "mean: 1.0926597819999984 sec\nrounds: 5"
           }
         ]
       }
