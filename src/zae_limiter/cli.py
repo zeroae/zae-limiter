@@ -2310,6 +2310,12 @@ def resource_get_defaults(
             click.echo(f"Defaults for resource '{resource_name}':")
             for limit in limits:
                 click.echo(f"  {_format_limit(limit)}")
+
+            disabled = await repo.get_resource_disabled(resource_name)
+            if disabled is True:
+                click.echo("Status: DISABLED")
+            elif disabled is False:
+                click.echo("Status: enabled (explicit override)")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -2402,6 +2408,183 @@ def resource_delete_defaults(
             await repo.close()
 
     asyncio.run(_delete())
+
+
+@resource.command(
+    "disable",
+    epilog="""\b
+Examples:
+    \b
+    # Turn off a resource for everyone without an entity-level override
+    zae-limiter resource disable gpt-4
+""",
+)
+@click.argument("resource_name")
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def resource_disable(
+    resource_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Disable a resource.
+
+    RESOURCE_NAME is the resource to disable (e.g., 'gpt-4').
+
+    Existing buckets are stamped immediately, so the change takes effect on the
+    next request. Entities with an explicit enable override keep their access.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter resource disable gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.disable_resource(resource_name)
+            click.echo(f"Disabled resource '{resource_name}' ({count} buckets stamped)")
+        except Exception as e:
+            click.echo(f"Error: Failed to disable resource: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@resource.command(
+    "enable",
+    epilog="""\b
+Examples:
+    \b
+    # Explicitly enable a resource that is disabled by default
+    zae-limiter resource enable gpt-4
+""",
+)
+@click.argument("resource_name")
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def resource_enable(
+    resource_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Explicitly enable a resource.
+
+    RESOURCE_NAME is the resource to enable (e.g., 'gpt-4'). Stores an explicit
+    `disabled: false`, so the resource stays enabled even if a system-level
+    default would otherwise disable it.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter resource enable gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.enable_resource(resource_name)
+            click.echo(f"Enabled resource '{resource_name}' ({count} buckets cleared)")
+        except Exception as e:
+            click.echo(f"Error: Failed to enable resource: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@resource.command(
+    "clear-disabled",
+    epilog="""\b
+Examples:
+    \b
+    # Revert to inheriting the disabled state
+    zae-limiter resource clear-disabled gpt-4
+""",
+)
+@click.argument("resource_name")
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def resource_clear_disabled(
+    resource_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Clear a resource's explicit disabled flag, reverting to inherit.
+
+    RESOURCE_NAME is the resource to clear (e.g., 'gpt-4'). Removes any explicit
+    disable/enable value, so the resource resolves whatever it would inherit
+    (currently always enabled, since there is no system-level disable).
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter resource clear-disabled gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.clear_resource_disabled(resource_name)
+            click.echo(
+                f"Cleared disabled flag for resource '{resource_name}' ({count} buckets updated)"
+            )
+        except Exception as e:
+            click.echo(f"Error: Failed to clear resource disabled flag: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
 
 
 @resource.command(
@@ -3133,6 +3316,12 @@ def entity_get_limits(
             click.echo(f"Limits for entity '{entity_id}' on resource '{resource_name}':")
             for limit in limits:
                 click.echo(f"  {_format_limit(limit)}")
+
+            disabled = await repo.get_entity_disabled(entity_id, resource_name)
+            if disabled is True:
+                click.echo("Status: DISABLED")
+            elif disabled is False:
+                click.echo("Status: enabled (explicit override)")
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3235,6 +3424,209 @@ def entity_delete_limits(
             await repo.close()
 
     asyncio.run(_delete())
+
+
+@entity.command(
+    "disable",
+    epilog="""\b
+Examples:
+    \b
+    # Disable an entity across all resources
+    zae-limiter entity disable user-123
+    \b
+    # Disable an entity for a specific resource only
+    zae-limiter entity disable user-123 --resource gpt-4
+""",
+)
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    default=None,
+    help="Resource to scope to. Omit to apply across all resources for this entity.",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_disable(
+    entity_id: str,
+    resource: str | None,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Disable an entity.
+
+    ENTITY_ID is the entity to disable (e.g., 'user-123', 'api-key-abc').
+
+    Omit --resource to disable the entity across every resource (targets the
+    entity's `_default_` config). Existing buckets are stamped immediately, so
+    the change takes effect on the next request.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity disable user-123
+        zae-limiter entity disable user-123 --resource gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.disable_entity(entity_id, resource=resource)
+            click.echo(f"Disabled entity '{entity_id}' ({count} buckets stamped)")
+        except Exception as e:
+            click.echo(f"Error: Failed to disable entity: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@entity.command(
+    "enable",
+    epilog="""\b
+Examples:
+    \b
+    # Re-admit an entity to a resource that is disabled for everyone else
+    zae-limiter entity enable user-123 --resource gpt-4
+""",
+)
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    default=None,
+    help="Resource to scope to. Omit to apply across all resources for this entity.",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_enable(
+    entity_id: str,
+    resource: str | None,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Explicitly enable an entity, as an override.
+
+    ENTITY_ID is the entity to enable (e.g., 'user-123', 'api-key-abc').
+
+    This is an override: it re-admits one entity to a resource that is
+    disabled at the resource level, while everyone else stays blocked. Omit
+    --resource to apply the override across every resource for this entity
+    (targets the entity's `_default_` config).
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity enable user-123 --resource gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.enable_entity(entity_id, resource=resource)
+            click.echo(f"Enabled entity '{entity_id}' ({count} buckets cleared)")
+        except Exception as e:
+            click.echo(f"Error: Failed to enable entity: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@entity.command(
+    "clear-disabled",
+    epilog="""\b
+Examples:
+    \b
+    # Revert an entity to inheriting the resource's disabled state
+    zae-limiter entity clear-disabled user-123 --resource gpt-4
+""",
+)
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    default=None,
+    help="Resource to scope to. Omit to apply across all resources for this entity.",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_clear_disabled(
+    entity_id: str,
+    resource: str | None,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Clear an entity's explicit disabled flag, reverting to inherit.
+
+    ENTITY_ID is the entity to clear (e.g., 'user-123', 'api-key-abc'). Removes
+    any explicit disable/enable value, so the entity resolves whatever it
+    would inherit from the resource or system level. Omit --resource to apply
+    across every resource for this entity (targets the entity's `_default_`
+    config).
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity clear-disabled user-123 --resource gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.clear_entity_disabled(entity_id, resource=resource)
+            click.echo(f"Cleared disabled flag for entity '{entity_id}' ({count} buckets updated)")
+        except Exception as e:
+            click.echo(f"Error: Failed to clear entity disabled flag: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
 
 
 @entity.command(
