@@ -11,15 +11,17 @@ already in flight when the first pass's query ran -- without it, a bucket
 created between the first pass's query and its stamp would never be visited
 (ADR-125).
 
-Limitation: unlike Repository._fanout_resource, this does not evaluate
-per-entity overrides. The handler compensates by applying resource-level
-changes before entity-level ones, so an entity carve-out re-stamps its own
-buckets last.
+Limitation: unlike Repository._fanout_resource, fanout_resource does not
+evaluate per-entity overrides. The handler compensates by applying
+resource-level changes before entity-level ones, so an entity carve-out
+re-stamps its own buckets last. fanout_entity DOES evaluate per-resource
+overrides for its unscoped (`resource=None`) form -- see its docstring.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from zae_limiter.schema import (
@@ -30,6 +32,7 @@ from zae_limiter.schema import (
     decode_disabled,
     gsi2_pk_resource,
     gsi3_pk_entity,
+    parse_bucket_pk,
     pk_entity,
     pk_resource,
     sk_config,
@@ -122,7 +125,33 @@ def fanout_entity(
     resource: str | None,
     disabled: bool,
 ) -> int:
-    """Stamp every bucket for an entity. Returns the number stamped."""
+    """Stamp every bucket for an entity. Returns the number stamped.
+
+    When `resource` is None, this is applying the entity's `_default_`
+    directive across every resource the entity has a bucket for. A
+    resource-specific override for this same entity (its own per-resource
+    config, or the resource's own `disabled` config) can outrank that
+    `_default_` directive in `resolve_disabled`'s walk, exactly as an
+    entity's own override outranks a resource-level fan-out in
+    `fanout_resource`. Each discovered bucket's own resource is therefore
+    re-resolved via `resolve_disabled`, and buckets whose effective value
+    disagrees with the directive being applied are left alone (ADR-125),
+    mirroring `Repository._fanout_entity`. When scoped to one resource, the
+    caller's directive is unambiguous for every discovered bucket, so this
+    check is skipped and all buckets are stamped unconditionally.
+    """
+    effective_by_resource: dict[str, bool] = {}
+
+    def _should_stamp(pk: str) -> bool:
+        if resource is not None:
+            return True
+        _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
+        if bucket_resource not in effective_by_resource:
+            effective_by_resource[bucket_resource] = resolve_disabled(
+                client, table_name, namespace_id, entity_id, bucket_resource
+            )
+        return effective_by_resource[bucket_resource] == disabled
+
     return _fanout(
         client,
         table_name,
@@ -132,6 +161,7 @@ def fanout_entity(
         pk_value=gsi3_pk_entity(namespace_id, entity_id),
         sk_prefix=f"BUCKET#{resource}#" if resource else "BUCKET#",
         disabled=disabled,
+        should_stamp=_should_stamp,
     )
 
 
@@ -144,12 +174,17 @@ def _fanout(
     pk_value: str,
     sk_prefix: str,
     disabled: bool,
+    should_stamp: Callable[[str], bool] | None = None,
 ) -> int:
     """Discover and stamp matching bucket items, across two passes.
 
     Runs the paginated discovery query twice (see module docstring), with
     `stamped` shared across both passes so a PK visited on pass one is never
-    re-stamped on pass two.
+    re-stamped on pass two. `should_stamp`, when given, is consulted for
+    each newly-discovered PK before stamping; a PK it rejects is left alone
+    and NOT added to `stamped`, so it is re-considered (cheaply, since any
+    per-resource resolution the caller does is expected to be memoized) on
+    a later pass or page.
     """
     stamped: set[str] = set()
 
@@ -172,6 +207,8 @@ def _fanout(
             for item in response.get("Items", []):
                 pk = item.get("PK", {}).get("S", "")
                 if pk and pk not in stamped:
+                    if should_stamp is not None and not should_stamp(pk):
+                        continue
                     stamp_bucket(client, table_name, pk, disabled)
                     stamped.add(pk)
             start_key = response.get("LastEvaluatedKey")

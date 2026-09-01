@@ -27,6 +27,25 @@ def _make_client() -> MagicMock:
     return client
 
 
+def _item_router(items: dict[tuple[str, str], bool]):
+    """Build a `client.get_item` side_effect that looks up (PK, SK) tuples.
+
+    A key present in `items` returns a DynamoDB item with `disabled` set to
+    that bool; any other key resolves to "no Item" (mirrors an absent
+    `disabled` attribute, i.e. resolve_disabled continuing to the next level
+    in its walk).
+    """
+
+    def _get_item(*args, **kwargs):
+        raw_key = kwargs["Key"]
+        key = (raw_key["PK"]["S"], raw_key["SK"]["S"])
+        if key in items:
+            return {"Item": {"disabled": {"BOOL": items[key]}}}
+        return {}
+
+    return _get_item
+
+
 class TestStampBucket:
     """Tests for stamp_bucket's SET/REMOVE branching and error swallowing."""
 
@@ -260,6 +279,87 @@ class TestFanoutEntity:
         # just silently no-ops rather than raising.
         assert count == 2
         assert client.update_item.call_count == 2
+
+
+class TestFanoutEntityUnscopedOverride:
+    """Tests for fanout_entity's per-resource override check when `resource=None`.
+
+    An unscoped call (the entity's `_default_` directive) discovers buckets
+    across every resource the entity has one for. A resource-specific
+    override for this same entity must still win over that entity-wide
+    directive -- mirroring `Repository._fanout_entity`'s
+    `effective_by_resource` check -- so an entity carve-out on one resource
+    is never clobbered by disabling everything else.
+    """
+
+    NS = "ns123"
+    ENTITY = "vip-1"
+
+    def test_stamps_buckets_across_multiple_resources_when_no_override(self):
+        """Two real resources, neither with its own override: both inherit
+        the entity-wide `_default_` directive and get stamped."""
+        client = _make_client()
+        client.query.return_value = {
+            "Items": [
+                {"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}},
+                {"PK": {"S": "ns123/BUCKET#vip-1#claude-3#0"}},
+            ]
+        }
+        client.get_item.side_effect = _item_router(
+            {(pk_entity(self.NS, self.ENTITY), sk_config(DEFAULT_RESOURCE)): True}
+        )
+
+        count = fanout_entity(
+            client, "test-table", self.NS, self.ENTITY, resource=None, disabled=True
+        )
+
+        assert count == 2
+        stamped_pks = {c.kwargs["Key"]["PK"]["S"] for c in client.update_item.call_args_list}
+        assert stamped_pks == {
+            "ns123/BUCKET#vip-1#gpt-4#0",
+            "ns123/BUCKET#vip-1#claude-3#0",
+        }
+
+    def test_resource_specific_override_wins_over_entity_wide_directive(self):
+        """An entity's own explicit `disabled: false` for one resource must not
+        be clobbered by an entity-wide `disabled: true` directive (ADR-125)."""
+        client = _make_client()
+        client.query.return_value = {
+            "Items": [
+                {"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}},
+                {"PK": {"S": "ns123/BUCKET#vip-1#claude-3#0"}},
+            ]
+        }
+        client.get_item.side_effect = _item_router(
+            {
+                (pk_entity(self.NS, self.ENTITY), sk_config(DEFAULT_RESOURCE)): True,
+                # vip-1's own carve-out for claude-3 specifically.
+                (pk_entity(self.NS, self.ENTITY), sk_config("claude-3")): False,
+            }
+        )
+
+        count = fanout_entity(
+            client, "test-table", self.NS, self.ENTITY, resource=None, disabled=True
+        )
+
+        # Only gpt-4 (no override, inherits the True directive) is stamped;
+        # claude-3's own False override is left alone.
+        assert count == 1
+        stamped_pks = {c.kwargs["Key"]["PK"]["S"] for c in client.update_item.call_args_list}
+        assert stamped_pks == {"ns123/BUCKET#vip-1#gpt-4#0"}
+
+    def test_scoped_call_skips_the_override_check_entirely(self):
+        """When `resource` is given (not None), the caller's directive is
+        unambiguous, so no `get_item` calls are made at all."""
+        client = _make_client()
+        client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}}]}
+
+        count = fanout_entity(
+            client, "test-table", self.NS, self.ENTITY, resource="gpt-4", disabled=True
+        )
+
+        assert count == 1
+        client.get_item.assert_not_called()
 
 
 class TestResolveDisabled:

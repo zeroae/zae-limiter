@@ -2,7 +2,25 @@
 
 from unittest.mock import MagicMock, patch
 
+from zae_limiter.schema import DEFAULT_RESOURCE, pk_entity, sk_config
 from zae_limiter_provisioner.handler import _cfn_properties_to_manifest, on_event
+
+
+def _entity_default_get_item(namespace_id: str, entity_id: str, value: bool):
+    """Build a `client.get_item` side_effect where only the entity's
+    `_default_` config item is set, to `value`. Every other key (a specific
+    resource's own entity config, or a resource-level config) resolves to
+    "no Item", simulating that no per-resource override exists."""
+    target_key = (pk_entity(namespace_id, entity_id), sk_config(DEFAULT_RESOURCE))
+
+    def _get_item(*args, **kwargs):
+        raw_key = kwargs["Key"]
+        key = (raw_key["PK"]["S"], raw_key["SK"]["S"])
+        if key == target_key:
+            return {"Item": {"disabled": {"BOOL": value}}}
+        return {}
+
+    return _get_item
 
 
 class TestCfnPropertiesToManifestDisabled:
@@ -350,6 +368,68 @@ class TestProvisionerHandler:
         second_expr = mock_client.update_item.call_args_list[1].kwargs["UpdateExpression"]
         assert first_expr == "SET #disabled = :true"
         assert second_expr == "REMOVE #disabled"
+
+    def test_entity_wide_default_directive_fans_out_unscoped_across_resources(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """An entity-wide (`_default_`) directive must fan out unscoped, across
+        every real resource the entity has a bucket for -- not scoped to the
+        literal `_default_` sentinel.
+
+        Regression test for the round-3 fan-out bug: the pre-fix handler
+        passed `resource="_default_"` straight through to `fanout_entity`,
+        which queries GSI3 with `sk_prefix="BUCKET#_default_#"`. No real
+        bucket is ever keyed by the literal string `_default_` (buckets are
+        always keyed by their actual resource name, e.g. `gpt-4`), so that
+        query silently matched zero items: the config was written correctly,
+        the apply reported success, but no existing bucket was ever stamped.
+        The fix translates `_default_` -> `resource=None` (unscoped) before
+        calling `fanout_entity`, which queries with `sk_prefix="BUCKET#"` and
+        discovers every bucket for the entity across all resources.
+        """
+        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+        mock_client.get_item.side_effect = _entity_default_get_item("ns123", "vip-1", True)
+        mock_client.query.return_value = {
+            "Items": [
+                {"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}},
+                {"PK": {"S": "ns123/BUCKET#vip-1#claude-3#0"}},
+            ]
+        }
+
+        event = {
+            "action": "apply",
+            "table_name": "test-table",
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "entities": {
+                    "vip-1": {
+                        "resources": {
+                            "_default_": {
+                                "disabled": True,
+                                "limits": {"rpm": {"capacity": 1000}},
+                            }
+                        }
+                    }
+                },
+            },
+        }
+        result = on_event(event, MagicMock())
+        assert result["status"] == "applied"
+
+        # The GSI3 discovery query must be unscoped ("BUCKET#"), never
+        # "BUCKET#_default_#" -- this is the exact assertion that
+        # distinguishes the fix from the pre-fix bug.
+        query_kwargs = mock_client.query.call_args.kwargs
+        assert query_kwargs["IndexName"] == "GSI3"
+        assert query_kwargs["ExpressionAttributeValues"][":sk"] == {"S": "BUCKET#"}
+
+        # Both buckets, across two different real resources, get stamped.
+        stamped_pks = {c.kwargs["Key"]["PK"]["S"] for c in mock_client.update_item.call_args_list}
+        assert stamped_pks == {
+            "ns123/BUCKET#vip-1#gpt-4#0",
+            "ns123/BUCKET#vip-1#claude-3#0",
+        }
 
     def test_cfn_create_with_disabled_resource_fans_out(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen

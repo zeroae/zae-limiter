@@ -17,7 +17,13 @@ from typing import Any
 
 import boto3
 
-from zae_limiter.schema import RESERVED_NAMESPACE, pk_system, sk_namespace, sk_provisioner
+from zae_limiter.schema import (
+    DEFAULT_RESOURCE,
+    RESERVED_NAMESPACE,
+    pk_system,
+    sk_namespace,
+    sk_provisioner,
+)
 
 from .applier import apply_changes
 from .differ import Change, compute_diff
@@ -196,6 +202,20 @@ def _fanout_disabled_changes(
     touches bucket stamps; that mirrors delete_resource_defaults()/
     delete_limits() on the async Repository, which are likewise decoupled
     from disable_resource()/disable_entity().
+
+    An entity-level change whose resource is the `_default_` sentinel is an
+    entity-wide directive (applies across every resource the entity has a
+    bucket for). `_default_` is only ever a config SK, never a real bucket
+    resource — a bucket is always keyed by its actual resource name — so it
+    is translated to `resource=None` (unscoped) before calling
+    `fanout_entity`, which then discovers every one of the entity's buckets
+    across all resources and re-resolves each bucket's own effective value
+    so a per-resource override still wins over the entity-wide directive
+    (see `fanout.fanout_entity`'s docstring). Passing the literal string
+    `"_default_"` through to `fanout_entity` instead would silently match
+    zero real buckets (`GSI3SK begins_with "BUCKET#_default_#"`) and leave
+    every existing bucket un-stamped despite the config being written
+    correctly and the apply reporting success.
     """
     candidates = [
         c
@@ -216,7 +236,10 @@ def _fanout_disabled_changes(
         elif change.level == "entity" and change.target:
             entity_id, resource = change.target.split("/", 1)
             disabled = resolve_disabled(client, table_name, namespace_id, entity_id, resource)
-            fanout_entity(client, table_name, namespace_id, entity_id, resource, disabled)
+            fanout_resource_arg = None if resource == DEFAULT_RESOURCE else resource
+            fanout_entity(
+                client, table_name, namespace_id, entity_id, fanout_resource_arg, disabled
+            )
 
 
 def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
