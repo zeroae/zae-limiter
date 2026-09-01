@@ -13,6 +13,7 @@ from typing import Any
 import boto3
 
 from zae_limiter.schema import (
+    CONFIG_FIELD_DISABLED,
     limit_attr,
     pk_entity,
     pk_resource,
@@ -130,7 +131,7 @@ def _apply_set(
         extra = {"resource": {"S": resource}}
         disabled = data.get("disabled")
         if disabled is not None:
-            extra["disabled"] = {"BOOL": bool(disabled)}
+            extra[CONFIG_FIELD_DISABLED] = {"BOOL": bool(disabled)}
         item = _build_limit_item(pk, sk, namespace_id, limits, extra)
 
     elif change.level == "entity":
@@ -141,7 +142,7 @@ def _apply_set(
         extra = {"entity_id": {"S": entity_id}, "resource": {"S": resource}}
         disabled = data.get("disabled")
         if disabled is not None:
-            extra["disabled"] = {"BOOL": bool(disabled)}
+            extra[CONFIG_FIELD_DISABLED] = {"BOOL": bool(disabled)}
         item = _build_limit_item(pk, sk, namespace_id, limits, extra)
 
     else:

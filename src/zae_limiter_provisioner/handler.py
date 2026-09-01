@@ -21,7 +21,7 @@ from zae_limiter.schema import RESERVED_NAMESPACE, pk_system, sk_namespace, sk_p
 
 from .applier import apply_changes
 from .differ import Change, compute_diff
-from .fanout import fanout_entity, fanout_resource
+from .fanout import fanout_entity, fanout_resource, resolve_disabled
 from .manifest import LimitsManifest
 
 logger = logging.getLogger(__name__)
@@ -161,28 +161,61 @@ def _fanout_disabled_changes(
     namespace_id: str,
     changes: list[Change],
 ) -> None:
-    """Eagerly stamp bucket items for any change that sets `disabled` (ADR-125).
+    """Eagerly stamp bucket items for every resource/entity create or update (ADR-125).
+
+    Fans out unconditionally for every create/update at the resource and
+    entity levels — NOT only when the change's data happens to carry a
+    `disabled` key. `ResourceDecl.to_dict()` / `EntityResourceDecl.to_dict()`
+    omit `disabled` entirely when it is `None` ("inherit"), so an operator
+    deleting a `disabled: true` line and re-applying produces a change with
+    no `disabled` key at all. Filtering on key presence would skip that
+    change's fan-out, leaving existing buckets stamped `disabled: true`
+    forever (until TTL) even though the config item correctly lost the
+    attribute.
+
+    For a resource-level change, the effective value is simply the
+    resource's own (possibly absent -> False) `disabled` value — there is no
+    level above resource in the walk (system-level disable is out of scope
+    per ADR-125), mirroring ``Repository._set_resource_disabled``'s
+    ``disabled=bool(value)``.
+
+    For an entity-level change, the effective value is NOT `data.get(
+    "disabled", False)` — that would be wrong whenever the entity's own
+    value is absent, since absent at entity level means "inherit from
+    resource", which may legitimately be `True`. Instead this resolves the
+    same entity(resource) -> entity(_default_) -> resource walk
+    ``Repository.resolve_disabled`` uses, reading the config items
+    `apply_changes` has already written for this apply (see
+    ``fanout.resolve_disabled``).
 
     Resource-level changes are applied before entity-level ones so that an
     entity-level carve-out re-stamps its own buckets last and wins — see
     ``fanout.py``'s module docstring for why the fan-out is order-dependent.
-    Deletes never carry a `disabled` key (Change.data is None for deletes),
-    so removing a managed item never touches bucket stamps; that mirrors
-    delete_resource_defaults()/delete_limits() on the async Repository, which
-    are likewise decoupled from disable_resource()/disable_entity().
+    Deletes never fan out (`Change.data` is `None` for deletes, and they are
+    excluded by the action filter below), so removing a managed item never
+    touches bucket stamps; that mirrors delete_resource_defaults()/
+    delete_limits() on the async Repository, which are likewise decoupled
+    from disable_resource()/disable_entity().
     """
-    candidates = [c for c in changes if c.data and "disabled" in c.data]
+    candidates = [
+        c
+        for c in changes
+        if c.data is not None
+        and c.action in ("create", "update")
+        and c.level in ("resource", "entity")
+    ]
     if not candidates:
         return
 
     client = boto3.client("dynamodb")
     for change in sorted(candidates, key=lambda c: 0 if c.level == "resource" else 1):
         data = change.data or {}
-        disabled = bool(data["disabled"])
         if change.level == "resource" and change.target:
+            disabled = bool(data.get("disabled"))
             fanout_resource(client, table_name, namespace_id, change.target, disabled)
         elif change.level == "entity" and change.target:
             entity_id, resource = change.target.split("/", 1)
+            disabled = resolve_disabled(client, table_name, namespace_id, entity_id, resource)
             fanout_entity(client, table_name, namespace_id, entity_id, resource, disabled)
 
 

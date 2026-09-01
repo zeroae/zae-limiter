@@ -83,6 +83,10 @@ class TestProvisionerHandler:
         """Set up shared mock client for both handler and applier boto3."""
         mock_client = MagicMock()
         mock_client.get_item.return_value = get_item_return or {}
+        # Default to "no buckets discovered" so fan-out (now unconditional on every
+        # create/update, per the fix below) doesn't hang: an unconfigured MagicMock
+        # response is truthy for `LastEvaluatedKey`, which would loop forever.
+        mock_client.query.return_value = {"Items": []}
         mock_handler_boto3.client.return_value = mock_client
         mock_applier_boto3.client.return_value = mock_client
         return mock_client
@@ -230,10 +234,17 @@ class TestProvisionerHandler:
             "S": "ns123/BUCKET#user-1#gpt-4#0"
         }
 
-    def test_apply_without_disabled_key_skips_fanout(
+    def test_apply_without_disabled_key_still_fans_out_as_not_disabled(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
     ):
-        """A manifest with no `disabled` key never touches bucket items."""
+        """A manifest with no `disabled` key still fans out (as `disabled=False`).
+
+        Fan-out is unconditional on every create/update now (not gated on the
+        `disabled` key being present) — see `_fanout_disabled_changes`'s
+        docstring for why gating on key presence was the Finding 1 bug. With
+        no buckets discovered (the default empty query response), the fan-out
+        is a no-op: no `update_item` call, but the discovery `query` still runs.
+        """
         mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
 
         event = {
@@ -247,8 +258,61 @@ class TestProvisionerHandler:
         }
         on_event(event, MagicMock())
 
-        mock_client.query.assert_not_called()
+        mock_client.query.assert_called()
         mock_client.update_item.assert_not_called()
+
+    def test_reapply_without_disabled_line_unstamps_previously_disabled_buckets(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """Deleting the `disabled: true` line and re-applying must un-stamp buckets.
+
+        Regression test for Finding 1 (CRITICAL): the old fan-out selection,
+        `candidates = [c for c in changes if c.data and "disabled" in c.data]`,
+        skipped fan-out entirely once `disabled` was removed from the YAML,
+        because `ResourceDecl.to_dict()` omits the key when it is `None`. The
+        config item lost `disabled` correctly (PutItem replaces the whole
+        item), but every existing bucket kept its `disabled: true` stamp and
+        `ResourceDisabled` kept firing off the bucket alone, with nothing in
+        the manifest or the config item saying so. This must fail against the
+        pre-fix filter, which never issues the second apply's `update_item`
+        call at all.
+        """
+        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+        mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]}
+
+        # First apply: `disabled: true` stamps the bucket.
+        disable_event = {
+            "action": "apply",
+            "table_name": "test-table",
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}}},
+            },
+        }
+        on_event(disable_event, MagicMock())
+        mock_client.update_item.assert_called_once()
+        assert (
+            mock_client.update_item.call_args.kwargs["UpdateExpression"] == "SET #disabled = :true"
+        )
+
+        mock_client.update_item.reset_mock()
+
+        # Second apply: the operator deletes the `disabled: true` line and
+        # re-applies. The manifest dict now has no `disabled` key at all.
+        reenable_event = {
+            "action": "apply",
+            "table_name": "test-table",
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+            },
+        }
+        on_event(reenable_event, MagicMock())
+
+        mock_client.update_item.assert_called_once()
+        assert mock_client.update_item.call_args.kwargs["UpdateExpression"] == "REMOVE #disabled"
 
     def test_apply_disabled_resource_and_entity_fans_out_resource_first(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -316,7 +380,9 @@ class TestProvisionerHandler:
         result = on_event(event, MagicMock())
         assert result["status"] == "applied"
 
-        mock_client.query.assert_called_once()
+        # Two passes over the discovery query (Finding 2); the single discovered
+        # PK is stamped once thanks to cross-pass de-duplication.
+        assert mock_client.query.call_count == 2
         query_kwargs = mock_client.query.call_args.kwargs
         assert query_kwargs["IndexName"] == "GSI2"
         assert query_kwargs["ExpressionAttributeValues"][":pk"] == {"S": "ns123/RESOURCE#gpt-4"}
@@ -324,10 +390,16 @@ class TestProvisionerHandler:
         update_expr = mock_client.update_item.call_args.kwargs["UpdateExpression"]
         assert update_expr == "SET #disabled = :true"
 
-    def test_cfn_create_with_disabled_false_absent_key_skips_fanout(
+    def test_cfn_create_with_disabled_absent_key_still_fans_out_as_not_disabled(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
     ):
-        """CFN Create with no `Disabled` property never touches bucket items (tri-state)."""
+        """CFN Create with no `Disabled` property still fans out (as `disabled=False`).
+
+        Mirrors `test_apply_without_disabled_key_still_fans_out_as_not_disabled`
+        for the CFN entry point: fan-out is unconditional on create/update, so
+        the discovery query always runs; with no buckets discovered it is a
+        harmless no-op (no `update_item` call).
+        """
         mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
 
         event = {
@@ -346,7 +418,7 @@ class TestProvisionerHandler:
         }
         result = on_event(event, MagicMock())
         assert result["status"] == "applied"
-        mock_client.query.assert_not_called()
+        mock_client.query.assert_called()
         mock_client.update_item.assert_not_called()
 
     def test_cfn_update_event(self, mock_handler_boto3, mock_applier_boto3, mock_urlopen):
