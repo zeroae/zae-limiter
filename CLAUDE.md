@@ -778,6 +778,11 @@ Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.
 Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
 Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/M** (child consumed + compensated).
 
+`resolve_disabled()` (ADR-125) is deliberately uncached and only runs on the slow path — never
+on the speculative fast path — but when it does run it costs an extra up-to-3-key
+`BatchGetItem` (entity(resource), entity(`_default_`), resource), and a second one for the
+parent on a cascade slow path (`limiter.py` resolves child and parent independently).
+
 ## DynamoDB Access Patterns
 
 All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque namespace ID (e.g., `a7x3kq`). The reserved namespace `_` is used for namespace registry records.
@@ -1007,7 +1012,7 @@ deliberately **not** a `RateLimitError`, carrying no retry hint: map it to 403, 
 walk directly and is deliberately **uncached**: it is called only on the slow path and by the
 eager fan-out, never on the speculative fast path.
 
-**API (each returns an `int` count of bucket items stamped), on `Repository` (not `RateLimiter`):**
+**API (each returns an `int` count of bucket items written), on `Repository` (not `RateLimiter`):**
 
 | Level | Disable / Enable | Clear |
 |-------|------------------|-------|
@@ -1016,7 +1021,17 @@ eager fan-out, never on the speculative fast path.
 
 `resource=None` on the entity-level methods means "all resources for that entity" (targets the
 entity's `_default_` config). `set_resource_defaults()` and `set_limits()` also accept a
-`disabled` keyword to set it in the same call.
+`disabled` keyword; passing it **explicitly** (not the default "preserve stored value"
+sentinel) fans out immediately, exactly like `disable_resource()`/`disable_entity()` — a setter
+call is not just a config write. `delete_limits()` and `delete_resource_defaults()` delete the
+config item that was holding `disabled`, which can change what `resolve_disabled()` returns in
+either direction, so both re-run the fan-out against the newly resolved value rather than
+leaving the deleted level's stamp in place.
+
+Cascade is out of scope for entity-level `disabled`: an entity-level `disabled: false` carve-out
+on a cascading **child** does not extend to its **parent**. `acquire()` checks the child's own
+bucket stamp only; if the parent's bucket is separately stamped disabled, the cascade still
+raises `ResourceDisabled` with `entity_id` set to the **parent**, not the child.
 
 **CLI:**
 
@@ -1031,12 +1046,13 @@ zae-limiter entity disable|enable|clear-disabled ENTITY_ID [--resource R]
 **Declarative limits (Issue #405):** `disabled` is supported on `resources.<name>` and
 `entities.<id>.resources.<name>` in the YAML manifest (not on `system`), and carried through
 the CloudFormation `Custom::ZaeLimiterLimits` round trip in both directions via a `Disabled`
-property.
+property. The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) mirrors
+the async `Repository` fan-out and consults per-entity overrides the same way, so a manifest
+apply that merely re-asserts an unchanged resource-level `disabled` (as every apply does —
+`differ.py` emits a change for every manifest resource regardless of whether anything changed)
+never clobbers a carve-out made out of band directly against the table.
 
 **Known limitations:**
-- The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) cannot consult
-  per-entity overrides the way the async `Repository` fan-out can; the handler compensates by
-  applying resource-level changes before entity-level ones, so a carve-out re-stamps last.
 - Disabling is O(buckets for the resource) writes, not O(1).
 - A narrow race exists between the config write and the fan-out query: an in-flight
   `acquire()` can create a bucket the fan-out's GSI query misses. Mitigated by a two-pass

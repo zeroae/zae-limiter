@@ -205,7 +205,7 @@ class TestFanout:
 
         assert await disable_repo.disable_entity("user-1", resource="gpt-4") == 1
 
-    async def test_unscoped_disable_entity_skips_resource_with_override(
+    async def test_unscoped_disable_entity_restamps_each_resource_to_its_resolved_value(
         self, disable_limiter, disable_repo
     ):
         # user-1 has an explicit carve-out on gpt-4 (disabled=False) that
@@ -220,9 +220,13 @@ class TestFanout:
             async with disable_limiter.acquire("user-1", res, {"rpm": 1}):
                 pass
 
-        # Unscoped disable_entity applies the entity `_default_` directive;
-        # only claude-3's bucket (no override) should be stamped.
-        assert await disable_repo.disable_entity("user-1") == 1
+        # Unscoped disable_entity re-resolves and (re)writes EVERY discovered
+        # bucket to its own resolved value — the count is bucket items
+        # written, not buckets matching the `disabled` argument. gpt-4's
+        # bucket is written but ends up unstamped (its carve-out resolves to
+        # False, i.e. REMOVE); claude-3's bucket is written and stamped True.
+        # Both buckets count, so the total is 2.
+        assert await disable_repo.disable_entity("user-1") == 2
 
         gpt4_pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "gpt-4", 0)
         claude_pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "claude-3", 0)
@@ -240,7 +244,7 @@ class TestFanout:
         )
         assert claude_item["Item"][schema.BUCKET_FIELD_DISABLED] == {"BOOL": True}
 
-        # resolve_disabled must still agree with what got stamped.
+        # resolve_disabled must agree with each bucket's stamp (or lack of one).
         assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, "entity")
         assert await disable_repo.resolve_disabled("user-1", "claude-3") == (
             True,
@@ -336,6 +340,46 @@ class TestClearDisabledRevertsToInherited:
         assert await disable_repo.clear_entity_disabled("vip-1", resource="gpt-4") == 1
         assert await disable_repo.get_entity_disabled("vip-1", "gpt-4") is None
         assert await disable_repo.resolve_disabled("vip-1", "gpt-4") == (True, "resource")
+
+    async def test_unscoped_clear_restamps_resource_whose_own_config_now_decides(
+        self, disable_limiter, disable_repo
+    ):
+        """Regression (Critical 1): the unscoped clear must actively re-stamp a
+        bucket whose own resource-level config now decides, not merely skip it
+        because its resolution disagrees with the (stale) entity default.
+
+        Before the clear, the entity's `_default_: false` carve-out outranks
+        gpt-4's own `disabled: true`, so the bucket is created enabled. After
+        `_default_` is cleared, gpt-4's own config becomes the deciding level
+        and the bucket must flip to disabled. The pre-fix `_fanout_entity`
+        compared each bucket's freshly-resolved value against the single
+        `effective` value computed for the (now-nonexistent) `_default_`
+        level itself, saw a disagreement, and left the bucket's stale
+        `disabled=false`/absent stamp untouched -- a silent kill-switch
+        bypass with the config correctly saying `disabled: true`.
+        """
+        await disable_repo.set_resource_defaults(
+            "gpt-4", [Limit.per_minute("rpm", 100)], disabled=True
+        )
+        await disable_repo.set_limits("user-1", [Limit.per_minute("rpm", 100)], disabled=False)
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        # The entity-wide carve-out currently wins over the resource's own True.
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, "entity_default")
+
+        assert await disable_repo.clear_entity_disabled("user-1") == 1
+
+        # gpt-4's own config is now the deciding level, and says disabled.
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (True, "resource")
+
+        pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "gpt-4", 0)
+        client = await disable_repo._get_client()
+        item = await client.get_item(
+            TableName=disable_repo.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+        )
+        assert item["Item"][schema.BUCKET_FIELD_DISABLED] == {"BOOL": True}
 
     async def test_enable_entity_creates_stub_config_item(self, disable_repo):
         assert await disable_repo.get_entity_disabled("user-9", "_default_") is None
@@ -519,6 +563,117 @@ class TestDiscoverBucketPksPagination:
 
         pks = await disable_repo._discover_resource_bucket_pks("gpt-4")
         assert len(pks) == 1
+
+
+@pytest.mark.asyncio
+class TestSetterExplicitDisabledFansOut:
+    """set_resource_defaults()/set_limits() must fan out immediately when
+    `disabled` is passed explicitly -- not only when disable_resource()/
+    disable_entity() are called separately (I1, ADR-125)."""
+
+    async def test_set_resource_defaults_explicit_disabled_fans_out(
+        self, disable_limiter, disable_repo
+    ):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, None)
+
+        # Passing `disabled=True` alongside new limits must fan out on its
+        # own -- the pre-fix setter only preserved/wrote the value and never
+        # called _fanout_resource(), so existing buckets kept accepting
+        # traffic despite the config now saying disabled.
+        await disable_repo.set_resource_defaults(
+            "gpt-4", [Limit.per_minute("rpm", 200)], disabled=True
+        )
+
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (True, "resource")
+        pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "gpt-4", 0)
+        client = await disable_repo._get_client()
+        item = await client.get_item(
+            TableName=disable_repo.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+        )
+        assert item["Item"][schema.BUCKET_FIELD_DISABLED] == {"BOOL": True}
+
+    async def test_set_limits_explicit_disabled_fans_out(self, disable_limiter, disable_repo):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, None)
+
+        # Same for the entity-level setter: an explicit `disabled=True` must
+        # fan out immediately, not wait for a separate disable_entity() call.
+        await disable_repo.set_limits(
+            "user-1", [Limit.per_minute("rpm", 50)], resource="gpt-4", disabled=True
+        )
+
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (True, "entity")
+        pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "gpt-4", 0)
+        client = await disable_repo._get_client()
+        item = await client.get_item(
+            TableName=disable_repo.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+        )
+        assert item["Item"][schema.BUCKET_FIELD_DISABLED] == {"BOOL": True}
+
+
+@pytest.mark.asyncio
+class TestDeleteFansOut:
+    """delete_limits()/delete_resource_defaults() delete the config item that
+    holds `disabled`, so they must re-run the fan-out against the newly
+    resolved value (C2, ADR-125)."""
+
+    async def test_delete_resource_defaults_unstamps_buckets(self, disable_limiter, disable_repo):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        await disable_repo.disable_resource("gpt-4")
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (True, "resource")
+
+        # Deleting the resource config removes the only level that was
+        # setting `disabled` -- the pre-fix delete_resource_defaults() never
+        # called _fanout_resource() at all, so the bucket kept its stale
+        # `disabled: true` stamp (and ResourceDisabled kept firing) even
+        # though the config item, and get_resource_disabled(), now say
+        # "not disabled".
+        await disable_repo.delete_resource_defaults("gpt-4")
+
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, None)
+        pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "gpt-4", 0)
+        client = await disable_repo._get_client()
+        item = await client.get_item(
+            TableName=disable_repo.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+        )
+        assert schema.BUCKET_FIELD_DISABLED not in item.get("Item", {})
+
+    async def test_delete_limits_unstamps_buckets(self, disable_limiter, disable_repo):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        # disable_entity() writes the same entity+resource config item
+        # delete_limits() below will delete, and stamps the bucket -- using
+        # it here (rather than set_limits(disabled=True), I1's own fix)
+        # isolates this test to delete_limits()'s fan-out specifically.
+        await disable_repo.disable_entity("user-1", resource="gpt-4")
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (True, "entity")
+
+        # Deleting the entity's resource-specific config removes the level
+        # that was overriding the resource's own (not-disabled) value -- the
+        # pre-fix delete_limits() never fanned out, leaving the bucket
+        # stamped `disabled: true` with nothing in DynamoDB saying so
+        # anymore.
+        await disable_repo.delete_limits("user-1", resource="gpt-4")
+
+        assert await disable_repo.resolve_disabled("user-1", "gpt-4") == (False, None)
+        pk = schema.pk_bucket(disable_repo._namespace_id, "user-1", "gpt-4", 0)
+        client = await disable_repo._get_client()
+        item = await client.get_item(
+            TableName=disable_repo.table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+        )
+        assert schema.BUCKET_FIELD_DISABLED not in item.get("Item", {})
 
 
 @pytest.mark.asyncio

@@ -2551,12 +2551,15 @@ class Repository:
             disabled: Tri-state disabled flag. Defaults to preserving whatever
                 value is already stored (this is a full-replace PutItem, so an
                 explicit value must be passed to change it; see ADR-125).
+                Passing an explicit value also fans out to existing buckets,
+                exactly as `disable_entity()`/`enable_entity()` do.
         """
         client = await self._get_client()
 
         # Full-replace PutItem would drop `disabled`; preserve it unless the
         # caller passed an explicit value (ADR-125).
-        if disabled is _PRESERVE_DISABLED:
+        disabled_explicit = disabled is not _PRESERVE_DISABLED
+        if not disabled_explicit:
             disabled = await self.get_entity_disabled(entity_id, resource)
 
         # Build composite config item with all limits
@@ -2633,6 +2636,15 @@ class Repository:
 
         # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
         self._config_cache.evict_entity(entity_id, resource)
+
+        # An explicit `disabled` changes what resolve_disabled() answers, so the
+        # denormalized bucket stamp has to follow it eagerly — same contract as
+        # disable_entity()/enable_entity() (ADR-125). With the preserve sentinel
+        # the stored value is unchanged, so no fan-out is needed.
+        if disabled_explicit:
+            effective, _level = await self.resolve_disabled(entity_id, resource)
+            fanout_resource = None if resource == schema.DEFAULT_RESOURCE else resource
+            await self._fanout_entity(entity_id, fanout_resource, disabled=effective)
 
         # Log audit event
         await self._log_audit_event(
@@ -2925,6 +2937,17 @@ class Repository:
         # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
         self._config_cache.evict_entity(entity_id, resource)
 
+        # The deleted item is where this level's `disabled` lived, so removing
+        # it can change resolve_disabled()'s answer in either direction. Re-stamp
+        # so the denormalized bucket flag never contradicts the resolution
+        # (ADR-125). Deleting the `_default_` config is an entity-wide change, so
+        # it fans out unscoped and each bucket's own resource is re-resolved.
+        if resource == schema.DEFAULT_RESOURCE:
+            await self._fanout_entity(entity_id, None, disabled=False)
+        else:
+            effective, _level = await self.resolve_disabled(entity_id, resource)
+            await self._fanout_entity(entity_id, resource, disabled=effective)
+
         # Log audit event
         await self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
@@ -3052,13 +3075,16 @@ class Repository:
             disabled: Tri-state disabled flag. Defaults to preserving whatever
                 value is already stored (this is a full-replace PutItem, so an
                 explicit value must be passed to change it; see ADR-125).
+                Passing an explicit value also fans out to existing buckets,
+                exactly as `disable_resource()`/`enable_resource()` do.
         """
         validate_resource(resource)
         client = await self._get_client()
 
         # Full-replace PutItem would drop `disabled`; preserve it unless the
         # caller passed an explicit value (ADR-125).
-        if disabled is _PRESERVE_DISABLED:
+        disabled_explicit = disabled is not _PRESERVE_DISABLED
+        if not disabled_explicit:
             disabled = await self.get_resource_disabled(resource)
 
         # Build composite config item with all limits
@@ -3100,6 +3126,13 @@ class Repository:
                 ":gsi4sk": {"S": schema.pk_system(self._namespace_id)},
             },
         )
+
+        # An explicit `disabled` changes what resolve_disabled() answers, so the
+        # denormalized bucket stamp has to follow it eagerly — same contract as
+        # disable_resource()/enable_resource() (ADR-125). With the preserve
+        # sentinel the stored value is unchanged, so no fan-out is needed.
+        if disabled_explicit:
+            await self._fanout_resource(resource, disabled=bool(disabled))
 
         # Log audit event with special prefix
         await self._log_audit_event(
@@ -3197,6 +3230,13 @@ class Repository:
                 ":resource": {"SS": [resource]},
             },
         )
+
+        # The deleted item is where the resource's `disabled` lived, so removing
+        # it can change resolve_disabled()'s answer. With no level above resource
+        # in the walk, the resource now resolves to "not disabled"; entities with
+        # their own override are skipped by _fanout_resource and keep their stamp
+        # (ADR-125).
+        await self._fanout_resource(resource, disabled=False)
 
         # Log audit event
         await self._log_audit_event(
@@ -4590,14 +4630,19 @@ class Repository:
         own `disabled` config) can outrank that `_default_` in
         `resolve_disabled`'s walk, exactly as an entity's own override
         outranks a resource-level fan-out in `_fanout_resource`. Each
-        discovered bucket's own resource is therefore re-resolved and
-        buckets whose effective value disagrees with the directive being
-        applied are left alone (ADR-125). When scoped to one resource, the
-        caller's directive is unambiguous for every discovered bucket, so
-        this check is skipped and all buckets are stamped unconditionally.
+        discovered bucket's own resource is therefore **re-resolved** and
+        stamped with its OWN resolved value, and the `disabled` argument is
+        ignored. Skipping the buckets whose resolution disagrees with the
+        directive would be wrong for a *clear*: once the entity's
+        `_default_` value is gone, a resource whose own config says the
+        opposite becomes the deciding level, and its buckets must be
+        restamped to that new value rather than left holding a stale one
+        (ADR-125). When scoped to one resource, the caller's directive is
+        unambiguous for every discovered bucket, so all buckets are stamped
+        with `disabled` directly.
 
         Returns:
-            Number of bucket items stamped.
+            Number of bucket items written.
         """
         stamped: set[str] = set()
         effective_by_resource: dict[str, bool] = {}
@@ -4606,16 +4651,14 @@ class Repository:
             for pk in await self._discover_entity_bucket_pks(entity_id, resource):
                 if pk in stamped:
                     continue
+                target = disabled
                 if resource is None:
                     _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
                     if bucket_resource not in effective_by_resource:
                         effective, _level = await self.resolve_disabled(entity_id, bucket_resource)
                         effective_by_resource[bucket_resource] = effective
-                    if effective_by_resource[bucket_resource] != disabled:
-                        # This resource has its own override that outranks
-                        # the entity-default directive being applied here.
-                        continue
-                await self._stamp_bucket_disabled(pk, disabled)
+                    target = effective_by_resource[bucket_resource]
+                await self._stamp_bucket_disabled(pk, target)
                 stamped.add(pk)
         return len(stamped)
 
@@ -4742,7 +4785,12 @@ class Repository:
             principal: Caller identity for audit logging
 
         Returns:
-            Number of bucket items stamped.
+            Number of bucket items written. When scoped to one resource,
+            every written bucket is stamped `disabled=True`. When unscoped,
+            `_fanout_entity` re-resolves and (re)writes each of the entity's
+            buckets to its OWN resolved value (which may disagree with this
+            call for a resource with its own override) — see
+            `_fanout_entity` for why.
         """
         return await self._set_entity_disabled(entity_id, resource, True, principal)
 
@@ -4755,7 +4803,11 @@ class Repository:
         """Explicitly enable an entity, overriding a disabled resource.
 
         Returns:
-            Number of bucket items unstamped.
+            Number of bucket items written. When scoped to one resource,
+            every written bucket is unstamped (`disabled=False` removes the
+            attribute). When unscoped, `_fanout_entity` re-resolves and
+            (re)writes each of the entity's buckets to its OWN resolved
+            value, which may disagree with this call — see `_fanout_entity`.
         """
         return await self._set_entity_disabled(entity_id, resource, False, principal)
 

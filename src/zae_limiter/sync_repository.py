@@ -2095,9 +2095,12 @@ class SyncRepository:
             disabled: Tri-state disabled flag. Defaults to preserving whatever
                 value is already stored (this is a full-replace PutItem, so an
                 explicit value must be passed to change it; see ADR-125).
+                Passing an explicit value also fans out to existing buckets,
+                exactly as `disable_entity()`/`enable_entity()` do.
         """
         client = self._get_client()
-        if disabled is _PRESERVE_DISABLED:
+        disabled_explicit = disabled is not _PRESERVE_DISABLED
+        if not disabled_explicit:
             disabled = self.get_entity_disabled(entity_id, resource)
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -2153,6 +2156,10 @@ class SyncRepository:
                 raise
         self._sync_bucket_params(entity_id, resource, limits, bucket_ttl_refill_multiplier=0)
         self._config_cache.evict_entity(entity_id, resource)
+        if disabled_explicit:
+            effective, _level = self.resolve_disabled(entity_id, resource)
+            fanout_resource = None if resource == schema.DEFAULT_RESOURCE else resource
+            self._fanout_entity(entity_id, fanout_resource, disabled=effective)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=entity_id,
@@ -2398,6 +2405,11 @@ class SyncRepository:
                 raise
         self._cleanup_entity_config_registry(resource)
         self._config_cache.evict_entity(entity_id, resource)
+        if resource == schema.DEFAULT_RESOURCE:
+            self._fanout_entity(entity_id, None, disabled=False)
+        else:
+            effective, _level = self.resolve_disabled(entity_id, resource)
+            self._fanout_entity(entity_id, resource, disabled=effective)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id=entity_id,
@@ -2502,10 +2514,13 @@ class SyncRepository:
             disabled: Tri-state disabled flag. Defaults to preserving whatever
                 value is already stored (this is a full-replace PutItem, so an
                 explicit value must be passed to change it; see ADR-125).
+                Passing an explicit value also fans out to existing buckets,
+                exactly as `disable_resource()`/`enable_resource()` do.
         """
         validate_resource(resource)
         client = self._get_client()
-        if disabled is _PRESERVE_DISABLED:
+        disabled_explicit = disabled is not _PRESERVE_DISABLED
+        if not disabled_explicit:
             disabled = self.get_resource_disabled(resource)
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
@@ -2533,6 +2548,8 @@ class SyncRepository:
                 ":gsi4sk": {"S": schema.pk_system(self._namespace_id)},
             },
         )
+        if disabled_explicit:
+            self._fanout_resource(resource, disabled=bool(disabled))
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=f"$RESOURCE:{resource}",
@@ -2611,6 +2628,7 @@ class SyncRepository:
             UpdateExpression="DELETE resources :resource",
             ExpressionAttributeValues={":resource": {"SS": [resource]}},
         )
+        self._fanout_resource(resource, disabled=False)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id=f"$RESOURCE:{resource}",
@@ -3769,14 +3787,19 @@ class SyncRepository:
         own `disabled` config) can outrank that `_default_` in
         `resolve_disabled`'s walk, exactly as an entity's own override
         outranks a resource-level fan-out in `_fanout_resource`. Each
-        discovered bucket's own resource is therefore re-resolved and
-        buckets whose effective value disagrees with the directive being
-        applied are left alone (ADR-125). When scoped to one resource, the
-        caller's directive is unambiguous for every discovered bucket, so
-        this check is skipped and all buckets are stamped unconditionally.
+        discovered bucket's own resource is therefore **re-resolved** and
+        stamped with its OWN resolved value, and the `disabled` argument is
+        ignored. Skipping the buckets whose resolution disagrees with the
+        directive would be wrong for a *clear*: once the entity's
+        `_default_` value is gone, a resource whose own config says the
+        opposite becomes the deciding level, and its buckets must be
+        restamped to that new value rather than left holding a stale one
+        (ADR-125). When scoped to one resource, the caller's directive is
+        unambiguous for every discovered bucket, so all buckets are stamped
+        with `disabled` directly.
 
         Returns:
-            Number of bucket items stamped.
+            Number of bucket items written.
         """
         stamped: set[str] = set()
         effective_by_resource: dict[str, bool] = {}
@@ -3784,14 +3807,14 @@ class SyncRepository:
             for pk in self._discover_entity_bucket_pks(entity_id, resource):
                 if pk in stamped:
                     continue
+                target = disabled
                 if resource is None:
                     _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
                     if bucket_resource not in effective_by_resource:
                         effective, _level = self.resolve_disabled(entity_id, bucket_resource)
                         effective_by_resource[bucket_resource] = effective
-                    if effective_by_resource[bucket_resource] != disabled:
-                        continue
-                self._stamp_bucket_disabled(pk, disabled)
+                    target = effective_by_resource[bucket_resource]
+                self._stamp_bucket_disabled(pk, target)
                 stamped.add(pk)
         return len(stamped)
 
@@ -3897,7 +3920,12 @@ class SyncRepository:
             principal: Caller identity for audit logging
 
         Returns:
-            Number of bucket items stamped.
+            Number of bucket items written. When scoped to one resource,
+            every written bucket is stamped `disabled=True`. When unscoped,
+            `_fanout_entity` re-resolves and (re)writes each of the entity's
+            buckets to its OWN resolved value (which may disagree with this
+            call for a resource with its own override) — see
+            `_fanout_entity` for why.
         """
         return self._set_entity_disabled(entity_id, resource, True, principal)
 
@@ -3907,7 +3935,11 @@ class SyncRepository:
         """Explicitly enable an entity, overriding a disabled resource.
 
         Returns:
-            Number of bucket items unstamped.
+            Number of bucket items written. When scoped to one resource,
+            every written bucket is unstamped (`disabled=False` removes the
+            attribute). When unscoped, `_fanout_entity` re-resolves and
+            (re)writes each of the entity's buckets to its OWN resolved
+            value, which may disagree with this call — see `_fanout_entity`.
         """
         return self._set_entity_disabled(entity_id, resource, False, principal)
 
